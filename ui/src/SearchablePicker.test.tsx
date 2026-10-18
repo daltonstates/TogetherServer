@@ -31,3 +31,16 @@ it('dismisses with Escape and outside touch without selecting a different server
   expect(details.open).toBe(false)
   expect(onSelect).not.toHaveBeenCalled()
 })
+
+it('keeps the picker open while scrolling choices and dismisses when its sidebar scrolls', () => {
+  const onSelect = vi.fn()
+  const { container } = render(<aside><SearchablePicker label="Selected server" items={items}
+    selectedId="a" onSelect={onSelect} /></aside>)
+  const details = container.querySelector('details')!
+  details.open = true
+  fireEvent.scroll(screen.getByLabelText('Selected server choices'))
+  expect(details.open).toBe(true)
+  fireEvent.scroll(container.querySelector('aside')!)
+  expect(details.open).toBe(false)
+  expect(onSelect).not.toHaveBeenCalled()
+})

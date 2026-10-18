@@ -16,6 +16,49 @@ const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('shared-save UX evidence', () => {
+  it('keeps recovery inputs, transfer progress and conflict warnings across management sections', async () => {
+    const mutations: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method) mutations.push(url)
+      if (url.endsWith('/recovery')) return reply({ ...noRecovery, state: 'HistoryReviewRequired' })
+      if (url.endsWith('/handoff/restore')) return reply(restoreStatus)
+      return reply({ ...receivedStatus, transferPhase: 'Receipt', receiptConfirmed: false })
+    }))
+    render(<FriendSharedWorlds profileId={profileId} available />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
+    const dialog = within(screen.getByRole('dialog', { name: 'Manage sharing' }))
+    const navigation = within(dialog.getByRole('navigation', { name: 'Shared-save management sections' }))
+    const conflict = await dialog.findByText(/Competing authority histories need review/)
+    const progress = dialog.getByRole('progressbar', { name: 'Management save bytes received' })
+    expect(navigation.getByRole('button', { name: 'Copy status' })).toHaveAttribute('aria-current', 'page')
+    expect(dialog.queryByRole('button', { name: 'Prepare solo recovery' })).not.toBeInTheDocument()
+
+    fireEvent.click(navigation.getByRole('button', { name: 'Recovery' }))
+    fireEvent.click(dialog.getByText('Join a new Host after takeover'))
+    const hash = dialog.getByLabelText('Signed takeover hash')
+    const fingerprint = dialog.getByLabelText('New Host certificate fingerprint')
+    fireEvent.change(hash, { target: { value: 'A'.repeat(64) } })
+    fireEvent.change(fingerprint, { target: { value: 'B'.repeat(64) } })
+    fireEvent.click(dialog.getByText('Choose the default Host after confirmed loss'))
+    const offer = dialog.getByLabelText('Offer code from candidate PC')
+    fireEvent.change(offer, { target: { value: 'unfinished private offer' } })
+    expect(dialog.getByRole('button', { name: 'Prepare solo recovery' })).toBeDisabled()
+
+    for (const section of ['People', 'Details', 'Copy status']) {
+      fireEvent.click(navigation.getByRole('button', { name: section }))
+      expect(hash).not.toBeVisible()
+      expect(progress).toBeVisible()
+      expect(conflict).toBeVisible()
+    }
+    fireEvent.click(navigation.getByRole('button', { name: 'Recovery' }))
+    expect(dialog.getByLabelText('Signed takeover hash')).toBe(hash)
+    expect(hash).toHaveValue('A'.repeat(64))
+    expect(fingerprint).toHaveValue('B'.repeat(64))
+    expect(offer).toHaveValue('unfinished private offer')
+    expect(hash).toBeVisible()
+    expect(mutations).toEqual([])
+  })
+
   it('keeps incomplete byte progress separate from verification and receipt, with canonical copy dates', async () => {
     const mutations: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -70,6 +113,7 @@ describe('shared-save UX evidence', () => {
     render(<FriendSharedWorlds profileId={profileId} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     // Management is open.
+    fireEvent.click(screen.getByRole('button', { name: 'Recovery' }))
     fireEvent.click(await screen.findByText('Choose the default Host after confirmed loss'))
     fireEvent.click(await screen.findByRole('button', { name: 'Copy signed offer code' }))
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith(JSON.stringify(offer)))
@@ -117,6 +161,7 @@ describe('shared-save UX evidence', () => {
     render(<FriendSharedWorlds profileId={profileId} available />)
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     // Management is open.
+    fireEvent.click(screen.getByRole('button', { name: 'Recovery' }))
     fireEvent.click(screen.getByRole('button', { name: 'Check signed branches' }))
     const comparison = await screen.findByRole('table', { name: 'Compare competing save histories' })
     expect(comparison).toHaveTextContent('Saved version 3')

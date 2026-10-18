@@ -68,6 +68,12 @@ const files = pureDecoders('ServerFilesPanel.tsx', ['entry', 'field', 'flag', 'p
 const addons = pureDecoders('ServerAddOnsPanel.tsx', ['object', 'string', 'boolean', 'parseAddOns'], { ContractError: contracts.ContractError });
 const readiness = pureDecoders('SharedWorldReadinessPanel.tsx', ['parseRestoreStatus'], { normalizedDirectIpHttpsEndpoint });
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
+const peers = pureDecoders('WorldPeerPanel.tsx', ['object', 'text', 'flag', 'count', 'identity', 'date', 'list',
+  'parsePeer', 'parseBranch', 'parseSession', 'parseSelection', 'parseWorldPeerGroups'], {
+  guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  hashPattern: /^[0-9a-f]{64}$/i
+});
+const installation = pureDecoders('LiveSaveAcceptancePanel.tsx', ['object', 'text', 'identity', 'stages', 'parseLiveSaveAcceptance']);
 const get = (state, path) => {
   const response = routeFixture(state, { method: 'GET', path });
   assert.equal(response?.status, 200, path);
@@ -84,7 +90,34 @@ test('all presets decode Host and Friend snapshots with current strict decoders'
     const state = createFixtureState(scenario);
     assert.doesNotThrow(() => contracts.parseSnapshot(state.host), `${scenario} host`);
     assert.doesNotThrow(() => contracts.parseFriendSnapshot(state.friend), `${scenario} friend`);
-    assert.doesNotThrow(() => contracts.parseSnapshot(get(state, '/api/local/snapshot')), scenario);
+    if (scenario === 'host-load-error') assert.equal(routeFixture(state, { method: 'GET', path: '/api/local/snapshot' }).status, 503);
+    else assert.doesNotThrow(() => contracts.parseSnapshot(get(state, '/api/local/snapshot')), scenario);
+  }
+});
+
+test('every world-group preset passes the current strict peer decoder and stays synthetic', () => {
+  for (const scenario of fixtureScenarios) {
+    const state = createFixtureState(scenario);
+    const groups = peers.parseWorldPeerGroups(get(state, '/api/local/world-peers'));
+    assert.equal(groups.length, /peers/.test(scenario) ? 1 : 0, scenario);
+    for (const group of groups) {
+      assert.ok(group.state.peers.every(peer => peer.routes.every(route => route.address.includes('192.0.2.10'))));
+      assert.equal(routeFixture(state, { method: 'POST', path: `/api/local/world-peers/${group.groupKey}/connect`,
+        body: { deviceId: fixtureIds.otherDevice, sessionId: fixtureIds.session } }).status, 503);
+    }
+  }
+});
+
+test('installation and transfer-progress variants decode without accepting a real game', () => {
+  for (const scenario of ['host-live-save', 'host-live-interrupted']) {
+    const state = createFixtureState(scenario);
+    const view = installation.parseLiveSaveAcceptance(get(state, `/api/local/profiles/${fixtureIds.primary}/live-save-acceptance`));
+    assert.equal(view.accepted, false); assert.equal(view.code, 'SyntheticEvidenceOnly');
+    assert.equal(view.stages.length, 6); assert.ok(view.stages.every(stage => stage.state === 'Unverified'));
+  }
+  for (const scenario of ['friend-shared-verifying-offline', 'friend-shared-receipt-offline', 'friend-shared-low-space', 'friend-shared-untrusted']) {
+    const state = createFixtureState(scenario);
+    shared.parseFriendSharedWorldStatus(get(state, `/api/local/friend/${fixtureIds.primary}/shared-world`));
   }
 });
 

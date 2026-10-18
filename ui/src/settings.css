@@ -100,13 +100,13 @@
 }
 .settings-card.ui-button {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: .85rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .75rem;
   min-inline-size: 0;
-  min-block-size: 10rem;
+  min-block-size: 0;
   margin: 0;
-  padding: 1.15rem;
+  padding: .9rem;
   border: 1px solid var(--color-border);
   border-radius: .85rem;
   background: var(--color-surface);
@@ -126,8 +126,7 @@
 .settings-card-content {
   display: flex;
   flex-direction: column;
-  align-self: stretch;
-  gap: .4rem;
+  gap: .25rem;
   min-inline-size: 0;
 }
 .settings-card-title {
@@ -139,20 +138,15 @@
 .settings-card-description { color: var(--color-text-muted); font-weight: 400; }
 .settings-card-summary {
   display: block;
-  padding-block: .25rem;
   color: var(--color-text-secondary);
   font-weight: 500;
 }
-.settings-card-action {
-  display: flex;
-  align-items: center;
-  gap: .4rem;
-  margin-block-start: auto;
-  padding-block-start: .4rem;
+.settings-card-chevron {
+  display: grid;
+  place-items: center;
   color: var(--color-accent-text);
-  font-weight: 700;
 }
-.settings-card-action .icon { flex: none; }
+.settings-card-chevron .icon { flex: none; }
 
 .settings-dialog {
   inline-size: min(36rem, calc(100vw - 2rem));
@@ -385,6 +379,106 @@
   background: var(--color-accent-soft);
   color: var(--color-accent-text);
 }
+
+.host-settings-tools {
+  display: grid;
+  gap: 1rem;
+}
+.host-settings-tools > :is(.settings-section-heading, .actions, .next-action) { margin: 0; }
+.host-settings-tools .setting-toggle > span { min-inline-size: 0; }
+.app-settings-page .settings-version-row,
+.app-settings-page .settings-danger-row {
+  flex-wrap: wrap;
+  margin-block-start: 0;
+}
+.app-settings-page :is(.settings-version-row, .settings-danger-row) > span { flex: 1 1 15rem; min-inline-size: 0; }
+.app-settings-page :is(.settings-version-row, .settings-danger-row) > .ui-button { flex: none; margin: 0; }
+.app-settings-page .settings-dialog-stack { gap: .85rem; }
+
+.game-settings-panel {
+  display: grid;
+  gap: 1rem;
+  min-inline-size: 0;
+}
+.game-settings-panel [hidden] { display: none; }
+.game-settings-panel > .section-heading,
+.game-settings-list > .section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem .85rem;
+  margin: 0;
+}
+.game-settings-panel .section-heading > div { min-inline-size: 0; flex: 1; }
+.game-settings-panel .section-heading :is(h3, h4) { margin: 0; }
+.game-settings-panel .section-heading p { margin: .25rem 0 0; color: var(--color-text-muted); }
+.game-settings-panel .section-heading > .icon-button { flex: none; margin: 0; }
+.game-settings-tabs { align-items: center; padding-block-end: .65rem; }
+.settings-unsaved-dot { inline-size: .4rem; block-size: .4rem; border-radius: 50%; background: currentColor; }
+.game-settings-general:not([hidden]),
+.game-settings-players:not([hidden]),
+.game-settings-list:not([hidden]) { display: grid; gap: .85rem; min-inline-size: 0; }
+.game-settings-panel :is(.helper-text, .notice, .actions, .next-action) { margin: 0; }
+.game-settings-panel :is(.game-settings-search, .game-settings-list-picker),
+.game-settings-fields label:not(.check),
+.game-settings-panel .advanced-block > label {
+  display: grid;
+  gap: .4rem;
+  min-inline-size: 0;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.game-settings-panel .game-settings-list-picker { max-inline-size: 28rem; }
+.game-settings-panel :is(.ui-input:not([type="checkbox"]), .ui-select, .ui-textarea) {
+  inline-size: 100%;
+  min-inline-size: 0;
+  margin: 0;
+}
+.game-settings-panel .game-settings-fields {
+  gap: .9rem 1rem;
+  align-items: start;
+}
+.game-settings-fields > div { min-inline-size: 0; }
+.game-settings-fields small {
+  display: block;
+  margin-block-start: .35rem;
+  color: var(--color-text-muted);
+  font-size: .75rem;
+  line-height: 1.5;
+}
+.game-settings-fields .check {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  margin: 0;
+  font-weight: 600;
+}
+.game-settings-fields .check input { flex: none; margin-block-start: .2rem; }
+.game-settings-panel .game-settings-entry {
+  align-items: center;
+  padding: .7rem .8rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: .55rem;
+  background: var(--color-surface-raised);
+}
+.game-settings-entry code { display: block; color: var(--color-text-muted); font-size: .75rem; }
+.game-settings-entry > .game-settings-entry-remove { flex: none; min-inline-size: 2.5rem; margin: 0; }
+.game-settings-panel .game-settings-add-player { align-items: end; }
+.game-settings-add-player > .ui-button { justify-self: start; align-self: end; margin: 0; }
+.settings-hidden-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .7rem;
+  padding: .8rem;
+  border: 1px solid var(--color-warning-border);
+  border-radius: .6rem;
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+.settings-hidden-feedback > span { flex: 1 1 15rem; min-inline-size: 0; overflow-wrap: anywhere; }
+.settings-hidden-feedback > .ui-button { flex: none; margin: 0; }
 
 @container settings-content (max-width: 36rem) {
   .settings-card-grid { grid-template-columns: minmax(0, 1fr); }

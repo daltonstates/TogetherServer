@@ -3,7 +3,8 @@ import type { ReactNode } from 'react'
 export type IconName = 'play' | 'stop' | 'copy' | 'invite' | 'refresh' | 'server' |
   'game' | 'plug' | 'check' | 'warning' | 'settings' | 'search' | 'link' |
   'eye' | 'eyeOff' | 'bell' | 'loader' | 'plus' | 'users' | 'chat' | 'logs' | 'clock' | 'archive' |
-  'close' | 'chevronRight' | 'chevronDown' | 'more' | 'monitor' | 'shield' | 'palette' | 'power' | 'keyboard' | 'trash'
+  'close' | 'chevronRight' | 'chevronDown' | 'more' | 'monitor' | 'shield' | 'palette' | 'power' | 'keyboard' | 'trash' |
+  'folder' | 'edit' | 'undo' | 'upload'
 
 const paths: Record<IconName, ReactNode> = {
   play: <path d="m6 4 8 6-8 6V4Z" />,
@@ -31,6 +32,10 @@ const paths: Record<IconName, ReactNode> = {
   archive: <><rect x="3" y="3" width="14" height="4" rx="1" /><path d="M4 7v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7M8 10h4" /></>,
   close: <path d="m5 5 10 10M15 5 5 15" />,
   trash: <><path d="M3 5h14M7 5V3h6v2M5 5l1 12h8l1-12M8 8v6M12 8v6" /></>,
+  folder: <path d="M2.5 6V4.5A1.5 1.5 0 0 1 4 3h4l2 3h6a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 16 17H4a1.5 1.5 0 0 1-1.5-1.5V6Z" />,
+  edit: <><path d="m12.5 3.5 4 4M3 17l4.5-1L17 6.5 13.5 3 4 12.5 3 17Z" /><path d="M11 17h6" /></>,
+  undo: <><path d="M7 4 3 8l4 4M3 8h8a5 5 0 0 1 0 10" /></>,
+  upload: <><path d="M10 13V2m-4 4 4-4 4 4M3 12v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" /></>,
   chevronRight: <path d="m8 5 5 5-5 5" />,
   chevronDown: <path d="m5 8 5 5 5-5" />,
   more: <><circle cx="4" cy="10" r=".7" /><circle cx="10" cy="10" r=".7" /><circle cx="16" cy="10" r=".7" /></>,

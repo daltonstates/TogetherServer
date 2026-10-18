@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServerFilesPanel } from './ServerFilesPanel'
 import { readProtectedDraft, saveProtectedDraft, clearProtectedDraft } from './protectedUiDrafts'
+import type { EditorDraftGuard } from './editorProtectedDraft'
 
 vi.mock('./protectedUiDrafts', () => ({ readProtectedDraft: vi.fn(), saveProtectedDraft: vi.fn(), clearProtectedDraft: vi.fn() }))
 beforeEach(() => {
@@ -159,7 +160,7 @@ it.each(guardedActions)('requires a dialog decision for $action and preserves th
   render(<ServerFilesPanel {...confirmationProps} state={item.state} />)
   fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
   await screen.findByLabelText('File contents')
-  await screen.findByRole('button', { name: 'Restore setup' })
+  if (item.action === 'Restore setup') fireEvent.click(screen.getByRole('button', { name: 'Checkpoints' }))
   fireEvent.click(screen.getByRole('button', { name: item.action }))
   let dialog = await screen.findByRole('dialog', { name: item.title })
   expect(dialog).toHaveTextContent(item.description)
@@ -181,7 +182,7 @@ it.each(guardedActions)('refuses $action when the current lifecycle guard change
   const rendered = render(<ServerFilesPanel {...confirmationProps} state={item.state} />)
   fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
   await screen.findByLabelText('File contents')
-  await screen.findByRole('button', { name: 'Restore setup' })
+  if (item.action === 'Restore setup') fireEvent.click(screen.getByRole('button', { name: 'Checkpoints' }))
   fireEvent.click(screen.getByRole('button', { name: item.action }))
   const dialog = await screen.findByRole('dialog', { name: item.title })
   rendered.rerender(<ServerFilesPanel {...confirmationProps} state="Unknown" />)
@@ -196,6 +197,7 @@ it('cancels the previous profile decision when the selected server changes', asy
   const fetcher = confirmationFetcher()
   vi.stubGlobal('fetch', fetcher)
   const rendered = render(<ServerFilesPanel {...confirmationProps} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Checkpoints' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Restore setup' }))
   await screen.findByRole('dialog', { name: 'Restore complete setup?' })
   rendered.rerender(<ServerFilesPanel {...confirmationProps} profileId="22222222-2222-4222-8222-222222222222" />)
@@ -260,4 +262,79 @@ it('waits for protected draft persistence before an accepted file reload', async
   finishSave!()
   await waitFor(() => expect(fetcher.mock.calls.filter(([input]) => String(input).endsWith('/files/admin-list'))).toHaveLength(reads + 1))
   await waitFor(() => expect(screen.getByLabelText('File contents')).toHaveValue('Steam_111\n'))
+})
+
+it('preserves a reviewed dirty file across supporting sections and blocks conflicting changes', async () => {
+  const addOns = { ok: true, code: 'AddOnsReady', message: 'Ready', gameVersion: '2.0',
+    requiredOnFriendPc: 'Match enabled add-ons.', stateToken: 'before', canImport: true, canUndo: false,
+    warning: null, importType: 'FactorioMod', items: [] }
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input)
+    const payload = path.endsWith('/files') ? fileListing : path.endsWith('/backups') ? completeBackups :
+      path.endsWith('/addons') ? addOns : currentFile
+    return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  const draftState = vi.fn()
+  render(<ServerFilesPanel {...confirmationProps} onDraftStateChange={draftState} />)
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
+  const editor = await screen.findByLabelText('File contents')
+  fireEvent.change(editor, { target: { value: 'Steam_333\n' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Review file changes' }))
+  expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeEnabled()
+  const fileReads = fetcher.mock.calls.filter(([input]) => String(input).endsWith('/files/admin-list')).length
+  const navigation = within(screen.getByRole('navigation', { name: 'Server file sections' }))
+
+  fireEvent.click(navigation.getByRole('button', { name: 'Add-ons' }))
+  expect(editor).not.toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Import mod ZIP' })).toBeDisabled()
+  expect(screen.getByText('Save or discard your file edits before changing add-ons.')).toBeVisible()
+  fireEvent.click(navigation.getByRole('button', { name: 'Checkpoints' }))
+  expect(screen.getByRole('button', { name: 'Restore setup' })).toBeDisabled()
+  expect(editor).toHaveValue('Steam_333\n')
+  fireEvent.click(navigation.getByRole('button', { name: /^Files/ }))
+
+  expect(screen.getByLabelText('File contents')).toBe(editor)
+  expect(editor).toBeVisible()
+  expect(editor).toHaveValue('Steam_333\n')
+  expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeEnabled()
+  expect(screen.getByRole('region', { name: 'Review raw file changes' })).toHaveTextContent('Steam_333')
+  expect(fetcher.mock.calls.filter(([input]) => String(input).endsWith('/files/admin-list'))).toHaveLength(fileReads)
+  expect(clearProtectedDraft).not.toHaveBeenCalled()
+  expect(draftState).toHaveBeenLastCalledWith(`file:${profileId}`, true)
+})
+
+it('reveals a hidden file editor when its protected draft cannot be kept before navigation', async () => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input)
+    return new Response(JSON.stringify(path.endsWith('/files') ? fileListing : path.endsWith('/backups') ? completeBackups : currentFile),
+      { status: 200, headers: { 'Content-Type': 'application/json' } })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  let guard: EditorDraftGuard | null = null
+  render(<ServerFilesPanel {...confirmationProps} onDraftGuardChange={(_source, next) => { guard = next }} />)
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
+  const editor = await screen.findByLabelText('File contents')
+  fireEvent.change(editor, { target: { value: 'Steam_333\n' } })
+  await waitFor(() => expect(guard?.dirty).toBe(true))
+  fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Checkpoints' }))
+  expect(editor).not.toBeVisible()
+  vi.mocked(saveProtectedDraft).mockRejectedValue(new Error('Protected draft unavailable'))
+  await act(async () => { expect(await guard!.flush()).toBe(false) })
+  expect(editor).toBeVisible()
+  expect(editor).toHaveValue('Steam_333\n')
+  expect(screen.getByText('Protected draft unavailable')).toBeVisible()
+})
+
+it('keeps unopened file tools from blocking server actions without any draft to save', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+    String(input).endsWith('/files') ? fileListing : completeBackups),
+    { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  let guard: EditorDraftGuard | null = null
+  render(<ServerFilesPanel {...confirmationProps} onDraftGuardChange={(_source, next) => { guard = next }} />)
+  await screen.findAllByRole('button', { name: 'Edit file' })
+  expect(guard).toMatchObject({ dirty: false, saving: false })
+  fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Checkpoints' }))
+  expect(guard).toMatchObject({ dirty: false, saving: false })
+  expect(readProtectedDraft).not.toHaveBeenCalled()
 })

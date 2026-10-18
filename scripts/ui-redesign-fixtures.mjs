@@ -48,8 +48,51 @@ export const fixtureScenarios = Object.freeze([
   'friend-connected', 'friend-permitted', 'friend-pairing', 'friend-unpaired', 'friend-disabled', 'friend-offline', 'friend-disconnected', 'friend-expired',
   'friend-consent', 'friend-shared', 'friend-shared-verified-offline', 'friend-shared-receiving-offline',
   'friend-managed-sharing', 'settings', 'setup-valheim',
-  'setup-java', 'setup-bedrock', 'setup-factorio', 'setup-terraria', 'setup-custom'
+  'setup-java', 'setup-bedrock', 'setup-factorio', 'setup-terraria', 'setup-custom',
+  'host-stopping', 'host-error', 'host-java-offline', 'host-bedrock-offline', 'host-factorio-offline',
+  'host-terraria-offline', 'host-custom-offline', 'host-empty-backups', 'host-backup-failure',
+  'host-no-devices', 'host-removed-devices', 'host-expired-devices', 'host-pending-devices',
+  'host-update-available', 'host-update-error', 'host-peers', 'host-peers-conflict',
+  'host-shared-offline', 'host-live-save', 'host-live-interrupted',
+  'friend-revoked', 'friend-awaiting-approval', 'friend-no-assignment', 'friend-status-only',
+  'friend-starting', 'friend-stopping', 'friend-unknown', 'friend-maintenance', 'friend-peers',
+  'friend-peers-conflict', 'friend-peers-follower', 'friend-shared-verifying-offline',
+  'friend-shared-receipt-offline', 'friend-shared-low-space', 'friend-shared-untrusted',
+  'host-chat-empty', 'host-chat-notice', 'friend-chat-empty', 'friend-chat-notice',
+  'host-java-maintenance', 'host-bedrock-maintenance', 'host-valheim-maintenance',
+  'host-loading', 'host-load-error', 'host-logs-loading', 'host-logs-error', 'host-backups-error'
 ]);
+
+const stageIds = ['completion', 'snapshot', 'transfer', 'load', 'change', 'restart'];
+const stageSources = ['ObservedExactRun', 'VerifiedImmutableSnapshot', 'SignedSeparateDeviceReceipt', 'OwnerReported', 'OwnerReported', 'OwnerReported'];
+function liveAcceptance(state) {
+  return { accepted: false, code: 'SyntheticEvidenceOnly', message: boundary,
+    stages: stageIds.map((id, index) => ({ id, state: 'Unverified', detail: boundary, source: stageSources[index] })),
+    tests: /live-interrupted/.test(state.scenario) ? [{ testId: ids.session, state: 'Interrupted', reviewed: false,
+      artifact: null, stages: stageIds.map((id, index) => ({ id, state: 'Unverified', detail: boundary, source: stageSources[index] })) }] : [] };
+}
+function peerGroups(state) {
+  if (!/peers/.test(state.scenario)) return [];
+  const conflict = /conflict/.test(state.scenario), follower = /follower/.test(state.scenario), owner = state.mode === 'Host';
+  const branchHash = 'B'.repeat(64), secondBranch = 'C'.repeat(64), selfDeviceId = owner ? '00000000-0000-0000-0000-000000000000' : ids.device;
+  const peers = [ids.otherDevice, ids.third].map(deviceId => ({ deviceId, publicKey: 'synthetic-public-key', revision: 1,
+    routes: [{ address: endpoint, certificateSha256: hash }], hasConflict: false, authorized: true,
+    availableVersionHashes: [hash], announcedUtc: fixtureNow, contact: null }));
+  const sessions = peers.slice(0, conflict ? 2 : 1).map((peer, index) => ({ deviceId: peer.deviceId, publicKey: peer.publicKey,
+    hasConflict: false, authorized: true, session: { sessionId: index === 0 ? ids.session : ids.secondary,
+      branchHash: index === 0 ? branchHash : secondBranch, revision: 1, state: index === 0 ? 'Hosting' : 'Preparing',
+      baseVersionHash: hash, headVersionHash: hash, startedUtc: fixtureNow, endedUtc: null } }));
+  return [{ groupKey: hash, name: 'Weekend shared world', profileId: ids.primary, selfDeviceId,
+    sharingEnabled: false, receiveConsented: !follower, canReceive: !follower, canReshare: owner,
+    canHost: !follower, warning: null, selection: { canChoose: owner, needsChoice: conflict, heads: [] },
+    state: { root: { ownerPublicKey: 'synthetic-owner-key', profileId: ids.primary, groupId: ids.primary }, groupKey: hash, peers, branches: sessions.map(item => ({ deviceId: item.deviceId, publicKey: item.publicKey,
+      authorized: true, hasConflict: false, branch: { branchHash: item.session.branchHash, baseVersionHash: hash,
+        headVersionHash: hash, parentVersionHash: null, versionNumber: 5, authorityHash: null } })),
+      sessions, defaultChoices: [], needsChoice: conflict, knownSessions: sessions.length, announcementCount: peers.length,
+      replication: { knownPeers: peers.length, peersWithRoutes: peers.length, peersLastSyncSucceeded: 0,
+        claimedCopyPeers: peers.length, lastSuccessfulSyncUtc: null, hasConflicts: conflict, capacityReached: false,
+        state: 'Synthetic signed information; live connections unverified' } } }];
+}
 
 function profile(id, kind, name, gamePort) {
   return { ...clone(contract.settings.profiles[0]), id, kind, name, serverName: name,
@@ -97,17 +140,22 @@ export function createFixtureState(scenario = 'host-ready') {
   const name = options.id ?? options.name ?? 'host-ready';
   const preset = String(name).toLowerCase();
   const receivedSaveState = preset === 'friend-shared-verified-offline' ? 'verified' :
-    preset === 'friend-shared-receiving-offline' ? 'receiving' : null;
+    preset === 'friend-shared-receiving-offline' ? 'receiving' :
+    preset === 'friend-shared-verifying-offline' ? 'verifying' :
+    preset === 'friend-shared-receipt-offline' ? 'receipt' : null;
   const firstUse = /first-use|firstuse|setup/.test(preset);
   const host = clone(contract);
   host.settings.profiles = firstUse ? [] : [profile(ids.primary, 'Valheim', 'Weekend Valheim', 2456)];
+  const game = /java/.test(preset) ? 'MinecraftJava' : /bedrock/.test(preset) ? 'MinecraftBedrock' :
+    /factorio/.test(preset) ? 'Factorio' : /terraria/.test(preset) ? 'Terraria' : /custom/.test(preset) ? 'Custom' : null;
+  if (game && !firstUse) host.settings.profiles = [profile(ids.primary, game, `Weekend ${game}`, game === 'MinecraftJava' ? 25565 : game === 'MinecraftBedrock' ? 19132 : game === 'Factorio' ? 34197 : game === 'Terraria' ? 7777 : 27015)];
   if (/multi|compare/.test(preset)) host.settings.profiles.push(
     profile(ids.secondary, 'MinecraftJava', 'Minecraft Java', 25565), profile(ids.third, 'MinecraftBedrock', 'Bedrock world', 19132));
   host.evidence = boundary;
   Object.assign(host.settings, { maxConcurrentServers: 3, autoShutdownEnabled: /countdown/.test(preset), keepAwakeWhileHosting: false,
     remoteControlsEnabled: true, companionListeningEnabled: true, companionEndpoint: endpoint, publicGameIp: '192.0.2.10',
     publicGameIpCheckedUtc: fixtureNow, connectionRoute: { mode: 'DirectInternet', address: '192.0.2.10' } });
-  host.runs = host.settings.profiles.map((p, index) => makeRun(p, index === 2 || /offline|maintenance/.test(preset) ? 'Offline' : /starting/.test(preset) ? 'Starting' : 'Ready', /countdown/.test(preset) ? 0 : 2));
+  host.runs = host.settings.profiles.map((p, index) => makeRun(p, index === 2 || /offline|maintenance|update-available/.test(preset) ? 'Offline' : /starting/.test(preset) ? 'Starting' : /stopping/.test(preset) ? 'Stopping' : /host-error/.test(preset) ? 'Error' : 'Ready', /countdown/.test(preset) ? 0 : 2));
   if (/unknown|attention|multi/.test(preset) && host.runs[0]) Object.assign(host.runs[0], { onlinePlayers: null, playerCountTrusted: false, playerCountObservedUtc: null, playerObservationSource: null });
   if (/countdown/.test(preset) && host.runs[0]) Object.assign(host.runs[0], { autoShutdownAtUtc: '2026-10-10T16:15:00Z', autoShutdownReason: 'Synthetic empty-server countdown.' });
   if (/maintenance/.test(preset) && host.settings.profiles[0]) host.settings.profiles[0].maintenance = { enabled: true, message: 'Review settings before the next session.' };
@@ -130,12 +178,12 @@ export function createFixtureState(scenario = 'host-ready') {
   const r = host.runs[0] ?? makeRun(p);
   if (/permitted/.test(preset)) Object.assign(r, { onlinePlayers: 0, playerCountTrusted: true });
   const unpaired = /unpaired|pairing/.test(preset);
-  const friend = { mode: 'Friend', state: unpaired ? 'Unpaired' : /expired/.test(preset) ? 'AccessExpired' : /disabled/.test(preset) ? 'Disabled' : /friend-disconnected/.test(preset) ? 'Disconnected' : 'Connected',
+  const friend = { mode: 'Friend', state: unpaired ? 'Unpaired' : /expired/.test(preset) ? 'AccessExpired' : /revoked/.test(preset) ? 'Revoked' : /awaiting-approval/.test(preset) ? 'Awaiting approval' : /disabled/.test(preset) ? 'Disabled' : /friend-disconnected/.test(preset) ? 'Disconnected' : 'Connected',
     detail: boundary, endpoint: unpaired ? '' : endpoint, lastConnectedUtc: unpaired || /friend-disconnected/.test(preset) ? null : fixtureNow,
     remoteControlsEnabled: !/disabled/.test(preset), canStart: true, canStop: true, profiles: unpaired ? [] : [publicProfile(p, r)],
     connectionId: unpaired ? '' : ids.connection, connections: null, connectionName: unpaired ? null : 'Weekend Host',
     hostId: ids.host, hostVersion: '0.3.2', friendVersion: '0.3.2', hostProtocolVersion: 1, protocolCompatible: true,
-    hostCapabilities: ['server-chat-v1', 'server-logs-v1', 'shared-worlds-v2'], credentialExpiresUtc: null,
+    hostCapabilities: ['server-chat-v1', 'server-logs-v1', 'shared-worlds-v2', 'shared-world-peers-v1'], credentialExpiresUtc: null,
     certificateExpiresUtc: '2027-10-10T16:00:00Z', expiryWarning: null, routeMode: 'DirectInternet', routeAddress: '192.0.2.10',
     activity: clone(host.activity), chatProfiles: unpaired ? [] : [{ id: p.id, name: p.name, supported: true }] };
   const state = { scenario: name, now: fixtureNow, mode: /^friend|^join/.test(preset) ? 'Friend' : 'Host', host, friend,
@@ -147,6 +195,20 @@ export function createFixtureState(scenario = 'host-ready') {
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
       releaseNotes: '', releaseNotesUrl: null, snoozedUntilUtc: null, promptSnoozed: false, versionSkipped: false },
     requests: [] };
+  if (/no-devices/.test(preset)) state.devices = [];
+  if (/removed-devices/.test(preset)) state.devices[1].revoked = true;
+  if (/expired-devices/.test(preset)) Object.assign(state.devices[1], { accessExpired: true, accessExpiresUtc: '2026-10-09T16:00:00Z' });
+  if (/pending-devices/.test(preset)) Object.assign(state.devices[1], { approvalPending: true, paired: false });
+  if (/backup-failure/.test(preset)) Object.assign(host.backups[ids.primary], { lastFailureUtc: fixtureNow, lastFailure: 'Synthetic backup failure. Original world unchanged.' });
+  if (/empty-backups/.test(preset)) Object.assign(host.backups[ids.primary], { completedCount: 0, retainedSizeBytes: 0, lastSuccessfulUtc: null });
+  if (/no-assignment|revoked|awaiting-approval/.test(preset)) friend.profiles = [];
+  if (/status-only/.test(preset)) { friend.canStart = false; friend.canStop = false;
+    for (const item of friend.profiles) Object.assign(item, { canStart: false, canStop: false, canStopNow: false, canRestartNow: false, canExtendTimer: false }); }
+  if (/update-available/.test(preset)) Object.assign(state.update, { state: 'Available', latestVersion: '0.3.3',
+    releaseNotes: 'Synthetic update review. No download or installation is available in this UI fixture.',
+    releaseNotesUrl: 'https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3' });
+  if (/update-error/.test(preset)) Object.assign(state.update, { state: 'Failed', message: 'Synthetic update check failure; current app remains unchanged.' });
+  state.worldPeers = peerGroups(state);
   return state;
 }
 
@@ -155,7 +217,9 @@ function chat(state, id, host) {
     { id: 'synthetic-message-1', hostId: ids.host, profileId: id, authorId: ids.device, author: 'Friend PC',
       sentUtc: '2026-10-10T15:55:00Z', text: 'Ready for the next session?', signature: 'synthetic-signature' } ],
     pending: [], members: host ? state.devices.map(d => ({ deviceId: d.id, name: d.name, allowed: true })) : null,
-    notice: null, noticeCached: false, noticeSupported: true });
+    notice: /chat-notice/.test(state.scenario) ? { hostId: ids.host, profileId: id, revision: 1, updatedUtc: fixtureNow,
+      text: 'Synthetic room notice: review the server plan before the next session.', signature: `${'A'.repeat(86)}==` } : null,
+    noticeCached: false, noticeSupported: true });
 }
 function sharing(state) {
   return { available: true, canManage: state.manageSharing, selfDeviceId: ids.device, revision: 1,
@@ -176,12 +240,30 @@ export function routeFixture(state, request) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return { status: 400, body: { code: 'SyntheticInvalidJson', message: 'Invalid synthetic request body.' } }; } }
   state.requests.push({ method, path });
   const snapshot = () => state.mode === 'Host' ? state.host : state.friend;
-  if (path === '/api/local/snapshot' && method === 'GET') return reply(snapshot());
+  if (path === '/api/local/world-peers' && method === 'GET') return reply(state.worldPeers);
+  const peerMatch = /^\/api\/local\/world-peers\/([a-f0-9]{64})\/(.+)$/i.exec(path);
+  if (peerMatch) {
+    const group = state.worldPeers.find(item => item.groupKey === peerMatch[1]), action = peerMatch[2];
+    if (action === 'live-tests' && method === 'GET') return reply([]);
+    if (action === 'contact-code' && method === 'GET') return reply({ code: 'SYNTHETIC-CONTACT-ONLY-NOT-VALID' });
+    if (group && method === 'PUT' && ['sharing', 'receiving'].includes(action)) {
+      group[action === 'sharing' ? 'sharingEnabled' : 'receiveConsented'] = body.enabled === true;
+      return reply(result());
+    }
+    if (method === 'POST' && ['sync', 'contact', 'default', 'connect', 'recovery-source', 'owner-recovery'].includes(action))
+      return unavailable('Peer network, signed default or recovery action');
+    if (action.startsWith('owner-recovery')) return unavailable('Owner recovery hosting preparation');
+  }
+  if (path === '/api/local/snapshot' && method === 'GET') {
+    if (state.scenario === 'host-loading') return { ...reply(snapshot()), pending: true };
+    if (state.scenario === 'host-load-error') return unavailable('Local snapshot');
+    return reply(snapshot());
+  }
   if (/^\/api\/local\/mode\/(host|friend)$/i.test(path) && method === 'POST') {
     state.mode = path.toLowerCase().endsWith('/host') ? 'Host' : 'Friend'; return reply(result());
   }
-  if (path === '/api/local/instance' && method === 'GET') return reply({ kind: 'Staging', displayName: 'TogetherServer SYNTHETIC',
-    isStaging: true, freshWorldsOnly: false, startupAvailable: false, updatesAvailable: false, localPort: 5128,
+  if (path === '/api/local/instance' && method === 'GET') return reply({ kind: /update-available/.test(state.scenario) ? 'Production' : 'Staging', displayName: 'TogetherServer SYNTHETIC',
+    isStaging: !/update-available/.test(state.scenario), freshWorldsOnly: false, startupAvailable: false, updatesAvailable: /update-available/.test(state.scenario), localPort: 5128,
     companionPort: 5132, valheimPort: 2458, minecraftJavaPort: 25566, minecraftBedrockPort: 19134,
     dataRoot: root, dataIsolation: boundary });
   if (path === '/api/local/data-recovery' && method === 'GET') return reply(state.host.recovery);
@@ -233,7 +315,19 @@ export function routeFixture(state, request) {
     // specific room route so "connections" cannot become a profile identity.
     const host = !chatMatch && match?.[1] === 'profiles'; const id = chatMatch?.[1] ?? match[2]; const suffix = chatMatch?.[2] ?? match[3];
     const p = state.host.settings.profiles.find(p => p.id === id) ?? profile(id, 'Valheim', 'Weekend Valheim', 2456);
-    if (suffix === 'chat' && method === 'GET') return reply(chat(state, id, host));
+    if (suffix === 'logs' && method === 'GET' && state.scenario === 'host-logs-loading') return { ...reply({}), pending: true };
+    if (suffix === 'logs' && method === 'GET' && state.scenario === 'host-logs-error') return unavailable('Server log read');
+    if (suffix === 'backup-catalog' && method === 'GET' && state.scenario === 'host-backups-error') return unavailable('Backup catalog read');
+    if (suffix === 'chat/summary' && method === 'GET') {
+      const room = chat(state, id, host);
+      return reply(result({ hostId: ids.host, profileId: id, messageIds: /chat-empty/.test(state.scenario) ? [] : [ids.session],
+        notice: room.notice, noticeCached: room.noticeCached, noticeSupported: room.noticeSupported }));
+    }
+    if (suffix === 'chat' && method === 'GET') {
+      const room = chat(state, id, host);
+      if (/chat-empty/.test(state.scenario)) room.entries = [];
+      return reply(room);
+    }
     if (suffix === 'chat/sync' && !host && method === 'POST') return reply({ ...chat(state, id, false), code: 'ChatSynced' });
     if (suffix.startsWith('chat')) return unavailable('Chat writes');
     if (suffix === 'logs' && method === 'GET') return reply(result({ sourceState: 'Active', runId, cursor: 'synthetic-cursor', hasMore: false,
@@ -244,26 +338,35 @@ export function routeFixture(state, request) {
       readyEverObserved: true, endReason: 'GracefulStop', outcome: 'GracefulStop', crashRecoveryScheduled: false,
       lastTrustedOnlinePlayers: 0, maximumTrustedOnlinePlayers: 3, backupResult: 'Completed' }] }));
     if (suffix === 'weekly-summary' && method === 'GET') return unavailableState('Seven-day archive', result({ profileId: id, summary: null, ok: false, code: 'SyntheticUnavailable', message: 'No seven-day archive in this synthetic fixture.' }));
-    if (suffix === 'backups' && method === 'GET') return reply({ backups: [{ id: ids.backup, profileId: id, kind: p.kind, worldId: p.worldId,
-      backupKind: 'Manual', createdUtc: '2026-10-10T15:00:00Z', sizeBytes: 4194304, fileCount: 2, label: 'Before the weekend', pinned: true, setupIncluded: true }], status: backupStatus(id) });
+    if (suffix === 'backups' && method === 'GET') return reply({ backups: /empty-backups/.test(state.scenario) ? [] : [{ id: ids.backup, profileId: id, kind: p.kind, worldId: p.worldId,
+      backupKind: 'Manual', createdUtc: '2026-10-10T15:00:00Z', sizeBytes: 4194304, fileCount: 2, label: 'Before the weekend', pinned: true, setupIncluded: true }], status: state.host.backups[id] ?? backupStatus(id) });
     if (suffix === 'backup-catalog' && method === 'GET') return reply(result({ profileId: id,
-      backups: [{ backupId: ids.backup, profileId: id, createdUtc: '2026-10-10T15:00:00Z', backupKind: 'Manual', sizeBytes: 4194304,
+      backups: /empty-backups/.test(state.scenario) ? [] : [{ backupId: ids.backup, profileId: id, createdUtc: '2026-10-10T15:00:00Z', backupKind: 'Manual', sizeBytes: 4194304,
         label: 'Before the weekend', pinned: true, gameKind: p.kind, worldId: p.worldId, fileCount: 2, setupIncluded: true,
-        payloadSha256: hash, setupSha256: hash, metadataAvailable: true, evidence: [] }], pinnedCount: 1, pinnedSizeBytes: 4194304,
+        payloadSha256: hash, setupSha256: hash, metadataAvailable: true, evidence: [] }], pinnedCount: /empty-backups/.test(state.scenario) ? 0 : 1, pinnedSizeBytes: /empty-backups/.test(state.scenario) ? 0 : 4194304,
       maximumLabelLength: 64, maximumPinnedCount: 20, maximumPinnedSizeBytes: 50 * 1024 ** 3, moreBackupsAvailable: false,
       retention: { retentionCount: 5, minimumFreeSpaceBytes: 1073741824, rollingEnabled: true },
-      retainedSizeBytes: 4194304, availableSpaceBytes: 68719476736, evidenceAvailable: true }));
+      retainedSizeBytes: /empty-backups/.test(state.scenario) ? 0 : 4194304, availableSpaceBytes: 68719476736, evidenceAvailable: true }));
     if (suffix === 'files' && method === 'GET') return reply(result({ locations: [{ key: 'world', label: 'Managed world', path: p.worldDirectory, available: true }],
       files: [{ key: 'server-properties', label: 'Server properties', path: `${root}\\server.properties`, available: true }] }));
     if (suffix.startsWith('files/') && method === 'GET') return reply(result({ key: suffix.slice(6), content: '# Synthetic configuration\nmax-players=10\n', sha256: hash, canUndo: false }));
     if (suffix === 'game-settings' && method === 'GET') return reply({ ok: true, code: 'SyntheticFixture', message: boundary, kind: p.kind,
       sha256: p.kind.startsWith('Minecraft') ? hash : null, settings: p.kind.startsWith('Minecraft') ?
         { difficulty: 'normal', maximumPlayers: 10, gameMode: 'survival', allowListEnabled: false, forceGameMode: false } : null,
-      canUndo: false, lists: p.kind === 'Valheim' ? [{ key: 'admin-list', label: 'Administrators', available: false }] : [] });
+      canUndo: false, lists: p.kind === 'Valheim' ? [{ key: 'admin-list', label: 'Administrators', available: true },
+        { key: 'ban-list', label: 'Banned players', available: true }, { key: 'permit-list', label: 'Permitted players', available: true }] :
+        p.kind.startsWith('Minecraft') ? [{ key: 'allow-list', label: 'Allowed players', available: true }] : [] });
+    if (/^game-settings\/lists\/(allow-list|admin-list|ban-list|permit-list)$/.test(suffix) && method === 'GET')
+      return reply({ ok: true, code: 'SyntheticFixture', message: boundary, kind: p.kind, key: suffix.split('/').at(-1),
+        label: p.kind === 'Valheim' ? 'Administrators' : 'Allowed players', sha256: hash, entries: [], canUndo: false });
+    if (suffix.startsWith('game-settings/') && method === 'POST') return unavailable('Game settings or player list writes');
     if (suffix === 'addons' && method === 'GET') return reply(result({ gameVersion: 'Unknown', requiredOnFriendPc: boundary, stateToken: 'synthetic',
       items: [], canImport: false, canUndo: false, warning: null, importType: null }));
     if (suffix === 'acceptance' && method === 'GET') return reply({ profileId: id, stale: false, updatedUtc: null, checks: [],
       evidenceBoundary: boundary, gameFilesAvailable: false, gameFilesChanged: false });
+    if (suffix === 'live-save-acceptance' && method === 'GET') return reply(liveAcceptance(state));
+    if (suffix.startsWith('live-save-acceptance/') && method === 'POST') return unavailable('Installed game acceptance or capture');
+    if (suffix.startsWith('custom-scripts')) return unavailable('Custom script reveal or writes');
     if (suffix === 'game-password/reveal' && method === 'POST') return reply(result({ password: 'SYNTHETIC-ONLY' }));
     if ((suffix === 'requirements' || suffix === 'compatibility') && method === 'GET') return unavailableState('Game compatibility inventory', result({ ok: false, requirements: null,
       ...(suffix === 'compatibility' ? { clientVersion: null, clientVersionSource: 'Unknown', versionComparison: 'Unknown', addOnComparison: 'Unknown' } : {}) }));
@@ -283,7 +386,13 @@ export function routeFixture(state, request) {
         completedUtc: fixtureNow, receivedUtc: fixtureNow, receiptConfirmed: true,
         receivedBytes: 4194304, totalBytes: 4194304 } : {}),
       ...(state.consented && state.receivedSaveState === 'receiving' ? { hostVersion: 5, state: 'Receiving',
-        completedUtc: fixtureNow, receivedBytes: 1048576, totalBytes: 4194304, transferPhase: 'Receiving' } : {}) });
+        completedUtc: fixtureNow, receivedBytes: 1048576, totalBytes: 4194304, transferPhase: 'Receiving' } : {}),
+      ...(state.consented && state.receivedSaveState === 'verifying' ? { hostVersion: 5, state: 'Verifying',
+        completedUtc: fixtureNow, receivedBytes: 4194304, totalBytes: 4194304, transferPhase: 'Verifying' } : {}),
+      ...(state.consented && state.receivedSaveState === 'receipt' ? { hostVersion: 5, state: 'ReceiptPending',
+        completedUtc: fixtureNow, receivedBytes: 4194304, totalBytes: 4194304, transferPhase: 'Receipt' } : {}),
+      ...(/low-space/.test(state.scenario) ? { capacityState: 'Low space', capacityNotice: 'Synthetic low-space condition. No partial copy is playable.' } : {}),
+      ...(/untrusted/.test(state.scenario) ? { trust: 'Unverified', rosterRevision: null } : {}) });
     if (suffix === 'shared-world' && !host && method === 'GET') return reply(friendShared());
     if (suffix === 'shared-world/consent' && !host && method === 'PUT') { state.consented = body.enabled === true || body.consented === true;
       return reply(result({ status: friendShared() })); }
@@ -312,6 +421,7 @@ export function routeFixture(state, request) {
   if (/^\/api\/local\/servers\/[^/]+\/invite\/current$/.test(path) && method === 'POST') return reply({ exists: true, open: true, canStart: true, requireApproval: true });
   if (/^\/api\/local\/servers\/[^/]+\/invite$/.test(path) && method === 'POST') return reply(result({ password: 'SYNTHETIC-INVITE-NOT-VALID', expiresUtc: null, listenerActive: true, listenerWarning: null }));
   if (method === 'POST' && unsupportedNativePosts.has(path)) return unavailable('Native, file, install or external actions');
-  if (method === 'GET' && /^\/api\/local\/world-load\/source\/[a-f\d-]{36}$/i.test(path)) return unavailable('Game restore rehearsal');
+  if (/^\/api\/local\/devices\/[^/]+\//.test(path) && method !== 'GET') return unavailable('Friend access changes');
+  if (method === 'GET' && /^\/api\/local\/world-load\/source\/[a-f\d-]{36}$/i.test(path)) return reply({ ok: true, message: boundary, rehearsals: [] });
   return null;
 }

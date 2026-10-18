@@ -11,11 +11,47 @@ export function SearchablePicker({ label, items, selectedId, onSelect, actions, 
   const ref = useRef<HTMLDetailsElement>(null)
   const [query, setQuery] = useState('')
   useEffect(() => {
-    const dismissOutside = (event: PointerEvent) => {
-      if (event.target instanceof Node && ref.current?.open && !ref.current.contains(event.target)) ref.current.open = false
+    const picker = ref.current
+    if (!picker) return
+    const position = () => {
+      if (!picker.open) return
+      const trigger = picker.querySelector('summary')
+      const popover = picker.querySelector<HTMLElement>('.context-picker-popover')
+      if (!trigger || !popover) return
+      const anchor = trigger.getBoundingClientRect()
+      const margin = 12, gap = 7
+      const width = Math.min(Math.max(anchor.width, 320), window.innerWidth - margin * 2)
+      const below = window.innerHeight - anchor.bottom - margin - gap
+      const above = anchor.top - margin - gap
+      const opensAbove = below < Math.min(popover.scrollHeight, 220) && above > below
+      const height = Math.max(0, Math.min(420, opensAbove ? above : below))
+      popover.style.setProperty('--picker-left', `${Math.max(margin, Math.min(anchor.left, window.innerWidth - width - margin))}px`)
+      popover.style.setProperty('--picker-top', `${opensAbove ? Math.max(margin, anchor.top - gap - Math.min(popover.scrollHeight, height)) : anchor.bottom + gap}px`)
+      popover.style.setProperty('--picker-width', `${width}px`)
+      popover.style.setProperty('--picker-height', `${height}px`)
     }
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && picker.open && !picker.contains(event.target)) picker.open = false
+    }
+    const dismissOnScroll = (event: Event) => {
+      if (picker.open && event.target instanceof Element && !picker.contains(event.target)) picker.open = false
+    }
+    picker.addEventListener('toggle', position)
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(position) : null
+    const trigger = picker.querySelector('summary')
+    const popover = picker.querySelector('.context-picker-popover')
+    if (trigger) observer?.observe(trigger)
+    if (popover) observer?.observe(popover)
     document.addEventListener('pointerdown', dismissOutside)
-    return () => document.removeEventListener('pointerdown', dismissOutside)
+    document.addEventListener('scroll', dismissOnScroll, true)
+    window.addEventListener('resize', position)
+    return () => {
+      picker.removeEventListener('toggle', position)
+      observer?.disconnect()
+      document.removeEventListener('pointerdown', dismissOutside)
+      document.removeEventListener('scroll', dismissOnScroll, true)
+      window.removeEventListener('resize', position)
+    }
   }, [])
   const selected = items.find(item => item.id === selectedId)
   const filtered = items.filter(item => `${item.name} ${item.detail ?? ''} ${item.keywords ?? ''}`

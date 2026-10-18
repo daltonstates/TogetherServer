@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { DismissibleNotice } from './DismissibleNotice'
+import { Icon } from './Icon'
 import { Button } from './Controls'
 import { ContractError, type Decoder } from './contracts'
 import { useConfirmation } from './Confirmation'
+import './ServerFilesPresentation.css'
 
 type AddOnItem = { key: string; name: string; version: string; requiredGameVersion: string;
   enabled: boolean; compatibility: string; type: string }
@@ -97,34 +99,36 @@ export function ServerAddOnsPanel({ profileId, state, maintenance, busy, recover
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { inFlight.current = false; setPending(false) }
   }
-  return <section className="server-addons-panel" aria-label="Server add-ons">
-    <div className="section-heading"><div><h4>Add-ons &amp; game version</h4>
+  return <section className="server-addons-panel server-addons-workspace" aria-label="Server add-ons" aria-busy={pending}>
+    <div className="server-files-list-heading"><div><h4><Icon name="game" />Add-ons &amp; game version</h4>
       <p>Game version: <strong>{view?.gameVersion ?? 'Loading…'}</strong></p></div>
-      <Button className="secondary" disabled={pending || busy} onClick={() => void refresh()}>Refresh</Button></div>
+      <Button className="secondary" disabled={pending || busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh</Button></div>
     {notice && <DismissibleNotice scope={profileId} className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
     {view?.warning && <DismissibleNotice scope={profileId} noticeKey={view.stateToken} className="notice bad" role="status">{view.warning}</DismissibleNotice>}
     {view && <>
-      <p className="helper-text">{view.requiredOnFriendPc}</p>
-      {view.items.length > 0 ? <div className="server-file-list">{view.items.map(item =>
-        <div className="server-file-row" key={item.key}><div><strong>{item.name} {item.version}</strong>
-          <small>{item.type} · {item.enabled ? 'Enabled' : 'Disabled'} · {item.compatibility}</small></div>
+      <p className="server-files-section-note"><Icon name="users" />{view.requiredOnFriendPc}</p>
+      {view.items.length > 0 ? <><div className="server-files-list-heading server-addons-count"><small>{view.items.length} {view.items.length === 1 ? 'add-on' : 'add-ons'}</small>
+        <span className="server-files-state">{view.items.filter(item => item.enabled).length} enabled</span></div>
+        <div className="server-file-list server-addons-inventory" role="region" aria-label="Installed add-ons" tabIndex={0}>{view.items.map(item =>
+        <div className="server-file-row server-addon-row" key={item.key}><div><strong>{item.name} {item.version}</strong>
+          <small>{item.type} · {item.compatibility}</small><span className="server-addon-state">{item.enabled ? 'Enabled' : 'Disabled'}</span></div>
           {(item.type === 'Factorio mod' || item.type === 'behavior pack' || item.type === 'resource pack') &&
             <Button className="secondary" disabled={!allowed}
             onClick={() => void change('state', { expectedStateToken: view.stateToken, key: item.key,
               enabled: !item.enabled }, `${item.enabled ? 'Disable' : 'Enable'} ${item.name}? An offline complete setup checkpoint will be made first.`)}>
-            {item.enabled ? 'Disable' : 'Enable'}</Button>}</div>)}</div> :
-        <p className="helper-text">No managed add-ons found for this server.</p>}
-      <div className="actions">
+            <Icon name={item.enabled ? 'close' : 'check'} />{item.enabled ? 'Disable' : 'Enable'}</Button>}</div>)}</div></> :
+        <p className="server-files-empty"><Icon name="game" />No managed add-ons found for this server.</p>}
+      <div className="actions server-addons-actions">
         {view.canImport && <Button disabled={!allowed}
           onClick={() => void change('import', { expectedStateToken: view.stateToken },
             `Choose a local ${view.importType === 'BedrockPack' ? 'Bedrock .mcpack' : 'Factorio mod ZIP'}? TogetherServer will checkpoint the offline setup before copying it.`)}>
-            {view.importType === 'BedrockPack' ? 'Import world pack' : 'Import mod ZIP'}</Button>}
+            <Icon name="upload" />{view.importType === 'BedrockPack' ? 'Import world pack' : 'Import mod ZIP'}</Button>}
         {view.canUndo && <Button className="secondary" disabled={!allowed}
           onClick={() => void change('undo', { expectedStateToken: view.stateToken },
-            'Undo the last mod change? TogetherServer will checkpoint the offline world first.')}>Undo last add-on change</Button>}
+            'Undo the last mod change? TogetherServer will checkpoint the offline world first.')}><Icon name="undo" />Undo last add-on change</Button>}
         {view.warning && <Button className="secondary" disabled={!allowed}
           onClick={() => void change('review-version', { expectedStateToken: view.stateToken },
-            'Confirm you reviewed this game version and each installed add-on? This does not prove a real game join.')}>Mark version reviewed</Button>}
+            'Confirm you reviewed this game version and each installed add-on? This does not prove a real game join.')}><Icon name="eye" />Mark version reviewed</Button>}
       </div>
       {(view.canImport || view.canUndo) && !allowed &&
         <p className="helper-text">Begin maintenance and stop this server before changing add-ons.</p>}

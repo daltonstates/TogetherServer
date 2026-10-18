@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { GameSettingsPanel } from './GameSettingsPanel'
+import type { EditorDraftGuard, EditorDraftGuardChange } from './editorProtectedDraft'
 import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft } from './protectedUiDrafts'
 
 vi.mock('./protectedUiDrafts', () => ({ readProtectedDraft: vi.fn(), saveProtectedDraft: vi.fn(), clearProtectedDraft: vi.fn() }))
@@ -22,6 +23,16 @@ const json = (value: unknown) => new Response(JSON.stringify(value), { status: 2
 const preview = { ok: true, code: 'SettingsPreviewReady', message: 'Review', key: 'server-properties',
   expectedSha256: beforeSha, proposedSha256: afterSha,
   changes: [{ key: 'difficulty', label: 'Difficulty', before: 'difficulty=normal', after: 'difficulty=hard' }] }
+
+async function selectPlayers(key = 'allow-list') {
+  const navigation = await screen.findByRole('navigation', { name: 'Game settings sections' })
+  const players = within(navigation).getByRole('button', { name: /^Players/ })
+  if (!players.hasAttribute('aria-current')) fireEvent.click(players)
+  const picker = await screen.findByRole('combobox', { name: 'Player list' })
+  await waitFor(() => expect(picker).toBeEnabled())
+  if ((picker as HTMLSelectElement).value !== key) fireEvent.change(picker, { target: { value: key } })
+  await waitFor(() => expect(picker).toBeEnabled())
+}
 
 it('requires Offline maintenance, keeps difficulty visible, and exposes the maintenance guide', async () => {
   const fetcher = vi.fn(async () => json(baseView))
@@ -138,7 +149,7 @@ it('adds and removes real typed Valheim IDs with the non-empty permitted-list re
   })
   vi.stubGlobal('fetch', fetcher)
   render(<GameSettingsPanel {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage permitted players' }))
+  await selectPlayers('permit-list')
   await screen.findByText('Steam_111')
   expect(screen.getByText(/non-empty permitted list restricts joining/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Remove Steam_111' }))
@@ -153,20 +164,21 @@ it('adds and removes real typed Valheim IDs with the non-empty permitted-list re
     entries: [{ identity: 'Steam_222', name: null, ignoresPlayerLimit: null }] })
 })
 
-it('preserves a collapsed list draft and rejects a duplicate Bedrock name without a request', async () => {
+it('preserves a player draft across tabs and rejects a duplicate Bedrock name without a request', async () => {
   const listView = { ok: true, code: 'AccessListReady', message: 'Next Start', kind: 'MinecraftBedrock', key: 'allow-list',
     label: 'Allowed players', sha256: beforeSha, entries: [{ identity: null, name: 'Test Gamer', ignoresPlayerLimit: false }], canUndo: false }
   const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/allow-list') ? listView : {
     ...baseView, kind: 'MinecraftBedrock', lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] }))
   vi.stubGlobal('fetch', fetcher)
   render(<GameSettingsPanel {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage allowed players' }))
+  await selectPlayers()
   fireEvent.change(await screen.findByLabelText('Xbox gamertag'), { target: { value: 'test gamer' } })
   fireEvent.click(screen.getByRole('button', { name: 'Add player' }))
   expect(screen.getByText('Remove the repeated player name.')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Remove Test Gamer' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Close list' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Manage allowed players' }))
+  fireEvent.click(screen.getByRole('button', { name: 'General' }))
+  expect(screen.queryByRole('button', { name: 'Review list changes' })).not.toBeInTheDocument()
+  await selectPlayers()
   expect(await screen.findByText('No players in this list.')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Review list changes' })).toBeEnabled()
   expect(fetcher).toHaveBeenCalledTimes(2)
@@ -266,7 +278,7 @@ it.each([false, true])('does not reload captured lists after child content chang
     ...baseView, lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] }))
   vi.stubGlobal('fetch', fetcher)
   render(<GameSettingsPanel {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage allowed players' }))
+  await selectPlayers()
   await screen.findByLabelText('Java player name')
   if (alreadyDirty) fireEvent.change(screen.getByLabelText('Java player name'), { target: { value: 'OldPlayer' } })
   fireEvent.change(screen.getByLabelText('Difficulty'), { target: { value: 'hard' } })
@@ -291,7 +303,7 @@ it('keeps an unchanged reload decision valid while a player-list draft finishes 
     ? new Promise(resolve => { finishListSave = () => resolve({ ok: true, text, revision: revision + 1, message: '' }) })
     : Promise.resolve({ ok: true, text, revision: revision + 1, message: '' }))
   render(<GameSettingsPanel {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage allowed players' }))
+  await selectPlayers()
   fireEvent.change(await screen.findByLabelText('Java player name'), { target: { value: 'KeptPlayer' } })
   fireEvent.change(screen.getByLabelText('Difficulty'), { target: { value: 'hard' } })
   fireEvent.click(screen.getByRole('button', { name: 'Reload game settings' }))
@@ -304,38 +316,38 @@ it('keeps an unchanged reload decision valid while a player-list draft finishes 
   expect(vi.mocked(saveProtectedDraft).mock.calls.some(([identity, text]) => identity.purpose === 'list' && text.includes('KeptPlayer'))).toBe(true)
 })
 
-it('owns a persistent list confirmation and refuses stale collapsed-list decisions', async () => {
+it('owns a persistent list confirmation and refuses stale decisions after choosing another list', async () => {
   const listView = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'Valheim', key: 'permit-list',
     label: 'Permitted players', sha256: beforeSha, entries: [], canUndo: false }
-  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/permit-list') ? listView : {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/permit-list') ? listView : String(input).endsWith('/ban-list') ? { ...listView, key: 'ban-list', label: 'Banned players' } : {
     ...baseView, kind: 'Valheim', settings: null, sha256: null,
-    lists: [{ key: 'permit-list', label: 'Permitted players', available: true }] }))
+    lists: [{ key: 'permit-list', label: 'Permitted players', available: true }, { key: 'ban-list', label: 'Banned players', available: true }] }))
   vi.stubGlobal('fetch', fetcher)
   render(<GameSettingsPanel {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage permitted players' }))
-  fireEvent.change(await screen.findByLabelText('Platform user ID'), { target: { value: 'Steam_222' } })
+  await selectPlayers('permit-list')
+  fireEvent.change(within(screen.getByRole('region', { name: 'Permitted players' })).getByLabelText('Platform user ID'), { target: { value: 'Steam_222' } })
   fireEvent.click(screen.getByRole('button', { name: 'Reload this list' }))
   let dialog = await screen.findByRole('dialog', { name: 'Reload player list?' })
   expect(dialog).toHaveTextContent('Reloading replaces this unsaved player list. Keep the protected draft and reload?')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   expect(fetcher).toHaveBeenCalledTimes(2)
-  expect(screen.getByLabelText('Platform user ID')).toHaveValue('Steam_222')
+  expect(within(screen.getByRole('region', { name: 'Permitted players' })).getByLabelText('Platform user ID')).toHaveValue('Steam_222')
   fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved list edits' }))
   dialog = await screen.findByRole('dialog', { name: 'Discard player list edits?' })
   expect(dialog).toHaveTextContent('Discard this unsaved player list and unfinished entries? The saved list stays unchanged.')
-  fireEvent.click(screen.getByRole('button', { name: 'Close list' }))
+  fireEvent.change(screen.getByRole('combobox', { name: 'Player list' }), { target: { value: 'ban-list' } })
   expect(screen.getByRole('dialog')).toBe(dialog)
   fireEvent.click(within(dialog).getByRole('button', { name: 'Discard list edits' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-  fireEvent.click(screen.getByRole('button', { name: 'Manage permitted players' }))
-  expect(screen.getByLabelText('Platform user ID')).toHaveValue('Steam_222')
+  await selectPlayers('permit-list')
+  expect(within(screen.getByRole('region', { name: 'Permitted players' })).getByLabelText('Platform user ID')).toHaveValue('Steam_222')
   expect(clearProtectedDraft).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved list edits' }))
   fireEvent.click(within(await screen.findByRole('dialog', { name: 'Discard player list edits?' })).getByRole('button', { name: 'Discard list edits' }))
-  await waitFor(() => expect(screen.getByLabelText('Platform user ID')).toHaveValue(''))
+  await waitFor(() => expect(within(screen.getByRole('region', { name: 'Permitted players' })).getByLabelText('Platform user ID')).toHaveValue(''))
   await waitFor(() => expect(clearProtectedDraft).toHaveBeenCalledOnce())
-  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(fetcher).toHaveBeenCalledTimes(3)
 })
 
 it('keeps bulk paste in a reviewed local draft until the exact game-list preview is accepted', async () => {
@@ -352,7 +364,7 @@ it('keeps bulk paste in a reviewed local draft until the exact game-list preview
   vi.stubGlobal('fetch', fetcher)
   const drafts = vi.fn()
   render(<GameSettingsPanel {...props} onDraftStateChange={drafts} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage permitted players' }))
+  await selectPlayers('permit-list')
   const paste = await screen.findByLabelText('Players to paste')
   paste.closest('details')!.open = true
   fireEvent.change(paste, { target: { value: 'Steam_222' } })
@@ -385,4 +397,134 @@ it('requires explicit draft recovery and leaves live settings unchanged until th
   expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
   expect(screen.getByText(/saved file changed since this draft/)).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Save with checkpoint' })).not.toBeInTheDocument()
+})
+
+it('keeps general edits and unfinished player entries while changing sections', async () => {
+  const listView = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'MinecraftJava', key: 'allow-list',
+    label: 'Allowed players', sha256: beforeSha, entries: [], canUndo: false }
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/allow-list') ? listView : {
+    ...baseView, lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] }))
+  vi.stubGlobal('fetch', fetcher)
+  const drafts = vi.fn()
+  render(<GameSettingsPanel {...props} onDraftStateChange={drafts} />)
+  fireEvent.change(await screen.findByLabelText('Difficulty'), { target: { value: 'hard' } })
+  expect(screen.queryByRole('region', { name: 'Allowed players' })).not.toBeInTheDocument()
+  await selectPlayers()
+  fireEvent.change(await screen.findByLabelText('Java player name'), { target: { value: 'KeptPlayer' } })
+  expect(screen.getByRole('button', { name: /^Players/ })).toHaveAttribute('aria-current', 'page')
+  fireEvent.click(screen.getByRole('button', { name: /^General/ }))
+  expect(screen.getByLabelText('Difficulty')).toHaveValue('hard')
+  expect(screen.queryByRole('region', { name: 'Allowed players' })).not.toBeInTheDocument()
+  await selectPlayers()
+  expect(screen.getByLabelText('Java player name')).toHaveValue('KeptPlayer')
+  expect(drafts).toHaveBeenCalledWith(`settings:${props.profileId}`, true)
+  expect(drafts).toHaveBeenCalledWith(`list:${props.profileId}:allow-list`, true)
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('shows one player list, keeps other-list errors visible, and blocks navigation while loading', async () => {
+  const permit = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'Valheim', key: 'permit-list',
+    label: 'Permitted players', sha256: beforeSha, entries: [], canUndo: false }
+  let finishBanned: ((value: Response) => void) | undefined
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).endsWith('/permit-list')) return json(permit)
+    if (String(input).endsWith('/ban-list')) return new Promise<Response>(resolve => { finishBanned = resolve })
+    return json({ ...baseView, kind: 'Valheim', settings: null, sha256: null, lists: [
+      { key: 'permit-list', label: 'Permitted players', available: true }, { key: 'ban-list', label: 'Banned players', available: true }] })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  render(<GameSettingsPanel {...props} />)
+  await selectPlayers('permit-list')
+  fireEvent.change(await screen.findByLabelText('Platform user ID'), { target: { value: 'invalid' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Add player' }))
+  expect(screen.getByRole('status')).toHaveTextContent('Enter the case-sensitive Platform_UserID')
+  fireEvent.change(screen.getByRole('combobox', { name: 'Player list' }), { target: { value: 'ban-list' } })
+  await waitFor(() => expect(finishBanned).toBeTypeOf('function'))
+  expect(screen.getByRole('combobox', { name: 'Player list' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: /^Players/ })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Reload game settings' })).toBeDisabled()
+  expect(screen.queryByRole('region', { name: 'Permitted players' })).not.toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Banned players' })).toBeVisible()
+  expect(screen.getByRole('status')).toHaveTextContent('Enter the case-sensitive Platform_UserID')
+  await act(async () => finishBanned?.(json({ ...permit, key: 'ban-list', label: 'Banned players' })))
+  fireEvent.click(screen.getByRole('button', { name: 'Review' }))
+  expect(screen.getByRole('region', { name: 'Permitted players' })).toBeVisible()
+  expect(within(screen.getByRole('region', { name: 'Permitted players' })).getByLabelText('Platform user ID')).toHaveValue('invalid')
+  expect(screen.queryByRole('region', { name: 'Banned players' })).not.toBeInTheDocument()
+  expect(fetcher).toHaveBeenCalledTimes(3)
+})
+
+it('reveals General when its hidden draft cannot be kept before leaving', async () => {
+  const listView = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'MinecraftJava', key: 'allow-list',
+    label: 'Allowed players', sha256: beforeSha, entries: [], canUndo: false }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/allow-list') ? listView : {
+    ...baseView, lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] })))
+  vi.mocked(saveProtectedDraft).mockResolvedValue({ ok: false, text: null, revision: 5, message: 'Cannot keep this settings draft.' })
+  const guards = new Map<string, EditorDraftGuard>()
+  const keepGuard: EditorDraftGuardChange = (source, guard) => { if (guard) guards.set(source, guard); else guards.delete(source) }
+  render(<GameSettingsPanel {...props} onDraftGuardChange={keepGuard} />)
+  const difficulty = await screen.findByLabelText('Difficulty')
+  fireEvent.change(difficulty, { target: { value: 'hard' } })
+  await selectPlayers()
+  expect(difficulty).not.toBeVisible()
+  let saved = true
+  await act(async () => { saved = await guards.get(`settings:${props.profileId}`)!.flush() })
+  expect(saved).toBe(false)
+  expect(screen.getByRole('button', { name: /^General/ })).toHaveAttribute('aria-current', 'page')
+  expect(difficulty).toBeVisible()
+  expect(difficulty).toHaveValue('hard')
+  expect(screen.getByText('Cannot keep this settings draft.')).toBeVisible()
+})
+
+it('reveals the exact player list when its hidden draft cannot be kept before leaving', async () => {
+  const permit = { ok: true, code: 'AccessListReady', message: 'Ready', kind: 'Valheim', key: 'permit-list',
+    label: 'Permitted players', sha256: beforeSha, entries: [], canUndo: false }
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/permit-list') ? permit :
+    String(input).endsWith('/ban-list') ? { ...permit, key: 'ban-list', label: 'Banned players' } : {
+      ...baseView, kind: 'Valheim', settings: null, sha256: null, lists: [
+        { key: 'permit-list', label: 'Permitted players', available: true }, { key: 'ban-list', label: 'Banned players', available: true }] })))
+  vi.mocked(saveProtectedDraft).mockResolvedValue({ ok: false, text: null, revision: 5, message: 'Cannot keep this player draft.' })
+  const guards = new Map<string, EditorDraftGuard>()
+  const keepGuard: EditorDraftGuardChange = (source, guard) => { if (guard) guards.set(source, guard); else guards.delete(source) }
+  render(<GameSettingsPanel {...props} onDraftGuardChange={keepGuard} />)
+  await selectPlayers('permit-list')
+  const identity = within(screen.getByRole('region', { name: 'Permitted players' })).getByLabelText('Platform user ID')
+  fireEvent.change(identity, { target: { value: 'Steam_222' } })
+  await selectPlayers('ban-list')
+  expect(identity).not.toBeVisible()
+  let saved = true
+  await act(async () => { saved = await guards.get(`list:${props.profileId}:permit-list`)!.flush() })
+  expect(saved).toBe(false)
+  expect(screen.getByRole('combobox', { name: 'Player list' })).toHaveValue('permit-list')
+  expect(identity).toBeVisible()
+  expect(identity).toHaveValue('Steam_222')
+  expect(screen.getByText('Cannot keep this player draft.')).toBeVisible()
+})
+
+it.each(['unvisited players', 'unselected Valheim lists', 'unsupported game'])('keeps unchanged %s out of the Start-blocking draft guards', async scenario => {
+  const valheim = scenario === 'unselected Valheim lists'
+  const unsupported = scenario === 'unsupported game'
+  const view = unsupported ? { ...baseView, ok: false, kind: 'Custom', code: 'GameSettingsUnsupported',
+    message: 'Use its saved setup or reviewed file editor.', settings: null, sha256: null, lists: [] } : valheim ? {
+      ...baseView, kind: 'Valheim', settings: null, sha256: null, lists: [
+        { key: 'permit-list', label: 'Permitted players', available: true }, { key: 'admin-list', label: 'Administrators', available: true }] } : {
+      ...baseView, lists: [{ key: 'allow-list', label: 'Allowed players', available: true }] }
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => json(String(input).endsWith('/permit-list') ? {
+    ok: true, code: 'AccessListReady', message: 'Ready', kind: 'Valheim', key: 'permit-list',
+    label: 'Permitted players', sha256: beforeSha, entries: [], canUndo: false } : view))
+  vi.stubGlobal('fetch', fetcher)
+  const guards = new Map<string, EditorDraftGuard>()
+  const keepGuard: EditorDraftGuardChange = (source, guard) => { if (guard) guards.set(source, guard); else guards.delete(source) }
+  render(<GameSettingsPanel {...props} onDraftGuardChange={keepGuard} />)
+  if (unsupported) await screen.findByText('Use its saved setup or reviewed file editor.')
+  else if (valheim) await screen.findByLabelText('Platform user ID')
+  else await screen.findByLabelText('Difficulty')
+  await waitFor(() => {
+    expect(guards.size).toBe(unsupported ? 1 : valheim ? 3 : 2)
+    expect([...guards.values()].every(guard => !guard.dirty && !guard.saving)).toBe(true)
+  })
+  const results = await Promise.all([...guards.values()].map(guard => guard.flush()))
+  expect(results.every(Boolean)).toBe(true)
+  expect(fetcher).toHaveBeenCalledTimes(valheim ? 2 : 1)
+  expect(saveProtectedDraft).not.toHaveBeenCalled()
 })

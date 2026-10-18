@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { useConfirmation, type ConfirmationOptions } from './Confirmation'
 import { ContractError, parseBasicResult, type BasicResult, type Decoder } from './contracts'
 import { ServerAddOnsPanel } from './ServerAddOnsPanel'
+import { Icon, type IconName } from './Icon'
 import { editorFileDiff } from './editorChanges'
 import { EditorDraftRecovery, useEditorDirtyGuard, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftStateChange, type EditorDraftGuardChange } from './editorProtectedDraft'
+import './ServerFilesPresentation.css'
 
 type Location = { key: string; label: string; path: string; available: boolean }
 type FileEntry = { key: string; label: string; path: string; available: boolean }
@@ -88,6 +90,14 @@ export function ServerFilesPanel(props: ServerFilesPanelProps) {
 
 function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlocked,
   onPrepareMaintenance, onStart, onOpenDoctor, onDraftStateChange, onDraftGuardChange }: ServerFilesPanelProps) {
+  const [section, setSection] = useState<'files' | 'addons' | 'checkpoints'>('files')
+  const registerDraftGuard = useCallback<EditorDraftGuardChange>((source, guard) => {
+    onDraftGuardChange?.(source, guard ? { ...guard, flush: async () => {
+      const saved = await guard.flush()
+      if (!saved) setSection('files')
+      return saved
+    } } : null)
+  }, [onDraftGuardChange])
   const [view, setView] = useState<FilesView | null>(null)
   const [loaded, setLoaded] = useState<FileContent | null>(null)
   const [draft, setDraft] = useState('')
@@ -132,7 +142,9 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
     finally { confirmationInFlight.current = false }
   }
   useEditorDirtyGuard(`file:${profileId}`, changed, onDraftStateChange)
-  useEditorDraftGuard(`file:${profileId}`, changed, protectedDraft, onDraftGuardChange)
+  useEditorDraftGuard(`file:${profileId}`, changed, {
+    status: loaded ? protectedDraft.status : 'ready', persistNow: protectedDraft.persistNow
+  }, registerDraftGuard)
   const diff = changed && loaded?.content !== null && loaded?.content !== undefined ? editorFileDiff(loaded.content, draft) : null
   const reviewMatches = reviewed !== null && loaded !== null && reviewed.key === loaded.key && reviewed.sha256 === loaded.sha256 && reviewed.content === draft
   const recoverDraft = () => {
@@ -315,16 +327,22 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
     setDraft(loaded.content ?? ''); setReviewed(null); await protectedDraft.clear()
   }
 
-  return <section className="server-files-panel" aria-label="Server files and settings">
-    <div className="section-heading"><div><h3>Files &amp; settings</h3><p>Open the folders and edit the files this server actually uses.</p></div></div>
+  const sections: { id: typeof section; label: string; icon: IconName }[] = [
+    { id: 'files', label: 'Files', icon: 'logs' },
+    { id: 'addons', label: 'Add-ons', icon: 'game' },
+    { id: 'checkpoints', label: 'Checkpoints', icon: 'archive' }
+  ]
+  return <section className="server-files-panel server-files-workspace" aria-label="Server files and settings">
+    <div className="server-files-heading"><div><h3><Icon name="logs" />Server files</h3><p>Configuration, add-ons and setup checkpoints.</p></div>
+      <span className="server-files-state"><Icon name={maintenance ? 'shield' : 'server'} size={15} />{maintenance ? 'Maintenance' : state}</span></div>
     {notice && <DismissibleNotice scope={profileId} className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
-    <div className="next-action"><span>{editAllowed ? 'Ready to review and save guarded edits.' : recoveryBlocked ? 'Resolve local recovery before preparing changes.' : 'Prepare changes creates the offline checkpoint required for safe editing.'}</span>
+    <div className="next-action server-files-maintenance"><span>{editAllowed ? 'Offline and ready to edit.' : recoveryBlocked ? 'Resolve local recovery before preparing changes.' : 'Prepare changes to pause Friend controls and checkpoint the offline setup.'}</span>
       <div className="actions"><Button className="secondary" disabled={busy || !!pending || recoveryBlocked}
-        onClick={() => void prepareChanges()}>Prepare changes</Button>
+        onClick={() => void prepareChanges()}><Icon name={pending === 'prepare' ? 'loader' : 'shield'} />Prepare changes</Button>
         {maintenance && state === 'Ready' && <Button className="secondary" disabled={busy || !!pending || !!changed || recoveryBlocked}
-          onClick={() => void finishChanges()}>Finish maintenance</Button>}</div></div>
+          onClick={() => void finishChanges()}><Icon name="check" />Finish maintenance</Button>}</div></div>
     {!editAllowed && state !== 'Offline' && <DismissibleNotice as="p" scope={profileId} className="warning-text">Preparing changes needs a fresh zero-player count. Positive or Unknown counts block a graceful Stop.</DismissibleNotice>}
-    <details className="server-support-disclosure"><summary>Editing safely</summary><section aria-label="Prepare for editing"><ol>
+    <details className="server-support-disclosure server-files-disclosure"><summary><Icon name="shield" />Editing safely<Icon name="chevronDown" /></summary><section aria-label="Prepare for editing"><ol>
       <li>{maintenance ? 'Friend lifecycle controls are paused.' : 'Pause Friend lifecycle controls with Prepare changes.'}</li>
       <li>{state === 'Offline' ? 'Server is offline. Prepare changes still verifies the setup checkpoint.' : 'Prepare changes needs a fresh exact zero-player count before graceful Stop. Positive or Unknown counts block it.'}</li>
       <li>Create a complete setup checkpoint, review edits, and save with the matching file version.</li>
@@ -332,55 +350,42 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
     </ol></section></details>
     {!view && !notice && <p className="helper-text">Loading server files…</p>}
     {view && <>
+      <nav className="server-files-navigation" aria-label="Server file sections">{sections.map(item =>
+        <Button key={item.id} className="secondary" aria-current={section === item.id ? 'page' : undefined}
+          onClick={() => setSection(item.id)}><Icon name={item.icon} />{item.label}
+          {item.id === 'files' && changed && <span className="server-files-dirty">Unsaved</span>}</Button>)}</nav>
+      <div className="server-files-content" hidden={section !== 'files'}>
+      <details className="server-files-locations server-files-disclosure"><summary><Icon name="folder" />Folders on this PC<span>{view.locations.length}</span><Icon name="chevronDown" /></summary>
       <div className="server-file-locations">{view.locations.map(location =>
         <div className="server-file-row" key={location.key}><div><strong>{location.label}</strong><code>{location.path}</code>
           {!location.available && <small>This folder is unavailable at the saved location. Check the server setup; Open folder does not create it.</small>}</div>
           <Button className="secondary" disabled={!location.available || !!pending || busy}
-            onClick={() => void openFolder(location.key)}>Open folder</Button></div>)}</div>
+            onClick={() => void openFolder(location.key)}><Icon name="folder" />Open folder</Button></div>)}</div>
       {!view.locations.some(location => location.key === 'behavior-packs' || location.key === 'mods') &&
-        <p className="helper-text">This saved server has no reviewed mod or add-on folder assigned by its current driver.</p>}
+        <p className="helper-text">This driver has no reviewed add-on folder.</p>}
+      </details>
       {view.files.length === 0 ? <p className="helper-text">This driver has no reviewed text configuration file in use. Edit its saved setup in TogetherServer.</p> :
-        <div className="server-file-list"><h4>Editable files</h4>{view.files.map(file =>
-          <div className="server-file-row" key={file.key}><div><strong>{file.label}</strong><code>{file.path}</code>
+        <div className="server-file-list"><div className="server-files-list-heading"><h4>Configuration files</h4><small>{view.files.length} reviewed {view.files.length === 1 ? 'file' : 'files'}</small></div>{view.files.map(file =>
+          <div className={`server-file-row${loaded?.key === file.key ? ' is-selected' : ''}`} key={file.key}><div><strong>{file.label}</strong><code title={file.path}>{file.path}</code>
             {!file.available && <small>{file.key === 'factorio-settings' || file.key === 'terraria-config'
               ? 'This configuration is not available. Prepare changes, then use Create config to create the reviewed file.'
               : 'This reviewed file is unavailable. Check the saved server folder or start the game once, then stop and reload.'}</small>}</div>
             <div className="actions">
               {!file.available && (file.key === 'factorio-settings' || file.key === 'terraria-config') &&
                 <Button className="secondary" disabled={!editAllowed}
-                  onClick={() => void createConfiguration(file.key)}>Create config</Button>}
+                  onClick={() => void createConfiguration(file.key)}><Icon name="plus" />Create config</Button>}
               <Button className="secondary" disabled={!file.available || !!pending || busy}
-                onClick={() => void loadFile(file.key)}>{loaded?.key === file.key ? 'Reload file' : 'Edit file'}</Button>
+                onClick={() => void loadFile(file.key)}><Icon name={pending === `read-${file.key}` ? 'loader' : loaded?.key === file.key ? 'refresh' : 'edit'} />{loaded?.key === file.key ? 'Reload file' : 'Edit file'}</Button>
               <Button className="text-button" disabled={!file.available || !editAllowed || !!changed}
-                onClick={() => void openTextFile(file.key)}>Open in Notepad</Button>
+                onClick={() => void openTextFile(file.key)}><Icon name="logs" />Open in Notepad</Button>
             </div></div>)}</div>}
-      <ServerAddOnsPanel key={revision} profileId={profileId} state={state} maintenance={maintenance}
-        busy={busy} recoveryBlocked={recoveryBlocked} />
-      <section className="server-setup-checkpoints" aria-label="Complete setup checkpoints">
-        <div className="section-heading"><div><h4>Setup checkpoints</h4>
-          <p>Complete setup checkpoints include the world, reviewed configuration, and managed add-on files.</p></div>
-          <Button className="secondary" disabled={!editAllowed} onClick={() => void createSetupCheckpoint()}>
-            Create checkpoint</Button></div>
-        <details className="advanced-block"><summary>What a setup checkpoint covers</summary>
-          <p>Included: this server's world files, reviewed configuration files shown above when present, managed add-ons, game ports and listing settings.</p>
-          <p>Excluded: game executables and runtimes, Friend credentials, Windows app preferences, custom scripts, and packs outside the managed world.</p>
-          <p>Active shared Bedrock packs outside this world block a complete setup checkpoint. Use the reviewed world-local pack flow before creating one.</p>
-          <p>Undo last change restores one file. Restore setup restores the complete saved world and supported setup, with a pre-restore checkpoint.</p>
-        </details>
-        {backups.filter(backup => backup.setupIncluded).slice(0, 5).map(backup =>
-          <div className="server-file-row" key={backup.id}><div><strong>{new Date(backup.createdUtc).toLocaleString()}</strong>
-            <small>{backup.backupKind} · Complete setup</small></div>
-            <Button className="secondary" disabled={!editAllowed || !!changed}
-              onClick={() => void restoreSetup(backup.id)}>Restore setup</Button></div>)}
-        {!backups.some(backup => backup.setupIncluded) &&
-          <p className="helper-text">No complete setup checkpoint yet. Older world-only backups remain in Maintenance.</p>}
-      </section>
-      {loaded && <div className="server-file-editor"><h4>{view.files.find(file => file.key === loaded.key)?.label ?? 'Server file'}</h4>
+      {loaded && <div className="server-file-editor"><div className="server-files-editor-heading"><h4><Icon name="logs" />{view.files.find(file => file.key === loaded.key)?.label ?? 'Server file'}</h4>
+        {changed && <span className="server-files-dirty">Unsaved changes</span>}</div>
         <p className="helper-text">Changes are saved only while maintenance is on and the server is offline. A matching on-disk version is required.</p>
         <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} status={protectedDraft.status} scope={`${profileId}:file:${loaded.key}`} disabled={!!pending}
           onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
         <label>File contents<TextArea rows={15} spellCheck={false} value={draft} disabled={!!pending || protectedDraft.recovered !== null} onChange={event => { setDraft(event.target.value); setReviewed(null) }} /></label>
-        {changed && <Button className="secondary" disabled={!!pending || protectedDraft.recovered !== null} onClick={() => loaded.sha256 && setReviewed({ key: loaded.key, sha256: loaded.sha256, content: draft })}>Review file changes</Button>}
+        {changed && <Button className="secondary server-files-review-action" disabled={!!pending || protectedDraft.recovered !== null} onClick={() => loaded.sha256 && setReviewed({ key: loaded.key, sha256: loaded.sha256, content: draft })}><Icon name="eye" />Review file changes</Button>}
         {diff && reviewMatches && <section aria-label="Review raw file changes"><h4>Before and after</h4>
           <p>{diff.unchangedStart} unchanged leading lines · {diff.unchangedEnd} unchanged trailing lines</p>
           <p>Line endings before: {(loaded.content?.match(/\r\n/gu) ?? []).length} CRLF, {(loaded.content?.match(/(?<!\r)\n/gu) ?? []).length} LF. After: {(draft.match(/\r\n/gu) ?? []).length} CRLF, {(draft.match(/(?<!\r)\n/gu) ?? []).length} LF.</p>
@@ -389,15 +394,41 @@ function ServerFilesContent({ profileId, state, maintenance, busy, recoveryBlock
           {diff.omitted > 0 && <p>{diff.omitted} more lines changed. The editor above contains the complete proposed file; only this comparison is shortened.</p>}
           <p>Save first checkpoints the offline world and supported setup, then keeps the previous file version for Undo.</p>
         </section>}
-        <div className="actions"><Button disabled={!editAllowed || !changed || !reviewMatches || protectedDraft.recovered !== null} onClick={() => void save()}>{pending === 'save' ? 'Saving…' : 'Save with checkpoint'}</Button>
-          <Button className="text-button" disabled={!changed || !!pending} onClick={() => void discard()}>Discard unsaved file edits</Button>
-          <Button className="secondary" disabled={!editAllowed || !loaded.canUndo || !!changed} onClick={() => void undo()}>Undo last change</Button></div>
-        {changed && <small>Unsaved changes in this editor.</small>}</div>}
+        <div className="actions server-files-editor-actions"><Button disabled={!editAllowed || !changed || !reviewMatches || protectedDraft.recovered !== null} onClick={() => void save()}><Icon name={pending === 'save' ? 'loader' : 'check'} />{pending === 'save' ? 'Saving…' : 'Save with checkpoint'}</Button>
+          <Button className="secondary" disabled={!editAllowed || !loaded.canUndo || !!changed} onClick={() => void undo()}><Icon name="undo" />Undo last change</Button>
+          <Button className="text-button" disabled={!changed || !!pending} onClick={() => void discard()}><Icon name="close" />Discard unsaved file edits</Button></div>
+      </div>}
+      </div>
+      <div className="server-files-content" hidden={section !== 'addons'}>
+        <ServerAddOnsPanel key={revision} profileId={profileId} state={state} maintenance={maintenance}
+          busy={busy || !!pending || !!changed} recoveryBlocked={recoveryBlocked} />
+        {changed && <p className="server-files-section-note"><Icon name="logs" />Save or discard your file edits before changing add-ons.</p>}
+      </div>
+      <section className="server-setup-checkpoints server-files-content" aria-label="Complete setup checkpoints" hidden={section !== 'checkpoints'}>
+        <div className="server-files-list-heading"><div><h4><Icon name="archive" />Setup checkpoints</h4>
+          <p>World, reviewed configuration and managed add-ons.</p></div>
+          <Button className="secondary" disabled={!editAllowed} onClick={() => void createSetupCheckpoint()}>
+            <Icon name={pending === 'checkpoint' ? 'loader' : 'plus'} />Create checkpoint</Button></div>
+        <details className="server-files-disclosure"><summary><Icon name="shield" />What a setup checkpoint covers<Icon name="chevronDown" /></summary>
+          <div className="server-files-disclosure-body"><p>Includes this server's world, existing reviewed configuration, managed add-ons, game ports and listing settings.</p>
+          <p>Excludes game executables, runtimes, Friend credentials, Windows app preferences, custom scripts and packs outside the managed world.</p>
+          <p>Active shared Bedrock packs outside this world block a complete checkpoint. Use world-local packs first.</p>
+          <p>Undo restores one file. Restore setup replaces the saved world and supported setup after a pre-restore checkpoint.</p></div>
+        </details>
+        {backups.filter(backup => backup.setupIncluded).slice(0, 5).map(backup =>
+          <div className="server-file-row" key={backup.id}><div><strong>{new Date(backup.createdUtc).toLocaleString()}</strong>
+            <small>{backup.backupKind} · Complete setup</small></div>
+            <Button className="secondary" disabled={!editAllowed || !!changed}
+              onClick={() => void restoreSetup(backup.id)}><Icon name="undo" />Restore setup</Button></div>)}
+        {!backups.some(backup => backup.setupIncluded) &&
+          <p className="server-files-empty"><Icon name="archive" />No setup checkpoints yet. World-only backups are in Backups.</p>}
+        {changed && <p className="server-files-section-note"><Icon name="logs" />Save or discard your file edits before restoring a setup.</p>}
+      </section>
       {!maintenance || state !== 'Offline' ? <div className="next-action"><span>{!maintenance ? 'Begin maintenance before changing files.' : 'Stop or resolve this server before changing files.'}</span>
         <Button className="secondary" onClick={onPrepareMaintenance}>Open maintenance guide</Button></div> :
         <div className="next-action"><span>After saving, start the server and check a real game join and saved change.</span>
-          <div className="actions"><Button className="secondary" disabled={busy || recoveryBlocked || !!changed} onClick={onStart}>Start server</Button>
-            <Button className="text-button" onClick={onOpenDoctor}>Connection Doctor</Button></div></div>}
+          <div className="actions"><Button className="secondary" disabled={busy || recoveryBlocked || !!changed} onClick={onStart}><Icon name="play" />Start server</Button>
+            <Button className="text-button" onClick={onOpenDoctor}><Icon name="plug" />Connection Doctor</Button></div></div>}
     </>}
     {confirmationDialog}
   </section>

@@ -1,0 +1,83 @@
+.shared-world-workspace .friend-sharing-manager {
+  display: grid;
+  gap: 14px;
+  min-inline-size: 0;
+  color: var(--color-text-secondary);
+}
+.shared-world-workspace .settings-dialog-body .friend-sharing-manager p { margin: 0; line-height: 1.5; }
+.friend-sharing-manager :is(h3, h4) { margin: 0; color: var(--color-text); }
+.friend-sharing-manager .friend-sharing-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-inline-size: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface-raised);
+}
+.friend-sharing-status > .icon { margin-block-start: 2px; color: var(--color-accent-light); flex: 0 0 auto; }
+.friend-sharing-status > div { display: grid; gap: 5px; min-inline-size: 0; inline-size: 100%; }
+.friend-sharing-status strong { color: var(--color-text); font-size: .82rem; }
+.friend-sharing-status span { color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
+.friend-sharing-status progress { inline-size: 100%; block-size: 6px; margin-block-start: 3px; accent-color: var(--color-accent); }
+.friend-sharing-status[data-warning="true"] { border-color: var(--color-warning-border); background: var(--color-warning-bg); }
+.friend-sharing-status[data-warning="true"] > .icon { color: var(--color-warning-text); }
+.friend-sharing-manager .friend-sharing-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-block-end: 12px;
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+.friend-sharing-manager .friend-sharing-navigation > .ui-button { display: inline-flex; align-items: center; gap: 7px; background: transparent; color: var(--color-text-secondary); }
+.friend-sharing-manager .friend-sharing-navigation > .ui-button[aria-current="page"] { border-color: var(--color-accent-border); background: var(--color-accent-soft); color: var(--color-accent-text); }
+.friend-sharing-manager .friend-sharing-pane { display: grid; gap: 14px; min-inline-size: 0; }
+.friend-sharing-manager .friend-sharing-pane[hidden] { display: none; }
+.friend-sharing-pane-heading { display: grid; gap: 5px; }
+.friend-sharing-pane-heading h3 { display: flex; align-items: center; gap: 8px; font-size: .9rem; }
+.friend-sharing-pane-heading p,
+.friend-sharing-manager .friend-sharing-hint { color: var(--color-text-muted); font-size: .75rem; }
+.friend-sharing-pane > section:not(.shared-solo-recovery),
+.friend-sharing-pane > details,
+.friend-sharing-pane > .friend-sharing-card {
+  display: grid;
+  gap: 10px;
+  min-inline-size: 0;
+  padding: 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: var(--color-surface-raised);
+}
+.friend-sharing-manager .friend-sharing-pane details:not([open]) { display: block; }
+.friend-sharing-manager .friend-sharing-pane details > summary {
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: .8rem;
+  line-height: 1.5;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.friend-sharing-manager .friend-sharing-pane details[open] > summary { margin-block-end: 10px; }
+.friend-sharing-manager .friend-sharing-pane :is(p, li) { font-size: .78rem; }
+.friend-sharing-manager .friend-sharing-pane ol { margin: 0; padding-inline-start: 20px; }
+.friend-sharing-manager .friend-sharing-pane li + li { margin-block-start: 6px; }
+.friend-sharing-manager .friend-sharing-pane :is(input, textarea) { min-inline-size: 0; max-inline-size: 100%; }
+.friend-sharing-manager .friend-sharing-pane label:has(:is(input:not([type="checkbox"]), textarea)) { display: grid; gap: 6px; color: var(--color-text-secondary); font-size: .78rem; }
+.friend-sharing-manager .friend-sharing-pane label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; font-size: .78rem; }
+.friend-sharing-manager .friend-sharing-pane input[type="checkbox"] { flex: 0 0 auto; margin-block-start: 3px; }
+.friend-sharing-manager .friend-sharing-pane .ui-button { justify-self: start; }
+.friend-sharing-manager .friend-sharing-pane > section > .ui-button,
+.friend-sharing-manager .friend-sharing-pane > details > .ui-button { margin: 0; }
+.friend-sharing-manager .friend-sharing-pane dl[aria-label="Shared save age"] { display: grid; grid-template-columns: minmax(8rem, .6fr) minmax(0, 1fr); gap: 10px 16px; margin: 0; font-size: .78rem; }
+.friend-sharing-manager dl[aria-label="Shared save age"] dt { color: var(--color-text-muted); }
+.friend-sharing-manager dl[aria-label="Shared save age"] dd { margin: 0; min-inline-size: 0; overflow-wrap: anywhere; color: var(--color-text-secondary); }
+.friend-sharing-manager .shared-solo-recovery { padding: 14px; gap: 10px; }
+.friend-sharing-manager .shared-solo-recovery > h4 { font-size: .88rem; }
+.friend-sharing-manager summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 4px; border-radius: 4px; }
+@media (max-width: 640px) {
+  .friend-sharing-manager .friend-sharing-navigation > .ui-button { flex: 1 1 calc(50% - 6px); justify-content: center; min-block-size: 44px; }
+  .friend-sharing-manager .friend-sharing-pane dl[aria-label="Shared save age"] { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .friend-sharing-manager dl[aria-label="Shared save age"] dd + dt { margin-block-start: 8px; }
+  .friend-sharing-manager .friend-sharing-pane .ui-button { min-block-size: 44px; max-inline-size: 100%; white-space: normal; }
+}

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, Select, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { useConfirmation, type ConfirmationOptions } from './Confirmation'
 import { editorBulkPlayers } from './editorChanges'
+import { Icon } from './Icon'
 import { EditorDraftRecovery, useEditorDirtyGuard, useEditorDraftGuard, useEditorProtectedDraft, type EditorDraftStateChange, type EditorDraftGuard, type EditorDraftGuardChange } from './editorProtectedDraft'
 import { accessListIssue, gameModes, maximumAccessEntries, parseGameAccessList, parseGameSettings,
   parseGameSettingsChange, parseGameSettingsPreview, settingsIssue, type GameAccessEntry,
@@ -22,6 +24,7 @@ export type GameSettingsPanelProps = {
 }
 type Notice = { bad: boolean; text: string }
 type Review<T> = { request: T; result: GameSettingsPreview }
+type ListActivity = { pending: boolean; dirty: boolean; error: string | null }
 
 // Replacing a selected profile always replaces its drafts and outstanding reviews.
 export function GameSettingsPanel(props: GameSettingsPanelProps) {
@@ -39,6 +42,24 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
   const [review, setReview] = useState<Review<GameSettingsRequest> | null>(null)
   const [listRevision, setListRevision] = useState(0)
   const [search, setSearch] = useState('')
+  const [tab, setTab] = useState<'general' | 'players'>('general')
+  const [listKey, setListKey] = useState('')
+  const [listActivity, setListActivity] = useState<Record<string, ListActivity>>({})
+  const editorId = useId()
+  const updateListActivity = useCallback((key: string, activity: ListActivity | null) => {
+    setListActivity(current => {
+      const previous = current[key]
+      if (!activity) {
+        if (!previous) return current
+        const next = { ...current }
+        delete next[key]
+        return next
+      }
+      if (previous?.pending === activity.pending && previous?.dirty === activity.dirty && previous?.error === activity.error) return current
+      return { ...current, [key]: activity }
+    })
+  }, [])
+  const revealList = useCallback((key: string) => { setTab('players'); setListKey(key) }, [])
   const listGuards = useRef(new Map<string, EditorDraftGuard>())
   const listGuardsRevision = useRef(0)
   const updateListConfirmationTarget = useCallback(() => { listGuardsRevision.current += 1 }, [])
@@ -50,11 +71,16 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
     onDraftGuardChange?.(source, guard)
   }, [onDraftGuardChange])
   const allowed = maintenance && state === 'Offline' && !busy && !recoveryBlocked && !pending
+  const page = view?.settings ? tab : 'players'
+  const selectedList = view?.lists.find(list => list.key === listKey) ?? view?.lists[0]
+  const navigationBlocked = busy || !!pending || Object.values(listActivity).some(activity => activity.pending)
+  const playersDirty = Object.values(listActivity).some(activity => activity.dirty)
   const next = draft ? { ...draft, maximumPlayers: Number(maximumPlayers) } : null
   const issue = next && view ? settingsIssue(view.kind, next) : null
   const changed = next !== null && view?.settings !== null && JSON.stringify(next) !== JSON.stringify(view?.settings)
   const protectedDraft = useEditorProtectedDraft(view?.settings ? { purpose: 'settings', profileId, key: 'settings:properties' } : null,
     changed && draft && view ? JSON.stringify({ version: 1, kind: view.kind, sha256: view.sha256, settings: draft, maximumPlayers }) : null)
+  const generalProblem = issue && changed ? issue : protectedDraft.status === 'error' || protectedDraft.status === 'conflict' ? protectedDraft.message : null
   const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
   const confirmationInFlight = useRef(false)
   const currentConfirmationTarget = useRef({ signature: '', revision: 0 })
@@ -72,7 +98,14 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
     finally { confirmationInFlight.current = false }
   }
   useEditorDirtyGuard(`settings:${profileId}`, changed, onDraftStateChange)
-  useEditorDraftGuard(`settings:${profileId}`, changed, protectedDraft, onDraftGuardChange)
+  useEditorDraftGuard(`settings:${profileId}`, changed, {
+    status: view?.settings ? protectedDraft.status : 'ready',
+    persistNow: async () => {
+      const saved = await protectedDraft.persistNow()
+      if (!saved) setTab('general')
+      return saved
+    }
+  }, onDraftGuardChange)
   const matches = (label: string) => label.toLowerCase().includes(search.trim().toLowerCase())
   const labels = ['Difficulty peaceful easy normal hard combat enemy damage', 'Maximum players capacity simultaneous joins 1 200',
     'Game mode survival creative adventure spectator new players', 'Apply game mode when players join saved player world mode',
@@ -182,48 +215,68 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
 
   return <section className="game-settings-panel" aria-label="Simple game settings">
     <div className="section-heading"><div><h3>Game settings</h3>
-      <p>Choose common settings and manage who can join. Changes apply after the next Start.</p></div>
-      <Button className="secondary" disabled={!!pending || busy} onClick={() => void reload()}>Reload game settings</Button></div>
+      <p>Settings and player access apply after the next Start.</p></div>
+      <Button className="secondary icon-button" aria-label="Reload game settings" title="Reload game settings" disabled={navigationBlocked} onClick={() => void reload()}><Icon name={pending === 'reload' ? 'loader' : 'refresh'} /></Button></div>
     {notice && <DismissibleNotice scope={profileId} className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</DismissibleNotice>}
     {!view && !notice && <p className="helper-text">Loading game settings…</p>}
     {view && !view.ok && <DismissibleNotice as="p" scope={profileId} className="helper-text">{view.message}</DismissibleNotice>}
-    {view?.settings && draft && <>
+    {view && (view.settings !== null || view.lists.length > 0) && <nav className="settings-dialog-tabs game-settings-tabs" aria-label="Game settings sections">
+      {view.settings && <Button id={`${editorId}-general-tab`} aria-current={page === 'general' ? 'page' : undefined}
+        aria-controls={`${editorId}-general`} disabled={navigationBlocked} onClick={() => setTab('general')}>
+        <Icon name="settings" />General{changed && <span className="settings-unsaved-dot" aria-label="Unsaved settings" />}</Button>}
+      {view.lists.length > 0 && <Button id={`${editorId}-players-tab`} aria-current={page === 'players' ? 'page' : undefined}
+        aria-controls={`${editorId}-players`} disabled={navigationBlocked} onClick={() => setTab('players')}>
+        <Icon name="users" />Players{playersDirty && <span className="settings-unsaved-dot" aria-label="Unsaved player edits" />}</Button>}
+    </nav>}
+    {Object.entries(listActivity).filter(([key, activity]) => activity.error && (page !== 'players' || key !== selectedList?.key)).map(([key, activity]) =>
+      <div className="settings-hidden-feedback" role="status" key={key}>
+        <span><strong>{view?.lists.find(list => list.key === key)?.label ?? 'Player list'}: </strong>{activity.error}</span>
+        <Button className="secondary" disabled={navigationBlocked} onClick={() => { setTab('players'); setListKey(key) }}>Review</Button>
+      </div>)}
+    {page !== 'general' && generalProblem &&
+      <div className="settings-hidden-feedback" role="status"><span>{generalProblem}</span>
+        <Button className="secondary" disabled={navigationBlocked} onClick={() => setTab('general')}>Review settings</Button></div>}
+    {view?.settings && draft && <div id={`${editorId}-general`} className="game-settings-general" hidden={page !== 'general'} aria-labelledby={`${editorId}-general-tab`}>
       <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} status={protectedDraft.status} scope={`${profileId}:settings:properties`} disabled={!!pending}
         onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
-      <label>Search game settings<Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Difficulty, players, joining…" /></label>
+      <label className="game-settings-search"><span className="sr-only">Search game settings</span><Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Find a setting…" /></label>
       {search.trim() && <p className="helper-text" role="status">{labels.filter(matches).length} of {labels.length} settings match.</p>}
       <div className="game-settings-fields">
         {matches(labels[0]) && <div><label>Difficulty<Select aria-describedby={`difficulty-${profileId}`} value={draft.difficulty} disabled={!allowed || protectedDraft.recovered !== null} onChange={event => change({ difficulty: event.target.value })}>
           {['peaceful', 'easy', 'normal', 'hard'].map(value => <option key={value} value={value}>{title(value)}</option>)}</Select></label>
-          <small id={`difficulty-${profileId}`}>Peaceful through Hard changes the game's challenge and enemy behavior after the next Start.</small></div>}
+          <small id={`difficulty-${profileId}`}>Applies after the next Start.</small></div>}
         {matches(labels[1]) && <div><label>Maximum players<Input type="number" min={1} max={200} step={1} value={maximumPlayers}
           aria-describedby={`players-${profileId}`} disabled={!allowed || protectedDraft.recovered !== null} onChange={event => { setMaximumPlayers(event.target.value); setReview(null); setNotice(null) }} /></label>
-          <small id={`players-${profileId}`}>The game's simultaneous player limit, from 1 to 200. This does not grant Friend access.</small></div>}
+          <small id={`players-${profileId}`}>1–200 simultaneous players. Friend access is separate.</small></div>}
         {matches(labels[2]) && <div><label>Game mode<Select aria-describedby={`mode-${profileId}`} value={draft.gameMode} disabled={!allowed || protectedDraft.recovered !== null} onChange={event => change({ gameMode: event.target.value })}>
           {gameModes(view.kind).map(value => <option key={value} value={value}>{title(value)}</option>)}</Select></label>
-          <small id={`mode-${profileId}`}>The default for new players. {view.kind === 'MinecraftBedrock' ? 'Bedrock has no Spectator choice in this reviewed editor.' : 'Existing player modes can remain unchanged.'}</small></div>}
+          <small id={`mode-${profileId}`}>Default mode for new players.</small></div>}
         {matches(labels[3]) && <div><label className="check"><Input type="checkbox" checked={draft.forceGameMode} disabled={!allowed || protectedDraft.recovered !== null}
           aria-describedby={`force-mode-${profileId}`} onChange={event => change({ forceGameMode: event.target.checked })} />Apply game mode when players join</label>
-          <small id={`force-mode-${profileId}`}>On: apply the selected mode each time a player joins. Off: retain the game's normal saved-mode behavior.</small></div>}
+          <small id={`force-mode-${profileId}`}>On: use this mode every join. Off: keep saved modes.</small></div>}
         {matches(labels[4]) && <div><label className="check"><Input type="checkbox" checked={draft.allowListEnabled} disabled={!allowed || protectedDraft.recovered !== null}
           aria-describedby={`allowed-${profileId}`} onChange={event => change({ allowListEnabled: event.target.checked })} />Require allowed players</label>
-          <small id={`allowed-${profileId}`}>On: joining requires an entry in the {view.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'} list below, independently of TogetherServer's Friend permissions.</small></div>}
+          <small id={`allowed-${profileId}`}>Requires an entry in Players, separately from app permissions.</small></div>}
       </div>
-      <p className="helper-text">Game mode normally applies to new players; the saved player or world mode can remain unless you apply it when players join.
-        Requiring allowed players uses this edition's list below.</p>
       {issue && changed && <DismissibleNotice as="p" scope={profileId} className="helper-text" role="status">{issue}</DismissibleNotice>}
-      <div className="actions"><Button disabled={!allowed || !changed || !!issue} onClick={() => void preview()}>
-        {pending === 'preview' ? 'Reviewing…' : 'Review settings changes'}</Button>
-        <Button className="secondary" disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
-          {pending === 'undo' ? 'Undoing…' : 'Undo last settings change'}</Button></div>
-      {changed && <Button className="text-button" disabled={!!pending} onClick={() => void discard()}>Discard unsaved settings</Button>}
+      <div className="actions"><Button aria-label={pending === 'preview' ? 'Reviewing settings changes' : 'Review settings changes'} disabled={!allowed || !changed || !!issue} onClick={() => void preview()}>
+        <Icon name={pending === 'preview' ? 'loader' : 'check'} />{pending === 'preview' ? 'Reviewing…' : 'Review changes'}</Button>
+        <Button className="secondary" aria-label={pending === 'undo' ? 'Undoing settings change' : 'Undo last settings change'} disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
+          <Icon name={pending === 'undo' ? 'loader' : 'undo'} />{pending === 'undo' ? 'Undoing…' : 'Undo'}</Button>
+        {changed && <Button className="text-button" aria-label="Discard unsaved settings" disabled={!!pending} onClick={() => void discard()}><Icon name="trash" />Discard</Button>}</div>
       {changed && <small>Unsaved settings. Review them before saving.</small>}
       {review && <PreviewChanges review={review.result} disabled={!allowed || review.result.changes.length === 0}
         pending={pending === 'save'} onSave={() => void save()} />}
-    </>}
-    {view?.lists.map(list => <GameAccessListEditor key={`${listRevision}-${list.key}`} base={`${base}/lists/${list.key}`}
-      profileId={profileId} onDraftStateChange={onDraftStateChange} onDraftGuardChange={updateListGuard}
-      onConfirmationTargetChange={updateListConfirmationTarget} summary={list} kind={view.kind} editAllowed={allowed} blocked={busy || !!pending || recoveryBlocked} />)}
+    </div>}
+    {view && view.lists.length > 0 && <div id={`${editorId}-players`} className="game-settings-players" hidden={page !== 'players'} aria-labelledby={`${editorId}-players-tab`}>
+      <label className="game-settings-list-picker">Player list<Select value={selectedList?.key ?? ''} disabled={navigationBlocked}
+        onChange={event => setListKey(event.target.value)}>{view.lists.map(list => <option key={list.key} value={list.key}>
+          {list.label}{listActivity[list.key]?.dirty ? ' · Unsaved' : ''}</option>)}</Select></label>
+      {view.lists.map(list => <GameAccessListEditor key={`${listRevision}-${list.key}`} base={`${base}/lists/${list.key}`}
+        active={page === 'players' && list.key === selectedList?.key} onActivityChange={updateListActivity} onReveal={revealList}
+        profileId={profileId} onDraftStateChange={onDraftStateChange} onDraftGuardChange={updateListGuard}
+        onConfirmationTargetChange={updateListConfirmationTarget} summary={list} kind={view.kind} editAllowed={allowed} blocked={busy || !!pending || recoveryBlocked} />)}
+    </div>}
     {view && (view.settings !== null || view.lists.length > 0) && <>
       <p className="helper-text">Each save and Undo makes an offline setup checkpoint first. Undo restores the previous version of that file.</p>
       {recoveryBlocked ? <DismissibleNotice as="p" scope={profileId} className="helper-text">Resolve local recovery before changing game settings.</DismissibleNotice> :
@@ -235,13 +288,15 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
   </section>
 }
 
-function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profileId, onDraftStateChange, onDraftGuardChange, onConfirmationTargetChange }: {
+function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profileId, active, onActivityChange, onReveal, onDraftStateChange, onDraftGuardChange, onConfirmationTargetChange }: {
   base: string; summary: GameAccessListSummary; kind: string; editAllowed: boolean; blocked: boolean;
   profileId: string; onDraftStateChange?: EditorDraftStateChange
+  active: boolean
+  onActivityChange: (key: string, activity: ListActivity | null) => void
+  onReveal: (key: string) => void
   onDraftGuardChange?: EditorDraftGuardChange
   onConfirmationTargetChange: () => void
 }) {
-  const [open, setOpen] = useState(false)
   const [view, setView] = useState<GameAccessListView | null>(null)
   const [entries, setEntries] = useState<GameAccessEntry[]>([])
   const [identity, setIdentity] = useState('')
@@ -259,10 +314,13 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
   const dirty = changed || !!identity || !!name || !!bulkText
   const protectedDraft = useEditorProtectedDraft(view ? { purpose: 'list', profileId, key: `list:${summary.key}` } : null,
     dirty && view ? JSON.stringify({ version: 1, kind, key: summary.key, sha256: view.sha256, entries, identity, name, ignoresPlayerLimit, bulkText }) : null)
+  const error = notice?.bad ? notice.text : protectedDraft.status === 'error' || protectedDraft.status === 'conflict' ? protectedDraft.message : null
+  useEffect(() => { onActivityChange(summary.key, { pending: !!pending, dirty, error }) }, [summary.key, pending, dirty, error, onActivityChange])
+  useEffect(() => () => { onActivityChange(summary.key, null) }, [summary.key, onActivityChange])
   const { confirm: requestConfirmation, confirmationDialog } = useConfirmation()
   const confirmationInFlight = useRef(false)
   const currentConfirmationTarget = useRef({ signature: '', revision: 0 })
-  const confirmationSignature = JSON.stringify({ base, profileId, summary, kind, open, editAllowed, blocked, pending,
+  const confirmationSignature = JSON.stringify({ base, profileId, summary, kind, active, editAllowed, blocked, pending,
     view, entries, identity, name, ignoresPlayerLimit, bulkText, recovered: protectedDraft.recovered })
   useEffect(() => { onConfirmationTargetChange() }, [confirmationSignature, onConfirmationTargetChange])
   if (currentConfirmationTarget.current.signature !== confirmationSignature) {
@@ -276,7 +334,14 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
     finally { confirmationInFlight.current = false }
   }
   useEditorDirtyGuard(`list:${profileId}:${summary.key}`, dirty, onDraftStateChange)
-  useEditorDraftGuard(`list:${profileId}:${summary.key}`, dirty, protectedDraft, onDraftGuardChange)
+  useEditorDraftGuard(`list:${profileId}:${summary.key}`, dirty, {
+    status: view ? protectedDraft.status : 'ready',
+    persistNow: async () => {
+      const saved = await protectedDraft.persistNow()
+      if (!saved) onReveal(summary.key)
+      return saved
+    }
+  }, onDraftGuardChange)
   const recoverDraft = () => {
     try {
       const value: unknown = JSON.parse(protectedDraft.recovered ?? '')
@@ -300,17 +365,19 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
     setReview(null)
   }
   useEffect(() => {
-    if (!open || !summary.available || view !== null) return
-    let active = true
+    if (!active || !summary.available || view !== null) return
+    let current = true
     const abort = new AbortController()
+    setPending('load')
     void getLocalJson(base, parseGameAccessList, abort.signal).then(result => {
-      if (!active) return
+      if (!current) return
       if (result.key !== summary.key || result.kind !== kind) throw new Error('The list response does not match this saved game.')
       setView(result)
       setEntries(result.entries)
-    }).catch(error => { if (active) setNotice({ bad: true, text: errorMessage(error) }) })
-    return () => { active = false; abort.abort() }
-  }, [base, kind, open, summary.available, summary.key, view])
+      setPending('')
+    }).catch(error => { if (current) { setNotice({ bad: true, text: errorMessage(error) }); setPending('') } })
+    return () => { current = false; abort.abort() }
+  }, [base, kind, active, summary.available, summary.key, view])
   const reload = async () => {
     if (pending || blocked) return
     if (dirty && !(await confirmCurrent({ title: 'Reload player list?',
@@ -381,22 +448,21 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
       description: 'Discard this unsaved player list and unfinished entries? The saved list stays unchanged.', confirmLabel: 'Discard list edits', destructive: true }))) return
     accept(view); setIdentity(''); setName(''); setBulkText(''); setIgnoresPlayerLimit(false); setBulkReview(null); await protectedDraft.clear()
   }
-  return <section className="game-settings-list" aria-label={summary.label}>
+  return <section className="game-settings-list" aria-label={summary.label} hidden={!active}>
     <div className="section-heading"><h4>{summary.label}</h4>
-      <Button className="secondary" aria-expanded={open} disabled={blocked || !!pending}
-        onClick={() => setOpen(value => !value)}>{open ? 'Close list' : `Manage ${summary.label.toLowerCase()}`}</Button></div>
+      <Button className="secondary icon-button" aria-label="Reload this list" title="Reload this list" disabled={!summary.available || blocked || !!pending}
+        onClick={() => void reload()}><Icon name={pending === 'reload' || pending === 'load' ? 'loader' : 'refresh'} /></Button></div>
     {!summary.available && <p className="helper-text">The game has not created this list yet. Start it once, then stop and reload to manage the list.</p>}
-    {open && summary.available && <>
+    {summary.available && <>
       {notice && <DismissibleNotice scope={`${profileId}:${summary.key}`} className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</DismissibleNotice>}
       {!view && !notice && <p className="helper-text">Loading players…</p>}
       {view && !view.ok && <DismissibleNotice as="p" scope={`${profileId}:${summary.key}`} className="helper-text">{view.message}</DismissibleNotice>}
-      <Button className="text-button" disabled={blocked || !!pending} onClick={() => void reload()}>Reload this list</Button>
       {view?.ok && <>
         <EditorDraftRecovery recovered={protectedDraft.recovered} message={protectedDraft.message} status={protectedDraft.status} scope={`${profileId}:list:${summary.key}`} disabled={!!pending}
           onRecover={recoverDraft} onDiscard={() => void protectedDraft.clear({ keepCurrent: true })} />
         {kind === 'Valheim' && summary.key === 'permit-list' && <p className="helper-text">
           A non-empty permitted list restricts joining to these IDs. An empty list allows other players subject to bans and the game password.</p>}
-        <label>Search {summary.label.toLowerCase()}<Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Name or player ID" /></label>
+        <label className="game-settings-search"><span className="sr-only">Search {summary.label.toLowerCase()}</span><Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Find a name or player ID…" /></label>
         {search.trim() && <p className="helper-text" role="status">{entries.filter(entry => `${entry.name ?? ''} ${entry.identity ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())).length} of {entries.length} players match.</p>}
         {entries.length === 0 ? <p className="helper-text">No players in this list.</p> : entries.map((entry, index) => ({ entry, index })).filter(({ entry }) =>
           `${entry.name ?? ''} ${entry.identity ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())).map(({ entry, index }) =>
@@ -405,9 +471,9 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
             {kind === 'MinecraftBedrock' && <label className="check"><Input type="checkbox" checked={entry.ignoresPlayerLimit ?? false}
               disabled={!allowed || protectedDraft.recovered !== null} onChange={event => update(entries.map((item, position) => position === index ?
                 { ...item, ignoresPlayerLimit: event.target.checked } : item))} />Bypass player limit for {entry.name}</label>}
-            <Button className="text-button" disabled={!allowed || protectedDraft.recovered !== null} aria-label={`Remove ${entry.name ?? entry.identity}`}
-              onClick={() => update(entries.filter((_, position) => position !== index))}>Remove</Button></div>)}
-        <div className="game-settings-fields">
+            <Button className="text-button icon-button game-settings-entry-remove" disabled={!allowed || protectedDraft.recovered !== null} aria-label={`Remove ${entry.name ?? entry.identity}`} title={`Remove ${entry.name ?? entry.identity}`}
+              onClick={() => update(entries.filter((_, position) => position !== index))}><Icon name="trash" /></Button></div>)}
+        <div className="game-settings-fields game-settings-add-player">
           {kind !== 'Valheim' && <label>{kind === 'MinecraftJava' ? 'Java player name' : 'Xbox gamertag'}<Input
             value={name} maxLength={kind === 'MinecraftJava' ? 16 : 32} disabled={!allowed || protectedDraft.recovered !== null} onChange={event => setName(event.target.value)} /></label>}
           <label>{kind === 'Valheim' ? 'Platform user ID' : kind === 'MinecraftJava' ? 'Player UUID' : 'XUID (optional)'}<Input
@@ -415,7 +481,7 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
             disabled={!allowed || protectedDraft.recovered !== null} onChange={event => setIdentity(event.target.value)} /></label>
           {kind === 'MinecraftBedrock' && <label className="check"><Input type="checkbox" checked={ignoresPlayerLimit}
             disabled={!allowed || protectedDraft.recovered !== null} onChange={event => setIgnoresPlayerLimit(event.target.checked)} />Bypass player limit for new player</label>}
-          <Button className="secondary" disabled={!allowed || entries.length >= maximumAccessEntries} onClick={add}>Add player</Button>
+          <Button className="secondary" disabled={!allowed || entries.length >= maximumAccessEntries} onClick={add}><Icon name="plus" />Add player</Button>
         </div>
         {kind === 'Valheim' && <p className="helper-text">Use the case-sensitive Platform_UserID from the game's F2 panel or server log.</p>}
         {kind === 'MinecraftJava' && <p className="helper-text">Use this player's verified Java UUID and username. This editor does not look up identities.</p>}
@@ -435,16 +501,16 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
         </details>
         <small>{entries.length} of {maximumAccessEntries} player entries</small>
         {changed && <p className="helper-text">Unsaved list changes.</p>}
-        {dirty && <Button className="text-button" disabled={!!pending} onClick={() => void discard()}>Discard unsaved list edits</Button>}
-        <div className="actions"><Button disabled={!allowed || !changed || !!issue} onClick={() => void preview()}>
-          {pending === 'preview' ? 'Reviewing…' : 'Review list changes'}</Button>
-          <Button className="secondary" disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
-            {pending === 'undo' ? 'Undoing…' : 'Undo last list change'}</Button></div>
+        <div className="actions"><Button aria-label={pending === 'preview' ? 'Reviewing list changes' : 'Review list changes'} disabled={!allowed || !changed || !!issue} onClick={() => void preview()}>
+          <Icon name={pending === 'preview' ? 'loader' : 'check'} />{pending === 'preview' ? 'Reviewing…' : 'Review changes'}</Button>
+          <Button className="secondary" aria-label={pending === 'undo' ? 'Undoing list change' : 'Undo last list change'} disabled={!allowed || !view.canUndo || changed} onClick={() => void undo()}>
+            <Icon name={pending === 'undo' ? 'loader' : 'undo'} />{pending === 'undo' ? 'Undoing…' : 'Undo'}</Button>
+          {dirty && <Button className="text-button" aria-label="Discard unsaved list edits" disabled={!!pending} onClick={() => void discard()}><Icon name="trash" />Discard</Button>}</div>
         {review && <PreviewChanges review={review.result} disabled={!allowed || review.result.changes.length === 0}
           pending={pending === 'save'} onSave={() => void save()} />}
       </>}
     </>}
-    {confirmationDialog}
+    {confirmationDialog && createPortal(confirmationDialog, document.body)}
   </section>
 }
 

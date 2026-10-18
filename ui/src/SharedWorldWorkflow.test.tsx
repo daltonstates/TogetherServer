@@ -196,6 +196,7 @@ describe('Shared saves guided workflow', () => {
     await act(async () => {})
     expect(screen.getByLabelText('Shared save age').querySelector(`time[datetime="${receivedUtc}"]`)).not.toBeNull()
     expect(screen.getByText('Acknowledged when last checked')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Recovery' }))
     fireEvent.click(screen.getByText('Choose the default Host after confirmed loss'))
     expect(screen.getByRole('button', { name: 'Prepare signed offer' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Prepare solo recovery' })).toBeEnabled()

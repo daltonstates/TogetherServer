@@ -69,6 +69,7 @@ import { FriendStartConnectionNotice, HostStartConnectionNotice } from './StartC
 import { ServerLogViewer, friendLogAvailability } from './ServerLogViewer'
 import { ServerChat, ServerChatCardSummary, type ChatDraftState } from './ServerChat'
 import { ServerFilesPanel } from './ServerFilesPanel'
+import { ServerSettingsWorkspace, type EditorRecoveryRequest } from './ServerSettingsWorkspace'
 import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
 import { SharedHostingIdentity } from './SharedHostingIdentity'
 import { WorldPeerPanel } from './WorldPeerPanel'
@@ -345,17 +346,30 @@ export function App() {
   }, [])
   const scrollPositions = useRef<Record<string, number>>({})
   const scrollContainer = useRef<HTMLDivElement | null>(null)
+  const workspaceScrollTarget = useCallback(() => {
+    const viewport = scrollContainer.current
+    return (window.matchMedia?.('(min-width: 701px)').matches ?? window.innerWidth > 700)
+      ? viewport?.querySelector<HTMLDivElement>(':scope > .context-workspace > .context-content') ?? viewport
+      : viewport
+  }, [])
   const currentScrollKey = useRef('')
   const restoringScroll = useRef(false)
   const currentOperationProfile = useRef<Record<string, string>>({})
   const draftGuards = useRef<Map<string, EditorDraftGuard>>(new Map())
   const [hasUnsavedServerEdits, setHasUnsavedServerEdits] = useState(false)
+  const [editorRecoveryRequest, setEditorRecoveryRequest] = useState<EditorRecoveryRequest | null>(null)
   const navigationEpoch = useRef(0)
   const modeSwitchesInFlight = useRef(0)
   const keepEditorGuard = useCallback((source: string, guard: EditorDraftGuard | null) => {
     if (guard) draftGuards.current.set(source, guard)
     else draftGuards.current.delete(source)
-    setHasUnsavedServerEdits([...draftGuards.current].some(([key, current]) => key !== 'chat' && (current.dirty || current.saving)))
+    const unsaved = [...draftGuards.current].some(([key, current]) => key !== 'chat' && (current.dirty || current.saving))
+    setHasUnsavedServerEdits(unsaved)
+    setEditorRecoveryRequest(current => {
+      if (!current) return null
+      const active = draftGuards.current.get(current.source)
+      return active?.dirty || active?.saving ? current : null
+    })
   }, [])
   const keepChatGuard = useCallback((guard: ChatDraftState) => {
     if (guard.dirty || guard.saving) draftGuards.current.set('chat', guard)
@@ -370,8 +384,10 @@ export function App() {
       setNotice({ good: false, text: 'Wait for the Host preference change to finish before leaving this page.' })
       return false
     }
-    for (const guard of draftGuards.current.values()) {
+    for (const [source, guard] of draftGuards.current) {
       if ((guard.dirty || guard.saving) && !await guard.flush()) {
+        const section = source.startsWith('file:') ? 'files' : /^(settings|list):/.test(source) ? 'settings' : null
+        if (section) setEditorRecoveryRequest(current => ({ section, source, revision: (current?.revision ?? 0) + 1 }))
         setNotice({ good: false, text: 'This edit is still open. Keep editing, retry its protected draft save, or deliberately discard it before leaving.' })
         return false
       }
@@ -384,6 +400,7 @@ export function App() {
   const changeScope = async (action: () => void): Promise<boolean> => {
     const epoch = ++navigationEpoch.current
     if (!await beforeChangingScope() || epoch !== navigationEpoch.current) return false
+    setEditorRecoveryRequest(null)
     action()
     return true
   }
@@ -486,6 +503,7 @@ export function App() {
   }, [workspacePage, joinSection, snapshot?.mode])
 
   const scrollConnectionId = snapshot?.mode === 'Friend' ? snapshot.connectionId : ''
+  const workspaceReady = snapshot !== null && appInstance !== null
   useEffect(() => {
     const key = workspacePage === 'settings' ? `app:${appSection}` : workspacePage === 'join'
       ? `join:${scrollConnectionId}:${selectedFriendProfileId}:${joinSection}` : workspacePage === 'host'
@@ -495,11 +513,26 @@ export function App() {
     restoringScroll.current = true
     const savedPosition = scrollPositions.current[key] ?? 0
     const frame = window.requestAnimationFrame(() => {
-      if (scrollContainer.current) scrollContainer.current.scrollTop = savedPosition
+      const target = workspaceScrollTarget()
+      if (target) target.scrollTop = savedPosition
       restoringScroll.current = false
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [workspacePage, appSection, scrollConnectionId, selectedFriendProfileId, joinSection, hostScope, selectedHostProfileId, hostSettingsSection, hostServerTab])
+  }, [workspacePage, appSection, scrollConnectionId, selectedFriendProfileId, joinSection, hostScope, selectedHostProfileId, hostSettingsSection, hostServerTab, snapshot?.mode, workspaceReady, workspaceScrollTarget])
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(min-width: 701px)')
+    const resize = () => {
+      const target = workspaceScrollTarget()
+      if (target) target.scrollTop = scrollPositions.current[currentScrollKey.current] ?? 0
+    }
+    if (media) {
+      media.addEventListener('change', resize)
+      return () => media.removeEventListener('change', resize)
+    }
+    window.addEventListener('resize', resize)
+    return () => window.removeEventListener('resize', resize)
+  }, [workspaceScrollTarget])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1916,7 +1949,10 @@ export function App() {
     <div className="app-body">
       <WorkspaceNavigation page={workspacePage} activeRuns={activeRuns} unread={notificationUnread} onNavigate={navigateWorkspace} />
       <main className="workspace-main"><div className="workspace-scroll" ref={scrollContainer}
-        onScroll={event => { if (!restoringScroll.current) scrollPositions.current[currentScrollKey.current] = event.currentTarget.scrollTop }}>
+        onScrollCapture={event => {
+          const target = workspaceScrollTarget()
+          if (!restoringScroll.current && event.target === target && target) scrollPositions.current[currentScrollKey.current] = target.scrollTop
+        }}>
       <div className={workspacePage === 'host' || workspacePage === 'join' ? 'page-heading sr-only' : 'page-heading'}><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
       </div>
 
@@ -1957,7 +1993,7 @@ export function App() {
       </AttentionWorkspace></PaneErrorBoundary>}
 
       {workspacePage === 'settings' && snapshot && <section className="context-workspace app-settings-workspace" aria-label="App Settings">
-        <aside className="context-sidebar"><SectionSidebar title="App Settings" label="App settings sections"
+        <aside className="context-sidebar" aria-label="App settings navigation" tabIndex={0}><SectionSidebar title="App Settings" label="App settings sections"
           sections={appSections} section={appSection} onSelect={section => void changeScope(() => setAppSection(section))} /></aside>
         <div className="context-content settings-content"><AppSettings preferences={uiPreferences} onPreferencesChange={setUiPreferences}
           section={appSection} onSectionChange={section => void changeScope(() => setAppSection(section))} onBusyChange={setAppSettingsBusy}
@@ -1967,7 +2003,7 @@ export function App() {
       </section>}
 
       {workspacePage === 'join' && snapshot?.mode === 'Friend' && <section className="context-workspace join-context-workspace">
-        <aside className="context-sidebar" aria-label="Join navigation">
+        <aside className="context-sidebar" aria-label="Join navigation" tabIndex={0}>
           {(snapshot.connections?.length ?? 0) > 0 && <FriendHostPicker connections={snapshot.connections ?? []}
             selectedId={snapshot.connectionId} showRemoved={showRemovedHosts} favorites={uiPreferences.favoriteHosts} busy={!!pending}
             onShowRemoved={setShowRemovedHosts} onSelect={id => void selectFriendConnection(id)}
@@ -2005,7 +2041,7 @@ export function App() {
             {snapshot.expiryWarning && <DismissibleNotice scope={snapshot.connectionId} className="notice bad" role="status">{snapshot.expiryWarning}</DismissibleNotice>}
             <FriendAccessExpiredNotice connectionCode={snapshot.connectionCode} connectionId={snapshot.connectionId} />
             {snapshot.connectionCode && (snapshot.state === 'Disconnected/Unknown' || snapshot.state === 'Revoked' || snapshot.state === 'Awaiting approval') && <details className="troubleshoot-block" open><summary>{snapshot.state === 'Awaiting approval' ? 'Waiting for Host approval' : 'Troubleshoot connection'}</summary>{snapshot.state === 'Awaiting approval' ? <p>This PC is saved. Ask the Host to approve it under Friend access; you do not need a new code.</p> : <FriendConnectionHelp code={snapshot.connectionCode} />}</details>}
-            {(joinSection === 'network' || joinSection === 'connection') && <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : 'Check connection'}</Button>
+            {(joinSection === 'network' || joinSection === 'connection') && <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => void checkFriendConnection()}>{pending === 'poll' ? <><Icon name="loader" />Refreshing…</> : <><Icon name="refresh" />Check connection</>}</Button>
               <Button className="text-button" onClick={() => void changeScope(() => { setShowPairing(true); setFriendHostAddress(''); setFriendInvite(''); setPairIssue(null); setJoinSection('pairing') })}>Add another Host</Button></div>}
 
           </> : <>
@@ -2129,13 +2165,13 @@ export function App() {
           {(joinSection === 'network' || joinSection === 'connection') && snapshot.endpoint && !showPairing && !friendConnectionHidden && <section className="friend-connection-tools" aria-labelledby="friend-tools-title">
             <h3 id="friend-tools-title">{joinSection === 'network' ? 'Connection help' : 'Connection settings'}</h3>
             {joinSection === 'connection' && selectedFriendProfile && <Button className="secondary" onClick={() => setServerNotification({ id: selectedFriendProfile.id, name: selectedFriendProfile.name, connectionId: snapshot.connectionId })}><Icon name="bell" />Server notifications</Button>}
-            {joinSection === 'connection' && <details className="advanced-block" ref={addressRecoveryRef} open><summary>Connection identity and recovery</summary>
-              <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}>Rename</Button></div></label>
+            {joinSection === 'connection' && <details className="advanced-block" ref={addressRecoveryRef}><summary><Icon name="shield" />Connection identity and recovery</summary>
+              <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}><Icon name="edit" />Rename</Button></div></label>
               <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
               <p className="helper-text">Saved access expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Secure Host identity expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
               <label>New Host address<Input ref={recoveryAddressInputRef} value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
-              <Button className="secondary" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}>{pending === 'recover-endpoint' ? 'Checking...' : 'Check and update address'}</Button>
-              <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}>{pending === 'forget-connection' ? 'Forgetting...' : 'Forget this Host'}</Button>
+              <div className="actions"><Button className="secondary" aria-label="Check and update address" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}><Icon name={pending === 'recover-endpoint' ? 'loader' : 'refresh'} />{pending === 'recover-endpoint' ? 'Checking…' : 'Update address'}</Button>
+              <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}><Icon name="trash" />{pending === 'forget-connection' ? 'Forgetting…' : 'Forget this Host'}</Button></div>
             </details>}
           {joinSection === 'network' && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendConnectionDoctor snapshot={snapshot}
             gameResults={gameEndpointResults} gameResultIdentities={gameResultIdentities} nowMs={nowMs} busy={!!pending}
@@ -2146,7 +2182,7 @@ export function App() {
         </div></section>}
 
       {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <section className="context-workspace host-context-workspace">
-        <aside className="context-sidebar" aria-label="Host navigation">
+        <aside className="context-sidebar" aria-label="Host navigation" tabIndex={0}>
           {savedProfiles.length > 0 && <SearchablePicker label="Selected server" selectedId={selectedHostProfile?.id ?? ''}
             items={visibleHostProfiles.map(profile => ({ id: profile.id, name: profile.name, detail: profileGameLabel(profile), keywords: profile.worldId,
               state: snapshot.runs.find(run => run.profileId === profile.id)?.state ?? 'Unknown' }))}
@@ -2262,16 +2298,16 @@ export function App() {
                   <details className="server-support-disclosure"><summary><Icon name="game" />Game version & add-ons</summary><PaneErrorBoundary title="Pre-join requirements" resetKey={profile.id}><GameCompatibilityPanel key={profile.id} profileId={profile.id} host /></PaneErrorBoundary></details>}
                 {hostServerTab === 'chat' && <details className="server-support-disclosure"><summary>Chat notices</summary><ServerChatCardSummary profileId={profile.id} host authorized
                   visible={workspacePage === 'host'} pollWhenClosed onOpenChat={() => selectHostTab('chat')} /></details>}
-                {hostServerTab === 'files' && <PaneErrorBoundary title="Game settings" resetKey={profile.id}><GameSettingsPanel
+                {hostServerTab === 'files' && <ServerSettingsWorkspace key={profile.id} recoveryRequest={editorRecoveryRequest} settings={<PaneErrorBoundary title="Game settings" resetKey={profile.id}><GameSettingsPanel
                   key={profile.id} profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
                   busy={profileWorkBusy || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}
                   onDraftGuardChange={keepEditorGuard} onPrepareMaintenance={() => selectHostTab('setup')} /></PaneErrorBoundary>}
-                {hostServerTab === 'files' && <PaneErrorBoundary title="Server files" resetKey={profile.id}><ServerFilesPanel
+                  files={<PaneErrorBoundary title="Server files" resetKey={profile.id}><ServerFilesPanel
                   profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
                   busy={profileWorkBusy || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}
                   onDraftGuardChange={keepEditorGuard} onPrepareMaintenance={() => selectHostTab('setup')}
                   onStart={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}
-                  onOpenDoctor={() => openHostSettings('network')} /></PaneErrorBoundary>}
+                  onOpenDoctor={() => openHostSettings('network')} /></PaneErrorBoundary>} />}
                 <PaneErrorBoundary title="Recent sessions" resetKey={profile.id}><RecentSessions profileId={profile.id}
                   visible={workspacePage === 'host' && hostServerTab === 'sessions'} /></PaneErrorBoundary>
                 {hostServerTab === 'sessions' && <PaneErrorBoundary title="Seven-day summary" resetKey={profile.id}><WeeklySummary

@@ -93,16 +93,16 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
     setDraft(current => ({ ...current, connectionRoute: { mode, address: selected }, companionEndpoint: endpoint,
       companionBindAddress: mode === 'DirectInternet' ? '0.0.0.0' : selected || current.companionBindAddress }))
   }
-  return <section className="settings-section task-first-page">
+  return <section className="settings-section host-settings-tools task-first-page">
     {section === 'stop' && <>
       <SettingsSectionHeading icon="clock" title="Stop & timer" description="Automatic shutdown and safe Friend Stop requests." />
-      <div className="settings-controls"><label className="setting-toggle"><span><strong>Stop empty servers automatically</strong>
+      <label className="setting-toggle"><span><strong>Stop empty servers automatically</strong>
         <small>Starts after a Ready server reports exactly zero players. A positive or Unknown count cancels the countdown.</small></span>
-        <Input type="checkbox" checked={settings.autoShutdownEnabled} disabled={busy} onChange={event => onAutoShutdown(event.target.checked)} /></label></div>
-      {keepAwake && <div className="settings-controls"><label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong>
+        <Input type="checkbox" checked={settings.autoShutdownEnabled} disabled={busy} onChange={event => onAutoShutdown(event.target.checked)} /></label>
+      {keepAwake && <label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong>
         <small>Prevents idle sleep while an exact managed server is running. Manual sleep can still interrupt hosting.</small>
         {keepAwake.detail && <small>{keepAwake.detail}</small>}</span><Input type="checkbox" checked={keepAwake.enabled} disabled={busy || dirty}
-          onChange={event => keepAwake.onChange(event.target.checked)} /></label></div>}
+          onChange={event => keepAwake.onChange(event.target.checked)} /></label>}
       <div className="settings-card-grid">
         <SettingsCard icon="clock" title="Empty-server countdown" description="Wait before gracefully stopping an empty server."
           summary={`${settings.idleMinutes} minutes · ${settings.autoShutdownEnabled ? 'Enabled' : 'Automatic shutdown is off'}`} actionLabel="Edit countdown" disabled={busy || dirty} onOpen={() => open('countdown')} />
@@ -171,8 +171,8 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
         <p className="helper-text">TogetherServer reads adapters and saves your selected route. It does not install clients or change firewall, router, DNS, or network policies.</p></div>}
       {tool === 'tcp' && <div className="settings-dialog-stack"><div className="settings-detail-row"><strong>Public game address</strong><span>{settings.publicGameIp && settings.publicGameIpCheckedUtc && Date.now() - Date.parse(settings.publicGameIpCheckedUtc) < 3600000 ? `${settings.publicGameIp} · address hint; Friend join untested` : 'Address unavailable or stale'}</span></div>
         {addressError && <DismissibleNotice as="p" scope={settings.companionEndpoint} className="warning-text" role="status">{addressError}</DismissibleNotice>}
-        <div className="actions"><Button className="secondary" disabled={modalBusy} onClick={onDetectAddress}><Icon name={detectingAddress ? 'loader' : 'refresh'} />{detectingAddress ? 'Refreshing…' : 'Refresh public address'}</Button>
-          <Button className="secondary" disabled={modalBusy || dirty} onClick={onTestRoute}><Icon name={checkingRoute ? 'loader' : 'search'} />{checkingRoute ? 'Testing TCP port…' : 'Test Friend app port from internet'}</Button></div>
+        <div className="actions"><Button className="secondary" aria-label="Refresh public address" disabled={modalBusy} onClick={onDetectAddress}><Icon name={detectingAddress ? 'loader' : 'refresh'} />{detectingAddress ? 'Refreshing…' : 'Refresh address'}</Button>
+          <Button className="secondary" aria-label="Test Friend app port from internet" disabled={modalBusy || dirty} onClick={onTestRoute}><Icon name={checkingRoute ? 'loader' : 'search'} />{checkingRoute ? 'Testing…' : 'Test outside TCP'}</Button></div>
         <p className="helper-text">The outside TCP check uses portchecker.io, which sees this PC's public IP and port. No code or saved access is sent.</p>
         {routeCheck && <DismissibleNotice scope={settings.companionEndpoint} noticeKey={`${routeCheck.checkedUtc}:${routeCheck.state}:${previousRouteVerdict}`} trackMessage={false} className="settings-detail-row" role="status"><strong>{previousRouteVerdict ? 'Previous TCP result' : routeCheck.state} · TCP {routeCheck.port}</strong><span>{routeCheck.detail}</span><small>Checked {new Date(routeCheck.checkedUtc).toLocaleString()}.{previousRouteVerdict && ' This result is stale; test again.'} TCP reachability does not prove pinned pairing or a game join.</small></DismissibleNotice>}
         {ports?.control.lanForwardDetail && <div className="settings-detail-row"><strong>Router forwarding target on this PC</strong><span>{ports.control.lanForwardDetail}</span>{ports.control.lanAddresses?.map(item => <small key={`${item.interfaceName}-${item.address}`}>{item.address} · {item.interfaceName} · gateway {item.gateway}</small>)}</div>}
@@ -189,11 +189,11 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
         {companion?.certificates ? <><p>Current identity is valid until {new Date(companion.certificates.activeExpiresUtc).toLocaleString()}.</p>
           <p className="helper-text">{companion.certificates.nextFingerprint ? 'The next identity is ready and connected Friends are receiving it.' : 'TogetherServer prepares the next identity automatically within 30 days of expiry.'}</p>
           {companion.certificates.previousAcceptedUntilUtc && <p className="helper-text">The old identity will be accepted until {new Date(companion.certificates.previousAcceptedUntilUtc).toLocaleString()}.</p>}
-          <div className="actions"><Button className="secondary" disabled={busy || !!companion.certificates.nextFingerprint} onClick={() => onCertificate('stage')}>Prepare next identity</Button>
-            <Button className="secondary" disabled={busy || !companion.certificates.nextFingerprint} onClick={() => onCertificate('activate')}>Use prepared identity</Button>
-            {companion.certificates.previousFingerprint && <Button className="danger-outline" disabled={busy} onClick={() => onCertificate('retire-previous')}>Stop accepting old identity</Button>}</div></> : <p className="helper-text">Secure identity details are unavailable.</p>}</div>}
+          <div className="actions"><Button className="secondary" disabled={busy || !!companion.certificates.nextFingerprint} onClick={() => onCertificate('stage')}><Icon name="plus" />Prepare next identity</Button>
+            <Button className="secondary" disabled={busy || !companion.certificates.nextFingerprint} onClick={() => onCertificate('activate')}><Icon name="check" />Use prepared identity</Button>
+            {companion.certificates.previousFingerprint && <Button className="danger-outline" disabled={busy} onClick={() => onCertificate('retire-previous')}><Icon name="shield" />Stop accepting old identity</Button>}</div></> : <p className="helper-text">Secure identity details are unavailable.</p>}</div>}
       {tool === 'move' && <div className="settings-dialog-stack"><p>On the old Host, stop the server, make a fresh backup, and choose Prepare move kit beside it. Take the verified .backup folder to this PC.</p>
-        <div className="actions"><Button className="secondary" disabled={busy} onClick={onInspectMoveKit}><Icon name="search" />Inspect move kit on this PC</Button></div>
+        <div className="actions"><Button className="secondary" aria-label="Inspect move kit on this PC" disabled={busy} onClick={onInspectMoveKit}><Icon name="search" />Inspect move kit</Button></div>
         {moveKit?.kit && <><div className="settings-detail-row"><strong>{moveKit.kit.name} · {gameLabel(moveKit.kit.kind)}</strong><span>World {moveKit.kit.worldId} · port {moveKit.kit.gamePort} · {moveKit.fileCount} verified files</span></div>
           <ol><li>Install the same game server version and create a fresh server on this PC.</li><li>While it is offline, copy the kit's payload into the new save location. Keep existing saves separate.</li><li>Choose the locally installed executable, recreate settings and passwords, and test a real join and saved change.</li><li>Pair Friend PCs again. Retire the old Host after the new one passes those checks.</li></ol>
           <div className="actions"><Button className="secondary" disabled={busy || dirty} onClick={() => { setTool(null); onNewHost() }}>Set up new Host</Button></div></>}

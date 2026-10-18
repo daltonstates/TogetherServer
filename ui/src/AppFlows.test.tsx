@@ -85,12 +85,12 @@ vi.mock('./WorldLoadRehearsal', async importOriginal => ({
 vi.mock('./GameSettingsPanel', () => ({ GameSettingsPanel: () => <section aria-label="Simple game settings">Common game settings</section> }))
 vi.mock('./ServerFilesPanel', async () => {
   const { useEffect, useState } = await import('react')
-  return { ServerFilesPanel: function TestFiles({ onDraftGuardChange }: { onDraftGuardChange: EditorDraftGuardChange }) {
+  return { ServerFilesPanel: function TestFiles({ profileId, onDraftGuardChange }: { profileId: string; onDraftGuardChange: EditorDraftGuardChange }) {
     const [draft, setDraft] = useState('')
     useEffect(() => {
-      onDraftGuardChange('synthetic-file', draft ? { dirty: true, saving: false, flush: transport.flush } : null)
-      return () => onDraftGuardChange('synthetic-file', null)
-    }, [draft, onDraftGuardChange])
+      onDraftGuardChange(`file:${profileId}`, draft ? { dirty: true, saving: false, flush: transport.flush } : null)
+      return () => onDraftGuardChange(`file:${profileId}`, null)
+    }, [draft, onDraftGuardChange, profileId])
     if (transport.failures.files) throw new Error('Synthetic pane failure')
     return <section aria-label="Server files"><label>Test file draft<input value={draft} onChange={event => setDraft(event.target.value)} /></label></section>
   } }
@@ -430,6 +430,7 @@ describe('Task-first app and Host PC navigation', () => {
     host().settings.profiles.push({ ...host().settings.profiles[0], id: secondId, name: 'Second synthetic server' })
     const workspace = await openHost()
     fireEvent.click(serverSections().getByRole('button', { name: 'Settings & files' }))
+    fireEvent.click(await within(workspace).findByRole('tab', { name: 'Server files' }))
     const editor = await within(workspace).findByRole('textbox', { name: 'Test file draft' })
     fireEvent.change(editor, { target: { value: 'Protected final keystroke' } })
     const navigate = () => {
@@ -767,12 +768,18 @@ describe('Host task structure', () => {
   it('blocks the persistent Start until unsaved server file changes are saved or discarded', async () => {
     const workspace = await openHost()
     fireEvent.click(serverSections().getByRole('button', { name: 'Settings & files' }))
+    fireEvent.click(await within(workspace).findByRole('tab', { name: 'Server files' }))
     const editor = await within(workspace).findByRole('textbox', { name: 'Test file draft' })
     fireEvent.change(editor, { target: { value: 'An unsaved configuration change' } })
+    fireEvent.click(within(workspace).getByRole('tab', { name: 'Game settings' }))
+    expect(editor).not.toBeVisible()
     const start = within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' })
     expect(start).toBeDisabled()
     fireEvent.click(start)
     expectNoServerAction()
+    fireEvent.click(within(workspace).getByRole('tab', { name: 'Server files' }))
+    expect(editor).toBeVisible()
+    expect(editor).toHaveValue('An unsaved configuration change')
     fireEvent.change(editor, { target: { value: '' } })
     await waitFor(() => expect(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' })).toBeEnabled())
     expectNoServerAction()
@@ -792,6 +799,7 @@ describe('Host task structure', () => {
     transport.failures[failure] = true
     const workspace = await openHost()
     fireEvent.click(serverSections().getByRole('button', { name: { logs: 'Logs', sessions: 'Sessions', files: 'Settings & files' }[failure] }))
+    if (failure === 'files') fireEvent.click(await within(workspace).findByRole('tab', { name: 'Server files' }))
     await waitFor(() => expect(workspace).toHaveAttribute('data-server-tab', failure), { timeout: 3000 })
     const error = await within(workspace).findByRole('alert')
     expect(error).toBeVisible()
@@ -809,11 +817,16 @@ describe('Host task structure', () => {
   it('keeps a failed draft save on the editing screen and permits navigation after retry', async () => {
     const workspace = await openHost()
     fireEvent.click(serverSections().getByRole('button', { name: 'Settings & files' }))
+    fireEvent.click(await within(workspace).findByRole('tab', { name: 'Server files' }))
     const editor = await within(workspace).findByRole('textbox', { name: 'Test file draft' })
     fireEvent.change(editor, { target: { value: 'Last unsaved keystroke' } })
+    fireEvent.click(within(workspace).getByRole('tab', { name: 'Game settings' }))
+    expect(editor).not.toBeVisible()
     transport.flush.mockResolvedValue(false)
     fireEvent.click(serverSections().getByRole('button', { name: 'Chat' }))
     await waitFor(() => expect(transport.flush).toHaveBeenCalledOnce())
+    await waitFor(() => expect(within(workspace).getByRole('tab', { name: 'Server files' })).toHaveAttribute('aria-selected', 'true'))
+    expect(editor).toBeVisible()
     expect(editor).toHaveValue('Last unsaved keystroke')
     expect(within(workspace).queryByRole('region', { name: 'Server chat' })).not.toBeInTheDocument()
     transport.flush.mockResolvedValue(true)
@@ -1270,6 +1283,7 @@ describe('Friend task structure', () => {
     render(<App />)
     await screen.findByRole('region', { name: 'Play' })
     fireEvent.click(joinSections().getByRole('button', { name: 'Connection settings' }))
+    fireEvent.click(await screen.findByText('Connection identity and recovery'))
     fireEvent.click(await screen.findByRole('button', { name: 'Forget this Host' }))
     const confirmation = await screen.findByRole('dialog', { name: 'Forget this saved Host?' })
     expect(confirmation).toHaveTextContent('TogetherServer will first try to revoke this PC on the Host.')

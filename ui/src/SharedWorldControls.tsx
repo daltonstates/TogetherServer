@@ -7,6 +7,7 @@ import { SettingsDialog } from './SettingsPresentation'
 import { HostSharingPermissions } from './HostSharingPermissions'
 import { parseSharedHostingIdentity, parseSharedSuccessorIdentity, SharedHostingIdentityView } from './SharedHostingIdentity'
 import './SharedWorld.css'
+import './SharedWorldFriendPresentation.css'
 import { parseBasicResult, type BasicResult, type Device } from './contracts'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
@@ -809,6 +810,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
   const [successorPin, setSuccessorPin] = useState('')
   const [successorMessage, setSuccessorMessage] = useState('')
   const [manageOpen, setManageOpen] = useState(false)
+  const [managePane, setManagePane] = useState<'copy' | 'people' | 'recovery' | 'details'>('copy')
   const open = true
   const [message, setMessage] = useState('')
   const [stageMessage, setStageMessage] = useState('')
@@ -914,7 +916,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
   useEffect(() => { setSoloOffer(null); setSoloMessage(''); setSplitAccepted(false); setSoloRecorded(0); setBusy(false) }, [soloScope])
   useEffect(() => {
     setStatus(null); setObservedAt(null); setObservationFailure(''); ++statusRequest.current
-    setBusy(false); setShowHosting(false); setManageOpen(false); setHostingSetupScope(null); setSuccessorIdentity(null)
+    setBusy(false); setShowHosting(false); setManageOpen(false); setManagePane('copy'); setHostingSetupScope(null); setSuccessorIdentity(null)
     setSuccessorHash(''); setSuccessorPin(''); setSuccessorMessage(''); setMessage('')
     setStageMessage(''); setStaged(false); setRecovery(null); setRecoveryMessage('')
     setOfferCode(''); setCandidateCode(null); setReviewedOffer(null); setSplitAccepted(false); setVoteCount(null)
@@ -1287,16 +1289,35 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
       <h4>3. This PC: choose Start server in Host</h4>
       <p>Restore and route checks never start a server. Start requires definite Offline and the current signed decision; Starting and Ready require separate fresh game observations.</p>
       {(!status?.consented || status.thisPcVersion == null) && <p>Get a verified copy first. Preparation and Start remain unavailable.</p>}
-      <Button className="secondary" onClick={() => { setShowHosting(false); setManageOpen(true) }}>
+      <Button className="secondary" onClick={() => { setShowHosting(false); setManagePane('details'); setManageOpen(true) }}>
         <Icon name="shield" />Sharing checks and history</Button>
       </details>
       </div>
     </SettingsDialog>}
-    {manageOpen && <SettingsDialog title="Manage sharing" description="Permissions, receipts, signed history, recovery and checks for this world."
-      busy={busy} onClose={() => setManageOpen(false)} wide>
-      {soloRecovery}
+    {manageOpen && <SettingsDialog title="Manage sharing" description="Copies, approved PCs and recovery for this world."
+      busy={busy} onClose={() => setManageOpen(false)} wide footer={<Button className="secondary" disabled={busy} onClick={() => setManageOpen(false)}>Done</Button>}>
+      <div className="friend-sharing-manager">
+      <div className="friend-sharing-status" data-warning={transferAlert || capacityAlert ? 'true' : undefined} aria-live="polite">
+        <Icon name={transferAlert || capacityAlert ? 'warning' : transferPhase ? 'refresh' : 'archive'} size={20} />
+        <div><strong>{!observationFresh ? 'Current save status unknown' : status?.thisPcVersion != null ? `Verified local save ${status.thisPcVersion}` :
+          status?.consented ? 'Waiting for a completed copy' : 'Save receiving off'}</strong>
+          <span>{transferPhase ? `${transferPhase === 'Receiving' ? 'Receiving bytes' : transferPhase === 'Verifying' ? 'Verifying files and access' : 'Confirming the signed receipt'} · ${formatSharedBytes(status?.receivedBytes ?? 0)} of ${formatSharedBytes(status?.totalBytes ?? 0)}` :
+            transferAlert ? headline : !available ? 'Host support unconfirmed. Local verified copies stay preserved.' : 'Receiving, hosting and choosing a default are separate decisions.'}</span>
+          {transferPhase && status && status.totalBytes > 0 && <progress max={status.totalBytes} value={status.receivedBytes} aria-label="Management save bytes received" />}
+        </div>
+      </div>
+      {observationFailure && <DismissibleNotice as="p" scope={noticeScope} className="warning-text" role="alert">Current Host progress is unavailable. Your verified copy and consent are retained.</DismissibleNotice>}
+      {observationFresh && status?.capacityNotice && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.capacityNotice}</DismissibleNotice>}
       {recovery?.state === 'HistoryReviewRequired' && <DismissibleNotice as="p" scope={noticeScope} role="alert">Competing authority histories need review before choosing a default. Manual recovery remains available.</DismissibleNotice>}
-      <details><summary>Save receipts and copy dates</summary>
+      <nav className="friend-sharing-navigation" aria-label="Shared-save management sections">
+        <Button className="secondary" aria-current={managePane === 'copy' ? 'page' : undefined} onClick={() => setManagePane('copy')}><Icon name="archive" />Copy status</Button>
+        <Button className="secondary" aria-current={managePane === 'people' ? 'page' : undefined} onClick={() => setManagePane('people')}><Icon name="users" />People</Button>
+        <Button className="secondary" aria-current={managePane === 'recovery' ? 'page' : undefined} onClick={() => setManagePane('recovery')}><Icon name="shield" />Recovery</Button>
+        <Button className="secondary" aria-current={managePane === 'details' ? 'page' : undefined} onClick={() => setManagePane('details')}><Icon name="logs" />Details</Button>
+      </nav>
+      <section className="friend-sharing-pane" aria-label="Copy status" hidden={managePane !== 'copy'}>
+      <div className="friend-sharing-pane-heading"><h3><Icon name="archive" />Copy status</h3><p>Dates and receipts apply to the exact completed copy.</p></div>
+      <section className="friend-sharing-card" aria-label="Save receipts and copy dates"><h4>Save receipts and copy dates</h4>
     {status?.thisPcVersion != null && <dl aria-label="Shared save age">
       <dt>Completed by the Host</dt><dd>{sharedSaveAge(status.completedUtc)}
         {status.completedUtc && <> · <time dateTime={status.completedUtc}>{new Date(status.completedUtc).toLocaleString()}</time></>}</dd>
@@ -1305,10 +1326,14 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
       <dt>Host receipt</dt><dd>{status.receiptConfirmed === true ? 'Acknowledged when last checked' :
         status.receiptConfirmed === false ? 'Not acknowledged yet' : 'Unavailable'}</dd>
     </dl>}
-    {observationFresh && status?.capacityNotice && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.capacityNotice}</DismissibleNotice>}
+    {status?.thisPcVersion == null && <p>No verified local copy yet. Allow saves on this PC and get a completed copy before preparing recovery.</p>}
+    <p className="friend-sharing-hint">Changes after the completed copy may be missing. Hash checks do not prove game load or a saved restart.</p>
     {status && <details><summary>Technical details</summary><p>Trust: {status.trust}.
       Roster revision {status.rosterRevision ?? 'not checked'}. This is a verified copy status, not takeover readiness.</p></details>}
-      </details>
+      </section>
+      </section>
+      <div className="friend-sharing-pane" hidden={managePane !== 'details'}>
+      <div className="friend-sharing-pane-heading"><h3><Icon name="logs" />Details</h3><p>Review signed history, local checks and diagnostics.</p></div>
     {available && <section aria-label="Signed hosting history"><h4>Signed hosting history</h4>
       <p>If this PC can vote, review the group and its hosting decisions here. Receiving saves is a separate choice.</p>
       <Button className="secondary" disabled={busy} onClick={() => void reviewHistory()}>Review signed history</Button>
@@ -1319,6 +1344,10 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
       </div>}
       {historyMessage && <DismissibleNotice as="p" scope={noticeScope} role="status">{historyMessage}</DismissibleNotice>}
     </section>}
+      </div>
+      <div className="friend-sharing-pane" hidden={managePane !== 'recovery'}>
+      <div className="friend-sharing-pane-heading"><h3><Icon name="shield" />Recovery</h3><p>Prepare a separate continuation or review the group's default.</p></div>
+      {soloRecovery}
     {status?.consented && <details><summary>Join a new Host after takeover</summary>
       <p>Use the signed takeover hash and certificate fingerprint shared by the new Host. This PC checks the takeover and pinned direct connection, then keeps the old Host connection and save history.</p>
       <SharedWorldRouteDetails key={profileId} profileId={profileId} onReviewed={details => {
@@ -1374,13 +1403,20 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
         <p>Save hash: {recovery.versionHash}</p>
       </details>}
     </details>}
-    <FriendSharingManager key={noticeScope} profileId={profileId} available={available} noticeScope={noticeScope} />
+      </div>
+      <section className="friend-sharing-pane" aria-label="Sharing people" hidden={managePane !== 'people'}>
+      <div className="friend-sharing-pane-heading"><h3><Icon name="users" />People</h3><p>Review which approved PCs may receive, host or vote.</p></div>
+      <FriendSharingManager key={noticeScope} profileId={profileId} available={available} noticeScope={noticeScope} />
+      </section>
+      <div className="friend-sharing-pane" hidden={managePane !== 'details'}>
     {status?.consented && status.thisPcVersion != null && <WorldLoadRehearsalPanel profileId={profileId} received />}
     {hasVerifiedLocalCopy && <details><summary>Hosting checks and file restore rehearsal</summary>
       <SharedWorldReadinessPanel key={`sharing-checks/${noticeScope}`} profileId={profileId}
         authorityHeadHash={recovery?.authorityHeadHash ?? null} authorityRevision={status?.rosterRevision ?? null}
         game={game} onBrowseServerFile={onBrowseServerFile} onOpenHostSetup={onOpenHostSetup} expanded />
     </details>}
+      </div>
+      <div className="friend-sharing-pane" hidden={managePane !== 'recovery'}>
     {available && <section aria-label="Resolve competing copies"><h4>Competing copies</h4>
       <p>A decision needs the complete signed branch set and a majority of recovery voters, or an enabled owner override. Both histories remain preserved; a higher version number alone does not choose a winner.</p>
       <Button className="secondary" disabled={busy} onClick={() => void loadChoices()}>Check signed branches</Button>
@@ -1412,10 +1448,14 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
       </details>
       {resolutionMessage && <DismissibleNotice as="p" scope={noticeScope} role="status">{resolutionMessage}</DismissibleNotice>}
     </section>}
+      </div>
+      <div className="friend-sharing-pane" hidden={managePane !== 'details'}>
     <details><summary>Diagnostics</summary><p>Last checked Host version: {observationFresh ? status?.hostVersion ?? 'unknown' : 'unknown (stale observation)'} · This PC: {status?.thisPcVersion ?? 'none'}.</p>
       {status?.error && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.error}</DismissibleNotice>}
       <p>Receive approved, hash-verified saves into this PC's private vault. A post-Stop backup is copied after a graceful Stop; a live save is captured while the game is running and requires acceptance for that exact Host installation. Hash verification does not prove game load or playability.</p>
       <p>Transfers resume in bounded chunks. Each file is checked before an atomic vault receipt. This never replaces a live game save.</p></details>
+      </div>
+      </div>
     </SettingsDialog>}
   </section>
 }

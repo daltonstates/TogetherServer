@@ -12,6 +12,8 @@ describe('SettingsCard', () => {
     const card = screen.getByRole('button', { name: 'Appearance Customize' })
     expect(card).toHaveAccessibleDescription('Choose how the app looks. Orange accent · 110% text')
     expect(screen.getByText('Orange accent · 110% text')).toBeVisible()
+    fireEvent.focus(card)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Customize')
     fireEvent.click(card)
     expect(open).toHaveBeenCalledOnce()
   })

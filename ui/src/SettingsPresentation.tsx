@@ -38,15 +38,16 @@ export function SettingsCard({ icon, title, description, summary, actionLabel, o
   const hasSummary = summary !== undefined && summary !== null && summary !== false
   const descriptions = [description && `${id}-description`, hasSummary && `${id}-summary`].filter(Boolean).join(' ')
 
-  return <Button className="settings-card" disabled={disabled} onClick={onOpen}
+  return <Button className="settings-card settings-card-compact" disabled={disabled} onClick={onOpen} title={actionLabel}
     aria-labelledby={`${id}-title ${id}-action`} aria-describedby={descriptions || undefined}>
     <span className="settings-card-icon"><Icon name={icon} size={21} /></span>
     <span className="settings-card-content">
       <span className="settings-card-title" id={`${id}-title`}>{title}</span>
-      {description && <span className="settings-card-description" id={`${id}-description`}>{description}</span>}
+      {description && <span className={hasSummary ? 'sr-only' : 'settings-card-description'} id={`${id}-description`}>{description}</span>}
       {hasSummary && <span className="settings-card-summary" id={`${id}-summary`}>{summary}</span>}
-      <span className="settings-card-action" id={`${id}-action`}>{actionLabel}<Icon name="chevronRight" size={16} /></span>
+      <span className="sr-only" id={`${id}-action`}>{actionLabel}</span>
     </span>
+    <span className="settings-card-chevron"><Icon name="chevronRight" size={17} /></span>
   </Button>
 }
 

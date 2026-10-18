@@ -1,0 +1,151 @@
+.server-files-panel.server-files-workspace,
+.server-addons-panel.server-addons-workspace {
+  display: grid;
+  gap: 14px;
+  min-inline-size: 0;
+  color: var(--color-text);
+}
+.server-files-workspace { container: server-files / inline-size; }
+.server-files-workspace :is(h3, h4, p),
+.server-addons-workspace :is(h4, p) { margin: 0; }
+.server-files-workspace :is(h3, h4),
+.server-addons-workspace h4 { display: flex; align-items: center; gap: 8px; }
+.server-files-heading,
+.server-files-list-heading,
+.server-files-editor-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-inline-size: 0;
+}
+.server-files-heading > div,
+.server-files-list-heading > div { display: grid; gap: 4px; min-inline-size: 0; }
+.server-files-heading p,
+.server-files-list-heading p,
+.server-files-list-heading > small { color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
+.server-files-state,
+.server-files-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-inline-size: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  color: var(--color-text-muted);
+  font-size: .7rem;
+  line-height: 1.4;
+}
+.server-files-dirty { color: var(--color-warning-text); border-color: var(--color-warning-border); background: var(--color-warning-bg); }
+.server-files-workspace .server-files-maintenance { margin: 0; gap: 10px 16px; }
+.server-files-workspace .server-files-maintenance > span { font-size: .78rem; }
+.server-files-workspace .server-files-maintenance > .actions { margin: 0; }
+.server-files-workspace .server-files-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-block-end: 12px;
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+.server-files-workspace .server-files-navigation > .ui-button { background: transparent; color: var(--color-text-secondary); }
+.server-files-workspace .server-files-navigation > .ui-button[aria-current="page"] {
+  color: var(--color-accent-text);
+  border-color: var(--color-accent-border);
+  background: var(--color-accent-soft);
+}
+.server-files-workspace .server-files-content { display: grid; gap: 14px; min-inline-size: 0; }
+.server-files-workspace .server-files-content[hidden] { display: none; }
+.server-files-workspace .server-files-disclosure {
+  min-inline-size: 0;
+  padding-inline: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+.server-files-workspace .server-files-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-block-size: 40px;
+  color: var(--color-text-secondary);
+  font-size: .78rem;
+  font-weight: 550;
+  cursor: pointer;
+  list-style: none;
+}
+.server-files-workspace .server-files-disclosure > summary::-webkit-details-marker { display: none; }
+.server-files-workspace .server-files-disclosure > summary > span { margin-inline-start: auto; color: var(--color-text-muted); font-size: .7rem; }
+.server-files-workspace .server-files-disclosure > summary > .icon:last-child { margin-inline-start: auto; }
+.server-files-workspace .server-files-disclosure > summary > span + .icon:last-child { margin-inline-start: 0; }
+.server-files-workspace .server-files-disclosure[open] > summary > .icon:last-child { transform: rotate(180deg); }
+.server-files-workspace .server-files-disclosure > :is(section, .server-files-disclosure-body),
+.server-files-workspace .server-files-disclosure > .server-file-locations { padding-block: 4px 12px; }
+.server-files-workspace .server-files-disclosure > .helper-text { margin-block-end: 12px; font-size: .75rem; }
+.server-files-workspace .server-files-disclosure-body { display: grid; gap: 8px; color: var(--color-text-muted); font-size: .75rem; }
+.server-files-workspace .server-files-disclosure ol { margin-block: 0; padding-inline-start: 20px; color: var(--color-text-muted); font-size: .75rem; }
+.server-files-workspace .server-files-disclosure li + li { margin-block-start: 5px; }
+.server-files-workspace .server-file-list,
+.server-addons-workspace .server-file-list { display: grid; gap: 8px; min-inline-size: 0; }
+.server-files-workspace .server-file-row,
+.server-addons-workspace .server-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  padding: 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+}
+.server-files-workspace .server-file-row.is-selected { border-color: var(--color-accent-border); }
+.server-files-workspace .server-file-row > div:first-child,
+.server-addons-workspace .server-file-row > div:first-child { display: grid; flex: 1 1 12rem; gap: 4px; min-inline-size: 0; }
+.server-files-workspace .server-file-row strong,
+.server-addons-workspace .server-file-row strong { font-size: .8rem; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.server-files-workspace .server-file-row code { display: block; max-inline-size: 100%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; }
+.server-files-workspace .server-file-row small,
+.server-addons-workspace .server-file-row small { color: var(--color-text-muted); font-size: .72rem; }
+.server-files-workspace .server-file-row > .actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; gap: 6px; margin: 0; }
+.server-files-workspace .ui-button,
+.server-addons-workspace .ui-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.server-files-workspace .server-file-editor {
+  display: grid;
+  gap: 12px;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-raised);
+}
+.server-files-workspace .server-file-editor > .helper-text { color: var(--color-text-muted); font-size: .75rem; }
+.server-files-workspace .server-files-review-action { justify-self: start; }
+.server-files-workspace .server-files-editor-actions { gap: 8px; margin: 0; padding-block-start: 12px; border-block-start: 1px solid var(--color-border-subtle); }
+.server-files-section-note,
+.server-files-empty { display: flex; align-items: flex-start; gap: 8px; color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
+.server-files-section-note > .icon,
+.server-files-empty > .icon { flex: 0 0 auto; margin-block-start: 2px; }
+.server-files-empty { padding: 18px 14px; border: 1px dashed var(--color-border); border-radius: 8px; }
+.server-addons-workspace .server-addons-count { padding-block-start: 2px; }
+.server-addons-workspace .server-addons-inventory { max-block-size: 25rem; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding-inline-end: 4px; }
+.server-addon-state { justify-self: start; color: var(--color-text-secondary); font-size: .7rem; }
+.server-addons-workspace .server-addons-actions { gap: 8px; margin: 0; }
+.server-files-workspace summary:focus-visible,
+.server-addons-workspace .server-addons-inventory:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 5px; }
+@container server-files (max-width: 38rem) {
+  .server-files-workspace .server-file-row { align-items: stretch; flex-direction: column; }
+  .server-files-workspace .server-file-row > div:first-child { flex: none; inline-size: 100%; }
+  .server-files-workspace .server-file-row > .actions { inline-size: 100%; }
+  .server-files-workspace .server-file-row > .actions > .ui-button { flex: 1 1 auto; }
+  .server-files-workspace .server-file-editor { padding: 12px; }
+}
+@media (max-width: 640px) {
+  .server-files-workspace .server-files-navigation > .ui-button { flex: 1 1 auto; }
+  .server-files-workspace .server-files-disclosure > summary { min-block-size: 44px; }
+  .server-addons-workspace .server-file-row { align-items: stretch; flex-direction: column; }
+  .server-addons-workspace .server-file-row > div:first-child { flex: none; }
+  .server-addons-workspace .server-file-row > .ui-button { align-self: start; min-block-size: 44px; }
+}
