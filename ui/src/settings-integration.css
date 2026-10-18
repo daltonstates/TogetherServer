@@ -1,8 +1,8 @@
 .settings-workspace > .modal-heading { position: static; margin-block-end: 1.25rem; }
 .friend-pc-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: stretch;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  align-items: start;
   gap: 1rem;
   margin-block-start: 1rem;
 }

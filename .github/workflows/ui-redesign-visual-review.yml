@@ -32,6 +32,8 @@ jobs:
         run: |
           node --check scripts/render-ui-redesign.mjs
           node --check scripts/ui-redesign-fixtures.mjs
+          node --check scripts/ui-polish-world-review.mjs
+          node --check scripts/ui-polish-access-review.mjs
           node --test scripts/ui-redesign-fixtures.test.mjs
       - name: Build bundled UI on the hosted runner
         working-directory: ui

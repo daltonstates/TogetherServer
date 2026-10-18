@@ -7,6 +7,7 @@ import { parseBasicResult } from './contracts'
 import { sharedSaveAge } from './sharedWorldUx'
 import { PeerLiveTestCopies } from './PeerLiveTestCopies'
 import './SharedWorld.css'
+import './WorldPeerPresentation.css'
 
 type Route = { address: string; certificateSha256: string }
 type Peer = { deviceId: string; publicKey: string; revision: number; routes: Route[];
@@ -249,7 +250,6 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
   return <section className="world-peer-panel" aria-label="World groups">
     <header><div><h3>World groups</h3><p>Follow the world across its approved PCs and sessions.</p></div>
       <Button className="secondary" disabled={busy !== null} onClick={() => void refresh()}><Icon name="refresh" />Refresh groups</Button></header>
-    <p className="helper-text">Following signed information does not allow save receiving. Background updates keep your current game connection and never start or stop a server.</p>
     {!loaded && !error && <p role="status">Checking this PC's saved world groups…</p>}
     {error && <DismissibleNotice scope="world-peers" noticeKey={error} role="alert"><p>{error}</p>
       <p>{loaded ? `Showing cached information checked ${sharedSaveAge(checkedUtc)}. Sessions and routes may have changed.` : 'World groups are unavailable. Retry when the local app responds.'}</p></DismissibleNotice>}
@@ -271,22 +271,6 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
         {group.state.needsChoice && <p role="note">Competing histories are preserved. A newer save number does not choose a winner or move your connection.</p>}
         {selection && (selection.needsChoice || selection.heads.length > 1) && <p role="note"><strong>Conflicting group default choices.</strong> All choices stay visible until an authorized member explicitly chooses a default. Running sessions and your game connection continue.</p>}
         {selection?.heads.some(head => !head.authorized || !head.targetKnown) && <p role="note"><strong>Default choice awaiting review or session details.</strong> The chosen session is not confirmed in this PC's current signed information.</p>}
-        <div className="world-peer-summary">
-          <p><strong>Information sync</strong><span>{group.state.replication.lastSuccessfulSyncUtc ?
-            `Last completed ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}` : 'No completed peer sync recorded'}</span></p>
-          <p><strong>Save receiving</strong><span>{!group.canReceive ? 'Owner permission required' :
-            !group.receiveConsented ? 'Off on this PC — local consent required' : 'Allowed on this PC'}</span></p>
-          <p><strong>Save forwarding</strong><span>{group.canReshare ? 'Owner permission granted' : 'Owner permission required'}</span></p>
-        </div>
-        <p className="helper-text">Offline PCs catch up when a permitted contact is reachable. Old signed information stays visible; its age does not erase a history.</p>
-        <label><Input type="checkbox" checked={group.receiveConsented}
-          disabled={busy !== null || (!group.receiveConsented && !group.canReceive)}
-          onChange={event => void perform(group, 'receiving', { enabled: event.target.checked })} />Allow saves on this PC</label>
-        <p className="helper-text">This consent stays with the world when its Host changes. Incoming peer contact is a separate choice.</p>
-        <label><Input type="checkbox" checked={group.sharingEnabled} disabled={busy !== null}
-          onChange={event => void perform(group, 'sharing', { enabled: event.target.checked })} />Allow world peers to contact this PC</label>
-        <Button className="secondary" disabled={busy !== null} onClick={() => void perform(group, 'sync', {})}>
-          <Icon name="refresh" />Sync world information</Button>
         <section className="world-peer-sessions" aria-label={`Sessions for ${group.name}`}>
           <h5>Hosts and sessions</h5>
           {activeSessions.length === 0 && <p>No active session is reported in this cached information. The game connection is unverified.</p>}
@@ -326,6 +310,27 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
               }}>Confirm group default</Button></div>
           </section>}
         </section>
+        <details className="world-peer-permissions"><summary><Icon name="settings" />Save sync &amp; permissions<Icon name="chevronDown" /></summary>
+          <div className="world-peer-permissions-body">
+            <div className="world-peer-summary">
+              <p><strong>Information sync</strong><span>{group.state.replication.lastSuccessfulSyncUtc ?
+                `Last completed ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}` : 'No completed peer sync recorded'}</span></p>
+              <p><strong>Save receiving</strong><span>{!group.canReceive ? 'Owner permission required' :
+                !group.receiveConsented ? 'Off on this PC — local consent required' : 'Allowed on this PC'}</span></p>
+              <p><strong>Save forwarding</strong><span>{group.canReshare ? 'Owner permission granted' : 'Owner permission required'}</span></p>
+            </div>
+            <p className="helper-text">Following world information does not enable save receiving. Sync keeps your current connection and never starts or stops a server.</p>
+            <label><Input type="checkbox" checked={group.receiveConsented}
+              disabled={busy !== null || (!group.receiveConsented && !group.canReceive)}
+              onChange={event => void perform(group, 'receiving', { enabled: event.target.checked })} />Allow saves on this PC</label>
+            <p className="helper-text">This consent stays with the world when its Host changes. Incoming peer contact is a separate choice.</p>
+            <label><Input type="checkbox" checked={group.sharingEnabled} disabled={busy !== null}
+              onChange={event => void perform(group, 'sharing', { enabled: event.target.checked })} />Allow world peers to contact this PC</label>
+            <Button className="secondary" disabled={busy !== null} onClick={() => void perform(group, 'sync', {})}>
+              <Icon name="refresh" />Sync world information</Button>
+            <p className="helper-text">Offline PCs catch up through permitted contacts. Old signed information stays visible; its age does not erase a history.</p>
+          </div>
+        </details>
         <details><summary>Save histories and copy claims</summary>
           <p>{group.state.replication.claimedCopyPeers} PCs report having save copies. Signed claims are not completed transfers or confirmed receipts.</p>
           <p>Confirmed transfer receipts are shown with the received save after its bytes and signature are verified.</p>

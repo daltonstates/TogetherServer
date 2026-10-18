@@ -23,6 +23,24 @@ afterEach(() => {
 })
 
 describe('ServerLogViewer', () => {
+  it('keeps unfinished filters when their compact controls are collapsed without issuing a request', async () => {
+    const loader = vi.fn<ServerLogLoader>().mockResolvedValue(result('a'.repeat(32), [record('latest line')], 'cursor'))
+    render(<ServerLogViewer endpoint="/logs" visible loader={loader} />)
+    await screen.findByText('latest line')
+    const toggle = screen.getByRole('button', { name: 'Filters' })
+    const form = document.getElementById(toggle.getAttribute('aria-controls')!)!
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Log contains' }), { target: { value: 'unfinished search' } })
+    fireEvent.click(toggle)
+    expect(form).toHaveAttribute('data-expanded', 'false')
+    expect(screen.getByRole('log')).toHaveTextContent('latest line')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('textbox', { name: 'Log contains' })).toHaveValue('unfinished search')
+    expect(loader).toHaveBeenCalledTimes(1)
+  })
+
   it('dismisses a read error while retaining log controls and allows a later endpoint error', async () => {
     const loader = vi.fn<ServerLogLoader>().mockRejectedValue(new Error('Host log request failed.'))
     const view = render(<ServerLogViewer endpoint="/first" visible loader={loader} />)

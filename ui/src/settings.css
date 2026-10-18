@@ -329,16 +329,17 @@
 
 .settings-shortcuts {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: center;
   gap: .65rem 1rem;
+  max-inline-size: 36rem;
   margin: 0;
   font-size: .8125rem;
   line-height: 1.5;
 }
 .settings-shortcuts > div { display: contents; }
 .settings-shortcuts dt { margin: 0; color: var(--color-text-secondary); overflow-wrap: anywhere; }
-.settings-shortcuts dd { margin: 0; color: var(--color-text-muted); text-align: end; }
+.settings-shortcuts dd { margin: 0; color: var(--color-text-muted); }
 .settings-shortcuts kbd {
   display: inline-block;
   padding: .2rem .4rem;
@@ -373,8 +374,10 @@
   line-height: 1.4;
   white-space: normal;
 }
-.settings-dialog-tabs .ui-button:hover:not(:disabled) { border-color: var(--color-accent-border); color: var(--color-text); }
-.settings-dialog-tabs :is(.selected, [aria-selected="true"], [aria-current="page"]) {
+.settings-dialog-tabs .ui-button:hover:not(:disabled),
+.game-settings-tabs .ui-button:hover:not(:disabled) { border-color: var(--color-accent-border); color: var(--color-text); }
+.settings-dialog-tabs :is(.selected, [aria-selected="true"], [aria-current="page"]),
+.game-settings-tabs .ui-button[aria-current="page"] {
   border-color: var(--color-accent-border);
   background: var(--color-accent-soft);
   color: var(--color-accent-text);
@@ -401,6 +404,21 @@
   min-inline-size: 0;
 }
 .game-settings-panel [hidden] { display: none; }
+.game-settings-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .25rem .75rem;
+  min-inline-size: 0;
+}
+.game-settings-heading > h3 { min-inline-size: 0; margin: 0; }
+.game-settings-panel > .game-settings-heading > .icon-button {
+  inline-size: 44px;
+  min-block-size: 44px;
+  margin: 0;
+  padding: 8px;
+}
+.game-settings-heading > p { grid-column: 1 / -1; margin: 0; color: var(--color-text-muted); }
 .game-settings-panel > .section-heading,
 .game-settings-list > .section-heading {
   display: flex;
@@ -414,7 +432,33 @@
 .game-settings-panel .section-heading :is(h3, h4) { margin: 0; }
 .game-settings-panel .section-heading p { margin: .25rem 0 0; color: var(--color-text-muted); }
 .game-settings-panel .section-heading > .icon-button { flex: none; margin: 0; }
-.game-settings-tabs { align-items: center; padding-block-end: .65rem; }
+.game-settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem;
+  margin: 0;
+  padding-block-end: .65rem;
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+.game-settings-tabs > .ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 auto;
+  gap: .45rem;
+  min-block-size: 44px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: .5rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: .8125rem;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: normal;
+}
 .settings-unsaved-dot { inline-size: .4rem; block-size: .4rem; border-radius: 50%; background: currentColor; }
 .game-settings-general:not([hidden]),
 .game-settings-players:not([hidden]),
@@ -504,6 +548,7 @@
   .settings-card-grid { grid-template-columns: minmax(0, 1fr); }
   .settings-card.ui-button { min-block-size: 0; padding: 1rem; }
   .settings-dialog .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .app-settings-page :is(.settings-version-row, .settings-danger-row) > span { flex: 0 1 auto; }
 }
 
 @media (max-width: 480px) {

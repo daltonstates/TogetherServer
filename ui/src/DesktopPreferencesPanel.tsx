@@ -137,6 +137,7 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
   }, 800, () => { setMessage('Could not refresh update progress. The current app keeps working.') }, busy, update.latestVersion)
   const polled = polledPreparation?.version === update.latestVersion ? polledPreparation.value : null
   const preparation = busy ? polled ?? update.preparation : update.preparation ?? polled
+  const showPreparation = !!preparation && (busy || preparation.stage !== 'Idle')
   const snooze = async (duration: UpdateReminderDuration) => {
     if (!update.latestVersion) return
     setSnoozeBusy(true); setMessage('')
@@ -154,6 +155,8 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
     link.href = url; link.download = 'TogetherServer-update-preparation.json'; link.click()
     URL.revokeObjectURL(url)
   }
+  if (update.state !== 'Available' && !showPreparation && !message) return null
+
   return <section className="update-details" aria-label="Update details">
     {update.state === 'Available' && <details className="advanced-block"><summary>What changed in version {update.latestVersion}</summary>
       {update.releaseNotes ? <pre className="update-release-notes">{update.releaseNotes}</pre> : <p>No release notes were supplied for this version.</p>}
@@ -171,7 +174,7 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
         {update.promptSnoozed && <option value="Clear">Resume reminders</option>}
       </Select></label>
     </div>}
-    {preparation && (busy || preparation.stage !== 'Idle') && <div className="update-preparation" aria-busy={busy}>
+    {preparation && showPreparation && <div className="update-preparation" aria-busy={busy}>
       {preparation.stage === 'Blocked' || preparation.stage === 'Failed' ?
         <DismissibleNotice as="p" scope={update.latestVersion ?? undefined} role="status" aria-live="polite" aria-atomic="true"><strong>{stageLabels[preparation.stage]}</strong> · {preparation.message}</DismissibleNotice> :
         <p role="status" aria-live="polite" aria-atomic="true"><strong>{stageLabels[preparation.stage]}</strong> · {preparation.message}</p>}

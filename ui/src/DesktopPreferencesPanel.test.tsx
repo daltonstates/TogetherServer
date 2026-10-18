@@ -110,6 +110,25 @@ describe('desktop notification preferences', () => {
 })
 
 describe('update details', () => {
+  it('omits idle details for a current app and retains preparation that still needs attention', () => {
+    const current: DesktopUpdateDetails = { ...update, state: 'Current', preparation: {
+      stage: 'Idle', message: 'No update in progress.', downloadedBytes: 0, totalBytes: null, blocker: null
+    } }
+    const { rerender } = render(<UpdateDetailsPanel update={current} />)
+    expect(screen.queryByRole('region', { name: 'Update details' })).not.toBeInTheDocument()
+
+    rerender(<UpdateDetailsPanel update={{ ...current, preparation: {
+      stage: 'Blocked', message: 'Update needs attention.', downloadedBytes: 0, totalBytes: null,
+      blocker: 'Resolve the hosted server before updating.'
+    } }} />)
+    expect(screen.getByRole('region', { name: 'Update details' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Resolve the hosted server before updating.')
+    expect(screen.getByRole('button', { name: 'Download preparation report' })).toBeInTheDocument()
+
+    rerender(<UpdateDetailsPanel update={current} />)
+    expect(screen.queryByRole('region', { name: 'Update details' })).not.toBeInTheDocument()
+  })
+
   it('renders release notes as plain text and snoozes exactly the displayed version', async () => {
     const saver = vi.fn(async () => ({ ok: true, message: 'Reminder saved.' }))
     const onSnoozed = vi.fn()

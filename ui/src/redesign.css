@@ -404,6 +404,32 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   background: var(--color-accent-soft); border-color: var(--color-accent-border); color: var(--color-accent-text);
 }
 .workspace-tabs > .ui-button:focus-visible { outline-offset: -2px; }
+.app-shell .update-banner {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  justify-content: normal; gap: 10px 16px; max-height: none; overflow: visible;
+}
+.app-shell .update-banner > .ui-button:not(.notice-dismiss) { justify-self: start; max-width: 100%; }
+.server-files-workspace .server-files-disclosure > summary::after { content: none; }
+.host-sidebar-primary { display: grid; gap: 6px; min-width: 0; }
+.context-picker-trigger strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-chat-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.server-chat-edit-actions > small { margin-inline-end: auto; }
+.server-log-viewer { container-type: inline-size; }
+.app-shell .server-log-filter-toggle { display: none; }
+@container (max-width: 32rem) {
+  .app-shell .server-log-filter-toggle { display: flex; margin: 10px 11px; width: calc(100% - 22px); justify-content: flex-start; }
+  .server-log-filter-toggle > .icon:last-child { margin-inline-start: auto; }
+  .app-shell .server-log-filters { display: none; }
+  .app-shell .server-log-filters[data-expanded="true"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .server-log-filters .server-log-contains { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+  .app-shell .update-banner { grid-template-columns: minmax(0, 1fr); padding-inline-start: 18px; }
+  .app-shell .host-context-workspace > .context-sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .host-sidebar-primary { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+  .host-sidebar-primary > .context-sidebar-actions { margin: 0; align-self: stretch; align-items: center; }
+  .app-shell .context-sidebar .section-sidebar-title { margin: 0 0 6px; }
+}
 @media (max-width: 420px) {
   .workspace-tabs > .ui-button { flex: 1 1 8rem; min-height: 44px; }
 }

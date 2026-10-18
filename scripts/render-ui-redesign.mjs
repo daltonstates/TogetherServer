@@ -9,13 +9,15 @@ if (!args.includes('--allow-isolated-browser-tests') ||
 }
 
 // Implementation below intentionally uses dynamic imports after authorization.
-const { readFile, writeFile, mkdir, realpath, stat } = await import('node:fs/promises');
+const { readFile, writeFile, mkdir, realpath, stat, rename } = await import('node:fs/promises');
 const { resolve, dirname, extname, relative, isAbsolute } = await import('node:path');
 const { fileURLToPath } = await import('node:url');
 const { createServer } = await import('node:http');
 const { createRequire } = await import('node:module');
 const { createHash } = await import('node:crypto');
 const { createFixtureState, routeFixture, fixtureNow, fixtureIds } = await import('./ui-redesign-fixtures.mjs');
+const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.mjs');
+const { extraCases: accessReviewCases } = await import('./ui-polish-access-review.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'local-data/ui-redesign-visual-review');
 await mkdir(output, { recursive: true });
@@ -25,12 +27,25 @@ const manifest = {
   sourceAuthority: 'Current TogetherServer ui/src integrated by root before this hosted build; never the stale isolated UI.',
   build: {}, cases: [], fatalErrors: [], status: 'running',
 };
-const saveManifest = () => writeFile(resolve(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+let manifestWrites = Promise.resolve();
+const saveManifest = () => {
+  // Concurrent contexts share only reporting. Serialize writes so one capture
+  // cannot truncate a newer manifest while another capture is finishing.
+  const write = manifestWrites.catch(() => {}).then(async () => {
+    const temporary = resolve(output, 'manifest.json.tmp');
+    await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`);
+    await rename(temporary, resolve(output, 'manifest.json'));
+  });
+  manifestWrites = write;
+  return write;
+};
 await saveManifest();
 
 // The inventory is explicit so a disappeared screen cannot silently reduce coverage.
 const heading = name => ({ role: 'heading', name });
 const region = name => ({ role: 'region', name });
+const extraReviewCases = [...worldReviewCases, ...accessReviewCases];
+const isDialogReview = testCase => testCase.id.startsWith('dialog-') || testCase.screen?.role === 'dialog';
 const hostTabs = [
   ['overview', 'Overview', region('Server controls')], ['chat', 'Chat', heading('Server chat')],
   ['players', 'Players', heading('Players')], ['logs', 'Logs', region('Server logs')],
@@ -58,10 +73,21 @@ const appSections = [
   ['shortcuts', 'Keyboard shortcuts', 'Keyboard shortcuts'],
 ];
 const cases = [
+  ...extraReviewCases.filter(testCase => !isDialogReview(testCase)),
   { id: 'app-loading', scenario: 'host-loading', workspace: 'Host', bootOnly: true, pendingState: true, screen: { css: 'main', text: 'Loading local state' } },
   { id: 'app-load-error', scenario: 'host-load-error', workspace: 'Host', bootOnly: true, screen: { css: '[role="alert"]', text: 'Connection to this local app failed' } },
+  { id: 'host-session-recovery', scenario: 'host-session-recovery', workspace: 'Host', screen: heading('Recovered app session') },
+  { id: 'attention-session-recovery', scenario: 'host-session-recovery', workspace: 'Attention', steps: [{ summary: 'Session recovery' }], screen: heading('Recovered app session') },
+  ...['recovery', 'warning'].map(state => ({ id: `app-data-${state}`, scenario: `host-data-${state}`, workspace: 'Host', screen: heading('Local data needs review') })),
+  { id: 'host-custom-certification-progress', scenario: 'host-custom-certification-step', workspace: 'Host', section: ['Selected server sections', 'setup', 'Maintenance & setup'], screen: { css: '.custom-certification', text: 'Certification in progress' } },
+  { id: 'host-crash-recovery-suspended', scenario: 'host-crash-recovery', workspace: 'Host', screen: { css: '.safety-status', text: 'Crash recovery: Suspended' } },
+  ...['downloading', 'blocked', 'failed'].map(state => ({ id: `settings-update-${state}`, scenario: `host-update-${state}`, workspace: 'App Settings',
+    section: ['App settings sections', 'updates', 'Updates'], screen: { css: '.update-preparation' } })),
+  { id: 'host-invite-code', scenario: 'host-ready', workspace: 'Host', steps: [{ button: 'Invite friends' }], screen: { css: '.inline-invite', text: 'Server code ready' } },
   ...hostTabs.map(([id, label, screen]) => ({ id: `host-${id}`, scenario: 'host-ready', workspace: 'Host', section: ['Selected server sections', id, label], screen })),
   ...pcSections.map(([id, label, title]) => ({ id: `host-pc-${id}`, scenario: 'host-ready', workspace: 'Host', section: ['This Host PC sections', id, label], screen: heading(title) })),
+  { id: 'host-diagnostics-report-privacy', scenario: 'host-ready', workspace: 'Host', section: ['This Host PC sections', 'diagnostics', 'Diagnostics'],
+    steps: [{ summary: 'Report contents & privacy' }], screen: { css: '.support-export-privacy[open]' } },
   { id: 'host-first-use', scenario: 'host-first-use', workspace: 'Host', screen: heading('Host or join a server') },
   { id: 'host-compare-all', scenario: 'host-multi', workspace: 'Host', action: 'compare', screen: { role: 'dialog', name: 'All servers' } },
   ...joinSections.map(([id, label, screen]) => ({ id: `join-${id}`, scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', id, label], screen })),
@@ -87,12 +113,15 @@ const cases = [
     steps: [{ summary: 'Add shutdown time' }], screen: { css: '.server-support-disclosure[open]' } },
   ...['empty-backups', 'backup-failure'].map(state => ({ id: `host-backups-${state}`, scenario: `host-${state}`, workspace: 'Host',
     section: ['Selected server sections', 'backups', 'Backups'], screen: heading('Backups & sharing') })),
-  { id: 'host-backups-error', scenario: 'host-backups-error', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'], screen: { css: '.backup-catalog', text: 'deliberately unavailable' } },
+  { id: 'host-backups-error', scenario: 'host-backups-error', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'], screen: { css: '.backup-catalog [role="alert"]', text: 'Backups unavailable' } },
   { id: 'host-logs-loading', scenario: 'host-logs-loading', workspace: 'Host', pendingState: true, section: ['Selected server sections', 'logs', 'Logs'], screen: region('Server logs') },
   { id: 'host-logs-error', scenario: 'host-logs-error', workspace: 'Host', section: ['Selected server sections', 'logs', 'Logs'], screen: region('Server logs') },
+  ...['Host', 'Join'].map(workspace => ({ id: `${workspace.toLowerCase()}-log-filters-expanded`, scenario: workspace === 'Host' ? 'host-ready' : 'friend-connected', workspace,
+    section: workspace === 'Host' ? ['Selected server sections', 'logs', 'Logs'] : ['Join sections', 'logs', 'Logs'],
+    steps: [{ button: 'Filters', whenVisible: true }], screen: { role: 'combobox', name: 'Log severity' } })),
   ...[['sharing', 'Sharing & hosting'], ['settings', 'Protection settings']].map(([id, name]) => ({
     id: `host-protection-${id}`, scenario: 'host-shared-offline', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: name }], screen: heading(id === 'sharing' ? 'Shared saves' : 'Protect this world automatically') })),
+    steps: [{ nav: 'World protection sections', button: name }], screen: id === 'sharing' ? region('Shared saves') : heading('Protect this world automatically') })),
   ...['Name and retention', 'Retention preview', 'Protection and retention details'].map((name, index) => ({
     id: `host-backup-details-${index}`, scenario: 'host-offline', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
     steps: [{ summary: name }], screen: { css: '.backup-catalog details[open]' } })),
@@ -101,8 +130,8 @@ const cases = [
   ...['disabled', 'offline', 'starting', 'stopping', 'unknown', 'maintenance', 'status-only'].map(state => ({
     id: `join-play-${state}`, scenario: `friend-${state}`, workspace: 'Join', section: ['Join sections', 'play', 'Play'], screen: heading('Play') })),
   ...['expired', 'revoked', 'awaiting-approval', 'no-assignment', 'disconnected'].map(state => ({
-    id: `join-connection-${state}`, scenario: `friend-${state}`, workspace: 'Join', section: ['Join sections', 'connection', 'Connection settings'],
-    screen: { css: '.friend-panel' } })),
+    id: `join-connection-${state}`, scenario: `friend-${state}`, workspace: 'Join', section: state === 'revoked' ? ['Join sections', 'pairing', 'Add a Host'] : ['Join sections', 'connection', 'Connection settings'],
+    screen: state === 'revoked' ? heading('Join a server') : { css: '.friend-panel' } })),
   ...['verifying', 'receipt'].map(state => ({ id: `join-shared-${state}`, scenario: `friend-shared-${state}-offline`, workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress') })),
   ...['low-space', 'untrusted'].map(state => ({ id: `join-shared-${state}`, scenario: `friend-shared-${state}`, workspace: 'Join',
@@ -110,10 +139,14 @@ const cases = [
   ...['Host', 'Join'].flatMap(workspace => ['peers', 'peers-conflict', ...(workspace === 'Join' ? ['peers-follower'] : [])].map(state => ({
     id: `${workspace.toLowerCase()}-${state}`, scenario: `${workspace === 'Host' ? 'host' : 'friend'}-${state}`, workspace,
     section: workspace === 'Host' ? ['Selected server sections', 'backups', 'Backups'] : ['Join sections', 'shared-saves', 'Shared saves'],
-    steps: workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }] : [], screen: region('World groups') }))),
+    steps: workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }] : [], screen: region('World groups') }))),
   ...['Save histories and copy claims', 'Contact another group PC', 'Technical details', 'Private live-save test copies'].map((name, index) => ({
     id: `join-peer-details-${index}`, scenario: 'friend-peers-conflict', workspace: 'Join', section: ['Join sections', 'shared-saves', 'Shared saves'],
     steps: [{ summary: name, within: '.world-peer-panel' }], screen: { css: '.world-peer-panel details[open]' } })),
+  ...['Host', 'Join'].map(workspace => ({ id: `${workspace.toLowerCase()}-peer-save-permissions`, scenario: workspace === 'Host' ? 'host-peers' : 'friend-peers', workspace,
+    section: workspace === 'Host' ? ['Selected server sections', 'backups', 'Backups'] : ['Join sections', 'shared-saves', 'Shared saves'],
+    steps: [...(workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }] : []),
+      { summary: 'Save sync & permissions', within: '.world-peer-panel' }], screen: { css: '.world-peer-permissions[open]' } })),
   ...['Host', 'Join'].flatMap(workspace => ['empty', 'notice'].map(state => ({
     id: `${workspace.toLowerCase()}-chat-${state}`, scenario: `${workspace === 'Host' ? 'host' : 'friend'}-chat-${state}`, workspace,
     section: workspace === 'Host' ? ['Selected server sections', 'chat', 'Chat'] : ['Join sections', 'chat', 'Chat'], screen: heading('Server chat') }))),
@@ -141,6 +174,7 @@ const cases = [
     steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Live-save setup & acceptance' }, { summary: /Automatic recovery copies/ }, { summary: /Private test history/ }], screen: region('Live-save installation test') },
 ];
 const dialogs = [
+  ...extraReviewCases.filter(isDialogReview),
   { id: 'dialog-server-tools', scenario: 'host-ready', workspace: 'Host', action: 'server-tools', screen: { role: 'dialog', name: 'Server tools' } },
   ...[
     ['capacity', 'advanced', 'Advanced', 'Edit hosting limits', 'Hosting limits'],
@@ -182,7 +216,7 @@ const dialogs = [
     screen: heading(step === 'review' ? 'Review and start' : step === 'server' ? 'Server app' : game === 'valheim' ? 'Choose a world' : 'Name this server') }))),
   { id: 'dialog-confirm-remove-server', scenario: 'host-offline', workspace: 'Host', action: 'server-tools',
     steps: [{ button: 'Edit setup' }, { summary: 'Danger zone' }, { button: 'Remove from TogetherServer' }], screen: { role: 'dialog', name: 'Remove server?' } },
-  { id: 'dialog-notifications-menu', scenario: 'host-attention', workspace: 'Host', steps: [{ summary: /^Notifications/ }], screen: { css: '.notification-menu[open]' } },
+  { id: 'dialog-notifications-menu', scenario: 'host-attention', workspace: 'Host', action: 'notifications-menu', screen: { css: '.notification-menu[open]' } },
   { id: 'dialog-selected-server-picker', scenario: 'host-multi', workspace: 'Host', action: 'picker', screen: { css: '.context-picker[open] .context-picker-popover' } },
   { id: 'dialog-selected-server-picker-empty', scenario: 'host-multi', workspace: 'Host', action: 'picker',
     steps: [{ fill: 'Find selected server', value: 'NoSyntheticServerMatches' }], screen: { css: '.context-picker[open] .context-picker-popover' } },
@@ -193,11 +227,11 @@ const dialogs = [
     id: `dialog-host-sharing-${name.toLowerCase().replaceAll(/[^a-z]+/g, '-')}`, scenario: 'host-shared', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
     action: 'manage-sharing', steps: [{ nav: 'Sharing sections', button: name }], screen: { role: 'dialog', name: 'Manage sharing' } })),
   { id: 'dialog-move-hosting', scenario: 'host-shared-offline', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'], action: 'manage-sharing',
-    steps: [{ nav: 'Sharing sections', button: 'History & recovery' }, { button: /Move hosting/ }], screen: { role: 'dialog', name: 'Move hosting' } },
+    steps: [{ nav: 'Sharing sections', button: 'History & recovery' }, { button: 'Move hosting', within: '.settings-dialog[open] [aria-label="Move hosting"]' }], screen: { role: 'dialog', name: 'Move hosting' } },
   { id: 'dialog-peer-default-review', scenario: 'host-peers-conflict', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { button: 'Use as group default', first: true }], screen: region('Review group default') },
+    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }, { button: 'Use as group default', first: true }], screen: region('Review group default') },
   { id: 'dialog-owner-peer-recovery', scenario: 'host-peers-conflict', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Save histories and copy claims', within: '.world-peer-panel' },
+    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }, { summary: 'Save histories and copy claims', within: '.world-peer-panel' },
       { button: 'Recover this history on the owner PC', first: true }], screen: region('Owner recovery from peer history') },
   ...['Copy status', 'People', 'Recovery', 'Details'].map(name => ({
     id: `dialog-friend-sharing-${name.toLowerCase().replaceAll(' ', '-')}`, scenario: 'friend-shared-verified-offline', workspace: 'Join',
@@ -214,6 +248,29 @@ const dialogs = [
   ...[['reload', 'Reload game settings', 'Reload game settings?'], ['discard', 'Discard unsaved settings', 'Discard unsaved settings?']].map(([id, button, name]) => ({
     id: `dialog-game-settings-${id}`, scenario: 'host-java-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
     steps: [{ fill: 'Maximum players', value: '12' }, { button }], screen: { role: 'dialog', name } })),
+  { id: 'dialog-resume-hosting', scenario: 'host-session-recovery', workspace: 'Host', steps: [{ button: 'Resume hosting' }], screen: { role: 'dialog', name: 'Resume hosting?' } },
+  { id: 'dialog-forget-orphaned-session', scenario: 'host-recovery-orphan', workspace: 'Host', steps: [{ button: 'Forget exited record' }], screen: { role: 'dialog', name: 'Forget exited record' } },
+  { id: 'dialog-archive-session', scenario: 'host-failed-session', workspace: 'Host', action: 'server-tools', steps: [{ button: 'Archive exited record' }], screen: { role: 'dialog', name: 'Archive this session?' } },
+  { id: 'dialog-replace-invite', scenario: 'host-ready', workspace: 'Host', steps: [{ button: 'Invite friends' }, { summary: 'New PCs and replacing the code' },
+    { button: 'Replace code and remove old access' }], screen: { role: 'dialog', name: 'Replace the code for Weekend Valheim?' } },
+  { id: 'dialog-revoke-custom-certification', scenario: 'host-custom-certified-offline', workspace: 'Host', section: ['Selected server sections', 'setup', 'Maintenance & setup'],
+    steps: [{ button: 'Revoke certification' }], screen: { role: 'dialog', name: 'Revoke Custom control certification?' } },
+  { id: 'dialog-chat-navigation-guard', scenario: 'host-chat-notice', workspace: 'Host', section: ['Selected server sections', 'chat', 'Chat'],
+    steps: [{ button: 'Edit notice' }, { fill: 'Notice text', value: 'Synthetic unsaved room notice' }, { nav: 'TogetherServer workspaces', button: 'Join' }],
+    screen: { role: 'dialog', name: 'Discard unsaved chat edits?' } },
+  { id: 'dialog-mode-change-with-setup-draft', scenario: 'host-setup-access-review', workspace: 'Host', action: 'setup-game', game: 'Valheim',
+    steps: [{ fill: /^World name/, value: 'Synthetic draft' }, { fill: /^Game password/, value: 'synthetic-only' }, { button: 'Finish later' },
+      { button: 'Finish later', within: '.settings-dialog-footer' }, { nav: 'TogetherServer workspaces', button: 'Join' }],
+    screen: { role: 'dialog', name: 'Keep a draft and change pages?' } },
+  ...[['reload', 'Reload this list', 'Reload player list?'], ['discard', 'Discard unsaved list edits', 'Discard player list edits?']].map(([id, button, name]) => ({
+    id: `dialog-player-list-${id}`, scenario: 'host-valheim-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
+    steps: [{ fill: 'Platform user ID', value: 'Steam_SYNTHETIC' }, { button: 'Add player' }, { button }], screen: { role: 'dialog', name } })),
+  ...['Disable', 'Import mod ZIP', 'Undo last add-on change'].map((button, index) => ({ id: `dialog-addon-review-${index}`, scenario: 'host-factorio-addons-maintenance', workspace: 'Host',
+    section: ['Selected server sections', 'files', 'Settings & files'], steps: [{ role: 'tab', name: 'Server files' }, { nav: 'Server file sections', button: 'Add-ons' }, { button }],
+    screen: { role: 'dialog', name: 'Confirm add-on change' } })),
+  ...['factorio', 'terraria'].map(game => ({ id: `dialog-create-${game}-configuration`, scenario: `host-${game}-config-maintenance`, workspace: 'Host',
+    section: ['Selected server sections', 'files', 'Settings & files'], steps: [{ role: 'tab', name: 'Server files' }, { button: 'Create config' }],
+    screen: { role: 'dialog', name: 'Create game configuration?' } })),
 ];
 const variants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100 },
@@ -223,7 +280,8 @@ const variants = [
 const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups', 'host-files', 'host-pc-access', 'host-pc-stop',
   'host-first-use', 'join-play', 'join-shared-saves', 'join-first-pairing', 'attention-issues', 'settings-appearance',
   'tooltip-hover', 'tooltip-keyboard', 'host-server-file-editor', 'host-server-file-review', 'host-server-files-checkpoints',
-  'dialog-protection', 'dialog-access-access-time', 'host-live-save-acceptance', 'join-peers-conflict']);
+  'dialog-protection', 'dialog-access-access-time', 'host-live-save-acceptance', 'join-peers-conflict',
+  ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation/.test(testCase.id)).map(testCase => testCase.id)]);
 const plans = [...cases, ...dialogs].flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
@@ -318,6 +376,9 @@ async function performActions(page, testCase, record) {
       await page.locator('.context-picker > summary').click();
       await visible(page.locator('.context-picker[open] .context-picker-popover'));
       break;
+    case 'notifications-menu':
+      await page.locator('.notification-menu > summary[aria-label]').click();
+      break;
     case 'consent': {
       const consent = await visible(page.getByRole('checkbox', { name: 'Allow saves on this PC', exact: true }));
       record.actions.push({ action: 'check', name: 'Allow saves on this PC', fixtureOnly: true });
@@ -402,12 +463,33 @@ async function performActions(page, testCase, record) {
     } else if (step.nav) {
       await scope.getByRole('navigation', { name: step.nav, exact: true }).getByRole('button', { name: step.button, exact: typeof step.button === 'string' }).click();
     } else if (step.fill) {
-      await scope.getByLabel(step.fill, { exact: true }).fill(step.value);
+      // A textarea's initial value is text inside its wrapping label. Use the
+      // control's accessible name as well as native label lookup, so contents
+      // cannot change the harness selector for File contents or Message.
+      const named = ['textbox', 'spinbutton', 'searchbox', 'combobox'].map(role =>
+        scope.getByRole(role, { name: step.fill, exact: true }));
+      const target = named.reduce((locator, next) => locator.or(next), scope.getByLabel(step.fill, { exact: true }));
+      await target.fill(step.value);
+    } else if (step.select) {
+      await scope.getByLabel(step.select, { exact: true }).selectOption(step.value);
+    } else if (step.check) {
+      let target = scope.getByRole('checkbox', { name: step.check, exact: true });
+      if (await target.count() === 0) target = scope.getByRole('radio', { name: step.check, exact: true });
+      if (step.first) target = target.first();
+      await target.check();
+    } else if (step.uncheck) {
+      let target = scope.getByRole('checkbox', { name: step.uncheck, exact: true });
+      if (step.first) target = target.first();
+      await target.uncheck();
     } else if (step.role) {
       await scope.getByRole(step.role, { name: step.name, exact: true }).click();
     } else if (step.button) {
       let target = scope.getByRole('button', { name: step.button, exact: typeof step.button === 'string' });
       if (step.first) target = target.first();
+      if (step.whenVisible && !await target.isVisible()) {
+        record.actions.push({ action: 'responsive-control-hidden', button: String(step.button), evidence: 'The asserted inline content must still be visible.' });
+        continue;
+      }
       await target.click();
     }
   }
@@ -491,14 +573,40 @@ async function independentScrollEvidence(page, record) {
 
 async function captureScrollEvidence(page, record, output) {
   if (record.id.startsWith('tooltip-') || record.id.startsWith('dialog-selected-server-picker')) return;
-  const panes = page.locator('.context-content, dialog[open] .settings-dialog-body, dialog[open].task-first-setup, dialog[open].update-dialog');
+  const panes = page.locator('.workspace-scroll, .workspace-scroll *, .context-content, .context-content *, dialog[open], dialog[open] *');
+  const indices = await panes.evaluateAll(elements => {
+    const topDialog = [...document.querySelectorAll('dialog[open]')].at(-1);
+    return elements.flatMap((el, index) => {
+      if (topDialog ? el !== topDialog && !topDialog.contains(el) : !el.closest('.workspace-scroll,.context-content')) return [];
+      if (el.matches('textarea,input') || el.closest('[hidden],[inert]')) return [];
+      const bounds = el.getBoundingClientRect(), style = getComputedStyle(el);
+      if (bounds.width < 1 || bounds.height < 40 || style.visibility === 'hidden' ||
+          !/auto|scroll/.test(style.overflowY) || el.scrollHeight <= el.clientHeight + 10) return [];
+      for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName === 'DETAILS' && !ancestor.open) {
+          const summary = [...ancestor.children].find(child => child.tagName === 'SUMMARY');
+          if (!summary?.contains(el)) return [];
+        }
+      }
+      return [index];
+    });
+  });
   record.scrollEvidence = [];
-  for (let index = 0; index < await panes.count(); index++) {
+  for (const index of indices) {
     const pane = panes.nth(index);
     if (!await pane.isVisible()) continue;
     const geometry = await pane.evaluate(el => ({ top: el.scrollTop, height: el.clientHeight, contentHeight: el.scrollHeight,
       name: el.getAttribute('aria-label') || el.className }));
     if (geometry.contentHeight <= geometry.height + 10) continue;
+    // Reveal nested readers such as .host-sharing-pane before recording their
+    // offsets, then restore the surrounding workspace/dialog reading position.
+    const ancestorScroll = await pane.evaluate(el => {
+      const positions = [];
+      for (let parent = el.parentElement; parent; parent = parent.parentElement)
+        positions.push({ top: parent.scrollTop, left: parent.scrollLeft });
+      return positions;
+    });
+    await pane.scrollIntoViewIfNeeded();
     const maximum = geometry.contentHeight - geometry.height;
     const offsets = [...new Set([0, ...(geometry.contentHeight > geometry.height * 2 ? [Math.round(maximum / 2)] : []), maximum])];
     for (const top of offsets) {
@@ -511,6 +619,12 @@ async function captureScrollEvidence(page, record, output) {
     }
     record.scrollEvidence.push({ ...geometry, capturedOffsets: offsets });
     await pane.evaluate((el, top) => { el.scrollTop = top; }, geometry.top);
+    await pane.evaluate((el, positions) => {
+      let index = 0;
+      for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+        parent.scrollTop = positions[index].top; parent.scrollLeft = positions[index].left; index++;
+      }
+    }, ancestorScroll);
   }
 }
 
@@ -564,7 +678,7 @@ try {
   const requireUI = createRequire(resolve(root, 'ui/package.json'));
   const { chromium } = requireUI('playwright');
   browser = await chromium.launch({ headless: true });
-  for (const { testCase, variant } of plans) {
+  const runPlan = async ({ testCase, variant }) => {
     const record = { id: `${testCase.id}--${variant.id}`, scenario: testCase.scenario, workspace: testCase.workspace,
       viewport: variant.viewport, theme: variant.theme, scale: variant.scale, status: 'running',
       actions: [], assertions: [], skippedSelectors: [], failedSelectors: [], jsErrors: [], consoleErrors: [],
@@ -640,6 +754,8 @@ try {
       if (!testCase.bootOnly) {
         // Navigation exists before the snapshot loads. Wait for a real mode workspace before clicking it.
         await visible(page.locator('section.context-workspace'));
+        await page.waitForLoadState('networkidle', { timeout: 8000 });
+        await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
         record.actions.push({ action: 'navigate-workspace', name: testCase.workspace });
         await page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true }).getByRole('button', { name: testCase.workspace, exact: true }).click();
         await visible(page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true }).getByRole('button', { name: testCase.workspace, exact: true }).and(page.locator('[aria-current="page"]')));
@@ -657,8 +773,21 @@ try {
       if (!testCase.pendingState) await page.waitForLoadState('networkidle', { timeout: 8000 });
       if (pending.size) throw new Error('Synthetic API responses still pending at capture');
       await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
+      if (testCase.id.endsWith('-chat-empty')) {
+        const messages = await visible(page.getByRole('log', { name: 'Messages', exact: true }));
+        if (await messages.locator('.server-chat-message').count() !== 0)
+          throw new Error('The empty-chat fixture rendered a message or queued entry');
+        await visible(messages.getByText('No messages yet.', { exact: true }));
+        record.assertions.push({ emptyChatHasNoMessagesOrQueue: true });
+      }
+      if (testCase.id === 'join-connection-expired') {
+        await visible(page.locator('.friend-access-expired').getByText('Access expired', { exact: true }));
+        if (state.friend.state !== 'Access expired' || state.friend.connectionCode !== 'AccessExpired' || state.friend.profiles.length)
+          throw new Error('The expired-access fixture does not match the actual denied Friend snapshot');
+        record.assertions.push({ ownerDeadlineNoticeVisible: true, noStaleAuthorizedProfiles: true });
+      }
       if (testCase.id.startsWith('host-server-files-')) {
-        if (!await page.getByRole('button', { name: 'Start server', exact: true }).isEnabled())
+        if (!await page.locator('[aria-label="Server controls"]').getByRole('button', { name: 'Start server', exact: true }).isEnabled())
           throw new Error('Unopened file or player editors incorrectly block Start without unsaved changes');
         record.assertions.push({ unopenedEditorsLeaveStartAvailable: true });
       }
@@ -710,11 +839,28 @@ try {
       }
       // Include errors emitted after the screenshot or while closing this isolated context.
       if ([record.unhandledFixtures, record.jsErrors, record.consoleErrors, record.blockedNetwork, record.failedRequests, record.httpFailures].some(items => items.length)) record.status = 'failed';
-      await writeFile(resolve(output, `${record.id}.json`), `${JSON.stringify(record, null, 2)}\n`);
+      const caseTemporary = resolve(output, `${record.id}.json.tmp`);
+      await writeFile(caseTemporary, `${JSON.stringify(record, null, 2)}\n`);
+      await rename(caseTemporary, resolve(output, `${record.id}.json`));
       await saveManifest();
       console.log(`${record.status}: ${record.id}`);
     }
-  }
+  };
+  let nextPlan = 0;
+  // Three isolated contexts keep UI-only screenshot review bounded on one
+  // hosted runner. Each plan owns its fixture state, context and filenames.
+  manifest.execution = { concurrentContexts: 3, browsers: 1, assetServers: 1, serializedManifest: true };
+  await Promise.all(Array.from({ length: Math.min(3, plans.length) }, async () => {
+    while (nextPlan < plans.length) {
+      const planIndex = nextPlan++;
+      try { await runPlan(plans[planIndex]); }
+      catch (error) {
+        // An infrastructure/write failure must not abandon the remaining
+        // inventory or close the browser under other active contexts.
+        manifest.fatalErrors.push(`Capture ${planIndex} ${plans[planIndex].testCase.id}: ${error.stack ?? String(error)}`);
+      }
+    }
+  }));
 } catch (error) {
   manifest.fatalErrors.push(error.stack ?? String(error));
 } finally {

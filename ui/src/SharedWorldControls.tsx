@@ -1193,7 +1193,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
       successorIdentity={successorIdentity} host={false} serverState={serverState} serverStatusFresh={serverStatusFresh} observedHostAddress={observedHostAddress} noticeScope={noticeScope}
       connectedHostName={connectedHostName} onOpenPlay={canJoin ? onOpenPlay : undefined} />
     {transferAlert ? <DismissibleNotice as="p" scope={noticeScope} className="warning-text" role="alert">{headline}</DismissibleNotice> :
-      <p role="status">{headline}</p>}
+      !transferPhase && <p role="status">{headline}</p>}
     {observationFailure && <DismissibleNotice as="p" scope={noticeScope} role="alert">{observationFailure} Your last verified local copy and consent are retained; the current Host version and transfer progress are unavailable.</DismissibleNotice>}
     {capacityAlert && <DismissibleNotice as="p" scope={noticeScope} className="warning-text" role="alert">{capacityAlert}</DismissibleNotice>}
     {status?.thisPcVersion != null && <p>Verified save copy {status.thisPcVersion} on this PC. Copy possession does not grant hosting authority or prove readiness.</p>}
@@ -1201,7 +1201,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     {recovery?.state === 'HistoricalRecovery' && <p role="status">Earlier recovery is historical, not a current hosting decision.</p>}
     <p className="helper-text">Changes since the Host's last completed copy may be missing. Automatic takeover is unavailable.</p>
     <section className="shared-next-action" aria-label="Next shared-save action">
-      <h4>{nextTask === 'start' ? 'Local preparation complete; Start is your next manual choice' :
+      <h4 aria-live="polite" aria-atomic="true">{nextTask === 'start' ? 'Local preparation complete; Start is your next manual choice' :
         nextTask === 'transfer' ? transferPhase === 'Receiving' ? 'Receiving the save copy' :
           transferPhase === 'Verifying' ? 'Verifying the save copy' : 'Confirming the signed receipt' :
         nextTask === 'pair' ? 'Connect to the new signed Host' :
@@ -1243,8 +1243,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
       {nextTask !== 'receive' && <Button className="secondary" disabled={!canReceive}
         onClick={() => void run('pull')}><Icon name="archive" />{busy ? 'Working…' : 'Get latest save'}</Button>}</div>
     {status && transferPhase && <section aria-label="Save transfer progress" aria-live="polite">
-      <p>{transferPhase === 'Receiving' ? 'Receiving copy' : transferPhase === 'Verifying' ?
-        'Verifying every file' : 'Confirming signed receipt'} · {formatSharedBytes(status.receivedBytes)} of {formatSharedBytes(status.totalBytes)}</p>
+      <p>{formatSharedBytes(status.receivedBytes)} of {formatSharedBytes(status.totalBytes)}</p>
       {status.totalBytes > 0 && <progress max={status.totalBytes} value={status.receivedBytes}
         aria-label="Save bytes received" aria-valuetext={`${formatSharedBytes(status.receivedBytes)} of ${formatSharedBytes(status.totalBytes)}`} />}
       <ol aria-label="Transfer phases">

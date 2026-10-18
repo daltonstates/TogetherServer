@@ -7,7 +7,7 @@ export function SectionSidebar<T extends string>({ title, label, sections, secti
 }) {
   return <div className="section-sidebar-group">
     <h2 className="section-sidebar-title">{title}</h2>
-    <label className="section-mobile-picker">Section
+    <label className="section-mobile-picker"><span className="sr-only">Section</span>
       <Select aria-label={label} value={section ?? ''} onChange={event => onSelect(event.target.value as T)}>
         {!section && <option value="" disabled>Choose a section</option>}
         {sections.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}

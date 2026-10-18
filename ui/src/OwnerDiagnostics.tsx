@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button, Select } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
+import { Icon } from './Icon'
 import {
   parseOwnerDiagnostics, parseSupportReportExport,
   type OwnerDiagnosticCheck, type OwnerDiagnosticsView, type SupportReportExport
@@ -228,14 +229,17 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
             scope={selected?.profileId ?? selectedProfileId} copyStatus={explanationStatus?.check === check ? explanationStatus : undefined} />)}</div></div>
       <section className="support-export" aria-labelledby="support-export-title">
         <div><h4 id="support-export-title">Export support report</h4>
-          <p>Copy summary keeps only reviewed check states and next steps. Copy report and Download JSON include the larger redacted report.</p>
-          <p>Creates a size-limited JSON report without saving anything on the Host. It leaves out saved access, server codes, passwords, scripts, private paths, addresses, secure identity data, player/chat details, raw logs, worlds, and environment variables.</p></div>
+          <p>Copy a short summary or export the full redacted JSON report.</p></div>
         <div className="actions"><Button className="secondary" disabled={!!exportBusy} onClick={() => void copySummary()}>
-          {exportBusy === 'summary' ? 'Copying…' : 'Copy summary'}</Button>
+          <Icon name="copy" />{exportBusy === 'summary' ? 'Copying…' : 'Copy summary'}</Button>
           <Button disabled={!!exportBusy} onClick={() => void exportReport('copy')}>
-          {exportBusy === 'copy' ? 'Copying…' : 'Copy report'}</Button>
+          <Icon name="copy" />{exportBusy === 'copy' ? 'Copying…' : 'Copy report'}</Button>
           <Button className="secondary" disabled={!!exportBusy} onClick={() => void exportReport('download')}>
-            {exportBusy === 'download' ? 'Preparing…' : 'Download JSON'}</Button></div>
+            <Icon name="download" />{exportBusy === 'download' ? 'Preparing…' : 'Download JSON'}</Button></div>
+        <details className="support-export-privacy"><summary>Report contents & privacy</summary>
+          <p>Copy summary keeps only reviewed check states and next steps. Copy report and Download JSON include the larger redacted report.</p>
+          <p>Creates a size-limited JSON report without saving anything on the Host. It leaves out saved access, server codes, passwords, scripts, private paths, addresses, secure identity data, player/chat details, raw logs, worlds, and environment variables.</p>
+        </details>
         {exportStatus && <DismissibleNotice as="output" scope={selected?.profileId ?? selectedProfileId} noticeKey={exportStatus.result} className={`support-export-status ${exportStatus.tone}`} role="status">{exportStatus.text}</DismissibleNotice>}
       </section>
     </>}

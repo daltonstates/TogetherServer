@@ -1402,8 +1402,14 @@ kbd {
 .owner-diagnostics-empty, .owner-diagnostics-error { padding: 18px; border: 1px dashed var(--color-border); border-radius: 9px; background: var(--color-surface-soft); }
 .owner-diagnostics-error { border-style: solid; border-color: var(--color-danger-border); }
 .owner-diagnostics-empty p, .owner-diagnostics-error p { margin: 5px 0 12px; color: var(--color-text-muted); font-size:calc(11px * var(--qol-text-scale, 1)); }
-.support-export { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; margin-top: 20px; padding: 15px; border: 1px solid var(--color-accent-border); border-radius: 10px; background: var(--color-accent-soft); }
-.support-export .actions { justify-content: flex-end; }
+.support-export { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 20px; padding: 15px; border: 1px solid var(--color-accent-border); border-radius: 10px; background: var(--color-accent-soft); }
+.support-export > div { min-width: 0; }
+.support-export .actions { justify-content: flex-start; flex-wrap: wrap; margin: 0; }
+.support-export .actions > .ui-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; max-width: 100%; margin: 0; }
+.support-export .actions > .ui-button > .icon { flex: none; }
+.support-export-privacy { min-width: 0; color: var(--color-text-muted); font-size:calc(12px * var(--qol-text-scale, 1)); }
+.support-export-privacy > summary { width: fit-content; min-height: 44px; padding-block: 12px; cursor: pointer; }
+.support-export-privacy > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 4px; }
 .support-export-status { grid-column: 1 / -1; padding-top: 10px; border-top: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size:calc(11px * var(--qol-text-scale, 1)); }
 .support-export-status.error { color: var(--color-danger); }
 .shortcut-reference { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; margin-top: 18px; padding: 13px 14px; border: 1px solid var(--color-border); border-radius: 9px; color: var(--color-text-muted); font-size:calc(11px * var(--qol-text-scale, 1)); }

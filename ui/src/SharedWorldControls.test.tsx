@@ -241,7 +241,7 @@ describe('Shared saves controls', () => {
     }))
     render(<FriendSharedWorlds profileId={profile} available />)
     await screen.findByRole('region', { name: 'Shared worlds' })
-    expect(await screen.findByText('Receiving completed save')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Receiving the save copy' })).toHaveAttribute('aria-live', 'polite')
     await new Promise(resolve => setTimeout(resolve, 2200))
     expect(await screen.findByText('Up to date when last checked')).toBeInTheDocument()
   })

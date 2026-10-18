@@ -1,5 +1,7 @@
 /** Synthetic UI transport. Never dispatches HTTP, launches processes, or reads local app data. */
 import { readFileSync } from 'node:fs';
+import * as worldReview from './ui-polish-world-review.mjs';
+import * as accessReview from './ui-polish-access-review.mjs';
 
 const contract = JSON.parse(readFileSync(new URL('../contracts/host-snapshot.v1.json', import.meta.url), 'utf8'));
 export const fixtureNow = '2026-10-10T16:00:00Z';
@@ -23,6 +25,7 @@ const reply = body => ({ status: 200, body: clone(body) });
 const unavailable = feature => ({ status: 503, deliberateFailure: `Synthetic fixture unavailable: ${feature}`,
   body: { ok: false, code: 'SyntheticFixtureUnavailable', message: `${feature} is deliberately unavailable in this synthetic UI fixture.` } });
 const unavailableState = (feature, body) => ({ ...reply(body), deliberateFailure: `Synthetic fixture unavailable state: ${feature}` });
+const reviewHelpers = Object.freeze({ reply, result, ids, hash, root, boundary, fixtureNow, clone });
 const unsupportedSharedGets = new Set(['shared-world/handoff/restore', 'shared-world/recovery/offer-code',
   'shared-world/recovery/separate', 'shared-world/resolution/heads', 'shared-world/resolution/offers']);
 const unsupportedSharedPosts = new Set(['shared-world/check', 'shared-world/pull', 'shared-world/successor-enrollment',
@@ -60,7 +63,12 @@ export const fixtureScenarios = Object.freeze([
   'friend-shared-receipt-offline', 'friend-shared-low-space', 'friend-shared-untrusted',
   'host-chat-empty', 'host-chat-notice', 'friend-chat-empty', 'friend-chat-notice',
   'host-java-maintenance', 'host-bedrock-maintenance', 'host-valheim-maintenance',
-  'host-loading', 'host-load-error', 'host-logs-loading', 'host-logs-error', 'host-backups-error'
+  'host-loading', 'host-load-error', 'host-logs-loading', 'host-logs-error', 'host-backups-error',
+  'host-session-recovery', 'host-data-recovery', 'host-data-warning', 'host-recovery-orphan',
+  'host-failed-session', 'host-crash-recovery', 'host-custom-certified-offline', 'host-custom-certification-step',
+  'host-update-downloading', 'host-update-blocked', 'host-update-failed',
+  'host-factorio-addons-maintenance', 'host-factorio-config-maintenance', 'host-terraria-config-maintenance',
+  ...worldReview.extraScenarioNames, ...accessReview.extraScenarioNames
 ]);
 
 const stageIds = ['completion', 'snapshot', 'transfer', 'load', 'change', 'restart'];
@@ -155,7 +163,7 @@ export function createFixtureState(scenario = 'host-ready') {
   Object.assign(host.settings, { maxConcurrentServers: 3, autoShutdownEnabled: /countdown/.test(preset), keepAwakeWhileHosting: false,
     remoteControlsEnabled: true, companionListeningEnabled: true, companionEndpoint: endpoint, publicGameIp: '192.0.2.10',
     publicGameIpCheckedUtc: fixtureNow, connectionRoute: { mode: 'DirectInternet', address: '192.0.2.10' } });
-  host.runs = host.settings.profiles.map((p, index) => makeRun(p, index === 2 || /offline|maintenance|update-available/.test(preset) ? 'Offline' : /starting/.test(preset) ? 'Starting' : /stopping/.test(preset) ? 'Stopping' : /host-error/.test(preset) ? 'Error' : 'Ready', /countdown/.test(preset) ? 0 : 2));
+  host.runs = host.settings.profiles.map((p, index) => makeRun(p, index === 2 || /offline|maintenance|update-(available|downloading|blocked|failed)/.test(preset) ? 'Offline' : /starting/.test(preset) ? 'Starting' : /stopping/.test(preset) ? 'Stopping' : /host-error/.test(preset) ? 'Error' : 'Ready', /countdown/.test(preset) ? 0 : 2));
   if (/unknown|attention|multi/.test(preset) && host.runs[0]) Object.assign(host.runs[0], { onlinePlayers: null, playerCountTrusted: false, playerCountObservedUtc: null, playerObservationSource: null });
   if (/countdown/.test(preset) && host.runs[0]) Object.assign(host.runs[0], { autoShutdownAtUtc: '2026-10-10T16:15:00Z', autoShutdownReason: 'Synthetic empty-server countdown.' });
   if (/maintenance/.test(preset) && host.settings.profiles[0]) host.settings.profiles[0].maintenance = { enabled: true, message: 'Review settings before the next session.' };
@@ -178,7 +186,7 @@ export function createFixtureState(scenario = 'host-ready') {
   const r = host.runs[0] ?? makeRun(p);
   if (/permitted/.test(preset)) Object.assign(r, { onlinePlayers: 0, playerCountTrusted: true });
   const unpaired = /unpaired|pairing/.test(preset);
-  const friend = { mode: 'Friend', state: unpaired ? 'Unpaired' : /expired/.test(preset) ? 'AccessExpired' : /revoked/.test(preset) ? 'Revoked' : /awaiting-approval/.test(preset) ? 'Awaiting approval' : /disabled/.test(preset) ? 'Disabled' : /friend-disconnected/.test(preset) ? 'Disconnected' : 'Connected',
+  const friend = { mode: 'Friend', state: unpaired ? 'Unpaired' : /expired/.test(preset) ? 'Access expired' : /revoked/.test(preset) ? 'Revoked' : /awaiting-approval/.test(preset) ? 'Awaiting approval' : /disabled/.test(preset) ? 'Disabled' : /friend-disconnected/.test(preset) ? 'Disconnected' : 'Connected',
     detail: boundary, endpoint: unpaired ? '' : endpoint, lastConnectedUtc: unpaired || /friend-disconnected/.test(preset) ? null : fixtureNow,
     remoteControlsEnabled: !/disabled/.test(preset), canStart: true, canStop: true, profiles: unpaired ? [] : [publicProfile(p, r)],
     connectionId: unpaired ? '' : ids.connection, connections: null, connectionName: unpaired ? null : 'Weekend Host',
@@ -202,20 +210,53 @@ export function createFixtureState(scenario = 'host-ready') {
   if (/backup-failure/.test(preset)) Object.assign(host.backups[ids.primary], { lastFailureUtc: fixtureNow, lastFailure: 'Synthetic backup failure. Original world unchanged.' });
   if (/empty-backups/.test(preset)) Object.assign(host.backups[ids.primary], { completedCount: 0, retainedSizeBytes: 0, lastSuccessfulUtc: null });
   if (/no-assignment|revoked|awaiting-approval/.test(preset)) friend.profiles = [];
+  if (preset === 'friend-expired') Object.assign(friend, { state: 'Access expired', connectionCode: 'AccessExpired',
+    detail: 'The Host ended access for this PC at the saved time.', remoteControlsEnabled: false,
+    canStart: false, canStop: false, profiles: [], chatProfiles: [] });
   if (/status-only/.test(preset)) { friend.canStart = false; friend.canStop = false;
     for (const item of friend.profiles) Object.assign(item, { canStart: false, canStop: false, canStopNow: false, canRestartNow: false, canExtendTimer: false }); }
   if (/update-available/.test(preset)) Object.assign(state.update, { state: 'Available', latestVersion: '0.3.3',
     releaseNotes: 'Synthetic update review. No download or installation is available in this UI fixture.',
     releaseNotesUrl: 'https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3' });
   if (/update-error/.test(preset)) Object.assign(state.update, { state: 'Failed', message: 'Synthetic update check failure; current app remains unchanged.' });
+  if (preset === 'host-session-recovery') {
+    host.runs = host.settings.profiles.map(item => makeRun(item, 'Offline'));
+    host.startupRecovery = { previousSessionInterrupted: true, previousStartedUtc: '2026-10-09T16:00:00Z',
+      items: [{ profileId: ids.primary, state: 'Exited', canResume: true, detail: 'Synthetic exact recorded process exited; review before manual Resume.' }],
+      message: 'Synthetic interrupted app session. No game was started by reopening.', windowsRestartRegistered: false };
+  }
+  if (/^host-data-(recovery|warning)$/.test(preset) || preset === 'host-recovery-orphan') {
+    const blocked = preset !== 'host-data-warning';
+    host.recovery = { lifecycleBlocked: blocked, notices: [{ stateFile: 'settings.json', quarantinedFile: 'settings.synthetic.invalid.json',
+      reason: 'Synthetic unreadable protected data. No real local file was read or moved.', detectedUtc: fixtureNow, blocksLifecycle: blocked }] };
+    host.runs = host.settings.profiles.map(item => makeRun(item, 'Offline'));
+    if (preset === 'host-recovery-orphan') host.runs.push({ ...makeRun(host.settings.profiles[0], 'Failed'), profileId: ids.secondary });
+  }
+  if (preset === 'host-failed-session') host.runs = host.settings.profiles.map(item => makeRun(item, 'Failed'));
+  if (preset === 'host-crash-recovery') host.crashRecovery[ids.primary] = { profileId: ids.primary, cycleId: ids.session,
+    state: 'Suspended', attempts: 3, crashDetectedUtc: fixtureNow, nextAttemptUtc: null, readinessDeadlineUtc: null,
+    recoveredUtc: null, lastFailure: 'Synthetic restart attempts exhausted. Review this saved session.' };
+  if (/host-custom-certif/.test(preset)) host.customCertifications[ids.primary] = { profileId: ids.primary,
+    stage: preset.includes('certified') ? 'Certified' : 'ConfirmFirstChange', message: boundary,
+    inProgress: !preset.includes('certified'), certified: preset.includes('certified'),
+    certifiedUtc: preset.includes('certified') ? fixtureNow : null, onlinePlayers: 0, blockReason: null };
+  if (/^host-update-(downloading|blocked|failed)$/.test(preset)) {
+    const stage = preset.endsWith('downloading') ? 'Downloading' : preset.endsWith('blocked') ? 'Blocked' : 'Failed';
+    Object.assign(state.update, { state: 'Available', latestVersion: '0.3.3', publisherTrust: 'GitHub digest only', releaseNotes: boundary,
+      releaseNotesUrl: 'https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3',
+      preparation: { stage, message: boundary, downloadedBytes: stage === 'Downloading' ? 1048576 : 0,
+        totalBytes: stage === 'Downloading' ? 4194304 : null, blocker: stage === 'Downloading' ? null : 'Synthetic update preparation needs review. No EXE is replaced.' } });
+  }
   state.worldPeers = peerGroups(state);
+  worldReview.configure(state, reviewHelpers);
+  accessReview.configure(state, reviewHelpers);
   return state;
 }
 
 function chat(state, id, host) {
-  return result({ hostId: ids.host, profileId: id, entries: state.chatEntries[id] ?? [
-    { id: 'synthetic-message-1', hostId: ids.host, profileId: id, authorId: ids.device, author: 'Friend PC',
-      sentUtc: '2026-10-10T15:55:00Z', text: 'Ready for the next session?', signature: 'synthetic-signature' } ],
+  return result({ hostId: ids.host, profileId: id, entries: state.chatEntries[id] ?? (/chat-empty/.test(state.scenario) ? [] : [
+    { id: ids.session, hostId: ids.host, profileId: id, authorId: ids.device, author: 'Friend PC',
+      sentUtc: '2026-10-10T15:55:00Z', text: 'Ready for the next session?', signature: 'synthetic-signature' } ]),
     pending: [], members: host ? state.devices.map(d => ({ deviceId: d.id, name: d.name, allowed: true })) : null,
     notice: /chat-notice/.test(state.scenario) ? { hostId: ids.host, profileId: id, revision: 1, updatedUtc: fixtureNow,
       text: 'Synthetic room notice: review the server plan before the next session.', signature: `${'A'.repeat(86)}==` } : null,
@@ -239,6 +280,9 @@ export function routeFixture(state, request) {
   let body = request.body ?? {};
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return { status: 400, body: { code: 'SyntheticInvalidJson', message: 'Invalid synthetic request body.' } }; } }
   state.requests.push({ method, path });
+  const reviewRequest = { method, path, body, query: url.search };
+  const reviewResponse = worldReview.route(state, reviewRequest, reviewHelpers) ?? accessReview.route(state, reviewRequest, reviewHelpers);
+  if (reviewResponse) return reviewResponse;
   const snapshot = () => state.mode === 'Host' ? state.host : state.friend;
   if (path === '/api/local/world-peers' && method === 'GET') return reply(state.worldPeers);
   const peerMatch = /^\/api\/local\/world-peers\/([a-f0-9]{64})\/(.+)$/i.exec(path);
@@ -262,8 +306,8 @@ export function routeFixture(state, request) {
   if (/^\/api\/local\/mode\/(host|friend)$/i.test(path) && method === 'POST') {
     state.mode = path.toLowerCase().endsWith('/host') ? 'Host' : 'Friend'; return reply(result());
   }
-  if (path === '/api/local/instance' && method === 'GET') return reply({ kind: /update-available/.test(state.scenario) ? 'Production' : 'Staging', displayName: 'TogetherServer SYNTHETIC',
-    isStaging: !/update-available/.test(state.scenario), freshWorldsOnly: false, startupAvailable: false, updatesAvailable: /update-available/.test(state.scenario), localPort: 5128,
+  if (path === '/api/local/instance' && method === 'GET') return reply({ kind: /update-(available|downloading|blocked|failed)/.test(state.scenario) ? 'Production' : 'Staging', displayName: 'TogetherServer SYNTHETIC',
+    isStaging: !/update-(available|downloading|blocked|failed)/.test(state.scenario), freshWorldsOnly: false, startupAvailable: false, updatesAvailable: /update-(available|downloading|blocked|failed)/.test(state.scenario), localPort: 5128,
     companionPort: 5132, valheimPort: 2458, minecraftJavaPort: 25566, minecraftBedrockPort: 19134,
     dataRoot: root, dataIsolation: boundary });
   if (path === '/api/local/data-recovery' && method === 'GET') return reply(state.host.recovery);
@@ -320,14 +364,10 @@ export function routeFixture(state, request) {
     if (suffix === 'backup-catalog' && method === 'GET' && state.scenario === 'host-backups-error') return unavailable('Backup catalog read');
     if (suffix === 'chat/summary' && method === 'GET') {
       const room = chat(state, id, host);
-      return reply(result({ hostId: ids.host, profileId: id, messageIds: /chat-empty/.test(state.scenario) ? [] : [ids.session],
+      return reply(result({ hostId: ids.host, profileId: id, messageIds: room.entries.map(entry => entry.id),
         notice: room.notice, noticeCached: room.noticeCached, noticeSupported: room.noticeSupported }));
     }
-    if (suffix === 'chat' && method === 'GET') {
-      const room = chat(state, id, host);
-      if (/chat-empty/.test(state.scenario)) room.entries = [];
-      return reply(room);
-    }
+    if (suffix === 'chat' && method === 'GET') return reply(chat(state, id, host));
     if (suffix === 'chat/sync' && !host && method === 'POST') return reply({ ...chat(state, id, false), code: 'ChatSynced' });
     if (suffix.startsWith('chat')) return unavailable('Chat writes');
     if (suffix === 'logs' && method === 'GET') return reply(result({ sourceState: 'Active', runId, cursor: 'synthetic-cursor', hasMore: false,
@@ -348,7 +388,9 @@ export function routeFixture(state, request) {
       retention: { retentionCount: 5, minimumFreeSpaceBytes: 1073741824, rollingEnabled: true },
       retainedSizeBytes: /empty-backups/.test(state.scenario) ? 0 : 4194304, availableSpaceBytes: 68719476736, evidenceAvailable: true }));
     if (suffix === 'files' && method === 'GET') return reply(result({ locations: [{ key: 'world', label: 'Managed world', path: p.worldDirectory, available: true }],
-      files: [{ key: 'server-properties', label: 'Server properties', path: `${root}\\server.properties`, available: true }] }));
+      files: /config-maintenance/.test(state.scenario) ? [{ key: p.kind === 'Factorio' ? 'factorio-settings' : 'terraria-config',
+        label: p.kind === 'Factorio' ? 'Factorio settings' : 'Terraria configuration', path: `${root}\\synthetic-config.json`, available: false }] :
+        [{ key: 'server-properties', label: 'Server properties', path: `${root}\\server.properties`, available: true }] }));
     if (suffix.startsWith('files/') && method === 'GET') return reply(result({ key: suffix.slice(6), content: '# Synthetic configuration\nmax-players=10\n', sha256: hash, canUndo: false }));
     if (suffix === 'game-settings' && method === 'GET') return reply({ ok: true, code: 'SyntheticFixture', message: boundary, kind: p.kind,
       sha256: p.kind.startsWith('Minecraft') ? hash : null, settings: p.kind.startsWith('Minecraft') ?
@@ -361,7 +403,9 @@ export function routeFixture(state, request) {
         label: p.kind === 'Valheim' ? 'Administrators' : 'Allowed players', sha256: hash, entries: [], canUndo: false });
     if (suffix.startsWith('game-settings/') && method === 'POST') return unavailable('Game settings or player list writes');
     if (suffix === 'addons' && method === 'GET') return reply(result({ gameVersion: 'Unknown', requiredOnFriendPc: boundary, stateToken: 'synthetic',
-      items: [], canImport: false, canUndo: false, warning: null, importType: null }));
+      items: /addons-maintenance/.test(state.scenario) ? [{ key: 'synthetic-mod', name: 'Synthetic mod', version: '1.0', requiredGameVersion: 'Unknown', enabled: true,
+        compatibility: 'Owner review required', type: 'Factorio mod' }] : [], canImport: /addons-maintenance/.test(state.scenario), canUndo: /addons-maintenance/.test(state.scenario),
+      warning: null, importType: /addons-maintenance/.test(state.scenario) ? 'FactorioMod' : null }));
     if (suffix === 'acceptance' && method === 'GET') return reply({ profileId: id, stale: false, updatedUtc: null, checks: [],
       evidenceBoundary: boundary, gameFilesAvailable: false, gameFilesChanged: false });
     if (suffix === 'live-save-acceptance' && method === 'GET') return reply(liveAcceptance(state));

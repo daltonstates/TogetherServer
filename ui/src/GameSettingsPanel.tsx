@@ -214,13 +214,13 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
   }
 
   return <section className="game-settings-panel" aria-label="Simple game settings">
-    <div className="section-heading"><div><h3>Game settings</h3>
+    <div className="game-settings-heading"><h3>Game settings</h3>
+      <Button className="secondary icon-button" aria-label="Reload game settings" title="Reload game settings" disabled={navigationBlocked} onClick={() => void reload()}><Icon name={pending === 'reload' ? 'loader' : 'refresh'} /></Button>
       <p>Settings and player access apply after the next Start.</p></div>
-      <Button className="secondary icon-button" aria-label="Reload game settings" title="Reload game settings" disabled={navigationBlocked} onClick={() => void reload()}><Icon name={pending === 'reload' ? 'loader' : 'refresh'} /></Button></div>
     {notice && <DismissibleNotice scope={profileId} className={`notice${notice.bad ? ' bad' : ''}`} role="status">{notice.text}</DismissibleNotice>}
     {!view && !notice && <p className="helper-text">Loading game settings…</p>}
     {view && !view.ok && <DismissibleNotice as="p" scope={profileId} className="helper-text">{view.message}</DismissibleNotice>}
-    {view && (view.settings !== null || view.lists.length > 0) && <nav className="settings-dialog-tabs game-settings-tabs" aria-label="Game settings sections">
+    {view && (view.settings !== null || view.lists.length > 0) && <nav className="game-settings-tabs" aria-label="Game settings sections">
       {view.settings && <Button id={`${editorId}-general-tab`} aria-current={page === 'general' ? 'page' : undefined}
         aria-controls={`${editorId}-general`} disabled={navigationBlocked} onClick={() => setTab('general')}>
         <Icon name="settings" />General{changed && <span className="settings-unsaved-dot" aria-label="Unsaved settings" />}</Button>}

@@ -72,7 +72,7 @@ describe('shared-save UX evidence', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
     const receiving = await screen.findByRole('region', { name: 'Receive save copies' })
     expect(within(receiving).queryByRole('button', { name: 'Prepare signed offer' })).not.toBeInTheDocument()
-    expect(await screen.findByText('Confirming signed receipt', { selector: '.shared-world-workspace > p' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Confirming the signed receipt' })).toBeInTheDocument()
     const progress = screen.getByRole('region', { name: 'Save transfer progress' })
     expect(progress).toHaveTextContent('2 MiB of 2 MiB')
     expect(within(progress).getByText('Confirm signed receipt')).toHaveAttribute('aria-current', 'step')

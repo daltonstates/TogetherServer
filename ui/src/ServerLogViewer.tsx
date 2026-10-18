@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { getLocalJson } from './api'
 import { Button, Input, Select } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
@@ -148,6 +148,8 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const [loading, setLoading] = useState(false)
   const [filters, setFilters] = useState<ServerLogFilters>(readLogPreferences)
   const [filterDraft, setFilterDraft] = useState<ServerLogFilters>(readLogPreferences)
+  const [filtersExpanded, setFiltersExpanded] = useState(false)
+  const filtersId = useId()
   const [onlyProblems, setOnlyProblems] = useState(false)
   const [followLatest, setFollowLatest] = useState(true)
   const [newLineCount, setNewLineCount] = useState(0)
@@ -358,7 +360,11 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
         }}>Follow latest</Button>
         <Button className="secondary" disabled={loading || !!unsupported || !visible} onClick={manualRefresh}>{loading ? <><Icon name="loader" />Refreshing</> : <><Icon name="refresh" />Refresh</>}</Button></div>
     </div>
-    <form className="server-log-filters" onSubmit={event => {
+    <Button className="secondary server-log-filter-toggle" aria-expanded={filtersExpanded} aria-controls={filtersId}
+      onClick={() => setFiltersExpanded(value => !value)}><Icon name="search" />Filters
+      {(filters.severity || filters.category || filters.contains || onlyProblems) && <span className="status neutral">Active</span>}
+      <Icon name={filtersExpanded ? 'chevronDown' : 'chevronRight'} /></Button>
+    <form id={filtersId} className="server-log-filters" data-expanded={filtersExpanded} onSubmit={event => {
       event.preventDefault()
       setFilters({ ...filterDraft, contains: filterDraft.contains.trim() })
       saveLogPreferences(filterDraft)

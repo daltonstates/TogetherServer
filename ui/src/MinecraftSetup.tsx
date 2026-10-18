@@ -73,7 +73,7 @@ function InstallationChoice({ item, busy, selected, onSelect }: {
   selected: boolean
   onSelect: (item: MinecraftInstallation) => void
 }) {
-  return <div className="choice">
+  return <div className="choice minecraft-installation-choice">
     <div><strong>{item.worldName || 'Unnamed world'} · {item.kind === 'MinecraftJava' ? 'Java' : 'Bedrock'}</strong>
       <small>Port {item.gamePort} · {item.source}</small><p className="helper-text">{item.note}</p>
       <details><summary>Install location</summary><code>{item.serverDirectory}</code><small>Server file: {item.artifactPath}</small></details></div>
@@ -114,10 +114,11 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
 
   return <>
     <p className="helper-text">Choose a server TogetherServer found, or browse to its folder. Setup reads its world name and port without changing the existing server or world.</p>
-    {profile.worldDirectory && profile.executablePath && <p className="selection-summary">
-      Selected: <strong>{profile.worldId || `${edition} server`}</strong>
-      <small>{profile.worldDirectory} · port {profile.gamePort}</small>
-    </p>}
+    {profile.worldDirectory && profile.executablePath && <div className="selection-summary minecraft-selected-server">
+      <span className="minecraft-selected-label">Selected:</span>
+      <strong>{profile.worldId || `${edition} server`}</strong>
+      <small><span>{profile.worldDirectory}</span><span>Port {profile.gamePort}</span></small>
+    </div>}
     <div className="choices">
       <strong>Servers found on this PC</strong>
       {!discovery && <p>Search the common folders on this PC, or browse directly to the server folder.</p>}

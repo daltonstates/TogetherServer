@@ -18,6 +18,7 @@ import { setupPlannedPorts as plannedPorts, setupPortSuggestion, setupProfileCha
 import { EditorDraftRecovery } from '../../editorProtectedDraft'
 import type { SetupImportReview } from '../../setupImportPreview'
 import '../../TaskFirstPages.css'
+import './HostSetupPolish.css'
 
 export type SetupStep = 'game' | 'world' | 'server' | 'review'
 
@@ -245,7 +246,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
     ...stepIssues, ...setupIssues.filter(message => setupIssueTarget(message, editedProfile).step === setupStep)
   ])]
   const laterIssues = setupIssues.filter(message => !currentIssues.includes(message))
-  const issueList = (messages: string[]) => <ul>{messages.map((message, index) => <li key={`${message}-${index}`}>
+  const issueList = (messages: string[]) => <ul className="setup-issue-list">{messages.map((message, index) => <li key={`${message}-${index}`}>
     <Button className="text-button" disabled={!!pending} onClick={() => { if (editedProfile) openBlocker(setupIssueTarget(message, editedProfile)) }}>{message}</Button>
   </li>)}</ul>
   return <dialog ref={dialogRef} className="panel settings-panel modal-dialog task-first-setup" aria-labelledby="setup-title"
@@ -257,7 +258,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
       disabled={!!pending} onRecover={onRecoverSetupDraft} onDiscard={onDiscardSetupDraft} />}
     {importReview && onConfirmImport && onCancelImport && <SetupImportReviewPanel review={importReview} busy={!!pending}
       onConfirm={onConfirmImport} onCancel={onCancelImport} />}
-    <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span>{index + 1}</span>{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</li>)}</ol>
+    <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span className="setup-step-number">{index + 1}</span><span className="setup-step-label">{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</span></li>)}</ol>
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
       {profile.kind !== 'Valheim' && <DismissibleNotice as="p" scope={profile.id} className="warning-text" role="status">{setupSupport(profile.kind).label}. {setupSupport(profile.kind).actions}</DismissibleNotice>}
@@ -345,9 +346,9 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         : profile.kind === 'Custom' ? <div className="custom-script-manager" id={`setup-${profile.id}-scripts`} tabIndex={-1}>
           <DismissibleNotice scope={profile.id} className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></DismissibleNotice>
           {customScriptsLoading[profile.id] && <p className="helper-text script-loading" role="status"><Icon name="loader" />Loading protected scripts…</p>}
-          <label>Start script<TextArea disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.start ?? ''} onChange={event => onEditCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
-          <label>Status and players script<TextArea disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.status ?? ''} onChange={event => onEditCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and echo every contract value.\n@{ contractVersion = [int]$env:TOGETHERSERVER_CONTRACT_VERSION; probeId = $env:TOGETHERSERVER_PROBE_ID; operationId = $env:TOGETHERSERVER_OPERATION_ID; state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Existing scripts still show status, but contract v2 checks and the guided live test are required before player counts can allow remote Stop, Restart, replacement, or automatic shutdown.</small></label>
-          <label>Stop script<TextArea disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.stop ?? ''} onChange={event => onEditCustomScripts(profile.id, { stop: event.target.value })} placeholder={'# Ask the real server to save and exit gracefully.\n# The Start script process must then exit within 90 seconds.'} /><small>Finish within 15 seconds after sending the game’s own save/stop command. TogetherServer never force-kills the game.</small></label>
+          <label>Start script<TextArea rows={8} spellCheck={false} disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.start ?? ''} onChange={event => onEditCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
+          <label>Status and players script<TextArea rows={8} spellCheck={false} disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.status ?? ''} onChange={event => onEditCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and echo every contract value.\n@{ contractVersion = [int]$env:TOGETHERSERVER_CONTRACT_VERSION; probeId = $env:TOGETHERSERVER_PROBE_ID; operationId = $env:TOGETHERSERVER_OPERATION_ID; state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Existing scripts still show status, but contract v2 checks and the guided live test are required before player counts can allow remote Stop, Restart, replacement, or automatic shutdown.</small></label>
+          <label>Stop script<TextArea rows={8} spellCheck={false} disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.stop ?? ''} onChange={event => onEditCustomScripts(profile.id, { stop: event.target.value })} placeholder={'# Ask the real server to save and exit gracefully.\n# The Start script process must then exit within 90 seconds.'} /><small>Finish within 15 seconds after sending the game’s own save/stop command. TogetherServer never force-kills the game.</small></label>
           <details className="advanced-block"><summary>Script environment and output contract</summary><p className="helper-text">Every action receives TOGETHERSERVER_ACTION, TOGETHERSERVER_PROFILE_ID, TOGETHERSERVER_WORLD_ID, TOGETHERSERVER_WORKING_DIRECTORY, TOGETHERSERVER_GAME_PORT, and TOGETHERSERVER_MANAGED_PID. Status output must be a single JSON object with optional detail, onlinePlayers, maxPlayers, and players fields.</p></details>
         </div>
         : <label>Fixture executable path<Input disabled={!!pending} value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\...\\TogetherServer.Fixture.exe" /></label>}</div>
@@ -401,7 +402,7 @@ function SetupWorldLocations({ profile, sourceRoot, minecraftMode }: {
   const minecraft = profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock'
   const usesExisting = minecraft && minecraftMode !== 'install'
   const newInstall = minecraft && minecraftMode === 'install'
-  return <section aria-label="World locations"><dl className="review-summary">
+  return <section aria-label="World locations" className="setup-world-locations"><dl className="review-summary">
     {(profile.worldSource === 'Existing' && !minecraft && profile.kind !== 'Custom') && <div><dt>Original on this PC</dt><dd>{sourceRoot ? <code>{sourceRoot}</code> : 'Chosen using discovery or Browse.'}<small>The original is retained.</small></dd></div>}
     <div><dt>{usesExisting ? 'World hosted in the selected server folder' : profile.kind === 'Custom' ? 'Owner-selected working and save folder' : 'World TogetherServer hosts'}</dt>
       <dd>{profile.worldDirectory ? <code>{profile.worldDirectory}</code> : 'A fresh managed destination is allocated when setup copies or installs the server.'}</dd></div>

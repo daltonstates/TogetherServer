@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
+import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
+import { extraCases as accessReviewCases } from './ui-polish-access-review.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
 const sourceRoot = process.env.TOGETHERSERVER_UI_SOURCE_ROOT
@@ -30,7 +32,7 @@ const contracts = await import(new URL('contracts.ts', sourceRoot).href);
 const { parseBackupCatalog } = await import(new URL('backupCatalogWire.ts', sourceRoot).href);
 const { parseWeeklyServerSummary } = await import(new URL('weeklySummaryWire.ts', sourceRoot).href);
 const { parseGameSettings } = await import(new URL('gameSettings.ts', sourceRoot).href);
-const { parseChatRoomWithNotice } = await import(new URL('pinnedNoticeContracts.ts', sourceRoot).href);
+const { parseChatRoomWithNotice, parsePinnedNoticeFields } = await import(new URL('pinnedNoticeContracts.ts', sourceRoot).href);
 const { parseNotificationPreferences, parseDesktopUpdateDetails, parseUpdatePreparation } = await import(new URL('desktopPreferencesWire.ts', sourceRoot).href);
 const { parseProtectedDraftResult } = await import(new URL('protectedUiDrafts.ts', sourceRoot).href);
 const { normalizedDirectIpHttpsEndpoint } = await import(new URL('sharedWorldUx.ts', sourceRoot).href);
@@ -51,8 +53,9 @@ function pureDecoders(file, names, globals = {}) {
   const js = ts.transpileModule(pureSource, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
   return runInNewContext(js, { ...globals });
 }
-const chat = pureDecoders('ServerChat.tsx', ['parseManagedChatRoom'], {
-  parseChatRoomWithNotice, ContractError: contracts.ContractError
+const chat = pureDecoders('ServerChat.tsx', ['parseManagedChatRoom', 'parseChatRoomSummary'], {
+  parseChatRoomWithNotice, parsePinnedNoticeFields, ContractError: contracts.ContractError,
+  messageIdPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 });
 const live = pureDecoders('LiveSaveControls.tsx', ['record', 'text', 'parseAttempt', 'parseLiveSaveStatus'], {
   ContractError: contracts.ContractError, stageLabels: Object.fromEntries(['completion', 'snapshot', 'transfer', 'load', 'change', 'restart'].map(id => [id, id]))
@@ -74,6 +77,8 @@ const peers = pureDecoders('WorldPeerPanel.tsx', ['object', 'text', 'flag', 'cou
   hashPattern: /^[0-9a-f]{64}$/i
 });
 const installation = pureDecoders('LiveSaveAcceptancePanel.tsx', ['object', 'text', 'identity', 'stages', 'parseLiveSaveAcceptance']);
+const worldLoad = pureDecoders('WorldLoadRehearsal.tsx', ['object', 'text', 'count', 'parseWorldLoadView', 'parseList'], { ContractError: contracts.ContractError });
+const separate = pureDecoders('SharedWorldSeparateRoutePanel.tsx', ['literalHttpsOrigin', 'branch', 'branches', 'hostStatus'], { URL });
 const get = (state, path) => {
   const response = routeFixture(state, { method: 'GET', path });
   assert.equal(response?.status, 200, path);
@@ -119,6 +124,41 @@ test('installation and transfer-progress variants decode without accepting a rea
     const state = createFixtureState(scenario);
     shared.parseFriendSharedWorldStatus(get(state, `/api/local/friend/${fixtureIds.primary}/shared-world`));
   }
+});
+
+test('expanded world evidence uses the actual backup, rehearsal, acceptance and owner-recovery decoders', () => {
+  for (const scenario of new Set(worldReviewCases.map(testCase => testCase.scenario))) {
+    const state = createFixtureState(scenario);
+    const profile = `/api/local/profiles/${fixtureIds.primary}`;
+    const catalog = parseBackupCatalog(get(state, `${profile}/backup-catalog`));
+    assert.equal(catalog.backups.length, 2, scenario);
+    const rehearsals = worldLoad.parseList(get(state, `/api/local/world-load/source/${fixtureIds.primary}`));
+    assert.equal(rehearsals.rehearsals.length, 1, scenario);
+    const acceptance = installation.parseLiveSaveAcceptance(get(state, `${profile}/live-save-acceptance`));
+    assert.match(acceptance.message, /Synthetic UI fixture only/);
+    if (scenario.startsWith('host-peers-world-owner-')) {
+      const base = `/api/local/world-peers/${'A'.repeat(64)}/owner-recovery`;
+      assert.equal(routeFixture(state, { method: 'POST', path: base, body: { acceptSplitWarning: true } }).body.ok, true);
+      const copies = separate.branches(get(state, base), fixtureIds.primary);
+      assert.equal(copies.length, 1);
+      separate.hostStatus(get(state, `${base}/hosting/${copies[0].branchHash}`));
+    }
+  }
+});
+
+test('world default review has eligible synthetic sessions and module scenarios stay isolated', () => {
+  const state = createFixtureState('host-peers-conflict');
+  const [group] = peers.parseWorldPeerGroups(get(state, '/api/local/world-peers'));
+  assert.equal(group.selection.canChoose, true);
+  assert.ok(group.state.sessions.some(item => item.authorized && !item.hasConflict && ['Preparing', 'Hosting'].includes(item.session.state)));
+  for (const file of ['ui-polish-world-review.mjs', 'ui-polish-access-review.mjs']) {
+    const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /(?:from|import\()\s*['"](?:node:)?(?:fs|http|https|net|child_process)(?:\/|['"])/u,
+      `${file} must remain a pure in-memory extension`);
+  }
+  const baseline = createFixtureState('host-ready');
+  assert.equal(baseline.worldReview, undefined);
+  assert.equal(baseline.devices[0].accessExpiresUtc, null);
 });
 
 test('core settings and every populated Host tab use valid contracts', () => {
@@ -175,6 +215,39 @@ test('saved-connection Friend chat sync preserves room identity and passes the a
   assert.equal(routeFixture(state, { method: 'POST', path: `/api/local/profiles/${fixtureIds.primary}/chat/sync` }).status, 503);
   assert.throws(() => chat.parseManagedChatRoom({ ...legacy.body, pending: [{ id: 'draft', text: 'Hello', submitted: 'false' }] }),
     /invalid delivery state/, 'the actual strict decoder still rejects malformed queue state');
+});
+
+test('empty chat remains empty across room reads, summary polling and Friend sync', () => {
+  for (const mode of ['host', 'friend']) {
+    const state = createFixtureState(`${mode}-chat-empty`);
+    const base = mode === 'host' ? `/api/local/profiles/${fixtureIds.primary}/chat`
+      : `/api/local/friend/connections/${fixtureIds.connection}/servers/${fixtureIds.primary}/chat`;
+    for (let poll = 0; poll < 2; poll++) {
+      const room = chat.parseManagedChatRoom(get(state, base));
+      assert.equal(room.entries.length, 0); assert.equal(room.pending.length, 0);
+      assert.equal(chat.parseChatRoomSummary(get(state, `${base}/summary`)).messageIds.length, 0);
+      if (mode === 'friend') {
+        const synced = chat.parseManagedChatRoom(routeFixture(state, { method: 'POST', path: `${base}/sync` }).body);
+        assert.equal(synced.entries.length, 0); assert.equal(synced.pending.length, 0);
+      }
+    }
+  }
+  const populated = createFixtureState('friend-connected');
+  const base = `/api/local/friend/connections/${fixtureIds.connection}/servers/${fixtureIds.primary}/chat`;
+  const room = chat.parseManagedChatRoom(get(populated, base));
+  const summary = chat.parseChatRoomSummary(get(populated, `${base}/summary`));
+  assert.deepEqual(Array.from(summary.messageIds), Array.from(room.entries, entry => entry.id));
+});
+
+test('expired access matches the backend denial snapshot while retaining its saved Host', () => {
+  const state = createFixtureState('friend-expired');
+  const snapshot = contracts.parseFriendSnapshot(get(state, '/api/local/snapshot'));
+  assert.equal(snapshot.state, 'Access expired'); assert.equal(snapshot.connectionCode, 'AccessExpired');
+  assert.equal(snapshot.profiles.length, 0); assert.equal(snapshot.remoteControlsEnabled, false);
+  assert.equal(snapshot.canStart, false); assert.equal(snapshot.canStop, false);
+  assert.equal(snapshot.connectionId, fixtureIds.connection); assert.equal(snapshot.endpoint, 'https://192.0.2.10:5131');
+  const poll = contracts.parseFriendSnapshot(routeFixture(state, { method: 'POST', path: '/api/local/friend/poll' }).body);
+  assert.equal(poll.connectionCode, 'AccessExpired'); assert.equal(poll.profiles.length, 0);
 });
 
 test('Files and add-ons decode actual current inline contracts', () => {
@@ -380,7 +453,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('const heading ='), end = source.indexOf('manifest.inventory =');
   assert.ok(start > 0 && end > start, 'literal inventory has stable boundaries');
-  const { plans } = runInNewContext(source.slice(start, end) + '\n;({plans})', { manifest: {} });
+  const { plans } = runInNewContext(source.slice(start, end) + '\n;({plans})', { manifest: {}, worldReviewCases, accessReviewCases });
   const captures = new Set(plans.map(plan => plan.testCase.id));
   for (const expected of [
     ...['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'].map(id => `host-${id}`),

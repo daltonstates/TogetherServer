@@ -4,7 +4,7 @@ export type IconName = 'play' | 'stop' | 'copy' | 'invite' | 'refresh' | 'server
   'game' | 'plug' | 'check' | 'warning' | 'settings' | 'search' | 'link' |
   'eye' | 'eyeOff' | 'bell' | 'loader' | 'plus' | 'users' | 'chat' | 'logs' | 'clock' | 'archive' |
   'close' | 'chevronRight' | 'chevronDown' | 'more' | 'monitor' | 'shield' | 'palette' | 'power' | 'keyboard' | 'trash' |
-  'folder' | 'edit' | 'undo' | 'upload'
+  'folder' | 'edit' | 'undo' | 'upload' | 'download'
 
 const paths: Record<IconName, ReactNode> = {
   play: <path d="m6 4 8 6-8 6V4Z" />,
@@ -36,6 +36,7 @@ const paths: Record<IconName, ReactNode> = {
   edit: <><path d="m12.5 3.5 4 4M3 17l4.5-1L17 6.5 13.5 3 4 12.5 3 17Z" /><path d="M11 17h6" /></>,
   undo: <><path d="M7 4 3 8l4 4M3 8h8a5 5 0 0 1 0 10" /></>,
   upload: <><path d="M10 13V2m-4 4 4-4 4 4M3 12v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" /></>,
+  download: <><path d="M10 2v11m-4-4 4 4 4-4M3 12v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4" /></>,
   chevronRight: <path d="m8 5 5 5-5 5" />,
   chevronDown: <path d="m5 8 5 5 5-5" />,
   more: <><circle cx="4" cy="10" r=".7" /><circle cx="10" cy="10" r=".7" /><circle cx="16" cy="10" r=".7" /></>,

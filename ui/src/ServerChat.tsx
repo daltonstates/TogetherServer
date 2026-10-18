@@ -529,9 +529,9 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
     <div className="server-chat-heading"><div><h3>Server chat</h3>
       <p>Talk about this server with the people who have access to its room.</p></div>
       <div className="server-chat-sync">
-        <Button className="secondary" disabled={busy || syncing || !visible} aria-busy={syncing}
+        <Button className="secondary" disabled={busy || syncing || !visible} aria-busy={syncing} aria-label={syncing ? 'Syncing\u2026' : 'Sync now'}
           aria-describedby={syncFeedbackId} onClick={() => void syncNow()}>
-          <Icon name={syncing ? 'loader' : 'refresh'} />{syncing ? 'Syncing\u2026' : 'Sync now'}</Button>
+          <Icon name={syncing ? 'loader' : 'refresh'} />{syncing ? 'Syncing\u2026' : 'Sync'}</Button>
         {currentSync && currentSync.status !== 'pending' ? <DismissibleNotice as="span" scope={scope} id={syncFeedbackId} className={`server-chat-sync-feedback${currentSync.status === 'error' ? ' warning-text' : ''}`}
           role={currentSync?.status === 'error' ? 'alert' : 'status'} aria-label="Chat sync" aria-atomic="true">
           {currentSync?.status === 'success' && <Icon name="check" />}
@@ -558,7 +558,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         <TextArea id={`notice-${profileId}`} value={editingNotice.text} maxLength={maximumNoticeTextLength} rows={4}
           placeholder="Rules, maintenance, or what changed" disabled={busy}
           onChange={event => setNoticeEdit({ ...editingNotice, text: event.target.value })} />
-        <div><small>{editingNotice.text.length}/{maximumNoticeTextLength}</small>
+        <div className="server-chat-edit-actions"><small>{editingNotice.text.length}/{maximumNoticeTextLength}</small>
           <Button type="submit" disabled={busy || !validPinnedNoticeText(editingNotice.text.trim())}>Save notice</Button>
           <Button className="secondary" disabled={busy} onClick={() => { setNoticeEdit(null); setNoticeError('') }}>Cancel</Button>
           {room.notice?.text && <Button className="secondary" disabled={busy}

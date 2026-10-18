@@ -1953,7 +1953,7 @@ export function App() {
           const target = workspaceScrollTarget()
           if (!restoringScroll.current && event.target === target && target) scrollPositions.current[currentScrollKey.current] = target.scrollTop
         }}>
-      <div className={workspacePage === 'host' || workspacePage === 'join' ? 'page-heading sr-only' : 'page-heading'}><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
+      <div className="page-heading sr-only"><div><h1>{pageTitle}</h1><p>{pageDescription}</p></div>
       </div>
 
       {loadError && <DismissibleNotice className="notice bad" role="alert">Connection to this local app failed: {loadError}</DismissibleNotice>}
@@ -2019,10 +2019,6 @@ export function App() {
             !!selectedFriendProfile && friendLogAvailability(selectedFriendProfile.canViewLogs, snapshot.hostCapabilities).visible)}
             section={showPairing || !snapshot.endpoint || friendConnectionHidden ? 'pairing' : joinSection} onSelect={selectJoinSection} />
         </aside><div className="context-content">
-        {(joinSection === 'play' || joinSection === 'shared-saves') && <WorldPeerPanel
-          onConnected={async () => { setPeerRecovery(null); applySnapshot(await readSnapshot()); setShowPairing(false); setJoinSection('play') }}
-          onChanged={async () => { applySnapshot(await readSnapshot()) }}
-          onRecoverBranch={(profileId, branchHash) => { setPeerRecovery({ profileId, branchHash }); setJoinSection('shared-saves'); setShowPairing(false) }} />}
         {joinSection === 'shared-saves' && peerRecovery && <section className="panel">
           <Button className="text-button" onClick={() => setPeerRecovery(null)}>Return to selected server saves</Button>
           <FriendSharedWorlds profileId={peerRecovery.profileId} sourceBranchHash={peerRecovery.branchHash}
@@ -2179,10 +2175,15 @@ export function App() {
           {joinSection === 'network' && appInstance?.isStaging && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
           </section>}
         </section>
+        {(joinSection === 'play' || joinSection === 'shared-saves') && <WorldPeerPanel
+          onConnected={async () => { setPeerRecovery(null); applySnapshot(await readSnapshot()); setShowPairing(false); setJoinSection('play') }}
+          onChanged={async () => { applySnapshot(await readSnapshot()) }}
+          onRecoverBranch={(profileId, branchHash) => { setPeerRecovery({ profileId, branchHash }); setJoinSection('shared-saves'); setShowPairing(false) }} />}
         </div></section>}
 
       {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <section className="context-workspace host-context-workspace">
         <aside className="context-sidebar" aria-label="Host navigation" tabIndex={0}>
+          <div className="host-sidebar-primary">
           {savedProfiles.length > 0 && <SearchablePicker label="Selected server" selectedId={selectedHostProfile?.id ?? ''}
             items={visibleHostProfiles.map(profile => ({ id: profile.id, name: profile.name, detail: profileGameLabel(profile), keywords: profile.worldId,
               state: snapshot.runs.find(run => run.profileId === profile.id)?.state ?? 'Unknown' }))}
@@ -2195,6 +2196,7 @@ export function App() {
             tools={<Button className="secondary" aria-pressed={reorderServers} onClick={() => setReorderServers(current => !current)}>{reorderServers ? 'Finish ordering' : 'Reorder servers'}</Button>} />}
           <div className="context-sidebar-actions"><Button className="secondary icon-button" aria-label="Add server" title="Add server" disabled={!!pending || dirty} onClick={addProfile}><Icon name="plus" /></Button>
             {savedProfiles.length > 1 && <Button className="secondary icon-button" aria-label="Compare all servers" title="Compare all servers" onClick={() => setShowAllServers(true)}><Icon name="server" /></Button>}</div>
+          </div>
           {savedProfiles.length > 0 && <SectionSidebar title="Server" label="Selected server sections"
             sections={(Object.keys(hostServerTabLabels) as HostServerTab[]).map(id => ({ id, label: hostServerTabLabels[id], icon: hostServerTabIcons[id] }))}
             section={hostScope === 'server' ? hostServerTab : undefined} onSelect={selectHostTab} />}

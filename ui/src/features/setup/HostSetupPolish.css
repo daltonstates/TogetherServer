@@ -1,0 +1,85 @@
+/* The setup dialog owns these layout corrections; shared editors are unchanged. */
+.task-first-setup .server-step {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: .9rem;
+}
+.task-first-setup .server-step > h3 { justify-content: flex-start; }
+.task-first-setup .server-step-content { width: 100%; min-width: 0; }
+
+.task-first-setup .minecraft-selected-server {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: .35rem;
+  min-width: 0;
+}
+.task-first-setup .minecraft-selected-server .minecraft-selected-label { white-space: nowrap; }
+.task-first-setup .minecraft-selected-server > strong { min-width: 0; overflow-wrap: anywhere; }
+.task-first-setup .minecraft-selected-server > small {
+  display: grid;
+  gap: .2rem;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.task-first-setup .minecraft-installation-choice > div { min-width: 0; }
+.task-first-setup .minecraft-installation-choice > .ui-button { flex-shrink: 0; white-space: nowrap; }
+
+.task-first-setup .setup-progress { gap: .75rem; }
+.task-first-setup .setup-progress > li {
+  display: grid;
+  grid-template-rows: 1.6rem auto;
+  align-content: start;
+  justify-items: start;
+  gap: .4rem;
+}
+.task-first-setup .setup-progress > li:not(:last-child)::after {
+  left: 2rem;
+  right: -.25rem;
+  top: .8rem;
+}
+.task-first-setup .setup-progress .setup-step-number { width: 1.6rem; height: 1.6rem; }
+.task-first-setup .setup-progress .setup-step-label {
+  display: block;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 1.35;
+  overflow-wrap: normal;
+}
+
+.task-first-setup .setup-world-locations .review-summary > div:only-child { grid-column: 1 / -1; }
+.task-first-setup .custom-script-manager > label { min-width: 0; }
+.task-first-setup .custom-script-manager .ui-textarea {
+  display: block;
+  width: 100%;
+  min-height: 12rem;
+  height: auto;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: calc(12px * var(--qol-text-scale, 1));
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.task-first-setup .setup-issue-list {
+  display: grid;
+  gap: .3rem;
+  margin: .55rem 0 0;
+  padding-inline-start: 1.1rem;
+}
+.task-first-setup .setup-issue-list > li { margin: 0; padding: 0; min-width: 0; }
+.task-first-setup .setup-issue-list .ui-button {
+  justify-content: flex-start;
+  min-height: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: .2rem 0;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.45;
+}

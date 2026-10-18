@@ -31,6 +31,23 @@ const report: SupportReportExport = {
 afterEach(() => vi.restoreAllMocks())
 
 describe('OwnerDiagnostics', () => {
+  it('keeps report privacy details available on demand without generating an export', async () => {
+    const supportReportLoader = vi.fn(async () => report)
+    render(<OwnerDiagnostics diagnosticsLoader={async () => diagnostics} supportReportLoader={supportReportLoader} />)
+    const exports = await screen.findByRole('region', { name: 'Export support report' })
+    expect(within(exports).getByText('Copy a short summary or export the full redacted JSON report.')).toBeInTheDocument()
+    const summary = within(exports).getByText('Report contents & privacy')
+    const privacy = summary.closest('details')
+    expect(privacy).not.toHaveAttribute('open')
+    fireEvent.click(summary)
+    expect(privacy).toHaveAttribute('open')
+    expect(within(privacy!).getByText(/It leaves out saved access, server codes, passwords, scripts, private paths/)).toBeInTheDocument()
+    expect(within(exports).getByRole('button', { name: 'Copy summary' })).toBeEnabled()
+    expect(within(exports).getByRole('button', { name: 'Copy report' })).toBeEnabled()
+    expect(within(exports).getByRole('button', { name: 'Download JSON' })).toBeEnabled()
+    expect(supportReportLoader).not.toHaveBeenCalled()
+  })
+
   it('copies a concise explanation and summary without loading the larger support report', async () => {
     const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
