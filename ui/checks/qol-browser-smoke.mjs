@@ -1114,11 +1114,17 @@ async function setupReview(page, host, profiles) {
   assert.equal(await addServer.count(), 1, 'The populated Host sidebar exposes one canonical Add server action.')
   await addServer.click()
   const dialog = page.getByRole('dialog', { name: 'Add new server' })
-  await dialog.getByRole('region', { name: 'Setup blockers' }).waitFor()
-  assert(await dialog.getByRole('region', { name: 'Setup blockers' }).getByRole('button').count() >= 2, 'Setup must show its blockers together.')
+  await dialog.getByRole('heading', { name: 'Choose a game', exact: true }).waitFor()
   await dialog.getByText("Reuse a saved server's nonsecret setup", { exact: true }).click()
   await dialog.getByRole('button', { name: `Use setup from ${profiles.valheim.name}`, exact: true }).click()
   await dialog.getByRole('heading', { name: 'Choose a world', exact: true }).waitFor()
+  // The Game step has no current blockers. Reuse opens World, where the
+  // deliberately missing new-world name and password must block Continue.
+  const blockers = dialog.getByRole('region', { name: 'Setup blockers', exact: true })
+  await blockers.waitFor({ state: 'visible' })
+  assert(await blockers.locator('.setup-issue-list').getByRole('button').count() >= 2,
+    'The World step must show its missing name and password blockers together.')
+  assert.equal(await dialog.getByRole('button', { name: 'Continue', exact: true }).isDisabled(), true)
   const worldName = dialog.getByRole('textbox', { name: /^World name/u })
   // These implicit labels include helper text; the password label also contains its visibility checkbox.
   const gamePassword = dialog.getByLabel(/^Game password/u)

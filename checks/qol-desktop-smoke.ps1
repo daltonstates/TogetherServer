@@ -813,7 +813,13 @@ try {
     assert.equal(beforeQuit.text, null, 'Draft must be absent until native Quit asks the page to flush.');
     fs.writeFileSync(out(`${mode}-ready.json`), JSON.stringify({ ready: true }));
     if (mode === 'arm-failed-draft') {
-      await page.waitForFunction(() => document.querySelector('.action-feedback,.notice,.helper-text')?.textContent?.includes('protected draft') || document.body.textContent.includes('could not be saved as a protected draft'));
+      await page.locator('.server-chat-compose').getByRole('alert').filter({ hasText: 'Synthetic draft storage rejection.' }).waitFor({ state: 'visible' });
+      assert.equal(await page.getByLabel('Message', { exact: true }).inputValue(), marker,
+        'A rejected draft save must retain the exact unfinished message in the open app.');
+      assert.equal(await page.getByRole('button', { name: 'Retry unfinished message', exact: true }).isVisible(), true);
+      assert.equal(await page.locator('.server-chat-compose').getByRole('button', { name: 'Send', exact: true }).isDisabled(), true);
+      assert.equal((await json('/api/local/ui-drafts/read', identity)).text, null,
+        'A rejected native flush must not be reported as a persisted draft.');
       await page.screenshot({ path: out('native-quit-draft-failure.png') });
     } else {
       // CDP transport disappears on native process exit; the PowerShell owner
