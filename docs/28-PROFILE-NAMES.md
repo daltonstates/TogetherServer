@@ -5,7 +5,9 @@
 Set **App Settings → Profile → Your name** once on this PC. Host and Join each
 offer **Set your name** or **Edit profile** in their sidebar. The same name is
 used for both roles. The app starts with no name and never reads the Windows
-account name to fill it in. A blank saved name clears it.
+account name to fill it in. [Required setup](29-REQUIRED-FEATURE-SETUP.md) now asks
+for it before normal use after installation or an upgrade when it is missing.
+An existing valid name skips that step; a local name cannot be cleared to blank.
 
 The Host receives the Friend's name during pairing and authenticated heartbeats.
 The Friend receives the Host's name after valid pairing and in authenticated
@@ -60,6 +62,9 @@ Focused UI validation: **87 passing JSDOM tests across seven files**, including
 editor state/errors, strict names, searching and person/PC/alias fallbacks.
 
 Final serialized verification on 2026-10-18:
+
+These are the original profile-slice results. The required-setup follow-up and
+its current verification are recorded in [delivery 29](29-REQUIRED-FEATURE-SETUP.md).
 
 | Check | Result |
 | --- | --- |

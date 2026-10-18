@@ -15,10 +15,9 @@ const response = (value: unknown, status = 200) => new Response(JSON.stringify(v
 afterEach(() => vi.unstubAllGlobals())
 
 describe('shared profile editor', () => {
-  it('loads with the local header, keeps a draft across pages, trims save and clears without using a PC name', async () => {
+  it('loads with the local header, keeps a draft across pages, trims save and requires a nonempty name', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response({ displayName: '' }))
       .mockResolvedValueOnce(response({ ok: true, code: 'Saved', message: 'Saved', displayName: 'Alex' }))
-      .mockResolvedValueOnce(response({ ok: true, code: 'Saved', message: 'Saved', displayName: '' }))
     vi.stubGlobal('fetch', fetch)
     render(<Harness />)
     await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
@@ -32,9 +31,9 @@ describe('shared profile editor', () => {
     await screen.findByText('Profile saved. Your name is shared with connected PCs.')
     expect(fetch.mock.calls[1][1]).toMatchObject({ method: 'PUT', body: '{"displayName":"Alex"}', headers: { 'X-TogetherServer-Local': '1' } })
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '' } })
-    fireEvent.click(screen.getByText('Save name'))
-    await screen.findByText('Profile cleared. Your shared name is empty.')
-    expect(fetch.mock.calls[2][1].body).toBe('{"displayName":""}')
+    expect(screen.getByText('Save name')).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a name your friends recognize.')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('preserves failed drafts, retries load and shows pending state until canonical save completes', async () => {
@@ -59,8 +58,8 @@ describe('shared profile editor', () => {
   })
 
   it('bounds UTF-16 length and rejects formatting, controls and line separators', () => {
-    for (const value of ['a\nb', 'a\rb', 'a\tb', 'a\u200db', 'a\u2028b', 'a\u2029b', '\ud800', '\udc00', 'x'.repeat(81), '😀'.repeat(41)]) expect(profileNameError(value)).not.toBe('')
-    for (const value of ['', ' '.repeat(90), 'a'.repeat(80), '😀'.repeat(40), ' Renée ']) expect(profileNameError(value)).toBe('')
+    for (const value of ['a\nb', 'a\rb', 'a\tb', 'a\u200db', 'a\u2028b', 'a\u2029b', '\ud800', '\udc00', '', ' '.repeat(90), 'x'.repeat(81), '😀'.repeat(41)]) expect(profileNameError(value)).not.toBe('')
+    for (const value of ['a'.repeat(80), '😀'.repeat(40), ' Renée ']) expect(profileNameError(value)).toBe('')
   })
 
   it('prevents invalid submissions and keeps the draft when a typed save is denied', async () => {

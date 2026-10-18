@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ApiError, changeJson, errorMessage, getJson, getLocalJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
-import { ProfileAccess, useLocalProfile } from './ProfileSettings'
+import { ProfileAccess, ProfileSettings, useLocalProfile } from './ProfileSettings'
+import { RequiredFeatureSetup, useRequiredFeatureSetup } from './RequiredFeatureSetup'
 import { AppSettings } from './AppSettings'
 import { SectionSidebar } from './SectionSidebar'
 import { SearchablePicker } from './SearchablePicker'
@@ -325,6 +326,7 @@ export function App() {
   const [serverToolsProfileId, setServerToolsProfileId] = useState('')
   const [showAllServers, setShowAllServers] = useState(false)
   const localProfile = useLocalProfile()
+  const requiredSetup = useRequiredFeatureSetup()
   const [appSettingsBusy, setAppSettingsBusy] = useState(false)
   const [serverNotification, setServerNotification] = useState<{ id: string; name: string; connectionId?: string } | null>(null)
   const [serverNotificationBusy, setServerNotificationBusy] = useState(false)
@@ -538,6 +540,7 @@ export function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (!requiredSetup.ready) return
       if (document.querySelector('dialog[open]') && !commandPaletteOpen) return
       const target = event.target
       const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
@@ -559,7 +562,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [commandPaletteOpen, hostMobileDetail, snapshot?.mode, workspacePage])
+  }, [commandPaletteOpen, hostMobileDetail, snapshot?.mode, workspacePage, requiredSetup.ready])
 
   const applySnapshot = useCallback((next: Snapshot) => {
     snapshotEpochRef.current += 1
@@ -581,6 +584,7 @@ export function App() {
     importReview, confirmImport, cancelImport, firstSessionProfileId, dismissFirstSessionGuide, pausedSetupProfileId
   } = setup
   const beforeLeavingApp = async () => {
+    if (!requiredSetup.ready) return !localProfile.saving && !requiredSetup.busy
     if (!await beforeChangingScope(false)) return false
     const pcEdits = serverAccessDevice && (serverAccessDirty || deadlineDraftState.dirty ||
       (deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() !== serverAccessDevice.name ||
@@ -1657,6 +1661,7 @@ export function App() {
   }
 
   const navigateWorkspace = (page: WorkspacePage) => {
+    if (!requiredSetup.ready) return
     if (page === 'attention' || page === 'settings' ||
       (page === 'host' && snapshot?.mode === 'Host' && modeSwitchesInFlight.current === 0) ||
       (page === 'join' && snapshot?.mode === 'Friend' && modeSwitchesInFlight.current === 0)) {
@@ -1712,6 +1717,7 @@ export function App() {
     })
   }
   notificationNavigationRef.current = target => {
+    if (!requiredSetup.ready) return
     void (async () => {
       if (!await beforeChangingScope()) return
       const destination = workspaceDestination(target)
@@ -1913,6 +1919,29 @@ export function App() {
     if (await confirm({ title: 'Resume hosting?', confirmLabel: 'Resume hosting', description: 'TogetherServer uses the normal Start checks and will never start a second copy of a process it reattached to.' }))
       void run(`resume-${profileId}`, `/api/local/profiles/${profileId}/resume-hosting`, 'POST')
   }
+
+  if (!requiredSetup.ready) return <><RequiredFeatureSetup setup={requiredSetup} appName={appInstance?.displayName}
+    renderStep={(feature, complete, busy) => feature.id === 'profile-name' && feature.revision === 1
+      ? <ProfileSettings profile={localProfile} required busy={busy} onSaved={complete} /> : null}
+    safety={<details className="required-setup-safety"><summary>Existing hosting and recovery</summary>
+      <p className="helper-text">Existing hosting and connection checks keep running during setup. You can request a graceful Stop or review local data here.</p>
+      {loadError && <p role="alert" className="warning-text">Connection to this local app failed: {loadError}</p>}
+      <ActionFeedback notice={notice} />
+      {snapshot?.mode === 'Friend' && <Button className="secondary" disabled={!!pending || localProfile.saving || requiredSetup.busy}
+        onClick={() => void switchMode('host')}>Review hosting on this PC</Button>}
+      {snapshot?.mode === 'Host' && snapshot.runs.filter(item => item.state !== 'Offline').map(item => <div className="required-setup-safety-row" key={item.profileId}>
+        <span>{snapshot.settings.profiles.find(profile => profile.id === item.profileId)?.name ?? 'Recorded server'} / {item.state}</span>
+        {['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(item.state) ? <Button className="secondary" disabled={!!pending || item.state === 'Stopping'} onClick={async () => {
+          if (await confirmOwnerLifecycle(item.profileId, 'Stop')) void run(`stop-${item.profileId}`, `/api/local/profiles/${item.profileId}/stop`, 'POST')
+        }}>Stop server</Button> : <small>Review the recorded process in local recovery. An uncertain process cannot be stopped here.</small>}</div>)}
+      {dataRecovery && <DataRecoveryPanel recovery={dataRecovery} mode={snapshot?.mode ?? null}
+        runs={snapshot?.mode === 'Host' ? snapshot.runs : []}
+        configuredProfileIds={snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : []}
+        pending={pending} confirmed={recoveryConfirmed} onConfirmedChange={setRecoveryConfirmed}
+        onAcknowledge={() => void acknowledgeDataRecovery()} onSwitchToHost={() => void switchMode('host')}
+        onStopRecordedRun={profileId => void run(`recovery-stop-${profileId}`, `/api/local/profiles/${profileId}/stop`, 'POST')}
+        onForgetRecordedRun={profileId => void run(`recovery-forget-${profileId}`, `/api/local/profiles/${profileId}/forget`, 'POST')} />}
+    </details>} />{confirmationDialog}</>
 
   return <div className={appInstance?.isStaging ? 'shell app-shell staging-shell' : 'shell app-shell'}>
     <header className="topbar">

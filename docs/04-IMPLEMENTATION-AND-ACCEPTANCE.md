@@ -27,6 +27,18 @@ Keep the project small and deliver working vertical slices. Start implementation
 
 ## Slice 2 — Friend mode and public-control protocol
 
+- Required app setup must cover a new installation, portable replacement and
+  old-version data with no profile name. A valid existing name must skip the
+  profile step. Source checks cover persisted per-feature revisions, later
+  revisions/new requirements, incomplete settings, corrupt or write-failed
+  progress and exact local request/gate checks. Component/shell checks must keep
+  ordinary UI, shortcuts and native-notification destinations gated through
+  loading, errors and unknown/missing steps; preserve drafts on retry; recheck
+  authoritative settings after completion; and retain confirmed safe Stop and
+  recovery while background hosting/polling continue. Installer/native/update
+  relaunch acceptance still requires an approved separate Windows session. See
+  [required feature setup delivery](29-REQUIRED-FEATURE-SETUP.md).
+
 - Add persistent owner-created server codes, pinned Host TLS identity, Friend outbound heartbeat, saved Host address, explicit per-friend server assignments, per-server Start/Stop/Extend permissions with global defaults, and typed remote actions. A code remains active until deliberately replaced and initially grants only its encoded server; every PC receives separate revocable access. Only the loopback owner GUI may approve a waiting PC or reassign a connected PC to zero, one, or several current saved profiles. Use one small HTTPS listener; the Host GUI remains loopback-only.
 - Implement the owner remote-control toggle and notice. Disabled remote Start/Stop must fail server-side immediately; status/heartbeat still communicates Disabled. Revoke one device and prove its credential stops working while another remains valid.
 - Test retry/idempotency, invalid token, wrong certificate, wrong effective per-server permission, mixed global permission state, denial for valid saved access against an unassigned server, zero/one/multiple Host reassignment, unknown profile rejection, stale/Unknown heartbeat, Host restart, and at least two instances on separate local processes. Exercise a code after long elapsed time and multiple PC connections, optional approval, deliberate code replacement with old-access removal, per-PC removal, rename, reachable and offline Forget, maintenance, redacted activity, and fixed timer-extension limits. Older unscoped credentials must migrate with no server access until the Host assigns them. These tests do not prove public Internet reachability.

@@ -43,8 +43,8 @@ internal static class UserProfileChecks
         }
         Require(!data.UserProfile.Save(null).Ok, "local null was confused with an explicit clear");
         Require(data.UserProfile.Save(new string('a', 80)).Ok, "the exact UTF-16 name limit was rejected");
-        Require(data.UserProfile.Save("   ").Ok && new UserProfileStore(data).View().DisplayName == "",
-            "an explicit blank did not durably clear the name");
+        Require(!data.UserProfile.Save("   ").Ok && new UserProfileStore(data).View().DisplayName == new string('a', 80),
+            "a blank bypassed required profile setup or erased the saved name");
     }
 
     private static async Task CheckLocalRoutesAsync(string root)

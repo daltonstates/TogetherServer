@@ -98,6 +98,13 @@ Automatic shutdown uses the same Host-only authority and final driver count. Fri
 
 ## Owner approval gates
 
+The local required-setup registry checks current saved configuration and optional
+per-feature revision acknowledgements. Only exact same-origin loopback requests
+can acknowledge registered current revisions. Missing setup data or a forged
+acknowledgement never grants identity, permissions or game lifecycle authority.
+Safe Stop and recovery remain available while ordinary UI waits for setup. See
+[required feature setup](29-REQUIRED-FEATURE-SETUP.md).
+
 `game-requirements-v1` and `server-notices-v1` are additive capabilities. The requirements GET resolves only an assigned saved profile, requires a compatible protocol plus the exact feature capability header, rejects query/body input, and atomically rechecks current device access/assignment before and after the asynchronous metadata read. Responses are capped at 64 KiB, with at most 64 add-ons and 48-character versions; Host observation has a four-second deadline. The Friend proxy bounds declared and streamed bytes before JSON decoding, checks the returned scope/fields, and reauthenticates after local discovery. No profile path, protected state, credential, URL, executable choice, command or argument leaves through this response. Observed, owner-reported and manual sources stay distinct; unknown metadata is not a compatibility pass.
 
 Every new local feature route requires the exact local header, rejects queries, enforces Host or Join role through the mode/update gate, and rejects GET bodies. Mutations use bounded streamed input and exact field/duplicate/type checks. Backup bookmark, weekly summary, game settings/list, owner notice and owner requirement mutations have no companion counterpart. Open game accepts only an assigned profile ID and an empty POST body, verifies fresh pinned authenticated access before and after read-only availability inspection, and dispatches one fixed reviewed URI on the explicit click. It never accepts a Friend-selected address/path/URI/argument or Host-supplied client command. Missing completed local Steam metadata refuses dispatch so no game installation is requested.

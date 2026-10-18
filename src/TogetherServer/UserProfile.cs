@@ -68,9 +68,9 @@ internal sealed class UserProfileStore
     {
         lock (sync)
         {
-            if (displayName is null || !UserProfileName.TryNormalize(displayName, out var name))
-                return new(false, "InvalidProfileName", "Use up to 80 characters without line breaks or hidden formatting.", profile.DisplayName);
-            var next = new UserProfileView(name ?? "");
+            if (displayName is null || !UserProfileName.TryNormalize(displayName, out var name) || name is null)
+                return new(false, "InvalidProfileName", "Enter your name using 1 to 80 characters without line breaks or hidden formatting.", profile.DisplayName);
+            var next = new UserProfileView(name);
             // Publish only after the protected atomic write succeeds.
             data.SaveProtected(FileName, JsonSerializer.SerializeToUtf8Bytes(next, Json));
             profile = next;

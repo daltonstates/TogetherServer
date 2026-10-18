@@ -115,6 +115,14 @@ The Host interface stays on loopback. For the Friend API, prefer a Host-generate
 
 ## Scope discipline
 
+Required setup uses a fixed local registry and one reusable React step surface.
+Feature IDs/revisions and current
+saved configuration decide completion; explicit reviews may require a persisted
+revision acknowledgement. First app opening after installation or replacement
+checks the same local registry. Missing/error/unknown steps keep ordinary UI
+behind setup while background supervision and safe Stop/recovery remain usable.
+See [required feature setup](29-REQUIRED-FEATURE-SETUP.md).
+
 The six new slices reuse these boundaries. HostManager partials project bounded game requirements, backup bookmarks and weekly summaries, and guard simple settings through existing maintenance/offline/setup-checkpoint/hash/Undo controls. `GameCompatibility` reads only fixed reviewed metadata; protected owner versions bind to profile identity. `FriendLink.GameCompatibility` uses the saved pinned client, bounded response decoding, current assignment rechecks and an injected client-discovery/launch boundary. `GameClientLaunch` maps only three fixed Steam URIs; asynchronous availability inspection is followed by fresh authenticated status before dispatch. No Host string becomes an executable or argument. A manual Minecraft fallback adds no native picker or stored launcher path.
 
 Pinned notices are separate protected owner/current and verified Friend-copy records on the existing signed chat transport. Signed clears and monotonic revisions survive chat pruning; Friend merge cannot mutate owner notices. Backup catalog names/pins are separate from immutable completion/payload/setup hashes. The weekly projection uses archived typed session evidence without process queries, logs or lifecycle side effects. The independent `TogetherServer.FeatureChecks` entry point links only the dedicated pure/file/fake-adapter checks and never invokes the process-running legacy Program. See [the six-feature record](14-SIX-FEATURE-DELIVERY.md) for routes and remaining verification.

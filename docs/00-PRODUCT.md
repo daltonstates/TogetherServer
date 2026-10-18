@@ -23,12 +23,18 @@ Let the owner host a dedicated game server on a Windows PC and let a small, know
 
 ## People and modes
 
-Each PC may save a display name under **App Settings → Profile**, also linked
-from Host and Join. The app automatically exchanges it with the other party
+Each PC sets a display name through required setup before first use, including
+after an upgrade when it is missing. A valid existing name skips that step.
+**App Settings → Profile**, also linked from Host and Join, can edit the name.
+The app automatically exchanges it with the other party
 during pairing and authenticated refreshes, including existing pairings. The
 person's name appears alongside the separate PC label or local Host alias and
 on new chat posts. The initial name is empty; no Windows account name is read.
 Names are display information and do not verify identity or grant permissions.
+The reusable required-setup flow tracks independent feature revisions, preserves
+completed steps across updates and does not treat loading/errors as completion.
+Existing hosting and Friend polling continue, with safe Stop and local recovery
+available during setup. See [required feature setup](29-REQUIRED-FEATURE-SETUP.md).
 
 - **Owner / Host mode:** configures a game server and its world, starts or stops it, and invites Friends. Minecraft setup can find an existing server or install a fresh official server after the owner accepts its terms in the app. Valheim setup includes a protected game password. A Custom game profile runs only owner-authored/reviewed PowerShell actions under the Host's Windows account. Installed paths, ports, multiple servers, and remote Stop safety live in secondary settings. The Host app supervises game processes and shows honest status and errors.
 - **Friend mode:** each friend runs the same app on the PC used to play. Each pasted server code creates a distinct credential that initially grants only that server. The Host may later assign the PC to zero, one, or several saved servers and may attach a separate owner-defined UTC access deadline to that PC. The app sends authenticated heartbeats, displays only assigned Host servers and their reported online-player counts, and requests only actions the owner grants while owner access remains active. When that exact assigned server has a separate View logs grant and advertises the log capability, the app can show a bounded sanitized Valheim, Minecraft Java, or Minecraft Bedrock tail from only its exact active run; Start and Stop do not imply log access. Owner access expiry does not revoke or delete the credential or assignments, so only the local owner can extend or clear it.

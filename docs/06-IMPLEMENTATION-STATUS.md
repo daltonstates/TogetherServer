@@ -1358,3 +1358,22 @@ Vite chunk-size warning remains. Symbolic-link subcases are skipped; native,
 rendered/browser, packaged-process and real Friend-PC/network acceptance remain
 unverified under the active-desktop constraint. Production was not launched,
 replaced or modified, and no release was published.
+
+## 2026-10-18 - Required setup for new and upgraded installations
+
+Required setup now runs before the ordinary workspace on first app opening
+after installation, portable replacement or update. It asks for a missing name,
+keeps valid existing names, and reuses the Profile editor. The fixed registry
+and reusable React step renderer support independent feature revisions and
+persisted review acknowledgements for future required features. Loading/errors
+cannot bypass setup. Background supervision/polling continue, with confirmed
+Stop and recovery available even when the app last opened on Join.
+
+PASS the code-only gate and all **44 source/synthetic groups**, **1,102 JSDOM
+tests across 91 files**, final UI lint/typecheck/bundle, and final app compilation
+embedding that bundle with zero .NET warnings/errors. The existing Vite chunk
+warning and unsupported symbolic-link subcase remain. Installer/native/rendered
+UI, packaged update/relaunch and real Friend-PC/game checks remain unverified
+under the active-desktop constraint. See [delivery, reuse instructions and
+remaining acceptance](29-REQUIRED-FEATURE-SETUP.md). No production app was launched
+or replaced, and no release was published.

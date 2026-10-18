@@ -183,6 +183,8 @@ ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
     () => !friendMode && !updatePending && !shutdownPending);
 UserProfileLocalRoutes.Map(app, data.UserProfile, modeGate,
     () => !updatePending && !shutdownPending);
+RequiredFeatureSetupLocalRoutes.Map(app, new RequiredFeatureSetupService(data), modeGate,
+    () => !updatePending && !shutdownPending);
 // As with the existing save action, HostManager owns capture serialization.
 // Do not hold modeGate through a long adapter wait: safe Stop and exact-request
 // cancellation must remain able to enter their existing lifecycle paths.

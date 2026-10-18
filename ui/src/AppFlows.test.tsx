@@ -127,7 +127,8 @@ beforeEach(() => {
   host().runs[0].playerCountObservedUtc = new Date().toISOString()
   transport.read.mockReset().mockImplementation(async (path: string) => {
     if (path === '/api/local/snapshot') return state
-    if (path === '/api/local/profile') return { displayName: '' }
+    if (path === '/api/local/profile') return { displayName: 'Alex' }
+    if (path === '/api/local/required-setup') return { features: [{ id: 'profile-name', revision: 1, title: 'Your name', description: 'Share your name.', completed: true }] }
     if (path === '/api/local/data-recovery') return { lifecycleBlocked: recoveryBlocked, notices: [] }
     if (path === '/api/local/instance') return instance
     if (path === '/api/local/companion') return companion
@@ -175,6 +176,188 @@ function mutationCalls() {
 function expectNoMutation() {
   expect(mutationCalls()).toHaveLength(0)
 }
+
+describe('required app setup shell gate', () => {
+  const nameFeature = { id: 'profile-name', revision: 1, title: 'Your name', description: 'Share a name your friends recognize.', completed: false }
+  function pendingSetup(initialName = '') {
+    let displayName = initialName
+    let completed = false
+    let setupFailure = ''
+    let completionFailure = ''
+    let checkFailureAfterSave = false
+    let extraFeature = false
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path === '/api/local/profile') return { displayName }
+      if (path === '/api/local/required-setup') {
+        if (setupFailure || checkFailureAfterSave && displayName) throw new Error(setupFailure || 'Setup check unavailable')
+        return { features: [{ ...nameFeature, completed: completed || !!displayName },
+          ...(extraFeature ? [{ ...nameFeature, id: 'later-feature', title: 'Later feature' }] : [])] }
+      }
+      return read(path, ...args)
+    })
+    transport.change.mockImplementation(async (path: string, _method: string, _decoder: unknown, body: Record<string, unknown>) => {
+      if (path === '/api/local/profile') {
+        displayName = String(body.displayName)
+        return { ok: true, code: 'Saved', message: 'Saved', displayName }
+      }
+      if (path === '/api/local/required-setup/profile-name/complete') {
+        if (completionFailure) return { ok: false, code: 'Unavailable', message: completionFailure, features: [nameFeature] }
+        completed = true
+        return { ok: true, code: 'Completed', message: 'Completed', features: [{ ...nameFeature, completed }] }
+      }
+      return { ok: true, code: 'Requested', message: 'Request accepted.', snapshot: state }
+    })
+    return {
+      failLoad: (value: string) => { setupFailure = value },
+      failCompletion: (value: string) => { completionFailure = value },
+      failCheckAfterSave: (value: boolean) => { checkFailureAfterSave = value },
+      addLaterFeature: () => { extraFeature = true }
+    }
+  }
+
+  it.each(['fresh installation', 'legacy upgrade'])('requires a name on %s and blocks shortcuts and notification navigation until completion', async () => {
+    pendingSetup()
+    const notify = nativeNotifications()
+    localStorage.setItem('together-required-setup-complete', 'true')
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Your name' })
+    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'App settings' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Commands' })).not.toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    fireEvent.keyDown(window, { key: '2', altKey: true })
+    fireEvent.keyDown(window, { key: '4', altKey: true })
+    await notify({ workspace: 'join', section: 'play', profileId: id, connectionId: secondPcId })
+    expect(screen.queryByRole('dialog', { name: /command/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Contract fixture workspace' })).not.toBeInTheDocument()
+    expect(transport.change.mock.calls.some(([path]) => path.startsWith('/api/local/mode/'))).toBe(false)
+    expect(screen.getByText('Save and continue')).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '  Sam  ' } })
+    fireEvent.click(screen.getByText('Save and continue'))
+    await screen.findByRole('region', { name: 'Contract fixture workspace' })
+    expect(transport.change.mock.calls.find(([path]) => path === '/api/local/profile')?.[3]).toEqual({ displayName: 'Sam' })
+    expect(transport.change.mock.calls.find(([path]) => path.endsWith('/complete'))?.[3]).toEqual({ revision: 1 })
+    expectNoServerAction()
+  })
+
+  it('skips setup for a preserved name and lets the owner edit it in normal Profile settings', async () => {
+    pendingSetup('Alex')
+    await openHost()
+    expect(screen.queryByRole('region', { name: 'Required app setup' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit profile' }))
+    expect(await screen.findByRole('heading', { name: 'Profile' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Your name')).toHaveValue('Alex')
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Sam' } })
+    fireEvent.click(screen.getByText('Save name'))
+    await screen.findByText('Profile saved. Your name is shared with connected PCs.')
+    expectNoServerAction()
+  })
+
+  it('keeps setup visible after a failed initial check and rechecks before showing any workspace', async () => {
+    const setup = pendingSetup()
+    setup.failLoad('Setup unavailable')
+    render(<App />)
+    await screen.findByText('Setup unavailable')
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    setup.failLoad('')
+    fireEvent.click(screen.getByText('Retry setup'))
+    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
+    setup.failCheckAfterSave(true)
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Sam' } })
+    fireEvent.click(screen.getByText('Save and continue'))
+    await screen.findByText('Setup check unavailable')
+    expect(screen.getByLabelText('Your name')).toHaveValue('Sam')
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    setup.failCheckAfterSave(false)
+    fireEvent.click(screen.getByText('Retry setup'))
+    await screen.findByRole('region', { name: 'Contract fixture workspace' })
+  })
+
+  it('preserves the name after completion failure and shows a later required feature after restart', async () => {
+    const setup = pendingSetup()
+    setup.failCompletion('Completion unavailable')
+    const view = render(<App />)
+    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Sam' } })
+    fireEvent.click(screen.getByText('Save and continue'))
+    await screen.findByText('Completion unavailable')
+    expect(screen.getByLabelText('Your name')).toHaveValue('Sam')
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    view.unmount()
+    setup.addLaterFeature()
+    render(<App />)
+    await screen.findByRole('alert')
+    expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expectNoServerAction()
+  })
+
+  it('keeps confirmed graceful Stop available during setup without revealing Start, Restart or ordinary navigation', async () => {
+    pendingSetup()
+    host().runs[0].state = 'Ready'
+    host().runs[0].onlinePlayers = 2
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Your name' })
+    fireEvent.click(screen.getByText('Existing hosting and recovery'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop server' }))
+    const confirmation = await screen.findByRole('dialog', { name: 'Stop Contract fixture?' })
+    expect(confirmation).toHaveTextContent('2 reported players')
+    expectNoServerAction()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop server' }))
+    await waitFor(() => expect(transport.change.mock.calls.filter(([path]) => path.endsWith('/stop'))).toHaveLength(1))
+    expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+  })
+
+  it('can review this PC hosting from a saved Join page while required setup stays gated', async () => {
+    const hosting = structuredClone(host())
+    hosting.runs[0].state = 'Ready'
+    state = friend()
+    pendingSetup()
+    const change = transport.change.getMockImplementation()!
+    transport.change.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path === '/api/local/mode/host') {
+        state = hosting
+        return { ok: true, code: 'ModeChanged', message: 'Hosting view selected.', snapshot: state }
+      }
+      return change(path, ...args)
+    })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Your name' })
+    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Unfinished name' } })
+    fireEvent.click(screen.getByText('Existing hosting and recovery'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review hosting on this PC' }))
+    expect(await screen.findByRole('button', { name: 'Stop server' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Your name')).toHaveValue('Unfinished name')
+    expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expectNoServerAction()
+  })
+
+  it('exposes existing local recovery while setup is blocked and never reveals the workspace through acknowledgement', async () => {
+    pendingSetup()
+    recoveryBlocked = true
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/data-recovery'
+      ? { lifecycleBlocked: recoveryBlocked, notices: [{ stateFile: 'required-setup.protected', quarantinedFile: 'required-setup.bad', reason: 'Synthetic unreadable setup record', detectedUtc: '2026-10-18T12:00:00Z', blocksLifecycle: true }] }
+      : read(path, ...args))
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Your name' })
+    fireEvent.click(screen.getByText('Existing hosting and recovery'))
+    await screen.findByRole('heading', { name: 'Local data needs review' })
+    fireEvent.click(screen.getByRole('checkbox', { name: 'I confirm no game server managed by TogetherServer is still running.' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and re-enable server controls' }))
+    await waitFor(() => expect(transport.change.mock.calls.some(([path]) => path === '/api/local/data-recovery/acknowledge')).toBe(true))
+    expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expectNoServerAction()
+  })
+})
 
 function serverSections() {
   return within(screen.getByRole('navigation', { name: 'Selected server sections' }))
@@ -286,6 +469,7 @@ describe('Task-first app and Host PC navigation', () => {
         fireEvent.click(workspaces().getByRole('button', { name: 'Host' }))
         await screen.findByRole('region', { name: 'Contract fixture workspace' })
       }
+      await act(async () => { await Promise.resolve() })
       fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
       const settings = await screen.findByRole('region', { name: 'App Settings' })
       expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
@@ -371,19 +555,19 @@ describe('Task-first app and Host PC navigation', () => {
     render(<App />)
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
     await act(async () => { await Promise.resolve() })
-    fireEvent.click(screen.getByRole('button', { name: 'Set your name' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit profile' }))
     const settings = await screen.findByRole('region', { name: 'App Settings' })
     const navigation = within(within(settings).getByRole('navigation', { name: 'App settings sections' }))
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Your name' })).toBeEnabled())
-    fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'Alex' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'Sam' } })
     fireEvent.click(navigation.getByRole('button', { name: 'Appearance' }))
     fireEvent.click(navigation.getByRole('button', { name: 'Profile' }))
-    expect(screen.getByRole('textbox', { name: 'Your name' })).toHaveValue('Alex')
+    expect(screen.getByRole('textbox', { name: 'Your name' })).toHaveValue('Sam')
     fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
     await screen.findByText('Profile saved. Your name is shared with connected PCs.')
     fireEvent.click(workspaces().getByRole('button', { name: mode === 'Host' ? 'Host' : 'Join' }))
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
-    expect(screen.getByText('Sharing as', { exact: false })).toHaveTextContent('Sharing as Alex')
+    expect(screen.getByText('Sharing as', { exact: false })).toHaveTextContent('Sharing as Sam')
     expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/profile'])
     expectNoServerAction()
     expect(state.mode).toBe(mode)
@@ -951,7 +1135,7 @@ describe('Host task structure', () => {
       return read(path, ...args)
     })
     render(<App />)
-    expect(screen.getByText('Loading local state…')).toBeVisible()
+    expect(await screen.findByText('Loading local state…')).toBeVisible()
     finish(state)
     expect(await screen.findByRole('alert')).toHaveTextContent('Synthetic local service unavailable')
     expect(await screen.findByRole('region', { name: 'Contract fixture workspace' }, { timeout: 4500 })).toBeInTheDocument()
