@@ -1,10 +1,12 @@
 // Browser automation is authorized ONLY on the explicitly selected hosted Windows runner.
+// The exact --list invocation emits pure inventory and exits before output writes or capture setup.
 // Keep this guard before imports, filesystem reads, servers, or browser side effects.
 const args = process.argv.slice(2);
-if (!args.includes('--allow-isolated-browser-tests') ||
+const listOnly = args.length === 1 && args[0] === '--list';
+if (!listOnly && (!args.includes('--allow-isolated-browser-tests') ||
     args.indexOf('--hosted-runner') < 0 || args[args.indexOf('--hosted-runner') + 1] !== 'github-actions' ||
     process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_OS !== 'Windows' ||
-    process.env.RUNNER_ENVIRONMENT !== 'github-hosted' || process.platform !== 'win32') {
+    process.env.RUNNER_ENVIRONMENT !== 'github-hosted' || process.platform !== 'win32')) {
   throw new Error('Refusing browser execution: requires --allow-isolated-browser-tests --hosted-runner github-actions on an actual github-hosted Windows runner (GITHUB_ACTIONS=true, RUNNER_OS=Windows, RUNNER_ENVIRONMENT=github-hosted). Never run on the owner desktop.');
 }
 
@@ -20,7 +22,7 @@ const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.
 const { extraCases: accessReviewCases } = await import('./ui-polish-access-review.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'local-data/ui-redesign-visual-review');
-await mkdir(output, { recursive: true });
+if (!listOnly) await mkdir(output, { recursive: true });
 const manifest = {
   version: 1, evidence: 'Actual bundled React UI; synthetic responses only. No game, .NET, production storage, network or real-world acceptance.',
   authorization: { explicitFlags: args, hostedRunner: 'github-actions', runnerOS: process.env.RUNNER_OS, runId: process.env.GITHUB_RUN_ID ?? null },
@@ -39,7 +41,7 @@ const saveManifest = () => {
   manifestWrites = write;
   return write;
 };
-await saveManifest();
+if (!listOnly) await saveManifest();
 
 // The inventory is explicit so a disappeared screen cannot silently reduce coverage.
 const heading = name => ({ role: 'heading', name });
@@ -301,7 +303,11 @@ manifest.acceptanceBoundaries = [
   'Synthetic signed data and test statuses are presentation fixtures. No real signing, peer connection, game readiness, world transfer or game acceptance is performed.',
   'Loading, request failure, empty, blocked and progress states must be labeled by their scenario and exact source in each capture.'
 ];
-manifest.inventory = plans.map(({ testCase, variant }) => ({ id: `${testCase.id}--${variant.id}`, scenario: testCase.scenario, workspace: testCase.workspace, section: testCase.section ?? null, expectedScreen: { ...testCase.screen, name: String(testCase.screen.name ?? '') }, ...variant }));
+manifest.inventory = plans.map(({ testCase, variant }) => ({ ...variant, id: `${testCase.id}--${variant.id}`, scenario: testCase.scenario, workspace: testCase.workspace, section: testCase.section ?? null, expectedScreen: { ...testCase.screen, name: String(testCase.screen.name ?? '') } }));
+if (listOnly) {
+  process.stdout.write(`${JSON.stringify({ coverage: manifest.coverage, inventory: manifest.inventory }, null, 2)}\n`);
+  process.exit(0);
+}
 await saveManifest();
 
 function locatorFor(page, screen) {
@@ -1022,11 +1028,11 @@ try {
 } finally {
   if (browser) await browser.close();
   if (server) await new Promise(resolveClose => server.close(resolveClose));
-  manifest.summary = { planned: plans.length, attempted: manifest.cases.length, screenshots: manifest.cases.reduce((count, entry) => count + entry.screenshots.length, 0),
-    failed: manifest.cases.filter(entry => entry.status === 'failed').length, layoutFindings: manifest.cases.reduce((count, entry) => count + entry.layoutFindings.length, 0),
-    intentionalErrorCases: manifest.cases.filter(entry => entry.deliberateFailures.length).length, skipped: plans.length - manifest.cases.length };
   const attempted = new Set(manifest.cases.map(entry => entry.id));
   manifest.skippedCases = manifest.inventory.filter(entry => !attempted.has(entry.id)).map(entry => ({ ...entry, status: 'skipped', reason: 'Run ended before this case; see fatalErrors. No screen assertion or capture performed.' }));
+  manifest.summary = { planned: plans.length, attempted: manifest.cases.length, screenshots: manifest.cases.reduce((count, entry) => count + entry.screenshots.length, 0),
+    failed: manifest.cases.filter(entry => entry.status === 'failed').length, layoutFindings: manifest.cases.reduce((count, entry) => count + entry.layoutFindings.length, 0),
+    intentionalErrorCases: manifest.cases.filter(entry => entry.deliberateFailures.length).length, skipped: manifest.skippedCases.length };
   manifest.status = manifest.fatalErrors.length || manifest.summary.failed || manifest.summary.skipped ? 'failed' : manifest.summary.layoutFindings ? 'captured-with-layout-findings' : 'captured-awaiting-visual-inspection';
   await saveManifest();
   await writeGallery();

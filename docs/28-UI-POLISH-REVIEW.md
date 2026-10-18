@@ -5,6 +5,11 @@ stacked settings and repeated explanations. This work changes presentation and
 navigation; existing lifecycle, permission, consent and world-safety gates remain
 authoritative.
 
+Final result: **267 recorded screen/state cases, 844/844 capture plans and 2,438
+screenshots reviewed**, with no confirmed remaining UI defect in that inventory.
+The final UI build, 1,074 UI tests, code-only verification and hosted rendered
+gate pass. Gallery, capture accounting and acceptance limits follow below.
+
 ## Delivered surfaces
 
 - Desktop Host, Join and App Settings have independently scrolling contextual
@@ -146,7 +151,7 @@ The code-only verifier was rerun against `c5cfaa7` and passes with zero build
 warnings/errors; the source-link privilege and interactive acceptance skips
 remain explicit. No production app or process fixture was launched locally.
 
-### Complete capture and final visual findings
+### Complete capture and visual findings
 
 Hosted Windows run [39143788396](https://github.com/daltonstates/TogetherServer/actions/runs/39143788396)
 at `c5cfaa731114926d7d14daf6dc13d4e1a0c37b17` passed **844/844** planned
@@ -184,7 +189,60 @@ files**, plus TypeScript, lint and the production UI build. The existing bundle
 size advisory remains. Renderer/fixture checks pass **24/24** after updating the
 obsolete two-disclosure expectation. Horizontal capture calculations also pass
 the pure checks, including clipped readers and missing-corner counterexamples.
-Final hosted capture results will be recorded before delivery.
+Final hosted capture results follow.
+The code-only verifier also passes at final implementation commit `c11b249`,
+with zero solution build warnings/errors and the same explicit source-link and
+interactive skips. This final pass launched no app or fixture locally.
+
+### Final capture and sign-off
+
+Hosted Windows run [39145708393](https://github.com/daltonstates/TogetherServer/actions/runs/39145708393)
+passes at final UI revision `c11b249fd67008011c6593ebf988b106d166e7d4`:
+**267 screen/state cases, 844/844 viewport plans and 2,438 PNGs**. There are zero
+failed cases, layout findings, fatal errors or missing image files. The 39 narrow
+150% plans and four short-desktop plans remain included. The ZIP SHA-256 is
+`0BD18EC693ED0A7258FC8881626CFB16E4D6573BA53E7584D049CE447376CD91`.
+
+The final hosted index SHA-256
+`E59AB0344C9A8D8A92F2BB3A3A5BEAEB47261229E2901D14664FD80737CFA69C`
+matches the local production UI build. All **542 vertical pane** range unions
+are complete. Both overflowing file-diff readers have complete row-and-column
+coverage across **28 horizontal companion PNGs**. Five independent wheel probes
+leave the other pane unchanged, three keyboard probes reveal the final sidebar
+item and all seven visible short-desktop picker buttons pass hit testing.
+
+The immutable artifact has a bookkeeping defect: a trailing variant spread
+overwrites inventory IDs, falsely populating `skippedCases` with 844 records even
+though `summary.skipped` is zero. The renderer now retains full case/variant IDs
+and derives skipped totals from those identities. Pure checks cover complete,
+partial and duplicate-attempt accounting. A separate read-only `--list` audit
+matches **all 844 unique planned IDs to all 844 actual IDs**, including scenario,
+workspace, theme, text scale and viewport, with no missing, unexpected, duplicate
+or mismatched entry. **Actual skips are zero.** Original ZIP/manifest evidence is
+preserved; the reconciliation is saved separately in
+`local-data/ui-polish-review/signoff-39145708393-inventory-audit.json`.
+This metadata-only correction does not change the reviewed application bundle.
+
+The final comparison reuses **1,752 exact previously reviewed PNG hashes**. Its
+fresh index contains **103 contact sheets / 686 changed or new PNGs**: Host
+43 / 279, sharing 32 / 217, Settings 7 / 41 and Join/global 21 / 149. The Join
+150% originals confirm normal instruction wrapping and short, aligned summary
+rows; the repeated instruction disclosure is gone. **All 103 fresh sheets were
+visually inspected**, plus all 28 horizontal originals, five sharing originals
+and two Join originals. Every remaining PNG matches previously reviewed bytes.
+No confirmed UI defects remain in the recorded inventory. The independent
+inventory audit also records exact Host sheet and original-image lists.
+
+The searchable gallery is
+`local-data/ui-polish-review/signoff-39145708393/index.html`; its raw screenshots,
+per-case JSON, range evidence and exact-hash review comparison remain beside it.
+The downloaded ZIP is `local-data/ui-polish-review/signoff-39145708393.zip`.
+Final application validation passes **1,074 UI tests in 89 files**, TypeScript,
+lint, production UI build and the code-only verifier. Final renderer metadata
+checks pass **24/24**; no further UI or backend change follows the captured build.
+The final documentation/inventory-only commit skips another hosted capture;
+its metadata/guard/accounting regressions pass locally, and the recorded UI
+build and screenshot evidence remain unchanged.
 
 The previous screenshot fixture inventory had drifted from the recent
 Backups tabs and peer-world UI; this review updates it against the actual bundled

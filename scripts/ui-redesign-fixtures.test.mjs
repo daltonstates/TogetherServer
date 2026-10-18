@@ -533,8 +533,10 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   const flags = ['--allow-isolated-browser-tests', '--hosted-runner', 'github-actions'];
   const check = (argv, env, platform = 'win32') => runInNewContext(pureGuard, { process: { argv: ['node', 'renderer', ...argv], env, platform } });
   assert.doesNotThrow(() => check(flags, hosted), 'both flags and the hosted Windows identity pass the pure guard');
+  assert.doesNotThrow(() => check(['--list'], {}, 'linux'), 'the exact inventory-only invocation needs no browser authorization');
   for (const [argv, env, platform] of [
     [[], hosted, 'win32'], [flags, {}, 'win32'],
+    [['--list', '--allow-isolated-browser-tests'], {}, 'win32'], [['--list', 'capture'], {}, 'win32'],
     [['--hosted-runner', 'github-actions'], hosted, 'win32'],
     [['github-actions', '--allow-isolated-browser-tests'], hosted, 'win32'],
     [flags, { ...hosted, RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'],
@@ -554,7 +556,11 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('const heading ='), end = source.indexOf('manifest.inventory =');
   assert.ok(start > 0 && end > start, 'literal inventory has stable boundaries');
-  const { plans } = runInNewContext(source.slice(start, end) + '\n;({plans})', { manifest: {}, worldReviewCases, accessReviewCases });
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const assignment = ast.statements.find(node => ts.isExpressionStatement(node) && node.expression.left?.getText(ast) === 'manifest.inventory');
+  assert.ok(assignment, 'test the actual emitted inventory mapping, including object spread order');
+  const { plans, inventory } = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
+    { manifest: {}, worldReviewCases, accessReviewCases });
   const captures = new Set(plans.map(plan => plan.testCase.id));
   for (const expected of [
     ...['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'].map(id => `host-${id}`),
@@ -570,6 +576,28 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   ]) assert.ok(captures.has(expected), `capture inventory retains ${expected}`);
   const unique = new Set(plans.map(plan => `${plan.testCase.id}--${plan.variant.id}`));
   assert.equal(unique.size, plans.length, 'capture keys are unique');
+  assert.equal(inventory.length, plans.length);
+  assert.equal(new Set(inventory.map(entry => entry.id)).size, plans.length, 'variant spreads cannot replace full capture IDs');
+  for (let index = 0; index < plans.length; index++) {
+    assert.equal(inventory[index].id, `${plans[index].testCase.id}--${plans[index].variant.id}`);
+    assert.equal(inventory[index].theme, plans[index].variant.theme);
+    assert.equal(inventory[index].viewport.width, plans[index].variant.viewport.width);
+  }
+  const accounting = source.slice(source.indexOf('  const attempted = new Set(manifest.cases.map'), source.indexOf('  manifest.status = manifest.fatalErrors.length'));
+  assert.ok(accounting.includes('manifest.skippedCases'), 'exercise the actual final manifest accounting');
+  const account = entries => {
+    const manifest = { inventory, cases: entries.map(entry => ({ id: entry.id, status: 'captured', screenshots: [], layoutFindings: [], deliberateFailures: [] })) };
+    runInNewContext(accounting, { manifest, plans });
+    return manifest;
+  };
+  const completeRun = account(inventory);
+  assert.equal(completeRun.skippedCases.length, 0); assert.equal(completeRun.summary.skipped, 0,
+    'a complete capture run has no skipped records rather than one false skip per variant');
+  const partialRun = account(inventory.filter((_, index) => index !== 7));
+  assert.equal(partialRun.skippedCases.length, 1); assert.equal(partialRun.skippedCases[0].id, inventory[7].id);
+  assert.equal(partialRun.summary.skipped, 1); assert.equal(partialRun.skippedCases[0].status, 'skipped');
+  const duplicateAttempt = account([...inventory.filter((_, index) => index !== 7), inventory[0]]);
+  assert.equal(duplicateAttempt.summary.skipped, 1, 'a duplicate attempted ID cannot disguise a missing planned capture');
   for (const plan of plans) {
     assert.ok(fixtureScenarios.includes(plan.testCase.scenario), `known fixture ${plan.testCase.scenario}`);
     assert.ok(plan.testCase.screen, `${plan.testCase.id} asserts an actual screen`);
