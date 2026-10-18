@@ -105,3 +105,25 @@ Installer, native/rendered UI, packaged update/relaunch and real Friend-PC/game
 acceptance require an approved separate PC or unattended Windows session and
 remain unverified on the owner's active desktop. No running production app,
 real world, credential, public listener or network policy is changed by testing.
+
+## Production artifact handoff (2026-10-18)
+
+Published the self-contained Windows x64 `TogetherServer.exe` from
+`be4b92ff5ad2244fede4cf78080f249c668d0346` to ignored
+`local-data/profile-setup-production-20261018-be4b92f/`.
+The executable is 65,961,820 bytes, file version `0.3.2.0`, and unsigned.
+Its SHA-256 is
+`a3faad1040262f57dd543ee5e50a6cc8897ee20717d0b2065024a0c7c699d214`.
+Adjacent checksum, publish log and JSON evidence record the handoff.
+
+Release publication passed. Static inspection confirmed a Windows x64 GUI
+executable and all four current UI assets embedded byte-for-byte in its publish
+input assembly. The app was not loaded, launched, installed or copied over the
+running app.
+
+The profile/setup changes retain companion protocol 3 and the existing storage
+schemas. Pairing, heartbeat and status names are optional added fields; older
+compatible peers ignore unknown fields, and updated peers accept absent names
+with existing PC/Host labels as fallback. Required setup stays local to the
+updated app. Builds outside the existing protocol compatibility range still
+require an update. Mixed-version real-PC acceptance remains unverified.
