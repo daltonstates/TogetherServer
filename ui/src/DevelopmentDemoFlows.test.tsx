@@ -20,7 +20,7 @@ function DemoApp() {
 
 async function selectServerSection(name: string) {
   const sections = await screen.findByRole('navigation', { name: 'Selected server sections' })
-  const button = within(sections).getByRole('button', { name, exact: true })
+  const button = within(sections).getByRole('button', { name })
   // The app awaits its scope/draft guard before applying a section change.
   // Flush that action and its effects before checking the destination surface.
   await act(async () => { fireEvent.click(button) })
