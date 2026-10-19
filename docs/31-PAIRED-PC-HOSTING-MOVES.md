@@ -39,6 +39,8 @@ The move dialog presents the current step and keeps game Start explicit.
 Rendered enlarged-text review also found a shared-dialog paragraph rule adding
 extra margins inside the move grid. The move grid now owns that spacing, and
 rendered checks bound its heading/copy/field gaps in both directions.
+The shared-workspace paragraph reset also has low specificity so expanded
+permission help can retain its intended spacing; that gap is measured too.
 
 ## Safety and verification
 

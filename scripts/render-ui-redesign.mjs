@@ -1014,6 +1014,8 @@ try {
             const permission = person.querySelector('.host-sharing-host-permission');
             check(permission?.querySelector('strong'), permission?.querySelector('small'), 6, 'permission title to explanation');
             check(permission, permission?.nextElementSibling, 12, 'hosting permission to following detail');
+            const advanced = person.querySelector('.host-sharing-advanced-permissions');
+            check(advanced, advanced?.nextElementSibling, 10, 'advanced permissions to help');
           }
           for (const field of document.querySelectorAll('.host-sharing-handoff-field, .local-hosting-flow > label:not(.local-hosting-consent), .local-hosting-fix > label')) {
             // A text node's range measures the actual label ink above its control.

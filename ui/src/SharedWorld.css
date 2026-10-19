@@ -1,5 +1,5 @@
 .shared-world-workspace { display: grid; gap: 14px; min-width: 0; }
-.shared-world-workspace p { margin: 0; }
+:where(.shared-world-workspace) p { margin: 0; }
 .shared-world-heading { display: grid; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--border, #454545); }
 .shared-world-heading h3 { margin: 0 0 4px; }
 .shared-world-heading > div { min-width: 0; overflow-wrap: anywhere; }
