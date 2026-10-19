@@ -36,6 +36,9 @@ their spacing through explicit grid gaps. The backups page's paragraph reset
 has lower specificity so it cannot override component spacing. Permission
 details and pending-enrollment help have space above and readable line heights.
 The move dialog presents the current step and keeps game Start explicit.
+Rendered enlarged-text review also found a shared-dialog paragraph rule adding
+extra margins inside the move grid. The move grid now owns that spacing, and
+rendered checks bound its heading/copy/field gaps in both directions.
 
 ## Safety and verification
 

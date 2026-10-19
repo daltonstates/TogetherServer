@@ -17,7 +17,7 @@
 .shared-world-workspace .actions { flex-wrap: wrap; }
 .shared-world-workspace .settings-dialog-body { display: grid; gap: 18px; }
 .shared-world-workspace .settings-dialog-body section { min-width: 0; }
-.shared-world-workspace .settings-dialog-body:not(:has(.host-sharing-manager)) p { margin: 10px 0; }
+.shared-world-workspace .settings-dialog-body:not(:has(.host-sharing-manager, .host-sharing-handoff)) p { margin: 10px 0; }
 .shared-hosting-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 0; list-style: none; }
 .shared-hosting-steps li { display: flex; align-items: center; gap: 8px; border-bottom: 2px solid var(--border, #454545); padding: 12px 0; }
 .shared-hosting-steps li[aria-current="step"] { border-color: var(--accent, #ff9b42); font-weight: 700; }

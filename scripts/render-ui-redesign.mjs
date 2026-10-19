@@ -995,11 +995,11 @@ try {
       if (testCase.id.startsWith('move-hosting-')) {
         const spacing = await page.evaluate(() => {
           const results = [];
-          const check = (first, next, minimum, label) => {
+          const check = (first, next, minimum, label, maximum) => {
             if (!first || !next) return;
             const a = first.getBoundingClientRect(), b = next.getBoundingClientRect();
             if (!a.width || !a.height || !b.width || !b.height) return;
-            results.push({ label, minimum, actual: Math.round((b.top - a.bottom) * 100) / 100 });
+            results.push({ label, minimum, maximum, actual: Math.round((b.top - a.bottom) * 100) / 100 });
           };
           for (const copy of document.querySelectorAll('.host-sharing-summary-copy')) {
             check(copy.querySelector('.host-sharing-summary-title'), copy.querySelector('p'), 6, 'save title to status');
@@ -1023,6 +1023,14 @@ try {
               check(range, field.querySelector('select, input:not([type="checkbox"])'), 6, 'hosting field label to control');
             }
           }
+          for (const flow of document.querySelectorAll('.host-sharing-handoff')) {
+            const heading = flow.querySelector(':scope > h4');
+            const copy = heading?.nextElementSibling;
+            const maximum = parseFloat(getComputedStyle(flow).rowGap) + .5;
+            check(heading, copy, 12, 'move heading to explanation', maximum);
+            if (copy?.nextElementSibling?.matches('label'))
+              check(copy, copy.nextElementSibling, 12, 'move explanation to PC field', maximum);
+          }
           for (const card of document.querySelectorAll('.local-hosting-card'))
             check(card.querySelector('h3'), card.querySelector('p'), 4, 'local hosting heading to explanation');
           for (const item of document.querySelectorAll('.local-hosting-checks li'))
@@ -1030,8 +1038,8 @@ try {
           return results;
         });
         record.assertions.push({ sharingSpacing: spacing });
-        record.layoutFindings.push(...spacing.filter(item => item.actual < item.minimum)
-          .map(item => ({ kind: 'cramped-sharing-spacing', ...item })));
+        record.layoutFindings.push(...spacing.filter(item => item.actual < item.minimum || item.actual > item.maximum)
+          .map(item => ({ kind: 'inconsistent-sharing-spacing', ...item })));
         if (hasDialog && await page.getByLabel("Next PC's HTTPS address and port", { exact: true }).count())
           throw new Error('Move hosting still asks the owner to enter the paired PC address.');
       }
