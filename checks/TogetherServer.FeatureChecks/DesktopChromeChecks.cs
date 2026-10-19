@@ -52,6 +52,7 @@ internal static class DesktopChromeChecks
         Require(DesktopWindow.RelativeMaximizedBounds(rightMonitor, workingArea) == new Rectangle(40, 40, 1880, 1040),
             "Custom frame maximization lost the selected monitor or taskbar insets.");
         CheckMaximizedWorkArea();
+        CheckClientBounds();
     }
 
     private static void CheckMaximizedWorkArea()
@@ -87,6 +88,31 @@ internal static class DesktopChromeChecks
             Require(!DesktopChrome.ApplyMaximizedWorkArea(ref unchanged, new(0, 0, 1024, 768), invalid) &&
                     unchanged.MaxPosition == new Point(11, 12) && unchanged.MaxSize == new Point(300, 200),
                 "Invalid work-area dimensions changed the native maximum rectangle.");
+    }
+
+    private static void CheckClientBounds()
+    {
+        Require(Marshal.SizeOf<DesktopNativeRectangle>() == 16 &&
+                Marshal.OffsetOf<DesktopNativeRectangle>("Right").ToInt32() == 8,
+            "The native client rectangle no longer matches the first RECT in NCCALCSIZE_PARAMS.");
+        foreach (var work in new[] { new Rectangle(0, 0, 1024, 720), new Rectangle(-1920, 40, 1920, 1040),
+                     new Rectangle(1960, -1040, 1880, 1040) })
+        foreach (var frame in new[] { 8, 10, 12, 16, 24 })
+        {
+            var outer = Rectangle.Inflate(work, frame, frame);
+            Require(DesktopChrome.ClientBounds(outer, true, work) == work,
+                "Maximized client content extends into Windows' invisible resize frame or taskbar.");
+            Require(DesktopChrome.ClientBounds(outer, false, work) == outer,
+                "Normal borderless bounds were changed by maximized client handling.");
+            var native = new DesktopNativeRectangle();
+            native.SetBounds(DesktopChrome.ClientBounds(outer, true, work));
+            Require(native.Bounds == work && native.Left == work.Left && native.Bottom == work.Bottom,
+                "Native client RECT conversion lost its screen position or size.");
+        }
+        var normal = new Rectangle(-100, 50, 800, 600);
+        Require(DesktopChrome.ClientBounds(normal, true, Rectangle.Empty) == normal &&
+                DesktopChrome.ClientBounds(normal, true, new Rectangle(2000, 0, 100, 100)) == normal,
+            "An unavailable work area changed the proposed client rectangle.");
     }
 
     private static RectangleF Bounds(DesktopCaptionStroke[] strokes)

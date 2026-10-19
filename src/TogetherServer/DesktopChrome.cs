@@ -8,6 +8,21 @@ internal enum DesktopCaptionGlyph { Minimize, Maximize, Restore, Close }
 internal readonly record struct DesktopCaptionStroke(PointF Start, PointF End);
 
 [StructLayout(LayoutKind.Sequential)]
+internal struct DesktopNativeRectangle
+{
+    internal int Left, Top, Right, Bottom;
+    internal readonly Rectangle Bounds => Rectangle.FromLTRB(Left, Top, Right, Bottom);
+
+    internal void SetBounds(Rectangle bounds)
+    {
+        Left = bounds.Left;
+        Top = bounds.Top;
+        Right = bounds.Right;
+        Bottom = bounds.Bottom;
+    }
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal struct DesktopMinMaxInfo
 {
     internal Point Reserved;
@@ -24,6 +39,14 @@ internal static class DesktopChrome
     internal const int WindowStyles = 0x00C00000 | 0x00080000 | 0x00040000 | 0x00020000 | 0x00010000;
     internal const int SystemCommandMessage = 0x0112;
     internal const int RestoreCommand = 0xF120;
+
+    internal static Rectangle ClientBounds(Rectangle proposedWindow, bool maximized, Rectangle workingArea)
+    {
+        if (!maximized || proposedWindow.Width <= 0 || proposedWindow.Height <= 0 ||
+            workingArea.Width <= 0 || workingArea.Height <= 0) return proposedWindow;
+        var visible = Rectangle.Intersect(proposedWindow, workingArea);
+        return visible.Width > 0 && visible.Height > 0 ? visible : proposedWindow;
+    }
 
     internal static bool ApplyMaximizedWorkArea(ref DesktopMinMaxInfo info, Rectangle monitor, Rectangle workingArea)
     {

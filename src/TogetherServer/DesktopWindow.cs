@@ -1078,6 +1078,10 @@ internal sealed class DesktopWindow
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsZoomed(IntPtr window);
+
     private sealed class ChromeCaptionButton(DesktopCaptionGlyph initialGlyph) : Button
     {
         private DesktopCaptionGlyph glyph = initialGlyph;
@@ -1175,10 +1179,9 @@ internal sealed class DesktopWindow
             const int getMinMaxInfo = 0x0024;
             if (message.Msg == getMinMaxInfo)
             {
-                // Preserve WinForms' minimum/maximum track constraints, then
-                // replace the standard frame's inflated maximum rectangle.
-                // Our entire window is client area and needs no hidden frame
-                // outside the monitor work area. This also covers shell actions.
+                // Preserve WinForms' track constraints and set the nominal
+                // maximum to this monitor's work area. Windows can retain an
+                // invisible resize frame; NCCALCSIZE keeps content inside it.
                 base.WndProc(ref message);
                 if (message.HWnd != IntPtr.Zero && message.LParam != IntPtr.Zero)
                 {
@@ -1190,10 +1193,21 @@ internal sealed class DesktopWindow
                 message.Result = IntPtr.Zero;
                 return;
             }
-            if (message.Msg == calculateNonClientSize && message.WParam != IntPtr.Zero)
+            if (message.Msg == calculateNonClientSize && message.LParam != IntPtr.Zero)
             {
-                // Retain the standard native styles for shell behavior, but
-                // use the whole window as our custom-drawn client frame.
+                // Both NCCALCSIZE_PARAMS and the wParam=false RECT begin with
+                // the proposed screen rectangle. Keep normal windows borderless.
+                // A maximized native window may extend beyond the work area by
+                // an invisible, DPI-dependent resize frame. Never draw content
+                // into that frame; use native state because Form.WindowState
+                // can still contain the previous state during this message.
+                if (IsZoomed(message.HWnd))
+                {
+                    var proposed = Marshal.PtrToStructure<DesktopNativeRectangle>(message.LParam);
+                    var screen = Screen.FromRectangle(proposed.Bounds);
+                    proposed.SetBounds(DesktopChrome.ClientBounds(proposed.Bounds, true, screen.WorkingArea));
+                    Marshal.StructureToPtr(proposed, message.LParam, false);
+                }
                 message.Result = IntPtr.Zero;
                 return;
             }
