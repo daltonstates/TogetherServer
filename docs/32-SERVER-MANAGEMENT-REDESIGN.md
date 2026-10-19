@@ -19,6 +19,15 @@ Validation on 2026-10-19:
 - Production UI bundle passed. The existing main-chunk size advisory remains. Packaging PowerShell syntax passed.
 - The tests caught a forgotten Host remaining in the combined directory; canonical connection-list replacement and immediate directory refresh now remove it. A long whole-app demo case exceeded the original five-second allowance under full-suite load; its bounded allowance is now 15 seconds, and all interaction assertions pass. The final count scenario and exact warning-selector assertions also passed.
 
-Ignored local evidence: `local-data/servers-ui-all-final.log`, `servers-ui-final-focused.log`, `servers-code-only-final.log`, `servers-ui-build.log`, and the `app-flows-*-final.log` files. The current source is ready for a fresh isolated demo package; its final static verification will be recorded before handoff.
+Ignored local evidence: `local-data/servers-ui-all-final.log`, `servers-ui-final-focused.log`, `servers-code-only-final.log`, `servers-ui-build.log`, and the `app-flows-*-final.log` files.
 
 No app/game/fixture/browser/native dialog or listener was launched on the owner's active desktop. Native viewport acceptance and real game, save, network and Friend-PC acceptance remain separate from source/JSDOM/package evidence.
+
+Delivered updated local demo built from source commit `cb7370b`:
+
+- `local-data/server-management-demo-20261019-cb7370b/TogetherServer DEVELOPMENT DEMO.exe`
+- `README-DEMO.txt` describes the grouped Servers workflow and all fake scenarios.
+- `package-evidence.json` passed static Windows GUI subsystem 2 verification, exact compressed-bundle assembly equality and hashes for all seven current embedded UI assets. No assembly was loaded or executed by verification.
+- EXE SHA-256: `4EF40EE3F8129CDAEA06624117F68C29A1E4B5818BB21D913C2C56392839B975`. Authenticode: `NotSigned`.
+
+Native publish and static verification passed. Logs: `local-data/server-management-demo-publish.log` and `server-management-demo-package.log`. The package remains closed. Close the earlier demo before opening this one, since both deliberately use the same dedicated demo port/storage; production may remain running.
