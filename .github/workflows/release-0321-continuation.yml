@@ -54,7 +54,7 @@ jobs:
               (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "0.3.2.1+$revision") { throw 'Candidate identity mismatch.' }
           $changed = @(git diff --no-renames --name-only $revision HEAD)
           if ($LASTEXITCODE -ne 0) { throw 'Could not compare verification source.' }
-          $allowed = '^(docs/|checks/TogetherServer\.(MinecraftChecks|CustomChecks)/Program\.cs$|checks/TogetherServer\.CompanionChecks/SharedWorldJourney\.cs$|src/TogetherServer\.MinecraftFixture/Program\.cs$|\.github/workflows/release-0321-continuation\.yml$)'
+          $allowed = '^(docs/|checks/TogetherServer\.(MinecraftChecks|CustomChecks)/Program\.cs$|checks/TogetherServer\.CompanionChecks/SharedWorldJourney\.cs$|checks/staging-smoke\.ps1$|src/TogetherServer\.MinecraftFixture/Program\.cs$|\.github/workflows/release-0321-continuation\.yml$)'
           if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Production code changed after the verified candidate.' }
           $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           try {
@@ -95,6 +95,59 @@ jobs:
           $failedChecks = @($report.checks | Where-Object outcome -eq 'failed')
           if ($failedChecks.Count -ne 1 -or $failedChecks[0].name -ne 'TogetherServer.CustomChecks') { throw 'Unexpected incomplete process check.' }
           'PASS prior completed gates bind to the unchanged candidate. Both failed attempts remain failed.'
+
+      - name: Verify completed runtime acceptance for the same candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtimeRevision = '0a2943a376ab4e459b1f423820a0ebe20d06e533'
+          $changed = @(git diff --no-renames --name-only $runtimeRevision HEAD)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compare completed runtime verification source.' }
+          $allowed = '^(docs/|checks/staging-smoke\.ps1$|\.github/workflows/release-0321-continuation\.yml$)'
+          if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Runtime check source changed after completed acceptance.' }
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          try {
+            $root = 'https://api.github.com/repos/daltonstates/TogetherServer/actions/runs/39183545360'
+            $previous = Invoke-RestMethod -Uri $root -Headers $headers
+            $jobs = (Invoke-RestMethod -Uri ($root+'/jobs?filter=all&per_page=100') -Headers $headers).jobs
+            $artifact = Invoke-RestMethod -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12157373595' -Headers $headers
+            if ($artifact.id -ne 12157373595 -or $artifact.name -ne 'release-0321-continuation-evidence' -or $artifact.expired -ne $false -or
+                $artifact.workflow_run.id -ne 39183545360 -or $artifact.workflow_run.head_sha -ne $runtimeRevision -or
+                $artifact.digest -ne 'sha256:cc56645297fc00d2fccb9590734b680bc37aa0bb7120cbd18715c30555af3fb4') { throw 'Runtime report artifact provenance mismatch.' }
+            $reportZip = Join-Path $env:RUNNER_TEMP 'accepted-runtime-gate.zip'
+            Invoke-WebRequest -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12157373595/zip' -Headers $headers -OutFile $reportZip
+          } finally { $headers.Clear() }
+          if ($previous.id -ne 39183545360 -or $previous.head_sha -ne $runtimeRevision -or $previous.status -ne 'completed' -or
+              $previous.conclusion -ne 'failure' -or $previous.run_attempt -ne 1 -or
+              $previous.path -ne '.github/workflows/release-0321-continuation.yml' -or $previous.workflow_id -ne 388882844) { throw 'Runtime run identity mismatch.' }
+          if ($jobs.Count -ne 1 -or $jobs[0].id -ne 117841160028 -or $jobs[0].name -ne 'Remaining acceptance and installer' -or
+              $jobs[0].conclusion -ne 'failure') { throw 'Unexpected prior runtime job.' }
+          foreach ($name in @('Verify provenance and completed gates before continuing','Compile checks and corrected synthetic fixtures')) {
+            $step = @($jobs[0].steps | Where-Object name -eq $name)
+            if ($step.Count -ne 1 -or $step[0].conclusion -ne 'success') { throw "Prior runtime prerequisite did not pass: $name" }
+          }
+          if ((Get-FileHash -LiteralPath $reportZip -Algorithm SHA256).Hash -ne 'CC56645297FC00D2FCCB9590734B680BC37AA0BB7120CBD18715C30555AF3FB4') { throw 'Runtime report ZIP digest mismatch.' }
+          Expand-Archive -LiteralPath $reportZip -DestinationPath local-data/previous-runtime-gate
+          $files = @(Get-ChildItem local-data/previous-runtime-gate -Filter continuation-report.json -File -Recurse)
+          if ($files.Count -ne 1) { throw 'Ambiguous runtime evidence.' }
+          $report = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+          if ($report.candidateSourceRevision -ne '4a5229bf03fae2e01767265e77797ec50a8aefbe' -or
+              $report.candidateSha256 -ne 'fc636db139c61cb71a3cf0cb0b9dfdb38b61e15df9ee06b736e218b0fc78a7ee' -or
+              $report.initialRunId -ne 39179559981 -or $report.verificationRevision -ne $runtimeRevision -or
+              @($report.checks).Count -ne 12) { throw 'Runtime report candidate identity or check count mismatch.' }
+          foreach ($name in @('TogetherServer.MinecraftChecks','TogetherServer.CustomChecks','TogetherServer.SharedHistoryChecks','TogetherServer.UpdateChecks',
+              'Core remote journey','World-load packaged rehearsal','Shared Worlds packaged journey','Staging LiveSave owner action',
+              'Shared LiveSave packaged transfer journey','TogetherServer.CompanionChecks','Packaged served smoke')) {
+            $check = @($report.checks | Where-Object name -eq $name)
+            if ($check.Count -ne 1 -or $check[0].outcome -ne 'passed') { throw "Runtime check did not pass: $name" }
+          }
+          $failed = @($report.checks | Where-Object outcome -eq 'failed')
+          if ($failed.Count -ne 1 -or $failed[0].name -ne 'Production plus staging isolation smoke') { throw 'Unexpected unfinished runtime check.' }
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/continuation -Force
+          Copy-Item -LiteralPath $files[0].FullName -Destination (Join-Path $evidence.FullName 'prior-runtime-report.json')
+          'PASS all 11 completed runtime checks bind to unchanged runtime and check source; staging and later checks must still pass.'
 
       - name: Compile checks and corrected synthetic fixtures
         shell: pwsh
@@ -140,17 +193,6 @@ jobs:
             finally { $checks.Add(@{name=$CheckLabel;outcome=$outcome}) }
           }
           try {
-            foreach ($name in @('MinecraftChecks','CustomChecks','SharedHistoryChecks','UpdateChecks')) {
-              Invoke-Check "TogetherServer.$name" { dotnet run --project "checks/TogetherServer.$name/TogetherServer.$name.csproj" -c Release --no-build --no-restore }
-            }
-            $runner = 'checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj'
-            Invoke-Check 'Core remote journey' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --core-remote-journey }
-            Invoke-Check 'World-load packaged rehearsal' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --world-load-rehearsal }
-            Invoke-Check 'Shared Worlds packaged journey' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --shared-world-journey }
-            Invoke-Check 'Staging LiveSave owner action' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --live-save-action }
-            Invoke-Check 'Shared LiveSave packaged transfer journey' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --shared-live-transfer-journey }
-            Invoke-Check 'TogetherServer.CompanionChecks' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate }
-            Invoke-Check 'Packaged served smoke' { ./checks/served-smoke.ps1 -AppPath $candidate }
             Invoke-Check 'Production plus staging isolation smoke' { ./checks/staging-smoke.ps1 -AppPath $candidate }
             Invoke-Check 'Packaged hidden desktop smoke' { ./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests }
             Invoke-Check 'Packaged interactive desktop smoke' { ./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests }
@@ -158,7 +200,7 @@ jobs:
             if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne 'FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE') { throw 'Candidate changed during continuation.' }
           } finally {
             @{candidateSourceRevision='4a5229bf03fae2e01767265e77797ec50a8aefbe';candidateSha256='fc636db139c61cb71a3cf0cb0b9dfdb38b61e15df9ee06b736e218b0fc78a7ee';initialRunId=39179559981;
-              verificationRevision=$env:GITHUB_SHA;checks=@($checks.ToArray());boundary='Dedicated hosted Windows session, disposable data only; no real-game or WAN acceptance.'} |
+              verificationRevision=$env:GITHUB_SHA;priorRuntimeRunId=39183545360;checks=@($checks.ToArray());boundary='Dedicated hosted Windows session, disposable data only; no real-game or WAN acceptance.'} |
               ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'continuation-report.json') -Encoding utf8
           }
 
@@ -196,7 +238,7 @@ jobs:
             $assets += @{name=$name;sha256=$hash;bytes=$file.Length;authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
           }
           @{version='0.3.2.1';sourceRevision='4a5229bf03fae2e01767265e77797ec50a8aefbe';candidateSha256=$hashBefore.ToLowerInvariant();initialRunId=39179559981;
-            verificationRevision=$env:GITHUB_SHA;verificationRunId=$env:GITHUB_RUN_ID;assets=$assets;acceptance='Prior completed source/UI/API/compatibility gates plus corrected synthetic process checks, all remaining packaged smokes and installer acceptance; exact candidate was not rebuilt.'} |
+            verificationRevision=$env:GITHUB_SHA;verificationRunId=$env:GITHUB_RUN_ID;priorRuntimeRunId=39183545360;priorRuntimeVerificationRevision='0a2943a376ab4e459b1f423820a0ebe20d06e533';assets=$assets;acceptance='Digest-pinned completed source/UI/API/compatibility and runtime reports plus remaining staging/desktop/update smokes and installer acceptance; exact candidate was not rebuilt.'} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
 
       - name: Preserve continuation evidence
