@@ -385,95 +385,118 @@ await Check("owner certification enables guarded Custom lifecycle and invalidate
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
     File.WriteAllText(Path.Combine(requested.WorldDirectory, "players.txt"), "0");
 
-    var begun = await manager.BeginCustomCertificationAsync(profile.Id);
-    Require(begun.Ok && begun.Certification.Stage == "StartingFirstRun", "certification did not begin offline");
-    var firstZero = await manager.CheckCustomCertificationAsync(profile.Id);
-    Require(firstZero.Ok && firstZero.Certification.Stage == "AwaitingFirstJoin",
-        $"first exact zero was not observed: {firstZero.Code} {firstZero.Message} stage={firstZero.Certification.Stage}");
-    File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "1");
-    var firstJoin = await manager.CheckCustomCertificationAsync(profile.Id);
-    Require(firstJoin.Certification.Stage == "AwaitingFirstLeave", "positive player count was not observed");
-    File.WriteAllText(Path.Combine(profile.WorldDirectory, "persistent-change.txt"), "recognizable-owner-change");
-    File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
-    var firstLeave = await manager.CheckCustomCertificationAsync(profile.Id);
-    Require(firstLeave.Certification.Stage == "ConfirmFirstChange", "first return to zero was not observed");
-    var restarted = await manager.ConfirmCustomCertificationAsync(profile.Id);
-    Require(restarted.Ok && restarted.Certification.Stage == "AwaitingRestartReady",
-        $"certification restart failed: {restarted.Code} {restarted.Message}");
-    Require(File.ReadAllText(Path.Combine(profile.WorldDirectory, "persistent-change.txt")) == "recognizable-owner-change",
-        "recognizable test change did not survive restart");
-    var secondZero = await manager.CheckCustomCertificationAsync(profile.Id);
-    Require(secondZero.Certification.Stage == "AwaitingSecondJoin", "post-restart exact zero was not observed");
-    File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "1");
-    var secondJoin = await manager.CheckCustomCertificationAsync(profile.Id);
-    Require(secondJoin.Certification.Stage == "ConfirmSecondChange", "post-restart join was not observed");
-    var saved = await manager.ConfirmCustomCertificationAsync(profile.Id);
-    Require(saved.Ok && saved.Certification.Stage == "AwaitingSecondLeave", "save survival confirmation failed");
-    File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
-    var completed = await manager.CheckCustomCertificationAsync(profile.Id);
-    Require(completed.Ok && completed.Code == "CustomCertificationCompleted" && completed.Certification.Certified,
-        $"certification did not complete: {completed.Code} {completed.Message}");
-
-    var protectedCertification = Directory.GetFiles(Path.Combine(root, "certified-lifecycle-data"),
-        "custom-certification-*.protected").Single();
-    Require(!File.ReadAllText(protectedCertification).Contains("recognizable-owner-change", StringComparison.Ordinal),
-        "certification stored private test data");
-    await manager.RefreshObservationsAsync();
-    var certified = await manager.SnapshotAsync();
-    var certifiedRun = certified.Runs.Single(run => run.ProfileId == profile.Id);
-    Require(certifiedRun.PlayerCountTrusted && certifiedRun.OnlinePlayers == 0,
-        "certified contract-v2 count was not authoritative");
-    var reattachedManager = new HostManager(data, games, clock);
-    await reattachedManager.RefreshObservationsAsync();
-    var reattachedCertified = (await reattachedManager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
-    Require(reattachedCertified.PlayerCountTrusted &&
-        (await reattachedManager.SnapshotAsync()).CustomCertifications![profile.Id].Certified,
-        "protected certification did not survive a Host manager restart");
-    using (var permit = RemoteStopSafety.TryAcquire(certified, profile.Id, data, games))
-        Require(permit.Allowed, $"certified Custom Stop was denied: {permit.Code} {permit.Reason}");
-
-    Require(certifiedRun.AutoShutdownAtUtc is not null, "certified Custom zero count did not start idle shutdown");
-    clock.Advance(TimeSpan.FromMinutes(2));
-    await manager.RefreshObservationsAsync();
-    var automatic = await manager.MaintainIdleShutdownAsync();
-    Require(automatic.Count == 1 && automatic[0].Ok,
-        "certified Custom automatic shutdown failed: " + string.Join("; ", automatic.Select(item => item.Code + " " + item.Message)));
-
-    Require((await manager.StartAsync(profile.Id)).Ok, "certified profile did not start again");
-    await WaitForState(manager, profile.Id, "Ready");
-    using (var staleZeroPermit = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), profile.Id, data, games))
+    try
     {
-        Require(staleZeroPermit.Allowed, "initial certified zero permit was denied");
+        var begun = await manager.BeginCustomCertificationAsync(profile.Id);
+        Require(begun.Ok && begun.Certification.Stage == "StartingFirstRun", "certification did not begin offline");
+        // Observe synthetic readiness before the manual step consumes its own fresh, bounded proof.
+        await WaitForState(manager, profile.Id, "Ready");
+        var firstZero = await manager.CheckCustomCertificationAsync(profile.Id);
+        Require(firstZero.Ok && firstZero.Certification.Stage == "AwaitingFirstJoin",
+            $"first exact zero was not observed: {firstZero.Code} {firstZero.Message} stage={firstZero.Certification.Stage}");
         File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "1");
-        var protectedRestart = await manager.RestartAsync(profile.Id, staleZeroPermit.StillSafe);
-        Require(!protectedRestart.Ok && protectedRestart.Code == "PlayersOnlineOrUnknown",
-            "a player appearing before the in-gate recheck did not block Custom restart");
-    }
-    File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
-    await manager.RefreshObservationsAsync();
-    using (var permit = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), profile.Id, data, games))
-    {
-        Require(permit.Allowed, "certified Custom restart permit was denied");
-        var remoteRestart = await manager.RestartAsync(profile.Id, permit.StillSafe);
-        Require(remoteRestart.Ok, $"certified Custom restart failed: {remoteRestart.Code} {remoteRestart.Message}");
-    }
-    await WaitForState(manager, profile.Id, "Ready");
-    var conflict = await manager.StartAsync(requested.Id);
-    Require(conflict.Code == "PortConflict" && conflict.PortConflicts is [{ CanReplace: true }],
-        "certified empty Custom conflict was not replaceable");
-    var replaced = await manager.ReplaceEmptyPortConflictsAndStartAsync(requested.Id);
-    Require(replaced.Ok && replaced.Code == "PortConflictReplaced", "certified Custom replacement failed");
-    var replacementCleanup = await manager.StopAsync(requested.Id);
-    Require(replacementCleanup.Ok,
-        $"replacement cleanup failed: {replacementCleanup.Code} {replacementCleanup.Message}");
-    Require(data.LoadRuns().All(item => item.ProfileId != requested.Id),
-        "replacement cleanup left its exact managed run recorded");
+        var firstJoin = await manager.CheckCustomCertificationAsync(profile.Id);
+        Require(firstJoin.Certification.Stage == "AwaitingFirstLeave", "positive player count was not observed");
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "persistent-change.txt"), "recognizable-owner-change");
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
+        var firstLeave = await manager.CheckCustomCertificationAsync(profile.Id);
+        Require(firstLeave.Certification.Stage == "ConfirmFirstChange", "first return to zero was not observed");
+        var restarted = await manager.ConfirmCustomCertificationAsync(profile.Id);
+        Require(restarted.Ok && restarted.Certification.Stage == "AwaitingRestartReady",
+            $"certification restart failed: {restarted.Code} {restarted.Message}");
+        Require(File.ReadAllText(Path.Combine(profile.WorldDirectory, "persistent-change.txt")) == "recognizable-owner-change",
+            "recognizable test change did not survive restart");
+        await WaitForState(manager, profile.Id, "Ready");
+        var secondZero = await manager.CheckCustomCertificationAsync(profile.Id);
+        Require(secondZero.Certification.Stage == "AwaitingSecondJoin", "post-restart exact zero was not observed");
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "1");
+        var secondJoin = await manager.CheckCustomCertificationAsync(profile.Id);
+        Require(secondJoin.Certification.Stage == "ConfirmSecondChange", "post-restart join was not observed");
+        var saved = await manager.ConfirmCustomCertificationAsync(profile.Id);
+        Require(saved.Ok && saved.Certification.Stage == "AwaitingSecondLeave", "save survival confirmation failed");
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
+        var completed = await manager.CheckCustomCertificationAsync(profile.Id);
+        Require(completed.Ok && completed.Code == "CustomCertificationCompleted" && completed.Certification.Certified,
+            $"certification did not complete: {completed.Code} {completed.Message}");
 
-    Require((await manager.SetCustomScriptsAsync(profile.Id, ContractV2Scripts())).Ok,
-        "script resave failed");
-    var invalidated = (await manager.SnapshotAsync()).CustomCertifications![profile.Id];
-    Require(!invalidated.Certified && invalidated.Stage == "NotCertified",
-        "lifecycle-affecting script change did not invalidate certification");
+        var protectedCertification = Directory.GetFiles(Path.Combine(root, "certified-lifecycle-data"),
+            "custom-certification-*.protected").Single();
+        Require(!File.ReadAllText(protectedCertification).Contains("recognizable-owner-change", StringComparison.Ordinal),
+            "certification stored private test data");
+        await manager.RefreshObservationsAsync();
+        var certified = await manager.SnapshotAsync();
+        var certifiedRun = certified.Runs.Single(run => run.ProfileId == profile.Id);
+        Require(certifiedRun.PlayerCountTrusted && certifiedRun.OnlinePlayers == 0,
+            "certified contract-v2 count was not authoritative");
+        var reattachedManager = new HostManager(data, games, clock);
+        await reattachedManager.RefreshObservationsAsync();
+        var reattachedCertified = (await reattachedManager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
+        Require(reattachedCertified.PlayerCountTrusted &&
+            (await reattachedManager.SnapshotAsync()).CustomCertifications![profile.Id].Certified,
+            "protected certification did not survive a Host manager restart");
+        using (var permit = RemoteStopSafety.TryAcquire(certified, profile.Id, data, games))
+            Require(permit.Allowed, $"certified Custom Stop was denied: {permit.Code} {permit.Reason}");
+
+        Require(certifiedRun.AutoShutdownAtUtc is not null, "certified Custom zero count did not start idle shutdown");
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await manager.RefreshObservationsAsync();
+        var automatic = await manager.MaintainIdleShutdownAsync();
+        Require(automatic.Count == 1 && automatic[0].Ok,
+            "certified Custom automatic shutdown failed: " + string.Join("; ", automatic.Select(item => item.Code + " " + item.Message)));
+
+        Require((await manager.StartAsync(profile.Id)).Ok, "certified profile did not start again");
+        await WaitForState(manager, profile.Id, "Ready");
+        using (var staleZeroPermit = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), profile.Id, data, games))
+        {
+            Require(staleZeroPermit.Allowed, "initial certified zero permit was denied");
+            File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "1");
+            var protectedRestart = await manager.RestartAsync(profile.Id, staleZeroPermit.StillSafe);
+            Require(!protectedRestart.Ok && protectedRestart.Code == "PlayersOnlineOrUnknown",
+                "a player appearing before the in-gate recheck did not block Custom restart");
+        }
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "players.txt"), "0");
+        await manager.RefreshObservationsAsync();
+        using (var permit = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), profile.Id, data, games))
+        {
+            Require(permit.Allowed, "certified Custom restart permit was denied");
+            var remoteRestart = await manager.RestartAsync(profile.Id, permit.StillSafe);
+            Require(remoteRestart.Ok, $"certified Custom restart failed: {remoteRestart.Code} {remoteRestart.Message}");
+        }
+        await WaitForState(manager, profile.Id, "Ready");
+        var conflict = await manager.StartAsync(requested.Id);
+        Require(conflict.Code == "PortConflict" && conflict.PortConflicts is [{ CanReplace: true }],
+            "certified empty Custom conflict was not replaceable");
+        var replaced = await manager.ReplaceEmptyPortConflictsAndStartAsync(requested.Id);
+        Require(replaced.Ok && replaced.Code == "PortConflictReplaced", "certified Custom replacement failed");
+        var replacementCleanup = await manager.StopAsync(requested.Id);
+        Require(replacementCleanup.Ok,
+            $"replacement cleanup failed: {replacementCleanup.Code} {replacementCleanup.Message}");
+        Require(data.LoadRuns().All(item => item.ProfileId != requested.Id),
+            "replacement cleanup left its exact managed run recorded");
+
+        Require((await manager.SetCustomScriptsAsync(profile.Id, ContractV2Scripts())).Ok,
+            "script resave failed");
+        var invalidated = (await manager.SnapshotAsync()).CustomCertifications![profile.Id];
+        Require(!invalidated.Certified && invalidated.Stage == "NotCertified",
+            "lifecycle-affecting script change did not invalidate certification");
+    }
+    finally
+    {
+        var cleanupFailures = new List<string>();
+        foreach (var profileId in new[] { profile.Id, requested.Id })
+        {
+            if (!data.LoadRuns().Any(run => run.ProfileId == profileId)) continue;
+            try
+            {
+                var stopped = await manager.StopAsync(profileId);
+                if (!stopped.Ok) cleanupFailures.Add($"{stopped.Code} {stopped.Message}");
+            }
+            catch (Exception error) { cleanupFailures.Add(error.Message); }
+        }
+        var retained = data.LoadRuns().Count(run => run.ProfileId == profile.Id || run.ProfileId == requested.Id);
+        Require(cleanupFailures.Count == 0 && retained == 0,
+            $"certification fixture cleanup failed; retainedRuns={retained}; " + string.Join("; ", cleanupFailures));
+    }
 });
 
 await Check("contract v2 rejects stale wrong and contradictory proofs", async () =>

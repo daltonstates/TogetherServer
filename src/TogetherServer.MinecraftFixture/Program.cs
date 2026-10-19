@@ -22,6 +22,15 @@ int? OnlinePlayers()
 using var done = new CancellationTokenSource();
 using var loggingDone = new CancellationTokenSource();
 var server = java ? ServeJava(done.Token) : ServeBedrock(done.Token);
+// Async listener methods perform their binds before their first await. Observe
+// that synchronous startup fault before entering the blocking console loop.
+if (server.IsFaulted)
+{
+    var failure = server.Exception!.GetBaseException();
+    var socketError = failure is SocketException socket ? (int)socket.SocketErrorCode : 0;
+    Console.Error.WriteLine($"[TogetherServer fixture/ERROR]: synthetic listener startup failed; code=31; socketError={socketError}.");
+    return 31;
+}
 var consoleOutput = EmitConsoleOutput(loggingDone.Token);
 var bedrockHeld = false;
 while (true)

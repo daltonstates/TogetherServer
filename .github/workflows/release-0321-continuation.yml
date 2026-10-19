@@ -1,0 +1,217 @@
+name: Finish verified 0.3.2.1 candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  finish:
+    name: Remaining acceptance and installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the corrected synthetic checks
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Install the pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+
+      - name: Retrieve the pinned immutable candidate and fixtures
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'}
+          try {
+            $artifact = Invoke-RestMethod -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12155727640' -Headers $headers
+            if ($artifact.id -ne 12155727640 -or $artifact.name -ne 'windows-candidate' -or $artifact.expired -ne $false -or
+                $artifact.workflow_run.id -ne 39179559981 -or $artifact.workflow_run.head_sha -ne '4a5229bf03fae2e01767265e77797ec50a8aefbe' -or
+                $artifact.digest -ne 'sha256:8d54d6880be09a1d90f87d14e35abfc283cf81d3e63776844e9b157ef25efea6') { throw 'Candidate artifact provenance mismatch.' }
+            $zip = Join-Path $env:RUNNER_TEMP 'candidate-0321.zip'
+            Invoke-WebRequest -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12155727640/zip' -Headers $headers -OutFile $zip
+          } finally { $headers.Clear() }
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '8D54D6880BE09A1D90F87D14E35ABFC283CF81D3E63776844E9B157EF25EFEA6') { throw 'Candidate artifact ZIP digest mismatch.' }
+          Expand-Archive -LiteralPath $zip -DestinationPath . -Force
+
+      - name: Verify provenance and completed gates before continuing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $revision = '4a5229bf03fae2e01767265e77797ec50a8aefbe'
+          $hash = 'FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hash -or
+              (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "0.3.2.1+$revision") { throw 'Candidate identity mismatch.' }
+          $changed = @(git diff --no-renames --name-only $revision HEAD)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compare verification source.' }
+          $allowed = '^(docs/|checks/TogetherServer\.(MinecraftChecks|CustomChecks)/Program\.cs$|src/TogetherServer\.MinecraftFixture/Program\.cs$|\.github/workflows/release-0321-continuation\.yml$)'
+          if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Production code changed after the verified candidate.' }
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          try {
+            $root = 'https://api.github.com/repos/daltonstates/TogetherServer/actions/runs/39179559981'
+            $previous = Invoke-RestMethod -Uri $root -Headers $headers
+            $jobs = (Invoke-RestMethod -Uri ($root+'/jobs?filter=latest&per_page=100') -Headers $headers).jobs
+            $allJobs = (Invoke-RestMethod -Uri ($root+'/jobs?filter=all&per_page=100') -Headers $headers).jobs
+            $artifact = Invoke-RestMethod -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12156021963' -Headers $headers
+            if ($artifact.id -ne 12156021963 -or $artifact.name -ne 'qol-windows-evidence-Existing' -or $artifact.expired -ne $false -or
+                $artifact.workflow_run.id -ne 39179559981 -or $artifact.workflow_run.head_sha -ne $revision -or
+                $artifact.digest -ne 'sha256:be27e9f60251a01a74983b4c7c62d05b89a29cb3b19fb180e59dc82ad2071369') { throw 'Prior report artifact provenance mismatch.' }
+            $reportZip = Join-Path $env:RUNNER_TEMP 'accepted-partial-gate.zip'
+            Invoke-WebRequest -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12156021963/zip' -Headers $headers -OutFile $reportZip
+          } finally { $headers.Clear() }
+          if ($previous.head_sha -ne $revision -or $previous.status -ne 'completed' -or $previous.conclusion -ne 'failure' -or
+              $previous.run_attempt -ne 2 -or $previous.path -ne '.github/workflows/windows-ci.yml' -or
+              $previous.workflow_id -ne 367811679) { throw 'Previous run identity mismatch.' }
+          foreach ($name in @('candidate','Verify Browser','Verify Desktop','Verify QolApi','Verify Rehearsal',
+              'Verify 0.3.0 compatibility','Verify 0.3.1 compatibility','Verify 0.3.2 compatibility')) {
+            $job = @($jobs | Where-Object name -eq $name)
+            if ($job.Count -ne 1 -or $job[0].conclusion -ne 'success') { throw "Missing completed gate: $name" }
+          }
+          $failed = @($allJobs | Where-Object conclusion -eq 'failure')
+          if ($failed.Count -ne 2 -or @($failed | Where-Object name -ne 'Verify Existing').Count) { throw 'Unexpected prior failed gate.' }
+          if ((Get-FileHash -LiteralPath $reportZip -Algorithm SHA256).Hash -ne 'BE27E9F60251A01A74983B4C7C62D05B89A29CB3B19FB180E59DC82AD2071369') { throw 'Prior report digest mismatch.' }
+          Expand-Archive -LiteralPath $reportZip -DestinationPath local-data/previous-gate
+          $files = @(Get-ChildItem local-data/previous-gate -Filter release-gate-report.json -File -Recurse)
+          if ($files.Count -ne 1) { throw 'Ambiguous prior process evidence.' }
+          $report = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+          if ($report.suite -ne 'Existing' -or $report.candidate.sourceRevision -ne $revision -or
+              $report.candidate.sha256 -ne $hash -or $report.candidate.productVersion -ne "0.3.2.1+$revision") { throw 'Prior process evidence identity mismatch.' }
+          foreach ($name in @('Git whitespace check','Desktop diagnostic isolation','Check runner listener identity','UI lint','UI unit tests','Locked application restore',
+              'TogetherServer.Checks','TogetherServer.ValheimChecks','TogetherServer.FactorioChecks','TogetherServer.TerrariaChecks',
+              'TogetherServer.MinecraftChecks','TogetherServer.MinecraftSetupChecks')) {
+            $check = @($report.checks | Where-Object name -eq $name)
+            if ($check.Count -ne 1 -or $check[0].outcome -ne 'passed') { throw "Prior check did not pass: $name" }
+          }
+          $failedChecks = @($report.checks | Where-Object outcome -eq 'failed')
+          if ($failedChecks.Count -ne 1 -or $failedChecks[0].name -ne 'TogetherServer.CustomChecks') { throw 'Unexpected incomplete process check.' }
+          'PASS prior completed gates bind to the unchanged candidate. Both failed attempts remain failed.'
+
+      - name: Compile checks and corrected synthetic fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Tracked whitespace check failed.' }
+          $checkFiles = @(Get-ChildItem -LiteralPath checks,ui/checks -File -Recurse | Where-Object {
+            $_.Extension -in '.cs','.ps1','.mjs' -and $_.FullName -notmatch '[\\/](?:obj|bin)[\\/]'
+          })
+          $patterns = @('\bnew\s+(?:System\.Net\.Sockets\.)?(?:TcpListener|UdpClient|Socket)\s*\(',
+            '\[(?:System\.)?Net\.Sockets\.(?:TcpListener|UdpClient|Socket)\]::new\s*\(',
+            '\.Bind\s*\(', '\.Listen\s*\(', '\bcreateServer\s*\(', '\bcreateSocket\s*\(')
+          if (@($checkFiles | Select-String -Pattern $patterns).Count) { throw 'Check runners must not own OS listeners.' }
+          $badProbes = @($checkFiles | Select-String -Pattern 'PortProbeMode\.LoopbackOnly' | Where-Object {
+            $_.Line -notmatch 'GameServerRegistry\.ProbeAddress\s*\('
+          })
+          if ($badProbes.Count) { throw 'Check runners must use ObserveOnly for indirect probes.' }
+          $routes = [regex]::Matches((Get-Content checks/TogetherServer.Checks/Program.cs -Raw), 'new CompanionServer\([\s\S]*?\);')
+          if (!$routes.Count -or @($routes | Where-Object { !$_.Value.Contains('inMemoryTransport: builder => builder.UseTestServer()') }).Count) {
+            throw 'Core route checks must use in-memory TestServer.'
+          }
+          dotnet restore TogetherServer.slnx --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed.' }
+          dotnet build TogetherServer.slnx -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Check build failed.' }
+          dotnet format TogetherServer.slnx --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed.' }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'Verification changed tracked source.' }
+
+      - name: Complete all remaining acceptance on this dedicated runner
+        shell: pwsh
+        run: |
+          # Explicit opt-in: this separate hosted Windows session owns its disposable processes and desktop.
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/continuation -Force
+          $checks = [Collections.Generic.List[object]]::new()
+          function Invoke-Check([string]$Name, [scriptblock]$Action) {
+            $outcome = 'failed'; $global:LASTEXITCODE = 0
+            try { & $Action; if ($LASTEXITCODE -ne 0) { throw "$Name returned $LASTEXITCODE." }; $outcome = 'passed' }
+            finally { $checks.Add(@{name=$Name;outcome=$outcome}) }
+          }
+          try {
+            foreach ($name in @('MinecraftChecks','CustomChecks','SharedHistoryChecks','UpdateChecks')) {
+              Invoke-Check "TogetherServer.$name" { dotnet run --project "checks/TogetherServer.$name/TogetherServer.$name.csproj" -c Release --no-build --no-restore }
+            }
+            $runner = 'checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj'
+            Invoke-Check 'Core remote journey' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --core-remote-journey }
+            Invoke-Check 'World-load packaged rehearsal' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --world-load-rehearsal }
+            Invoke-Check 'Shared Worlds packaged journey' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --shared-world-journey }
+            Invoke-Check 'Staging LiveSave owner action' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --live-save-action }
+            Invoke-Check 'Shared LiveSave packaged transfer journey' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate --shared-live-transfer-journey }
+            Invoke-Check 'TogetherServer.CompanionChecks' { dotnet run --project $runner -c Release --no-build --no-restore -- $candidate }
+            Invoke-Check 'Packaged served smoke' { ./checks/served-smoke.ps1 -AppPath $candidate }
+            Invoke-Check 'Production plus staging isolation smoke' { ./checks/staging-smoke.ps1 -AppPath $candidate }
+            Invoke-Check 'Packaged hidden desktop smoke' { ./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests }
+            Invoke-Check 'Packaged interactive desktop smoke' { ./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests }
+            Invoke-Check 'Update handoff smoke' { ./checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests }
+            if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne 'FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE') { throw 'Candidate changed during continuation.' }
+          } finally {
+            @{candidateSourceRevision='4a5229bf03fae2e01767265e77797ec50a8aefbe';candidateSha256='fc636db139c61cb71a3cf0cb0b9dfdb38b61e15df9ee06b736e218b0fc78a7ee';initialRunId=39179559981;
+              verificationRevision=$env:GITHUB_SHA;checks=@($checks.ToArray());boundary='Dedicated hosted Windows session, disposable data only; no real-game or WAN acceptance.'} |
+              ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'continuation-report.json') -Encoding utf8
+          }
+
+      - name: Install the pinned installer compiler
+        shell: pwsh
+        run: |
+          $compilerSetup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $compilerSetup
+          if ((Get-FileHash -LiteralPath $compilerSetup -Algorithm SHA256).Hash -ne '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732') { throw 'Compiler digest mismatch.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $compilerSetup
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw 'Compiler publisher mismatch.' }
+          $compilerRoot = Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6'
+          $installArguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER',"/DIR=`"$compilerRoot`"")
+          $setup = Start-Process -FilePath $compilerSetup -ArgumentList $installArguments -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0 -or !(Test-Path -LiteralPath (Join-Path $compilerRoot 'ISCC.exe'))) { throw 'Compiler installation failed.' }
+
+      - name: Package and verify the same candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $hashBefore = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
+          if ($hashBefore -ne 'FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE') { throw 'Candidate identity changed.' }
+          ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets -CompilerPath (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
+          ./checks/installer-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
+          if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance failed.' }
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hashBefore) { throw 'Verified bytes changed during packaging.' }
+          Copy-Item -LiteralPath $candidate -Destination local-data/release-assets/TogetherServer-win-x64.exe
+          $assets = @()
+          foreach ($name in @('TogetherServer-win-x64.exe','TogetherServer-Setup-win-x64.exe')) {
+            $file = Get-Item -LiteralPath (Join-Path 'local-data/release-assets' $name)
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath ($file.FullName+'.sha256') -Value "$hash  $name" -Encoding ascii
+            $assets += @{name=$name;sha256=$hash;bytes=$file.Length;authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
+          }
+          @{version='0.3.2.1';sourceRevision='4a5229bf03fae2e01767265e77797ec50a8aefbe';candidateSha256=$hashBefore.ToLowerInvariant();initialRunId=39179559981;
+            verificationRevision=$env:GITHUB_SHA;verificationRunId=$env:GITHUB_RUN_ID;assets=$assets;acceptance='Prior completed source/UI/API/compatibility gates plus corrected synthetic process checks, all remaining packaged smokes and installer acceptance; exact candidate was not rebuilt.'} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
+
+      - name: Preserve continuation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-0321-continuation-evidence
+          path: local-data/ci-evidence/continuation/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Preserve verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-release-assets
+          path: local-data/release-assets/
+          retention-days: 7
+          if-no-files-found: error

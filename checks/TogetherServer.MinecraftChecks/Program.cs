@@ -132,14 +132,19 @@ ServerProfile Profile(string kind, string name, string world, int port, bool eul
 
 async Task Ready(HostManager manager, Guid id, ActionResult launch)
 {
+    var budget = TimeSpan.FromSeconds(30);
     var elapsed = Stopwatch.StartNew();
+    var attempts = 0;
     RunView? lastView = null;
-    for (var attempt = 0; attempt < 15; attempt++)
+    while (elapsed.Elapsed < budget)
     {
+        attempts++;
         await manager.RefreshObservationsAsync();
         lastView = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == id);
         if (lastView.State == "Ready") return;
-        await Task.Delay(200);
+        var remaining = budget - elapsed.Elapsed;
+        if (remaining > TimeSpan.Zero)
+            await Task.Delay(remaining < TimeSpan.FromMilliseconds(200) ? remaining : TimeSpan.FromMilliseconds(200));
     }
     var startView = launch.Snapshot.Runs.FirstOrDefault(run => run.ProfileId == id);
     string? Bounded(string? value) => value is { Length: > 320 } ? value[..320] : value;
@@ -148,7 +153,8 @@ async Task Ready(HostManager manager, Guid id, ActionResult launch)
     {
         phase = "readiness",
         gameKind = launch.Snapshot.Settings.Profiles.FirstOrDefault(profile => profile.Id == id)?.Kind,
-        attempts = 15,
+        attempts,
+        startupBudgetMilliseconds = (long)budget.TotalMilliseconds,
         elapsedMilliseconds = elapsed.ElapsedMilliseconds,
         startOk = launch.Ok,
         startCode = launch.Code,
@@ -168,6 +174,32 @@ async Task Ready(HostManager manager, Guid id, ActionResult launch)
         operationPresent = lastView?.RunOperationId is not null
     });
     throw new Exception("Synthetic Minecraft status did not become ready. Diagnostic: " + diagnostic);
+}
+
+bool CleanupRecordedFixtureProcess(int? processId, long? startedUtcTicks, string? executablePath,
+    bool waitBeforeKill = false)
+{
+    if (processId is not > 0 || processId == Environment.ProcessId || startedUtcTicks is null ||
+        string.IsNullOrWhiteSpace(executablePath)) return false;
+    Process process;
+    try { process = Process.GetProcessById(processId.Value); }
+    catch (ArgumentException) { return true; }
+    catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+    { return false; }
+    try
+    {
+        using var ownedProcess = process;
+        if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != startedUtcTicks) return true;
+        if (process.MainModule?.FileName is not { } actualPath ||
+            !Path.GetFullPath(actualPath).Equals(Path.GetFullPath(executablePath),
+            StringComparison.OrdinalIgnoreCase)) return false;
+        if (waitBeforeKill && process.WaitForExit(5000)) return true;
+        process.Kill();
+        return process.WaitForExit(5000);
+    }
+    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or
+        IOException or UnauthorizedAccessException or NotSupportedException)
+    { return false; }
 }
 
 async Task Stop(HostManager manager, ServerProfile profile)
@@ -439,8 +471,8 @@ await Check("Bedrock pending resume survives a Host data reopen", async () =>
             "Bedrock recovery profile was rejected");
         var started = await manager.StartAsync(profile.Id);
         Require(started.Ok, $"Bedrock recovery fixture did not start: {started.Code} {started.Message}");
-        await Ready(manager, profile.Id, started);
         run = data.LoadRuns().Single();
+        await Ready(manager, profile.Id, started);
         new BedrockLiveSaveCandidate(data).Hold(run);
         Require(new BedrockLiveSaveCandidate(data).HasPendingResume,
             "pending resume was not written before interruption");
@@ -474,17 +506,16 @@ await Check("Bedrock pending resume survives a Host data reopen", async () =>
     finally
     {
         data.Dispose();
-        if (run?.ProcessId is { } processId)
+        if (run is not null)
         {
-            try
-            {
-                using var process = Process.GetProcessById(processId);
-                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
-                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
-                        StringComparison.OrdinalIgnoreCase))
-                    process.Kill();
-            }
-            catch (Exception) { }
+            var gameExited = CleanupRecordedFixtureProcess(run.ProcessId, run.StartTimeUtcTicks,
+                run.ExecutablePath);
+            // Capture belongs to this recorded run, and is touched only after
+            // its exact game is confirmed gone. Unknown identity sends no kill.
+            var captureExited = gameExited && CleanupRecordedFixtureProcess(run.ConsoleCaptureProcessId,
+                run.ConsoleCaptureStartTimeUtcTicks, run.ConsoleCaptureExecutablePath, waitBeforeKill: true);
+            if (!gameExited || !captureExited)
+                Report("WARNING exact recorded Bedrock reopen fixture cleanup could not be confirmed.");
         }
     }
 });
