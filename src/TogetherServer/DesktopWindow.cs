@@ -1166,12 +1166,7 @@ internal sealed class DesktopWindow
 
         protected override bool ShowWithoutActivation => suppressActivation;
 
-        public void MaximizeWithinWorkingArea()
-        {
-            var screen = Screen.FromControl(this);
-            MaximizedBounds = RelativeMaximizedBounds(screen.Bounds, screen.WorkingArea);
-            WindowState = FormWindowState.Maximized;
-        }
+        public void MaximizeWithinWorkingArea() => WindowState = FormWindowState.Maximized;
 
         protected override void WndProc(ref Message message)
         {
@@ -1180,11 +1175,20 @@ internal sealed class DesktopWindow
             const int getMinMaxInfo = 0x0024;
             if (message.Msg == getMinMaxInfo)
             {
-                // Shell maximize/restore and snap can bypass our caption
-                // button. Keep their full client frame inside this monitor's
-                // work area, including a top or left taskbar.
-                var screen = Screen.FromHandle(message.HWnd);
-                MaximizedBounds = RelativeMaximizedBounds(screen.Bounds, screen.WorkingArea);
+                // Preserve WinForms' minimum/maximum track constraints, then
+                // replace the standard frame's inflated maximum rectangle.
+                // Our entire window is client area and needs no hidden frame
+                // outside the monitor work area. This also covers shell actions.
+                base.WndProc(ref message);
+                if (message.HWnd != IntPtr.Zero && message.LParam != IntPtr.Zero)
+                {
+                    var screen = Screen.FromHandle(message.HWnd);
+                    var info = Marshal.PtrToStructure<DesktopMinMaxInfo>(message.LParam);
+                    if (DesktopChrome.ApplyMaximizedWorkArea(ref info, screen.Bounds, screen.WorkingArea))
+                        Marshal.StructureToPtr(info, message.LParam, false);
+                }
+                message.Result = IntPtr.Zero;
+                return;
             }
             if (message.Msg == calculateNonClientSize && message.WParam != IntPtr.Zero)
             {

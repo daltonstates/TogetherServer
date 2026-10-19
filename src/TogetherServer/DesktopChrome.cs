@@ -1,10 +1,21 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 
 namespace TogetherServer;
 
 internal enum DesktopCaptionGlyph { Minimize, Maximize, Restore, Close }
 
 internal readonly record struct DesktopCaptionStroke(PointF Start, PointF End);
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct DesktopMinMaxInfo
+{
+    internal Point Reserved;
+    internal Point MaxSize;
+    internal Point MaxPosition;
+    internal Point MinTrackSize;
+    internal Point MaxTrackSize;
+}
 
 internal static class DesktopChrome
 {
@@ -13,6 +24,20 @@ internal static class DesktopChrome
     internal const int WindowStyles = 0x00C00000 | 0x00080000 | 0x00040000 | 0x00020000 | 0x00010000;
     internal const int SystemCommandMessage = 0x0112;
     internal const int RestoreCommand = 0xF120;
+
+    internal static bool ApplyMaximizedWorkArea(ref DesktopMinMaxInfo info, Rectangle monitor, Rectangle workingArea)
+    {
+        if (monitor.Width <= 0 || monitor.Height <= 0 || workingArea.Width <= 0 || workingArea.Height <= 0)
+            return false;
+        var left = Math.Max((long)monitor.Left, workingArea.Left);
+        var top = Math.Max((long)monitor.Top, workingArea.Top);
+        var right = Math.Min((long)monitor.Left + monitor.Width, (long)workingArea.Left + workingArea.Width);
+        var bottom = Math.Min((long)monitor.Top + monitor.Height, (long)workingArea.Top + workingArea.Height);
+        if (right <= left || bottom <= top) return false;
+        info.MaxPosition = new((int)(left - monitor.Left), (int)(top - monitor.Top));
+        info.MaxSize = new((int)(right - left), (int)(bottom - top));
+        return true;
+    }
 
     internal static float StrokeWidth(int dpi) => 1.5f * dpi / 96f;
 

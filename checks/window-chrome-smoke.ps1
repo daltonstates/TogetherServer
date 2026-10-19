@@ -41,6 +41,7 @@ $displayName = 'TogetherServer DEVELOPMENT'
 $processes = [Collections.Generic.List[object]]::new()
 $results = [Collections.Generic.List[object]]::new()
 $shellObservations = [Collections.Generic.List[object]]::new()
+$windowGeometry = [Collections.Generic.List[object]]::new()
 $app = $null
 $failure = $null
 $requiredScopeCompleted = $false
@@ -357,13 +358,22 @@ try {
         Require ((Local-Post '/api/local/show').ok) 'Could not foreground the disposable app.'
         Wait-Until { return [TogetherServerChromeSmoke]::GetForegroundWindow() -eq (App-Handle) } 'App was not foreground before taskbar minimize.'
         $before = Read-Rect
+        $label = if ($maximized) { 'Maximized' } else { 'Normal' }
+        $screen = [Windows.Forms.Screen]::FromHandle((App-Handle))
+        $area = $screen.WorkingArea
+        $bounds = $screen.Bounds
+        $geometry = [pscustomobject]@{ phase = "$label before taskbar click";
+            window = @($before.Left, $before.Top, $before.Right, $before.Bottom);
+            workArea = @($area.Left, $area.Top, $area.Right, $area.Bottom);
+            monitor = @($bounds.Left, $bounds.Top, $bounds.Right, $bounds.Bottom);
+            dpi = [TogetherServerChromeSmoke]::GetDpiForWindow((App-Handle)) }
+        $windowGeometry.Add($geometry)
         if ($maximized) {
-            $area = [Windows.Forms.Screen]::FromHandle((App-Handle)).WorkingArea
             Require ($before.Left -ge $area.Left - 2 -and $before.Top -ge $area.Top - 2 -and
-                $before.Right -le $area.Right + 2 -and $before.Bottom -le $area.Bottom + 2) 'Maximized custom frame escaped the monitor work area.'
+                $before.Right -le $area.Right + 2 -and $before.Bottom -le $area.Bottom + 2) (
+                    "Maximized custom frame escaped the monitor work area: window=[$($geometry.window -join ',')], workArea=[$($geometry.workArea -join ',')], monitor=[$($geometry.monitor -join ',')], dpi=$($geometry.dpi).")
             Capture-Chrome 'maximized-caption'
         }
-        $label = if ($maximized) { 'Maximized' } else { 'Normal' }
         Click-Element (Taskbar-Button)
         Wait-Until { return [TogetherServerChromeSmoke]::IsIconic((App-Handle)) } "$label taskbar click did not minimize the active app."
         Click-Element (Taskbar-Button)
@@ -445,7 +455,7 @@ try {
         } else { throw 'Disposable cleanup refused a changed process identity.' }
     }
     [ordered]@{ candidateSha256 = $candidateHash; candidate = $candidate; caseId = $caseId;
-        source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations;
+        source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations; windowGeometry = $windowGeometry;
         requiredScope = 'Taskbar, caption, ShowAsync and single-instance normal/maximized restoration';
         requiredScopeCompleted = $requiredScopeCompleted; skipped = @($results | Where-Object status -eq 'SKIP').Count; passed = $null -eq $failure } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'result.json') -Encoding UTF8

@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using TogetherServer;
 
 namespace TogetherServer.FeatureChecks;
@@ -50,6 +51,42 @@ internal static class DesktopChromeChecks
         var workingArea = new Rectangle(1960, -1040, 1880, 1040);
         Require(DesktopWindow.RelativeMaximizedBounds(rightMonitor, workingArea) == new Rectangle(40, 40, 1880, 1040),
             "Custom frame maximization lost the selected monitor or taskbar insets.");
+        CheckMaximizedWorkArea();
+    }
+
+    private static void CheckMaximizedWorkArea()
+    {
+        Require(Marshal.SizeOf<DesktopMinMaxInfo>() == 40 &&
+                Marshal.OffsetOf<DesktopMinMaxInfo>("MaxSize").ToInt32() == 8 &&
+                Marshal.OffsetOf<DesktopMinMaxInfo>("MaxPosition").ToInt32() == 16 &&
+                Marshal.OffsetOf<DesktopMinMaxInfo>("MinTrackSize").ToInt32() == 24 &&
+                Marshal.OffsetOf<DesktopMinMaxInfo>("MaxTrackSize").ToInt32() == 32,
+            "The native MINMAXINFO layout no longer matches five Win32 POINT values.");
+
+        foreach (var monitor in new[] { new Rectangle(0, 0, 1024, 768), new Rectangle(-1920, 0, 1920, 1080),
+                     new Rectangle(1920, -1080, 1920, 1080) })
+        foreach (var insets in new[] { new Rectangle(0, 0, 0, 48), new Rectangle(40, 0, 0, 0),
+                     new Rectangle(0, 40, 0, 0), new Rectangle(0, 0, 40, 0), new Rectangle(40, 40, 0, 0) })
+        {
+            var work = new Rectangle(monitor.Left + insets.X, monitor.Top + insets.Y,
+                monitor.Width - insets.X - insets.Width, monitor.Height - insets.Y - insets.Height);
+            var info = new DesktopMinMaxInfo
+            {
+                Reserved = new(17, 23), MaxPosition = new(-8, -8), MaxSize = new(monitor.Width + 16, monitor.Height + 16),
+                MinTrackSize = new(380, 560), MaxTrackSize = new(8000, 4000)
+            };
+            Require(DesktopChrome.ApplyMaximizedWorkArea(ref info, monitor, work), "A valid monitor work area was rejected.");
+            Require(info.MaxPosition == new Point(insets.X, insets.Y) && info.MaxSize == new Point(work.Width, work.Height),
+                "The native maximized frame retained invisible border inflation or lost monitor-relative taskbar insets.");
+            Require(info.Reserved == new Point(17, 23) && info.MinTrackSize == new Point(380, 560) &&
+                    info.MaxTrackSize == new Point(8000, 4000),
+                "The work-area override changed WinForms' reserved or track constraints.");
+        }
+        var unchanged = new DesktopMinMaxInfo { MaxPosition = new(11, 12), MaxSize = new(300, 200) };
+        foreach (var invalid in new[] { Rectangle.Empty, new Rectangle(0, 0, -1, 40), new Rectangle(2000, 0, 100, 100) })
+            Require(!DesktopChrome.ApplyMaximizedWorkArea(ref unchanged, new(0, 0, 1024, 768), invalid) &&
+                    unchanged.MaxPosition == new Point(11, 12) && unchanged.MaxSize == new Point(300, 200),
+                "Invalid work-area dimensions changed the native maximum rectangle.");
     }
 
     private static RectangleF Bounds(DesktopCaptionStroke[] strokes)
