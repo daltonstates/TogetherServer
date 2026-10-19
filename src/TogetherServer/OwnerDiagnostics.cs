@@ -158,7 +158,7 @@ public static class OwnerDiagnostics
         if (game is null)
             return new("local-game-ports", "Declared game ports", "Unavailable",
                 "No existing declared-port diagnostic was returned for this saved server.",
-                "Open Connection help and refresh the existing port checks.", "Settings > Connection help",
+                "Open Network and refresh the existing port checks.", "Servers > This PC settings > Network",
                 OwnerDiagnosticTones.Error);
         var declared = game.Ports.Count == 0 ? "No game ports are declared." :
             $"Declared {game.Protocol} {string.Join(", ", game.Ports)}.";
@@ -172,8 +172,8 @@ public static class OwnerDiagnostics
             Bounded($"{declared} {game.Detail} Seeing a port open on this PC does not prove that a Friend can reach it or join the game.",
                 420, "Local port details are unavailable."),
             game.State == "Waiting" ? "Start only from Overview when you intend to inspect live local sockets." :
-                "Use Connection help for routing guidance, then verify the game separately from a real Friend PC.",
-            "Settings > Connection help", tone);
+                "Use Network for routing guidance, then verify the game separately from a real Friend PC.",
+            "Servers > This PC settings > Network", tone);
     }
 
     private static OwnerDiagnosticCheck FriendEvidenceCheck(Guid profileId,
@@ -211,7 +211,7 @@ public static class OwnerDiagnostics
             Bounded(detail, 420, "Friend connection state is unavailable."),
             control.State is "Off" or CompanionListenerStates.Idle
                 ? "Choose Invite friends to get the server code."
-                : "Review Friend access and Connection help without changing firewall or router settings automatically.",
+                : "Review Access and Network without changing firewall or router settings automatically.",
             "Settings > Friend access", tone);
     }
 
@@ -222,7 +222,7 @@ public static class OwnerDiagnostics
             return new("route-diagnostic", "Outside connection test", "Not checked",
                 "No outside TCP test has been run since TogetherServer opened.",
                 "Run the optional test only after the local Friend listener is open, or ask a Friend on another network to connect.",
-                "Settings > Connection help");
+                "Servers > This PC settings > Network");
         var age = now - result.CheckedUtc;
         var current = age >= TimeSpan.Zero && age < CurrentRouteDiagnostic && result.Port == control.Port &&
             (result.Endpoint is null ||
@@ -231,7 +231,7 @@ public static class OwnerDiagnostics
             return new("route-diagnostic", "Outside connection test", "Previous result expired",
                 "The latest outside TCP result is older than five minutes or no longer matches the current Friend connection and server code address.",
                 "Refresh the optional route test, then connect from a real Friend PC.",
-                "Settings > Connection help", OwnerDiagnosticTones.Attention, result.CheckedUtc);
+                "Servers > This PC settings > Network", OwnerDiagnosticTones.Attention, result.CheckedUtc);
         var tone = result.State switch
         {
             "Not reachable" => OwnerDiagnosticTones.Error,
@@ -244,7 +244,7 @@ public static class OwnerDiagnostics
             result.State == "Reachable"
                 ? "Verify Connect from a real Friend PC, then test the game join separately."
                 : "Review the shown route layers manually; TogetherServer will not change firewall, router, or DNS settings.",
-            "Settings > Connection help", tone, result.CheckedUtc);
+            "Servers > This PC settings > Network", tone, result.CheckedUtc);
     }
 
     private static OwnerDiagnosticCheck RecoveryCheck(DataRecoveryView recovery)

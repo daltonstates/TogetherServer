@@ -55,10 +55,12 @@ This is a fake-data UI demo, with no real game servers, downloads, save transfer
 pairing, network checks or external links. Changes to fake servers last for this
 session. Use the permanent demo bar to pick a scenario or reset the fake data.
 
-Try Host > Backups > Sharing & hosting and toggle Can host this save for Riley.
-Then switch to Join to test Host on this PC beside Start server. Prepare this PC
-simulates the checks; Start server on this PC simulates hosting. The bar also
-offers missing-server and offline-Host scenarios.
+The Servers list groups Your servers, Hosting for friends and Friend servers.
+Choose your server > Backups > Sharing & hosting to change hosting permissions.
+Choose Morgan's Meadow under Friend servers to try Host on this PC beside Start.
+Prepare this PC simulates the checks; Start server on this PC simulates hosting.
+The resulting local server is labeled Hosted for Morgan. The bar also offers
+missing-server, offline-Host, checking-players and repeated-player-issue scenes.
 
 The demo uses loopback port 5129 and its own %LOCALAPPDATA%\TogetherServer-Demo
 folder. Production and ordinary development settings/worlds are not loaded.

@@ -4,6 +4,7 @@ import type { Run } from './contracts'
 import type { Profile } from './GameProfile'
 import type { ActivityDestination } from './notificationState'
 import { playerCountAvailability } from './PlayersPanel'
+import { isTransientPlayerObservation } from './playerCountPresentation'
 import { Icon } from './Icon'
 
 export type HostLifecycleSummaryProps = {
@@ -37,8 +38,10 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
     Stopping: 'Stopping · Waiting for confirmed exit', Failed: 'Failed · Review needed', Unknown: 'Unknown · Review needed'
   }
   const state = observed?.state ?? 'Unknown'
-  const phase = Object.hasOwn(phases, state) ? phases[state] : 'Unknown · Review needed'
-  const detail = observed?.detail || 'The current server state is unavailable. Review it before starting another run.'
+  const checkingObservation = isTransientPlayerObservation(observed ?? undefined)
+  const phase = checkingObservation ? 'Checking server status' : Object.hasOwn(phases, state) ? phases[state] : 'Unknown · Review needed'
+  const detail = checkingObservation ? 'Waiting for a current player count. Friend and automatic Stop remain blocked.'
+    : observed?.detail || 'The current server state is unavailable. Review it before starting another run.'
   const navigate = (section: 'overview' | 'players' | 'setup', label: string, reason: string): HostLifecycleView => ({
     phase, detail, next: { kind: 'navigate', label, reason,
       destination: { workspace: 'host', section, profileId: profile.id, label } }
@@ -48,6 +51,7 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
     destination: { workspace: 'settings', section: 'diagnostics', profileId: profile.id, label: 'Review recovery' }
   } }
   if (profile.maintenance?.enabled) return navigate('setup', 'Continue maintenance', 'Review the maintenance guide and its remaining checks.')
+  if (checkingObservation) return navigate('players', 'View players', 'TogetherServer keeps checking automatically. No action is needed while this check completes.')
   switch (observed?.state) {
     case 'Offline': return startGate.allowed
       ? { phase, detail, next: { kind: 'start', label: 'Start server', reason: 'Start rechecks the saved setup, process identity, world and ports.' } }

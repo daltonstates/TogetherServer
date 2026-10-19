@@ -104,7 +104,7 @@ export function AppSettings({ profile, section, onSectionChange, onClose, onBusy
         <p className="helper-text">Preferences save as you change them.</p></>}
       {page === 'notifications' && <><DesktopPreferencesPanel quietMode={preferences.quietMode}
         onQuietModeChange={quietMode => onPreferencesChange(current => ({ ...current, quietMode }))} onBusyChange={setChildBusy} />
-        <p className="helper-text">Individual server choices are available in that server’s Host or Join workspace.</p></>}
+        <p className="helper-text">Choose a server on Servers to change its individual alerts.</p></>}
       {page === 'windows' && <div className="settings-dialog-stack">
         <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{instance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span>
           <Input type="checkbox" checked={desktop?.launchAtLogin ?? false} disabled={!desktop?.available || !desktop.startupAvailable || desktopBusy || busy} onChange={event => onDesktopChange({ launchAtLogin: event.target.checked })} /></label>
@@ -135,7 +135,7 @@ export function AppSettings({ profile, section, onSectionChange, onClose, onBusy
       </div>}
       {page === 'shortcuts' && <dl className="settings-shortcuts">
         <div><dt><kbd>Ctrl K</kbd></dt><dd>Command palette</dd></div>
-        <div><dt><kbd>Alt 1</kbd></dt><dd>Host</dd></div><div><dt><kbd>Alt 2</kbd></dt><dd>Join</dd></div>
+        <div><dt><kbd>Alt 1</kbd></dt><dd>Servers</dd></div><div><dt><kbd>Alt 2</kbd></dt><dd>Connect server</dd></div>
         <div><dt><kbd>Alt 3</kbd></dt><dd>Attention</dd></div><div><dt><kbd>Alt 4</kbd></dt><dd>App Settings</dd></div>
         <div><dt><kbd>Esc</kbd></dt><dd>Close the current dialog or menu</dd></div>
         <div><dt><kbd>Tab</kbd></dt><dd>Move to the next control</dd></div>

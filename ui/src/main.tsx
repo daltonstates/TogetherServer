@@ -6,13 +6,12 @@ import { ProfileAccess, ProfileSettings, useLocalProfile } from './ProfileSettin
 import { RequiredFeatureSetup, useRequiredFeatureSetup } from './RequiredFeatureSetup'
 import { AppSettings } from './AppSettings'
 import { SectionSidebar } from './SectionSidebar'
-import { SearchablePicker } from './SearchablePicker'
 import { appSections, hostPcSections, joinSections, workspaceDestination, type AppSection, type HostPcSection, type JoinSection } from './workspaceSections'
 import { useConfirmation } from './Confirmation'
 import { Tooltip } from './Tooltip'
 import { HostSettingsTools, type HostSettingsPatch } from './HostSettingsTools'
 import { FriendPcCard } from './FriendPcCard'
-import { FriendHostPicker } from './FriendHostPicker'
+import { directoryWithSnapshot, GuestHostingLabel, parseServerDirectory, ServerDirectory, type ServerDirectoryView, type ServerSelection } from './ServerDirectory'
 import { isRemovedHost, orderProfiles } from './profileLists'
 import { SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
@@ -44,8 +43,9 @@ import { DismissibleNotice } from './DismissibleNotice'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { PlayersPanel, playerCountAvailability } from './PlayersPanel'
+import { isTransientPlayerObservation, playerCountPresentation, publicPlayerCount } from './playerCountPresentation'
 import { RecentSessions } from './RecentSessions'
-import { AllServerOverview, allServerRows } from './AllServerOverview'
+import { allServerRows } from './AllServerOverview'
 import { WorldLoadRehearsalPanel, parseWorldLoadResult } from './WorldLoadRehearsal'
 import {
   HostSetupDialog
@@ -300,6 +300,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     catch { return { ...defaultUiPreferences } }
   })
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
+  const [serverDirectory, setServerDirectory] = useState<ServerDirectoryView | null>(null)
+  const [serverDirectoryError, setServerDirectoryError] = useState('')
+  const [directoryAction, setDirectoryAction] = useState<'new' | 'connect' | null>(null)
   const [peerRecovery, setPeerRecovery] = useState<{ profileId: string; branchHash: string } | null>(null)
   const [ownerPeerRecovery, setOwnerPeerRecovery] = useState<{ groupKey: string; profileId: string; branchHash: string } | null>(null)
   const [appInstance, setAppInstance] = useState<AppInstanceView | null>(null)
@@ -326,7 +329,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const [advancedSharedScope, setAdvancedSharedScope] = useState<string | null>(null)
   const [selectedFriendProfileId, setSelectedFriendProfileId] = useState('')
   const [serverToolsProfileId, setServerToolsProfileId] = useState('')
-  const [showAllServers, setShowAllServers] = useState(false)
   const localProfile = useLocalProfile()
   const requiredSetup = useRequiredFeatureSetup()
   const [appSettingsBusy, setAppSettingsBusy] = useState(false)
@@ -340,7 +342,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const [friendChatProfileId, setFriendChatProfileId] = useState('')
   const friendDoctorFocusRequested = useRef(false)
   const [hostMobileDetail, setHostMobileDetail] = useState(false)
-  const [reorderServers, setReorderServers] = useState(false)
+  const directorySelectionInFlight = useRef(false)
   const [deviceFilters, setDeviceFilters] = useState(defaultFriendPcFilters)
   const [actionNotices, setActionNoticeState] = useState<Record<string, ActionNotice>>({})
   const setActionNotices = useCallback<React.Dispatch<React.SetStateAction<Record<string, ActionNotice>>>>(next => {
@@ -442,6 +444,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const [friendHostAddress, setFriendHostAddress] = useState('')
   const [recoveryEndpoint, setRecoveryEndpoint] = useState('')
   const [friendConnectionName, setFriendConnectionName] = useState('')
+  const [friendTroubleshootingOpen, setFriendTroubleshootingOpen] = useState(false)
   const [gameEndpointResults, setGameEndpointResults] = useState<Record<string, GameEndpointResult>>({})
   const [gameResultIdentities, setGameResultIdentities] = useState<Record<string, string>>({})
   const [backupLists, setBackupLists] = useState<Record<string, WorldBackupList>>({})
@@ -477,6 +480,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const recoveryAddressInputRef = useRef<HTMLInputElement>(null)
   const updatePromptRef = useModalDialog(showUpdatePrompt)
   const workspaceNavigationRef = useRef<(page: WorkspacePage) => void>(() => {})
+  const connectServerRef = useRef<() => void>(() => {})
   const notificationNavigationRef = useRef<(target: DesktopNotificationTarget) => void>(() => {})
 
   useEffect(() => subscribeToDesktopNotifications(target => notificationNavigationRef.current(target)), [])
@@ -498,7 +502,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   }, [uiPreferences])
 
   useEffect(() => {
-    if (workspacePage !== 'join' || joinSection !== 'network') return
+    if (workspacePage !== 'join' || joinSection !== 'connection' || !friendDoctorFocusRequested.current) return
+    setFriendTroubleshootingOpen(true)
     const doctor = document.querySelector<HTMLDetailsElement>('.friend-connection-doctor')
     if (!doctor) return
     doctor.open = true
@@ -506,7 +511,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       friendDoctorFocusRequested.current = false
       doctor.querySelector('summary')?.focus()
     }
-  }, [workspacePage, joinSection, snapshot?.mode])
+  }, [workspacePage, joinSection, snapshot?.mode, friendTroubleshootingOpen])
 
   const scrollConnectionId = snapshot?.mode === 'Friend' ? snapshot.connectionId : ''
   const workspaceReady = snapshot !== null && appInstance !== null
@@ -559,7 +564,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
         return
       }
       if (typing || !event.altKey) return
-      const page = ({ '1': 'host', '2': 'join', '3': 'attention', '4': 'settings' } as const)[event.key]
+      if (event.key === '2') { event.preventDefault(); connectServerRef.current(); return }
+      const page = ({ '1': snapshot?.mode === 'Friend' ? 'join' : 'host', '3': 'attention', '4': 'settings' } as const)[event.key]
       if (page) { event.preventDefault(); workspaceNavigationRef.current(page) }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -745,19 +751,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
         serverTabs: { ...current.serverTabs, [selectedHostProfileId]: tab } }))
     })
   }
-  const toggleFavorite = (kind: 'favoriteServers' | 'favoriteHosts', id: string) => {
-    setUiPreferences(current => ({ ...current, [kind]: current[kind].includes(id)
-      ? current[kind].filter(value => value !== id) : [...current[kind], id].slice(-100) }))
-  }
-  const moveServer = (id: string, direction: -1 | 1) => {
-    const currentIds = snapshot?.mode === 'Host' ? snapshot.settings.profiles.map(profile => profile.id) : []
-    const order = [...new Set([...uiPreferences.serverOrder.filter(value => currentIds.includes(value)), ...currentIds])]
-    const index = order.indexOf(id)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= order.length) return
-    ;[order[index], order[target]] = [order[target], order[index]]
-    setUiPreferences(current => ({ ...current, serverOrder: order.slice(0, 100) }))
-  }
   const confirmOwnerLifecycle = async (profileId: string, action: 'Stop' | 'Restart'): Promise<boolean> => {
     if (snapshot?.mode !== 'Host') return false
     const profile = snapshot.settings.profiles.find(item => item.id === profileId)
@@ -813,6 +806,25 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       })
     }
   }, 3000, error => setLoadError(errorMessage(error)))
+
+  const refreshServerDirectory = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const next = await getLocalJson('/api/local/servers', parseServerDirectory, signal)
+      if (!signal?.aborted) { setServerDirectory(next); setServerDirectoryError('') }
+    } catch (error) {
+      if (!signal?.aborted) setServerDirectoryError(errorMessage(error))
+    }
+  }, [])
+  useSingleFlightPolling(refreshServerDirectory, 3000)
+
+  useEffect(() => {
+    if (!directoryAction || !snapshot || pending) return
+    if (directoryAction === 'new' && snapshot.mode === 'Host') {
+      setDirectoryAction(null); setWorkspacePage('host'); setHostScope('server'); addProfile()
+    } else if (directoryAction === 'connect' && snapshot.mode === 'Friend') {
+      setDirectoryAction(null); setWorkspacePage('join'); setJoinSection('pairing'); setShowPairing(true)
+    }
+  }, [directoryAction, snapshot, pending, addProfile])
 
   useEffect(() => {
     if (currentFriendEndpoint)
@@ -979,7 +991,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       const result = await changeJson(`/api/local/servers/${profileId}/invite`, 'POST', parseInviteResult,
         { refresh, canStart, enableConnections: true, durationMinutes: 30, deviceLimit: 1, requireApproval }, controller.signal)
       const listenerWarning = result.ok && result.listenerActive !== true
-        ? result.listenerWarning || `The HTTPS listener on TCP ${draft?.companionPort ?? 'the configured port'} did not start. Check Connection help before sharing this code.`
+        ? result.listenerWarning || `The HTTPS listener on TCP ${draft?.companionPort ?? 'the configured port'} did not start. Check Network before sharing this code.`
         : null
       if (!result.ok || !result.password) {
         const message = result.ok ? 'TogetherServer did not return a server code. Try again.' : result.message
@@ -1218,7 +1230,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     try {
       const result = await change(`/api/local/friend/connections/${id}/forget`, 'POST')
       setNotice({ good: result.ok, text: result.message })
-      if (result.ok) { setShowPairing(false); applySnapshot(await readSnapshot()) }
+      if (result.ok) { setShowPairing(false); applySnapshot(await readSnapshot()); await refreshServerDirectory() }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -1260,6 +1272,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     try {
       const result = await change(`/api/local/friend/${id}/${action}`, 'POST')
       const next = await readSnapshot()
+      if (result.code === 'PlayerCountPending') { applySnapshot(next); return }
       const feedback = serverActionNotice(result.ok, result.message, next, id, action)
       setNotice(feedback)
       setActionNotices(current => ({ ...current, [id]: feedback }))
@@ -1337,6 +1350,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     try {
       const result = await changeAction(path, method, body)
       applySnapshot(result.snapshot)
+      if (result.code === 'PlayerCountPending') return
       const profileId = snapshot?.mode === 'Host' ? snapshot.settings.profiles.find(item => path.includes(item.id))?.id : undefined
       const feedback = profileId ? serverActionNotice(result.ok, result.message, result.snapshot, profileId, path.split('/').at(-1) ?? '')
         : { good: result.ok, text: result.message }
@@ -1664,7 +1678,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
 
   const selectJoinSection = (section: JoinSection) => {
     void changeScope(() => {
-      setJoinSection(section)
+      setJoinSection(section === 'network' ? 'connection' : section)
       setShowPairing(section === 'pairing')
       const profileId = selectedFriendProfile?.id ?? ''
       if (section === 'chat') setFriendChatProfileId(profileId)
@@ -1674,6 +1688,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
 
   const navigateWorkspace = (page: WorkspacePage) => {
     if (!requiredSetup.ready) return
+    if (page === 'host' && snapshot?.mode === 'Friend') page = 'join'
     if (page === 'attention' || page === 'settings' ||
       (page === 'host' && snapshot?.mode === 'Host' && modeSwitchesInFlight.current === 0) ||
       (page === 'join' && snapshot?.mode === 'Friend' && modeSwitchesInFlight.current === 0)) {
@@ -1688,6 +1703,44 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     void switchMode(page === 'host' ? 'host' : 'friend')
   }
   workspaceNavigationRef.current = navigateWorkspace
+
+  const requestDirectoryAction = async (action: 'new' | 'connect') => {
+    if (pending || directorySelectionInFlight.current) return
+    directorySelectionInFlight.current = true
+    try {
+      const mode = action === 'new' ? 'Host' : 'Friend'
+      if (snapshot?.mode !== mode) {
+        if (!await switchMode(mode === 'Host' ? 'host' : 'friend')) return
+      } else if (!await beforeChangingScope()) return
+      setDirectoryAction(action)
+    } finally { directorySelectionInFlight.current = false }
+  }
+  connectServerRef.current = () => void requestDirectoryAction('connect')
+
+  const selectDirectoryServer = async (target: ServerSelection) => {
+    if (pending || directorySelectionInFlight.current) return
+    directorySelectionInFlight.current = true
+    try {
+      if (target.kind === 'local') {
+        if (snapshot?.mode !== 'Host') { if (!await switchMode('host')) return }
+        else if (!await beforeChangingScope()) return
+        setWorkspacePage('host'); setHostScope('server'); setSelectedHostProfileId(target.profileId); setHostServerTab('overview')
+        setUiPreferences(current => ({ ...current, selectedServer: target.profileId }))
+      } else {
+        if (snapshot?.mode !== 'Friend') { if (!await switchMode('friend')) return }
+        const current = await readSnapshot()
+        if (current.mode !== 'Friend') return
+        if (current.connectionId !== target.connectionId) {
+          if (!await selectFriendConnection(target.connectionId)) return
+        } else if (!await beforeChangingScope()) return
+        const chosenHost = directoryWithSnapshot(serverDirectory, snapshot).friendHosts.find(host => host.connectionId === target.connectionId)
+        setShowRemovedHosts(chosenHost?.state === 'Revoked' || chosenHost?.connectionCode === 'Revoked')
+        setWorkspacePage('join'); setShowPairing(false); setJoinSection('play')
+        setSelectedFriendProfileId(target.profileId); setFriendChatProfileId(target.profileId); setFriendLogProfileId(target.profileId)
+      }
+      void refreshServerDirectory()
+    } finally { directorySelectionInFlight.current = false }
+  }
 
   const openActivityDestination = (destination: ActivityDestination) => {
     if (snapshot?.mode !== 'Host' || (destination.profileId &&
@@ -1716,7 +1769,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   }
   const openFriendConnectionDoctor = () => {
     friendDoctorFocusRequested.current = true
-    void changeScope(() => { setJoinSection('network'); setWorkspacePage('join') })
+    void changeScope(() => { setJoinSection('connection'); setFriendTroubleshootingOpen(true); setWorkspacePage('join') })
   }
   const openFriendServer = (profileId: string) => {
     if (snapshot?.mode !== 'Friend' || !snapshot.profiles.some(profile => profile.id === profileId)) return
@@ -1827,8 +1880,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
     `${profile.name} ${profileGameLabel(profile)}`.toLocaleLowerCase().includes(normalizedServerSearch))
-  const activeRuns = snapshot?.mode === 'Host'
-    ? snapshot.runs.filter(run => ['Process running', 'Starting', 'Listening', 'Ready'].includes(run.state)).length : 0
+  const directory = directoryWithSnapshot(serverDirectory, snapshot)
+  const activeRuns = directory.localServers.filter(run => ['Process running', 'Starting', 'Listening', 'Ready'].includes(run.state)).length
   const currentRouteResult = !dirty && companion?.listenerActive
     ? currentOutsideResult(portDiagnostics?.control, internetRouteCheck) : null
   const previousRouteVerdict = !currentRouteResult &&
@@ -1852,13 +1905,12 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const storageWarnings = snapshot?.mode === 'Host' ? snapshot.storageHealth?.warnings ?? [] : []
   const hostOverviewRows = snapshot?.mode === 'Host' ? allServerRows(snapshot, nowMs) : []
   const currentProblems = hostOverviewRows.filter(row => row.priority > 20)
-  const visibleHostProfiles = savedProfiles
   const visibleDevices = filterFriendPcs(companion?.devices ?? [], savedProfiles, deviceFilters, nowMs)
   const attentionCount = visibleActivity.length + storageWarnings.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
   const groupedActivity = collapseRepeatedActivity(visibleActivity)
   const commands: WorkspaceCommand[] = [
-    { id: 'nav-host', label: 'Open Host', detail: 'Manage servers on this PC', icon: 'server', keywords: 'Alt+1', run: () => navigateWorkspace('host') },
-    { id: 'nav-join', label: 'Open Join', detail: 'Connect to a friend without interrupting hosting', icon: 'link', keywords: 'Alt+2', run: () => navigateWorkspace('join') },
+    { id: 'nav-host', label: 'Open Servers', detail: 'Your servers and connected friend servers', icon: 'server', keywords: 'Alt+1 host join', run: () => navigateWorkspace(snapshot?.mode === 'Friend' ? 'join' : 'host') },
+    { id: 'nav-join', label: 'Connect server', detail: 'Use a friend’s server code', icon: 'link', keywords: 'Alt+2', run: () => void requestDirectoryAction('connect') },
     { id: 'nav-attention', label: 'Open Attention Center', detail: `${attentionCount} current item${attentionCount === 1 ? '' : 's'}`, icon: 'bell', keywords: 'notifications activity Alt+3', run: () => navigateWorkspace('attention') },
     { id: 'nav-settings', label: 'Open App Settings', detail: 'Appearance and PC-wide preferences', icon: 'settings', keywords: 'Alt+4 preferences', run: () => navigateWorkspace('settings') },
     { id: 'add-server', label: 'Add a server', detail: 'Open the guided Host setup', icon: 'server', disabled: snapshot?.mode !== 'Host' || !!pending || dirty,
@@ -1920,7 +1972,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
-  const pageTitle = workspacePage === 'host' ? 'Host' : workspacePage === 'join' ? 'Join' : workspacePage === 'attention' ? 'Attention' : 'App Settings'
+  const pageTitle = workspacePage === 'host' || workspacePage === 'join' ? 'Servers' : workspacePage === 'attention' ? 'Attention' : 'App Settings'
   const pageDescription = workspacePage === 'host'
     ? savedProfiles.length === 0 ? 'Create a server to play with friends.' : activeRuns ? `${activeRuns} ${activeRuns === 1 ? 'server is' : 'servers are'} running.` : 'Choose a server to start hosting.'
     : workspacePage === 'join' ? 'Connect to a friend’s server and get ready to play.'
@@ -1933,6 +1985,12 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     if (await confirm({ title: 'Resume hosting?', confirmLabel: 'Resume hosting', description: 'TogetherServer uses the normal Start checks and will never start a second copy of a process it reattached to.' }))
       void run(`resume-${profileId}`, `/api/local/profiles/${profileId}/resume-hosting`, 'POST')
   }
+
+  const directoryControl = <ServerDirectory view={directory} nowMs={nowMs} busy={!!pending} error={serverDirectoryError}
+    selection={snapshot?.mode === 'Host' && selectedHostProfile ? { kind: 'local', profileId: selectedHostProfile.id }
+      : snapshot?.mode === 'Friend' && selectedFriendProfile ? { kind: 'friend', connectionId: snapshot.connectionId, profileId: selectedFriendProfile.id } : null}
+    onRetry={() => void refreshServerDirectory()} onSelect={target => void selectDirectoryServer(target)}
+    onAddLocal={() => void requestDirectoryAction('new')} onConnect={() => void requestDirectoryAction('connect')} />
 
   if (!requiredSetup.ready) return <>{developmentDemoControls}<RequiredFeatureSetup setup={requiredSetup} appName={appInstance?.displayName}
     renderStep={(feature, complete, busy) => feature.id === 'profile-name' && feature.revision === 1
@@ -2049,20 +2107,11 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       </section>}
 
       {workspacePage === 'join' && snapshot?.mode === 'Friend' && <section className="context-workspace join-context-workspace">
-        <aside className="context-sidebar" aria-label="Join navigation" tabIndex={0}>
+        <aside className="context-sidebar" aria-label="Server navigation" tabIndex={0}>
           <ProfileAccess profile={localProfile} onOpen={() => void changeScope(() => { setWorkspacePage('settings'); setAppSection('profile') })} />
-          {(snapshot.connections?.length ?? 0) > 0 && <FriendHostPicker connections={snapshot.connections ?? []}
-            selectedId={snapshot.connectionId} showRemoved={showRemovedHosts} favorites={uiPreferences.favoriteHosts} busy={!!pending}
-            onShowRemoved={setShowRemovedHosts} onSelect={id => void selectFriendConnection(id)}
-            onFavorite={id => toggleFavorite('favoriteHosts', id)} onForget={id => void forgetFriendConnection(id)} />}
-          {friendProfiles.length > 0 && <label className="context-server-select">Selected server
-            <Select value={selectedFriendProfile?.id ?? ''} onChange={event => {
-              const profileId = event.target.value
-              void changeScope(() => { setSelectedFriendProfileId(profileId); setFriendChatProfileId(profileId); setFriendLogProfileId(profileId) })
-            }}>
-              {friendProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-            </Select></label>}
-          <SectionSidebar title="Join" label="Join sections" sections={joinSections.filter(section => friendConnectionHidden ? section.id === 'pairing' : section.id !== 'logs' ||
+          {directoryControl}
+          <p className="server-directory-selected">{selectedFriendProfile?.name || 'Selected friend server'}</p>
+          <SectionSidebar title="Server" label="Selected server sections" sections={joinSections.filter(section => friendConnectionHidden ? section.id === 'pairing' : section.id !== 'logs' ||
             !!selectedFriendProfile && friendLogAvailability(selectedFriendProfile.canViewLogs, snapshot.hostCapabilities).visible)}
             section={showPairing || !snapshot.endpoint || friendConnectionHidden ? 'pairing' : joinSection} onSelect={selectJoinSection} />
         </aside><div className="context-content">
@@ -2111,8 +2160,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
               ? { message: profile.operation.message, conflicts: profile.operation.portConflicts } : null
             return <article className="profile-card" id={`friend-server-${profile.id}`} key={connectionKey} aria-busy={pending === 'poll' || pending.endsWith(profile.id)}>
               <div className="profile-top"><div><h3>{profile.name}</h3><p>{gameLabel(profile.kind)}</p></div><div className="server-current-state"><span className={`status ${statusTone(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.state : 'Unknown')}`}>{pending === 'poll' && <Icon name="loader" />}{!friendConnectionExplanation(snapshot, nowMs).currentAccess ? 'Last known / Unknown' : profile.state === 'Ready' ? 'Ready to join' : profile.state}</span>
-                {profile.state === 'Ready' && <span className="server-player-count"><Icon name="users" size={14} />{playerCount(friendConnectionExplanation(snapshot, nowMs).currentAccess ? profile.onlinePlayers : null, profile.maxPlayers)}</span>}
-                {profile.state === 'Ready' && profile.onlinePlayers === 0 && friendConnectionExplanation(snapshot, nowMs).currentAccess && <ServerCountdown deadline={profile.autoShutdownAtUtc} nowMs={nowMs} />}
+                {profile.state === 'Ready' && <span className="server-player-count"><Icon name="users" size={14} />{playerCount(friendConnectionExplanation(snapshot, nowMs).currentAccess ? publicPlayerCount(profile, nowMs) : null, profile.maxPlayers)}</span>}
+                {publicPlayerCount(profile, nowMs) === 0 && friendConnectionExplanation(snapshot, nowMs).currentAccess && <ServerCountdown deadline={profile.autoShutdownAtUtc} nowMs={nowMs} />}
               </div></div>
               {profile.operation && currentRemoteOperation(profile, nowMs) && <DismissibleNotice scope={connectionKey} noticeKey={profile.operation.id + ':' + (['Succeeded', 'Failed', 'Interrupted'].includes(profile.operation.state) ? profile.operation.state : 'pending')} trackMessage={false} className={`notice ${profile.operation.state === 'Failed' || profile.operation.state === 'Interrupted' ? 'bad' : 'good'}`} role="status"><strong>{profile.operation.action[0].toUpperCase() + profile.operation.action.slice(1)}: {profile.operation.state}</strong><p>{profile.operation.message}</p></DismissibleNotice>}
               <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
@@ -2225,20 +2274,25 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                       visible={workspacePage === 'join' && friendChatProfileId === profile.id} />
                   </PaneErrorBoundary>}</article>)}</div>}
           {(joinSection === 'network' || joinSection === 'connection') && snapshot.endpoint && !showPairing && !friendConnectionHidden && <section className="friend-connection-tools" aria-labelledby="friend-tools-title">
-            <h3 id="friend-tools-title">{joinSection === 'network' ? 'Connection help' : 'Connection settings'}</h3>
+            <h3 id="friend-tools-title">Server settings</h3>
             {joinSection === 'connection' && selectedFriendProfile && <Button className="secondary" onClick={() => setServerNotification({ id: selectedFriendProfile.id, name: selectedFriendProfile.name, connectionId: snapshot.connectionId })}><Icon name="bell" />Server notifications</Button>}
-            {joinSection === 'connection' && <details className="advanced-block" ref={addressRecoveryRef}><summary><Icon name="shield" />Connection identity and recovery</summary>
+            {joinSection === 'connection' && <div className="settings-dialog-stack">
               <label>Saved connection name<div className="field-with-button"><Input value={friendConnectionName} maxLength={48} onChange={event => setFriendConnectionName(event.target.value)} /><Button className="secondary" disabled={!!pending || !friendConnectionName.trim() || friendConnectionName.trim() === snapshot.connectionName} onClick={() => void renameFriendConnection()}><Icon name="edit" />Rename</Button></div></label>
+              <details className="advanced-block" ref={addressRecoveryRef}><summary><Icon name="link" />Change Host address</summary>
+              <label>New Host address<Input ref={recoveryAddressInputRef} value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
+              <Button className="secondary" aria-label="Check and update address" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}><Icon name={pending === 'recover-endpoint' ? 'loader' : 'refresh'} />{pending === 'recover-endpoint' ? 'Checking…' : 'Update address'}</Button>
+              <details><summary>Saved access details</summary>
               <p className="helper-text">Route: {snapshot.routeMode === 'PrivateMesh' ? 'Private mesh' : snapshot.routeMode === 'AdvancedAddress' ? 'Advanced address' : 'Direct Internet'}{snapshot.routeAddress ? ` (${snapshot.routeAddress})` : ''}. Host {snapshot.hostVersion ?? 'unknown'} · this app {snapshot.friendVersion ?? 'unknown'} · protocol {snapshot.hostProtocolVersion ?? 'unknown'}.</p>
               <p className="helper-text">Saved access expires {snapshot.credentialExpiresUtc ? new Date(snapshot.credentialExpiresUtc).toLocaleString() : 'unknown'}. Secure Host identity expires {snapshot.certificateExpiresUtc ? new Date(snapshot.certificateExpiresUtc).toLocaleString() : 'unknown'}.</p>
-              <label>New Host address<Input ref={recoveryAddressInputRef} value={recoveryEndpoint} onChange={event => setRecoveryEndpoint(event.target.value.trim())} placeholder={`https://100.64.0.2:${appInstance?.companionPort ?? 5131}`} /><small>The saved Host identity and this PC's access must both work at the new address. TogetherServer will not trust a different Host automatically.</small></label>
-              <div className="actions"><Button className="secondary" aria-label="Check and update address" disabled={!!pending || !recoveryEndpoint} onClick={() => void recoverFriendEndpoint()}><Icon name={pending === 'recover-endpoint' ? 'loader' : 'refresh'} />{pending === 'recover-endpoint' ? 'Checking…' : 'Update address'}</Button>
-              <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}><Icon name="trash" />{pending === 'forget-connection' ? 'Forgetting…' : 'Forget this Host'}</Button></div>
-            </details>}
-          {joinSection === 'network' && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendConnectionDoctor snapshot={snapshot}
+              </details></details>
+              <Button className="text-button danger" disabled={!!pending} onClick={() => void forgetFriendConnection()}><Icon name="trash" />{pending === 'forget-connection' ? 'Forgetting…' : 'Forget this Host'}</Button>
+            </div>}
+          <details className="friend-troubleshooting" open={friendTroubleshootingOpen} onToggle={event => setFriendTroubleshootingOpen(event.currentTarget.open)}><summary>Troubleshooting</summary>
+          {friendTroubleshootingOpen && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendConnectionDoctor snapshot={snapshot}
             gameResults={gameEndpointResults} gameResultIdentities={gameResultIdentities} nowMs={nowMs} busy={!!pending}
             onRefresh={() => void checkFriendConnection()} onProbe={profileId => void probeGameEndpoint(profileId)} />}
-          {joinSection === 'network' && appInstance?.isStaging && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
+          {friendTroubleshootingOpen && appInstance?.isStaging && snapshot.endpoint && !showPairing && !friendConnectionHidden && <FriendRemoteRehearsal key={snapshot.connectionId} snapshot={snapshot} />}
+          </details>
           </section>}
         </section>
         {(joinSection === 'play' || joinSection === 'shared-saves') && <WorldPeerPanel
@@ -2248,27 +2302,16 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
         </div></section>}
 
       {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <section className="context-workspace host-context-workspace">
-        <aside className="context-sidebar" aria-label="Host navigation" tabIndex={0}>
+        <aside className="context-sidebar" aria-label="Server navigation" tabIndex={0}>
           <ProfileAccess profile={localProfile} onOpen={() => void changeScope(() => { setWorkspacePage('settings'); setAppSection('profile') })} />
-          <div className="host-sidebar-primary">
-          {savedProfiles.length > 0 && <SearchablePicker label="Selected server" selectedId={selectedHostProfile?.id ?? ''}
-            items={visibleHostProfiles.map(profile => ({ id: profile.id, name: profile.name, detail: profileGameLabel(profile), keywords: profile.worldId,
-              state: snapshot.runs.find(run => run.profileId === profile.id)?.state ?? 'Unknown' }))}
-            onSelect={id => selectHostServer(id)}
-            actions={item => <><Button className="secondary icon-button" title={`${uiPreferences.favoriteServers.includes(item.id) ? 'Unpin' : 'Pin'} ${item.name}`}
-              aria-label={`${uiPreferences.favoriteServers.includes(item.id) ? 'Unpin' : 'Pin'} ${item.name}`} aria-pressed={uiPreferences.favoriteServers.includes(item.id)}
-              onClick={() => toggleFavorite('favoriteServers', item.id)}>{uiPreferences.favoriteServers.includes(item.id) ? '★' : '☆'}</Button>
-              {reorderServers && <span className="server-reorder"><Button className="secondary icon-button" aria-label={`Move ${item.name} up`} onClick={() => moveServer(item.id, -1)}>↑</Button>
-                <Button className="secondary icon-button" aria-label={`Move ${item.name} down`} onClick={() => moveServer(item.id, 1)}>↓</Button></span>}</>}
-            tools={<Button className="secondary" aria-pressed={reorderServers} onClick={() => setReorderServers(current => !current)}>{reorderServers ? 'Finish ordering' : 'Reorder servers'}</Button>} />}
-          <div className="context-sidebar-actions"><Button className="secondary icon-button" aria-label="Add server" title="Add server" disabled={!!pending || dirty} onClick={addProfile}><Icon name="plus" /></Button>
-            {savedProfiles.length > 1 && <Button className="secondary icon-button" aria-label="Compare all servers" title="Compare all servers" onClick={() => setShowAllServers(true)}><Icon name="server" /></Button>}</div>
-          </div>
+          {directoryControl}
+          <p className="server-directory-selected">{selectedHostProfile?.name || 'Selected server'}</p>
           {savedProfiles.length > 0 && <SectionSidebar title="Server" label="Selected server sections"
             sections={(Object.keys(hostServerTabLabels) as HostServerTab[]).map(id => ({ id, label: hostServerTabLabels[id], icon: hostServerTabIcons[id] }))}
             section={hostScope === 'server' ? hostServerTab : undefined} onSelect={selectHostTab} />}
-          <SectionSidebar title="This Host PC" label="This Host PC sections" sections={hostPcSections}
-            section={hostScope === 'pc' ? hostSettingsSection : undefined} onSelect={openHostSettings} />
+          <details className="server-sections-disclosure" open={hostScope === 'pc'}><summary>This PC settings</summary>
+            <SectionSidebar title="This PC" label="This Host PC sections" sections={hostPcSections}
+              section={hostScope === 'pc' ? hostSettingsSection : undefined} onSelect={openHostSettings} /></details>
         </aside><div className="context-content">
         {hostScope === 'server' && <>
         {savedProfiles.length > 0 && <>
@@ -2303,9 +2346,11 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                 onHide: () => hideConnectionDetails(passwordKey),
                 onCopy: () => void copyGamePassword(profile, passwordKey) }] : [])]
               return <article className="profile-card server-detail-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
+                {profile.separateCopySourceProfileId && <GuestHostingLabel server={directory.localServers.find(server => server.id === profile.id) ?? {
+                  separateCopySourceProfileId: profile.separateCopySourceProfileId, sourceName: null, sourceHostName: null }} />}
                 <div className="server-command-header">
                   <div className="profile-top"><div className="server-identity"><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · {profile.worldId}</p></div>
-                    <div className="server-current-state"><span className={`status ${statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
+                    <div className="server-current-state"><span className={`status ${statusTone(isTransientPlayerObservation(status) ? 'Starting' : status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{isTransientPlayerObservation(status) ? 'Checking players…' : status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
                       {['Ready', 'Listening'].includes(status?.state ?? '') && <Button className="text-button server-player-link" onClick={() => selectHostTab('players')}><Icon name="users" />{count === null ? 'Players unknown' : `${count}${status?.maxPlayers !== null && status?.maxPlayers !== undefined ? ` / ${status.maxPlayers}` : ''} online`}</Button>}
                       {count === 0 && <ServerCountdown deadline={status?.autoShutdownAtUtc ?? null} nowMs={nowMs} />}
                     </div>
@@ -2322,7 +2367,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   </div>
                   {status && !['Offline', 'Ready'].includes(status.state) && <p className="server-progress" role="status">{status.detail}</p>}
                   {dirty && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or cancel setup changes before server actions.</DismissibleNotice>}
-                  {!friendAppAddress && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Set the Host connection address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Connection help</Button></DismissibleNotice>}
+                  {!friendAppAddress && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Set this PC’s address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Network</Button></DismissibleNotice>}
                   {!dirty && hasUnsavedServerEdits && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or discard file changes before starting.</DismissibleNotice>}
                   {dataRecovery?.lifecycleBlocked && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Start and Restart need local data recovery. <Button className="text-button" onClick={() => openHostSettings('diagnostics')}>Review recovery</Button></DismissibleNotice>}
                   {profile.maintenance?.enabled && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Maintenance is on; Friend controls are paused. <Button className="text-button" onClick={() => selectHostTab('setup')}>Continue maintenance</Button></DismissibleNotice>}
@@ -2355,7 +2400,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   {status?.state === 'Offline' && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
                   {['Ready', 'Listening'].includes(status?.state ?? '') && !gameAddress && <div className="connection-empty"><h2>Connection details</h2><p>The joining address is unavailable. Confirm the Host route before sharing it.</p><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Set connection address</Button></div>}
                   {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <DismissibleNotice scope={connectionKey} noticeKey={shownBackupStatus.lastFailureUtc} as="p" className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></DismissibleNotice>}
-                  {status?.state === 'Ready' && count === null && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker"><Icon name="warning" />Players are unknown; Friend and automatic Stop are blocked. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></DismissibleNotice>}
+                  {status?.state === 'Ready' && playerCountPresentation(status, nowMs).showWarning && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker"><Icon name="warning" />Player count has been unavailable repeatedly. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></DismissibleNotice>}
                 </>}
                 {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   onNavigateIssue={destination => destination === 'health' ? void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST') : selectHostTab('files')}
@@ -2482,7 +2527,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   <div className="server-tools-menu actions">
                     {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Restart')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}><Icon name={pending === `restart-${profile.id}` ? 'loader' : 'refresh'} />{pending === `restart-${profile.id}` ? 'Restarting…' : 'Restart server'}</Button>}
                     {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}><Icon name={pending === `safe-restart-${profile.id}` ? 'loader' : 'archive'} />{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Safe restart with checkpoint'}</Button>}
-                    <Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}><Icon name="settings" />Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Connection help</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}><Icon name="refresh" />Check server health</Button>
+                    <Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}><Icon name="settings" />Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Network</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}><Icon name="refresh" />Check server health</Button>
                     <Button className="secondary" onClick={() => openHostSettings('access')}><Icon name="users" />Friend access</Button>
                     {profile.kind === 'Custom' && <Button className="text-button" onClick={() => selectHostTab('setup')}>Review Custom control certification</Button>}
                     <Button className="secondary" onClick={() => setServerNotification({ id: profile.id, name: profile.name })}><Icon name="bell" />Server notifications</Button>
@@ -2501,7 +2546,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   {status?.state === 'Offline' && <HostStartConnectionNotice profile={profile} ports={portDiagnostics} routeCheck={internetRouteCheck}
                     onOpenConnection={() => openHostSettings('network')}
                     onTestControl={() => void checkInternetRoute()} testingControl={checkingInternetRoute} />}
-                  <PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
+                  <PaneErrorBoundary title="Connection readiness" resetKey={profile.id}><ServerReadiness profileId={profile.id} run={status} status={status?.state ?? 'Unknown'} ports={portDiagnostics} routeCheck={internetRouteCheck}
                     busy={checkingPorts || !!pending} refreshing={checkingPorts} onRefresh={() => void checkPorts(true)} onOpenConnection={() => openHostSettings('network')} /></PaneErrorBoundary>
                 </details>
                 </SettingsDialog>}
@@ -2684,11 +2729,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
         </div></section>}
       </div></main>
     </div>
-    {showAllServers && snapshot?.mode === 'Host' && <SettingsDialog title="All servers" wide onClose={() => setShowAllServers(false)}
-      footer={<Button className="secondary" onClick={() => setShowAllServers(false)}>Done</Button>}>
-      <AllServerOverview snapshot={snapshot} selectedProfileId={selectedHostProfileId} nowMs={nowMs} error={loadError}
-        onOpen={destination => { setShowAllServers(false); openActivityDestination(destination) }} />
-    </SettingsDialog>}
     {serverNotification && <SettingsDialog title={`Notifications for ${serverNotification.name}`} busy={serverNotificationBusy}
       description="Overrides for this server on this PC." onClose={() => setServerNotification(null)}
       footer={<Button className="secondary" disabled={serverNotificationBusy} onClick={() => setServerNotification(null)}>Done</Button>}>

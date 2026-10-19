@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ServerReadiness, type PortDiagnostics } from './ServerReadiness'
+import type { Run } from './contracts'
 
 function diagnostics(state: string, detail: string): PortDiagnostics {
   return {
@@ -20,6 +21,23 @@ function diagnostics(state: string, detail: string): PortDiagnostics {
 }
 
 describe('ServerReadiness Friend connection wording', () => {
+  it('keeps a transient count observation neutral, then exposes repeated or identity failures', () => {
+    const pending: Run = { profileId: 'server-1', runOperationId: null, state: 'Unknown', detail: 'Waiting for a fresh probe.',
+      processId: 123, onlinePlayers: null, maxPlayers: null, autoShutdownAtUtc: null, autoShutdownReason: null,
+      hostAddedTime: false, playerNames: null, playerCountTrusted: false, friendAddedMinutes: 0, addedShutdownMinutes: 0,
+      playerObservationSource: 'ObservationStale', playerCountObservedUtc: null, playerCountRefreshing: true, playerCountFailureCount: 0 }
+    const props = { profileId: 'server-1', status: 'Unknown', ports: diagnostics('Idle', 'Idle'), routeCheck: null,
+      onRefresh: vi.fn(), busy: false }
+    const view = render(<ServerReadiness {...props} run={pending} />)
+    expect(screen.getByText('Waiting for a current server observation. Stop waits for a fresh player count.',
+      { selector: '.readiness-summary-detail' })).toBeVisible()
+    expect(screen.queryByText('The server state is unknown.')).not.toBeInTheDocument()
+    view.rerender(<ServerReadiness {...props} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 2 }} />)
+    expect(screen.getByText('The server state is unknown.')).toBeVisible()
+    view.rerender(<ServerReadiness {...props} run={{ ...pending, playerCountRefreshing: false, playerObservationSource: null }} />)
+    expect(screen.getByText('The server state is unknown.')).toBeVisible()
+  })
+
   it('presents an unused listener as a normal idle state without a repair warning', () => {
     render(<ServerReadiness profileId="server-1" status="Offline"
       ports={diagnostics('Idle', 'Friend access is idle. Nothing is wrong.')}

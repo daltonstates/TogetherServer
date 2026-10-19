@@ -15,8 +15,7 @@ export type WorkspaceCommand = {
 }
 
 const navigation: Array<{ id: WorkspacePage; label: string; icon: IconName; shortcut: string }> = [
-  { id: 'host', label: 'Host', icon: 'server', shortcut: 'Alt+1' },
-  { id: 'join', label: 'Join', icon: 'link', shortcut: 'Alt+2' },
+  { id: 'host', label: 'Servers', icon: 'server', shortcut: 'Alt+1' },
   { id: 'attention', label: 'Attention', icon: 'bell', shortcut: 'Alt+3' },
   { id: 'settings', label: 'App Settings', icon: 'settings', shortcut: 'Alt+4' }
 ]
@@ -83,10 +82,10 @@ export function WorkspaceNavigation({ page, activeRuns, unread, onNavigate }: {
 }) {
   const statusId = useId()
   return <nav className="workspace-nav" aria-label="TogetherServer workspaces">
-    {navigation.map(item => <Button key={item.id} className={page === item.id ? 'workspace-nav-item selected' : 'workspace-nav-item'}
-      aria-label={item.label} aria-current={page === item.id ? 'page' : undefined}
+    {navigation.map(item => <Button key={item.id} className={page === item.id || item.id === 'host' && page === 'join' ? 'workspace-nav-item selected' : 'workspace-nav-item'}
+      aria-label={item.label} aria-current={page === item.id || item.id === 'host' && page === 'join' ? 'page' : undefined}
       aria-describedby={item.id === 'host' && activeRuns > 0 ? `${statusId}-running` : item.id === 'attention' && unread ? `${statusId}-unread` : undefined}
-      title={`${item.label} (${item.shortcut})`} onClick={() => onNavigate(item.id)}>
+      title={`${item.label} (${item.shortcut})`} onClick={() => onNavigate(item.id === 'host' && page === 'join' ? 'join' : item.id)}>
       <span className="workspace-nav-icon"><Icon name={item.icon} /></span>
       <span className="workspace-nav-label">{item.label}</span>
       {item.id === 'host' && activeRuns > 0 && <span className="workspace-nav-count" aria-label={`${activeRuns} running`}>{activeRuns}<span className="sr-only" id={`${statusId}-running`}>{activeRuns} servers running</span></span>}

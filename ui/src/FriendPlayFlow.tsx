@@ -7,6 +7,7 @@ import { friendCheckFreshness } from './FriendConnectionDoctor'
 import { JoinGuide } from './JoinGuide'
 import { OpenGameButton } from './OpenGameButton'
 import { ServerNotificationPreferences } from './DesktopPreferencesPanel'
+import { hasRepeatedPlayerCountFailure, isTransientPlayerObservation, publicPlayerCount } from './playerCountPresentation'
 import './TaskFirstPages.css'
 
 export type FriendConnectionExplanation = {
@@ -91,9 +92,10 @@ export function effectiveFriendPermissions(snapshot: FriendSnapshot, profile: Pu
       ? 'The Host paused lifecycle controls for maintenance.' : assigned.operation?.state === 'Pending' || assigned.operation?.state === 'Running'
         ? 'Wait for the current server operation to finish.' : null
   const action = (reason: string | null): FriendActionAvailability => ({ available: reason === null, reason: reason ?? 'Available; the Host checks this request again.' })
+  const players = assigned ? publicPlayerCount(assigned, nowMs) : null
   const stopBlocker = !assigned || assigned.state !== 'Ready' ? 'Stop needs a fresh Ready server.'
-    : assigned.onlinePlayers === null || !Number.isInteger(assigned.onlinePlayers) || assigned.onlinePlayers < 0 ? 'Player count is Unknown. Refresh players or ask the Host; Stop needs a fresh count of zero.'
-      : assigned.onlinePlayers > 0 ? 'Players are online. Wait until the server reports zero players.'
+    : players === null ? 'Player count is Unknown. Refresh players or ask the Host; Stop needs a fresh count of zero.'
+      : players > 0 ? 'Players are online. Wait until the server reports zero players.'
         : !assigned.canStopNow ? 'The Host has not confirmed a safe Stop. Refresh player status.' : null
   const logBlocker = !assigned || !connection.currentAccess ? !assigned ? 'This server is no longer assigned.' : connection.detail
     : !grants.logs ? 'The Host has not granted View logs for this server.'
@@ -108,7 +110,7 @@ export function effectiveFriendPermissions(snapshot: FriendSnapshot, profile: Pu
       restart: action(blocked ?? (!grants.start || !grants.stop ? 'Restart needs both Start and Stop permissions.'
         : stopBlocker ?? (!assigned?.canRestartNow ? 'The Host has not confirmed a safe Restart.' : null))),
       extend: action(blocked ?? (!grants.extend ? 'The Host has not granted Add time for this server.'
-        : assigned?.state !== 'Ready' || assigned.onlinePlayers === null || !Number.isInteger(assigned.onlinePlayers) || assigned.onlinePlayers < 0
+        : assigned?.state !== 'Ready' || players === null
           ? 'Add time needs a Ready server with a known player count.'
           : assigned.timerExtensionMinutes <= 0 || assigned.timerExtensionRemainingMinutes < assigned.timerExtensionMinutes
             ? 'The Host’s added-time limit for this run has been reached.' : null)),
@@ -168,11 +170,14 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
   const permissions = effectiveFriendPermissions(snapshot, profile, nowMs)
   const currentProfile = snapshot.profiles.find(item => item.id === profile.id)
   const canJoin = permissions.currentAccess && !!currentProfile?.joinAddress && ['Ready', 'Listening'].includes(currentProfile.state)
+  const countPending = !!currentProfile && publicPlayerCount(currentProfile, nowMs) === null &&
+    !hasRepeatedPlayerCountFailure(currentProfile)
   const playExplanation = !permissions.currentAccess ? connection.detail
     : currentProfile?.state === 'Offline' ? !permissions.actions.start.available
       ? `The game server is stopped. ${permissions.actions.start.reason}`
       : !onStart ? 'The game server is stopped. Ask the Host to start this server.' : 'The game server is stopped.'
-    : friendServerStateExplanation(currentProfile?.state ?? 'Unknown')
+    : isTransientPlayerObservation(currentProfile) ? 'Checking the server. Stop waits for a fresh player count.'
+      : friendServerStateExplanation(currentProfile?.state ?? 'Unknown')
   return <section className="friend-play-flow" aria-labelledby={headingId} aria-busy={busy}>
     <div className="panel-heading"><h4 id={headingId}>Play</h4>
       {onRefresh && <Button className="icon-button" aria-label="Refresh server status" title="Refresh server status" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} /></Button>}</div>
@@ -189,8 +194,10 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
-    {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && !permissions.actions.stop.available &&
+    {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && !permissions.actions.stop.available && !countPending &&
       <DismissibleNotice as="p" scope={JSON.stringify([snapshot.connectionId, profile.id, identityKey])} className="warning-text" role="status">{permissions.actions.stop.reason}</DismissibleNotice>}
+    {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && countPending &&
+      <p className="helper-text" role="status">Checking players. Stop waits for a fresh count of zero.</p>}
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}

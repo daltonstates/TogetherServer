@@ -15,6 +15,22 @@ const run: Run = {
 const input = { profile, run, nowMs, startGate: { allowed: true } }
 
 describe('HostLifecycleSummary', () => {
+  it('keeps an initial or first failed asynchronous observation neutral without offering Start', () => {
+    const start = vi.fn(), open = vi.fn()
+    const pending = { ...run, state: 'Unknown', onlinePlayers: null, playerCountTrusted: false,
+      playerObservationSource: 'ObservationStale', playerCountRefreshing: true, playerCountFailureCount: 0 }
+    const view = render(<HostLifecycleSummary {...input} run={pending} compact onStart={start} onOpen={open} />)
+    expect(screen.getByText('Checking server status')).toBeVisible()
+    expect(screen.queryByText('Unknown · Review needed')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
+    expect(start).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+    view.rerender(<HostLifecycleSummary {...input} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 1 }} compact onStart={start} onOpen={open} />)
+    expect(screen.getByText('Checking server status')).toBeVisible()
+    view.rerender(<HostLifecycleSummary {...input} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 2 }} compact onStart={start} onOpen={open} />)
+    expect(screen.getByText('Unknown · Review needed')).toBeVisible()
+  })
+
   it('keeps compact Offline details without duplicating the parent Start action', () => {
     const start = vi.fn()
     const open = vi.fn()

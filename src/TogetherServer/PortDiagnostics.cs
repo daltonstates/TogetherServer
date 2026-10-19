@@ -158,7 +158,7 @@ public static class PortDiagnostics
             return ("Not configured", "Choose Invite friends after checking the public IP address to set the Friend app address.");
         if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out var endpoint) ||
             endpoint.Port != settings.CompanionPort)
-            return ("Invalid", "The secure Friend address and Friend app port do not match. Check Connection settings.");
+            return ("Invalid", "The secure Friend address and Friend app port do not match. Check Network.");
         if (!GameConnection.IsPublicIpv4(endpoint.Host))
             return ("Local only", "The server code needs a public IPv4 address for a Friend outside this network.");
         if (settings.PublicGameIpCheckedUtc is not { } addressCheckedUtc ||
@@ -166,7 +166,7 @@ public static class PortDiagnostics
             !GameConnection.IsPublicIpv4(settings.PublicGameIp))
             return ("Address stale", "Check the public IP again. An old address may no longer lead to this Host.");
         if (!string.Equals(endpoint.Host, settings.PublicGameIp, StringComparison.OrdinalIgnoreCase))
-            return ("Address differs", "The address in the server code differs from this PC's recent public IP. Check the router's WAN address and Connection settings.");
+            return ("Address differs", "The address in the server code differs from this PC's recent public IP. Check the router's WAN address and Network.");
         return ("Address hint", "The server code matches a recent public IP lookup. This does not verify Windows Firewall, router forwarding, or a Friend connection. Compare the router's WAN address to check for shared-address NAT.");
     }
 

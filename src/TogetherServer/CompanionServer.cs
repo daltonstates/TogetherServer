@@ -361,7 +361,12 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     canAddShutdownTime,
                     snapshot.Settings.FriendTimerExtensionMinutes,
                     Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes),
-                    canViewLogs, GameKind: profile.Kind, RunOperationId: run.RunOperationId);
+                    canViewLogs, GameKind: profile.Kind, RunOperationId: run.RunOperationId,
+                    PlayerCountRefreshing: run.PlayerCountRefreshing,
+                    PlayerCountFailureCount: run.PlayerCountFailureCount,
+                    PlayerCountTrusted: run.PlayerCountTrusted,
+                    PlayerObservationSource: run.PlayerObservationSource,
+                    PlayerCountObservedUtc: run.PlayerCountObservedUtc);
             }).ToList();
             var protocol = CompanionProtocol.Describe(own?.ProtocolVersion);
             var assigned = own?.AssignedProfileIds.ToHashSet() ?? [];

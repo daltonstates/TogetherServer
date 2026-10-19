@@ -185,6 +185,7 @@ app.Use(async (context, next) =>
 static bool HasSensitiveLocalGetHeader(HttpContext context) =>
     context.Request.Headers["X-TogetherServer-Local"] == "1";
 
+ServerDirectoryRoutes.Map(app, manager, friend);
 WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
     () => friendMode, () => updatePending || shutdownPending);
 FriendLocalHostingRoutes.Map(app, data, friend, manager, companionServer, externalPortProbe, modeGate,

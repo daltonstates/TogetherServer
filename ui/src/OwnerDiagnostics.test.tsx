@@ -13,7 +13,7 @@ const diagnostics: OwnerDiagnosticsView = {
         nextAction: 'Review Setup before changing it.', location: 'Host > Setup', tone: 'Neutral', observedUtc: null },
       { id: 'local-game-ports', label: 'Declared game ports', state: 'Open on PC',
         detail: 'Seeing a port open on this PC does not prove that a Friend can reach it or join the game.',
-        nextAction: 'Verify the game separately from a real Friend PC.', location: 'Settings > Connection help', tone: 'Attention', observedUtc: null }
+        nextAction: 'Verify the game separately from a real Friend PC.', location: 'Servers > This PC settings > Network', tone: 'Attention', observedUtc: null }
     ]
   }],
   sharedChecks: [{ id: 'update-state', label: 'Application update', state: 'Current', detail: 'TogetherServer is up to date.',

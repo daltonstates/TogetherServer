@@ -90,6 +90,22 @@ describe('Friend state and permission explanations', () => {
 })
 
 describe('the composed play flow', () => {
+  it('keeps a pending or single failed count check neutral without enabling Stop', () => {
+    const onStop = vi.fn()
+    const pending = { ...profile, onlinePlayers: null, playerCountRefreshing: true, playerCountFailureCount: 0 }
+    const props = { profile: pending, nowMs, onStop, showServerNotifications: false }
+    const view = render(<FriendPlayFlow {...props} snapshot={{ ...snapshot, profiles: [pending] }} />)
+    expect(view.container.querySelector('.warning-text')).toBeNull()
+    expect(screen.getByText('Checking players. Stop waits for a fresh count of zero.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    const first = { ...pending, playerCountRefreshing: false, playerCountFailureCount: 1 }
+    view.rerender(<FriendPlayFlow {...props} profile={first} snapshot={{ ...snapshot, profiles: [first] }} />)
+    expect(view.container.querySelector('.warning-text')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop server' }))
+    expect(onStop).not.toHaveBeenCalled()
+  })
+
   it('places local hosting beside Start without granting remote Start permission', () => {
     const stopped = { ...profile, state: 'Offline', joinAddress: null, canStart: false }
     const hostHere = vi.fn()
@@ -106,7 +122,7 @@ describe('the composed play flow', () => {
 
   it('retains the Unknown-player Stop guard after dismissal and repeats the warning for another connection', () => {
     const onStop = vi.fn()
-    const unknown = { ...profile, onlinePlayers: null, joinAddress: null }
+    const unknown = { ...profile, onlinePlayers: null, joinAddress: null, playerCountFailureCount: 2 }
     const props = { profile: unknown, nowMs, onStop, showServerNotifications: false }
     const current = { ...snapshot, profiles: [unknown] }
     const view = render(<FriendPlayFlow {...props} snapshot={current} />)

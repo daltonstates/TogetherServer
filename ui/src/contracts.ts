@@ -41,6 +41,8 @@ export type Run = {
   addedShutdownMinutes: number
   playerObservationSource: string | null
   playerCountObservedUtc: string | null
+  playerCountRefreshing?: boolean
+  playerCountFailureCount?: number
 }
 
 export type CustomCertificationState = {
@@ -226,6 +228,11 @@ export type PublicProfile = {
   timerExtensionMinutes: number
   timerExtensionRemainingMinutes: number
   canViewLogs: boolean
+  playerCountRefreshing?: boolean
+  playerCountFailureCount?: number
+  playerCountTrusted?: boolean | null
+  playerObservationSource?: string | null
+  playerCountObservedUtc?: string | null
 }
 
 export type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }
@@ -470,6 +477,14 @@ function numeric(value: unknown, context = 'value'): number {
   return value
 }
 
+function parsePlayerCountFailures(value: unknown, context: string): number {
+  if (value === undefined) return 0
+  const count = numeric(value, context)
+  if (!Number.isSafeInteger(count) || count < 0 || count > 2_147_483_647)
+    throw new ContractError(`${context} must be a non-negative completed-check count.`)
+  return count
+}
+
 function nullableText(value: unknown, context: string): string | null {
   return value === null ? null : text(value, context)
 }
@@ -650,7 +665,9 @@ const parseRun: Decoder<Run> = (value, context = 'run') => {
     friendAddedMinutes: numeric(source.friendAddedMinutes, `${context}.friendAddedMinutes`),
     addedShutdownMinutes: source.addedShutdownMinutes === undefined ? 0 : numeric(source.addedShutdownMinutes, `${context}.addedShutdownMinutes`),
     playerObservationSource: source.playerObservationSource === undefined ? null : nullableText(source.playerObservationSource, `${context}.playerObservationSource`),
-    playerCountObservedUtc: source.playerCountObservedUtc === undefined ? null : nullableText(source.playerCountObservedUtc, `${context}.playerCountObservedUtc`)
+    playerCountObservedUtc: source.playerCountObservedUtc === undefined ? null : nullableText(source.playerCountObservedUtc, `${context}.playerCountObservedUtc`),
+    playerCountRefreshing: source.playerCountRefreshing === undefined ? false : flag(source.playerCountRefreshing, `${context}.playerCountRefreshing`),
+    playerCountFailureCount: parsePlayerCountFailures(source.playerCountFailureCount, `${context}.playerCountFailureCount`)
   }
 }
 
@@ -815,7 +832,12 @@ const parsePublicProfile: Decoder<PublicProfile> = (value, context = 'public pro
     canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`),
     timerExtensionMinutes: numeric(source.timerExtensionMinutes, `${context}.timerExtensionMinutes`),
     timerExtensionRemainingMinutes: numeric(source.timerExtensionRemainingMinutes, `${context}.timerExtensionRemainingMinutes`),
-    canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`)
+    canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
+    playerCountRefreshing: source.playerCountRefreshing === undefined ? false : flag(source.playerCountRefreshing, `${context}.playerCountRefreshing`),
+    playerCountFailureCount: parsePlayerCountFailures(source.playerCountFailureCount, `${context}.playerCountFailureCount`),
+    playerCountTrusted: source.playerCountTrusted === undefined || source.playerCountTrusted === null ? null : flag(source.playerCountTrusted, `${context}.playerCountTrusted`),
+    playerObservationSource: source.playerObservationSource === undefined ? null : nullableText(source.playerObservationSource, `${context}.playerObservationSource`),
+    playerCountObservedUtc: source.playerCountObservedUtc === undefined ? null : nullableText(source.playerCountObservedUtc, `${context}.playerCountObservedUtc`)
   }
 }
 

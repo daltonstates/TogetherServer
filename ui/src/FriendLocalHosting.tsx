@@ -260,7 +260,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           onClick={() => onOpenHost(status.localProfileId!)}>Local server &amp; connection details</Button>}
         {status?.localProfileId && onOpenConnectionHelp && status.steps[4].state !== 'Ready' && <Button className="text-button"
           disabled={busy || manualBusy || disabled} onClick={() => { setOpen(false); onOpenConnectionHelp(status.localProfileId!) }}>
-          <Icon name="plug" />Connection help for this PC</Button>}
+          <Icon name="plug" />Network for this PC</Button>}
         {busy && <p role="status">{status?.readyForManualStart ? 'Starting the local server…' : 'Preparing and verifying your local copy. Keep TogetherServer open.'}</p>}
         {actionMessage && !busy && <p role="status">{actionMessage}</p>}
         {error && <p role="alert">{error}</p>}

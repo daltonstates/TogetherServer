@@ -4,6 +4,7 @@ import { changeJson, getJson, getLocalJson } from './api'
 import { parseActionResult, parseAppInstance, parseBasicResult, parseCompanionInfo, parseFriendSnapshot, parseSnapshot, type AppInstanceView } from './contracts'
 import { DevelopmentDemoControls, installDevelopmentDemo, useDevelopmentDemoRevision, type DevelopmentDemoController } from './developmentDemo'
 import { FriendLocalHosting, parseLocalHostingStatus } from './FriendLocalHosting'
+import { parseServerDirectory } from './ServerDirectory'
 
 const primary = '11111111-1111-4111-8111-111111111111'
 const local = '33333333-3333-4333-8333-333333333333'
@@ -73,6 +74,43 @@ describe('isolated development demo transport', () => {
     controller?.reset()
     const reset = await (await fetch('/api/local/ui-drafts/read', { method: 'POST', body: JSON.stringify(draft) })).json()
     expect(reset).toMatchObject({ text: null, revision: 0 })
+    expect(realFetch).not.toHaveBeenCalled()
+  })
+
+  it('lists local and saved friend servers together and preserves the original shared-save identity after local hosting', async () => {
+    install()
+    const directory = () => getLocalJson('/api/local/servers', parseServerDirectory)
+    const initial = await directory()
+    expect(initial.localServers.map(server => server.name)).toEqual(['Meadow friends · DEMO', 'Lantern village · DEMO'])
+    expect(initial.friendHosts).toMatchObject([{ hostProfileName: 'Morgan',
+      servers: [{ id: primary, name: 'Morgan’s Meadow · DEMO', state: 'Ready', playerCountTrusted: true }] }])
+    expect((await snapshot()).mode).toBe('Host')
+    await mode('friend')
+    await prepare()
+    const prepared = await directory()
+    expect(prepared.localServers.find(server => server.id === local)).toMatchObject({
+      name: 'Morgan’s Meadow · local DEMO copy', separateCopySourceProfileId: primary,
+      sourceName: 'Morgan’s Meadow · DEMO', sourceHostName: 'Morgan', state: 'Offline'
+    })
+    expect(prepared.friendHosts[0].servers[0].name).toBe('Morgan’s Meadow · DEMO')
+    expect((await snapshot()).mode).toBe('Friend')
+    for (const privateField of ['endpoint', 'joinAddress', 'worldDirectory', 'executablePath', 'credential', 'canStop'])
+      expect(JSON.stringify(prepared)).not.toContain(`"${privateField}"`)
+    expect((await fetch('/api/local/servers?host=192.0.2.1')).status).toBe(400)
+    expect(realFetch).not.toHaveBeenCalled()
+  })
+
+  it('makes normal count refresh and repeated failures separate, resettable fake scenarios', async () => {
+    install().reset('players-refreshing')
+    const directory = () => getLocalJson('/api/local/servers', parseServerDirectory)
+    expect((await directory()).localServers[0]).toMatchObject({ state: 'Unknown', onlinePlayers: null,
+      playerCountTrusted: false, playerCountRefreshing: true, playerCountFailureCount: 0 })
+    controller?.reset('players-repeated-issue')
+    expect((await directory()).localServers[0]).toMatchObject({ state: 'Unknown', onlinePlayers: null,
+      playerCountTrusted: false, playerCountRefreshing: false, playerCountFailureCount: 2 })
+    await changeJson(`/api/local/profiles/${primary}/players/refresh`, 'POST', parseActionResult)
+    expect((await directory()).localServers[0]).toMatchObject({ state: 'Ready', onlinePlayers: 0,
+      playerCountTrusted: true, playerCountRefreshing: false, playerCountFailureCount: 0 })
     expect(realFetch).not.toHaveBeenCalled()
   })
 
@@ -164,10 +202,10 @@ describe('isolated development demo transport', () => {
   })
 })
 
-it('runs the actual Join preparation and explicit Start controls entirely through fake data', async () => {
+it('runs the actual friend-server preparation and explicit Start controls entirely through fake data', async () => {
   install().reset('friend-hosting')
   const openHost = vi.fn()
-  render(<FriendLocalHosting profileId={primary} worldName="Meadow friends · DEMO" available onOpenHost={openHost} />)
+  render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Meadow · DEMO" available onOpenHost={openHost} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   const dialog = screen.getByRole('dialog', { name: 'Host on this PC' })
   expect(within(dialog).getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
@@ -184,7 +222,7 @@ it('runs the actual Join preparation and explicit Start controls entirely throug
 
 it('lets the actual missing-install flow select only a fake server file and prepare without installation', async () => {
   install().reset('friend-missing-server')
-  render(<FriendLocalHosting profileId={primary} worldName="Meadow friends · DEMO" available onOpenHost={vi.fn()}
+  render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Meadow · DEMO" available onOpenHost={vi.fn()}
     onBrowseServerFile={async game => {
       const response = await changeJson('/api/local/shared-worlds/browse-server-file', 'POST', value => value as { path: string }, { game })
       return response.path

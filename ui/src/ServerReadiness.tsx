@@ -2,6 +2,8 @@ import type { ReactNode } from 'react'
 import { Icon } from './Icon'
 import { Button } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
+import type { Run } from './contracts'
+import { isTransientPlayerObservation } from './playerCountPresentation'
 
 export type GamePortCheck = {
   profileId: string
@@ -81,15 +83,15 @@ function friendGuidance(control: ControlCheck | undefined, result: InternetRoute
   }
   if (control.state !== 'Open on PC') return {
     summary: 'The secure Friend connection is not running on this PC.',
-    next: 'Open Connection settings and fix the Friend connection warning before checking the router.'
+    next: 'Open Network and fix the Friend connection warning before checking the router.'
   }
   if (control.bindScope === 'Loopback only') return {
     summary: 'Friend connections are limited to this PC.',
-    next: 'Open Connection settings and choose a LAN bind address before inviting a Friend.'
+    next: 'Open Network and choose a LAN bind address before inviting a Friend.'
   }
   if (!['Address hint', 'Address stale'].includes(control.endpointState ?? '')) return {
     summary: 'The address in the server code needs review.',
-    next: 'Open Connection settings and refresh the public address before sharing the code.'
+    next: 'Open Network and refresh the public address before sharing the code.'
   }
   if (result?.state === 'Reachable') return {
     summary: `An outside checker reached HTTPS TCP ${result.port} at ${new Date(result.checkedUtc).toLocaleTimeString()}. A Friend still needs to connect with the server code.`,
@@ -319,7 +321,7 @@ function TechnicalDetail({ label, value, detail, tone = 'neutral', loading = fal
   </div>
 }
 
-export function ServerReadiness({ profileId, status, ports, routeCheck, onRefresh, onOpenConnection, busy, refreshing = false }: {
+export function ServerReadiness({ profileId, status, ports, routeCheck, onRefresh, onOpenConnection, busy, refreshing = false, run }: {
   profileId: string
   status: string
   ports: PortDiagnostics | null
@@ -328,6 +330,7 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   onOpenConnection?: () => void
   busy: boolean
   refreshing?: boolean
+  run?: Run
 }) {
   const game = ports?.games.find(item => item.profileId === profileId)
   const control = ports?.control
@@ -336,8 +339,13 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   const hadPreviousResult = routeCheck !== null
   const guidance = friendGuidance(control, checkedRoute, hadPreviousResult)
   const friend = friendSummary(control, checkedRoute)
-  const gameAccess = gameSummary(status, game)
-  const issue = connectionIssue(control, checkedRoute, hadPreviousResult) ?? gameIssue(status, game)
+  const countPending = isTransientPlayerObservation(run)
+  const gameAccess: ReadinessSummary = countPending ? {
+    label: 'Game access', state: 'Checking', tone: 'neutral',
+    detail: 'Waiting for a current server observation. Stop waits for a fresh player count.'
+  } : gameSummary(status, game)
+  const issue = connectionIssue(control, checkedRoute, hadPreviousResult) ??
+    (countPending ? null : gameIssue(status, game))
   const friendListenerDetail = control
     ? <>{control.detail}{control.bindAddress && <> Bound to <code>{control.bindAddress}</code> ({control.bindScope ?? 'scope unknown'}).</>}</>
     : 'Waiting for a listener check.'

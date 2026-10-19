@@ -59,13 +59,15 @@ describe('Host settings cards and editors', () => {
     expect(screen.getByRole('button', { name: 'Done' })).toBeEnabled()
     expect(input.onSave).not.toHaveBeenCalled()
   })
-  it('keeps the hosting power choice in Stop & timer and leaves unknown occupancy warnings intact', () => {
+  it('keeps the hosting power choice in Shutdown and leaves unknown occupancy warnings intact', () => {
     const keepAwake = { enabled: false, detail: 'Power request inactive.', onChange: vi.fn() }
     render(<HostSettingsTools {...props()} keepAwake={keepAwake} />)
     fireEvent.click(screen.getByRole('checkbox', { name: /Keep Windows awake/ }))
     expect(keepAwake.onChange).toHaveBeenCalledExactlyOnceWith(true)
     expect(screen.getByText('Power request inactive.')).toBeInTheDocument()
     expect(screen.getByText(/positive or Unknown count cancels/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Shutdown' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Edit extensions|Review Stop safety/ })).not.toBeInTheDocument()
   })
   it('keeps timer fields out of the overview, cancels locally, and reopens saved values', () => {
     const input = props()
@@ -95,15 +97,16 @@ describe('Host settings cards and editors', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
-  it('rejects invalid minutes and extension maxima that cannot cover one increment', () => {
+  it('rejects invalid minutes and keeps optional extension controls inside the same countdown editor', async () => {
     const input = props()
     render(<HostSettingsTools {...input} />)
     fireEvent.click(screen.getByRole('button', { name: 'Empty-server countdown Edit countdown' }))
     fireEvent.change(screen.getByRole('spinbutton', { name: /Wait after/ }), { target: { value: '0' } })
     expect(screen.getByRole('button', { name: 'Save timer' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Friend timer extensions Edit extensions' }))
-    fireEvent.change(screen.getByRole('spinbutton', { name: /Friend extension increment/ }), { target: { value: '20' } })
+    fireEvent.change(screen.getByRole('spinbutton', { name: /Wait after/ }), { target: { value: '20' } })
+    expect(screen.queryByRole('spinbutton', { name: /Friend extension increment/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Allow friends to add time'))
+    fireEvent.change(await screen.findByRole('spinbutton', { name: /Friend extension increment/ }), { target: { value: '20' } })
     fireEvent.change(screen.getByRole('spinbutton', { name: /Friend extension maximum/ }), { target: { value: '19' } })
     expect(screen.getByRole('button', { name: 'Save timer' })).toBeDisabled()
     expect(screen.getByRole('status')).toHaveTextContent('maximum must cover at least one extension increment')
@@ -116,12 +119,17 @@ describe('Host settings cards and editors', () => {
     expect(input.onSave).not.toHaveBeenCalled()
   })
 
-  it('keeps a dismissed TCP result hidden through polling and shows a later route test', () => {
+  it('keeps checks on demand and a dismissed TCP result hidden through polling until a later route test', async () => {
     const input = props('network')
     const routeCheck = { state: 'Not reachable' as const, detail: 'The Friend app TCP port could not be reached.',
       port: input.snapshot.settings.companionPort, checkedUtc: '2026-10-11T12:00:00Z' }
     const view = render(<HostSettingsTools {...input} routeCheck={routeCheck} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Internet and local checks Open connection checks' }))
+    expect(screen.queryByRole('button', { name: 'Troubleshoot connection' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Troubleshooting'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Troubleshoot connection' }))
+    expect(screen.queryByRole('button', { name: 'Refresh public address' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Address and port check details'))
+    await screen.findByRole('button', { name: 'Refresh public address' })
     fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
     const updated = { ...routeCheck, detail: 'Updated display details for the same test.' }
     view.rerender(<HostSettingsTools {...input} routeCheck={updated} />)
@@ -151,8 +159,8 @@ describe('Host settings cards and editors', () => {
     const input = props('network')
     render(<HostSettingsTools {...input} />)
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Friend connection route Edit connection route' }))
-    fireEvent.change(screen.getByRole('combobox', { name: /Friend route/ }), { target: { value: 'PrivateMesh' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Address and ports Edit network' }))
+    fireEvent.change(screen.getByRole('combobox', { name: /Network route/ }), { target: { value: 'PrivateMesh' } })
     fireEvent.change(screen.getByRole('textbox', { name: 'Selected route IPv4' }), { target: { value: '100.64.0.2' } })
     expect(input.onSave).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
@@ -160,12 +168,41 @@ describe('Host settings cards and editors', () => {
       companionEndpoint: `https://100.64.0.2:${input.snapshot.settings.companionPort}`, companionBindAddress: '100.64.0.2' }))
   })
 
-  it('opens read-only connection evidence without a probe, and closes it before navigating', () => {
+  it('edits a port in the same Network editor while custom binding fields stay unmounted until requested', async () => {
+    const input = props('network')
+    render(<HostSettingsTools {...input} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Address and ports Edit network' }))
+    expect(screen.queryByRole('textbox', { name: 'Bind IP' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Custom secure address' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByRole('spinbutton', { name: /^Friend app TCP port/u }), { target: { value: '5140' } })
+    fireEvent.click(screen.getByText('Advanced address settings'))
+    expect(await screen.findByRole('textbox', { name: 'Bind IP' })).toHaveValue(input.snapshot.settings.companionBindAddress)
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    await waitFor(() => expect(input.onSave).toHaveBeenCalledWith({ companionPort: 5140,
+      ...(input.snapshot.settings.companionEndpoint ? { companionEndpoint: new URL(input.snapshot.settings.companionEndpoint).origin.replace(/:\d+$/u, ':5140') } : {}) }))
+    expect(input.onTestRoute).not.toHaveBeenCalled()
+  })
+
+  it('saves only edited extension values while unrelated timer settings refresh in the background', async () => {
+    const input = props()
+    const view = render(<HostSettingsTools {...input} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Empty-server countdown Edit countdown' }))
+    fireEvent.click(screen.getByText('Allow friends to add time'))
+    fireEvent.change(await screen.findByRole('spinbutton', { name: /Friend extension increment/ }), { target: { value: '7' } })
+    const updated = structuredClone(input.snapshot)
+    updated.settings.idleMinutes = 42
+    view.rerender(<HostSettingsTools {...input} snapshot={updated} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save timer' }))
+    await waitFor(() => expect(input.onSave).toHaveBeenCalledExactlyOnceWith({ friendTimerExtensionMinutes: 7 }))
+  })
+
+  it('opens read-only connection evidence without a probe, and closes it before navigating', async () => {
     const input = props('network')
     render(<HostSettingsTools {...input} />)
     expect(screen.queryByRole('region', { name: 'Connection evidence' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Connection Doctor' }))
-    expect(screen.getByRole('dialog', { name: 'Connection Doctor' })).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Troubleshooting'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Troubleshoot connection' }))
+    expect(screen.getByRole('dialog', { name: 'Troubleshoot connection' })).toBeInTheDocument()
     expect(input.onTestRoute).not.toHaveBeenCalled()
     expect(input.onSave).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open diagnostics' }))
@@ -174,11 +211,11 @@ describe('Host settings cards and editors', () => {
   })
 
   it('keeps advanced fields scoped and prevents closing an in-flight Save', () => {
-    const input = props('advanced')
+    const input = props('network')
     const view = render(<HostSettingsTools {...input} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced network settings Edit network settings' }))
-    const dialog = screen.getByRole('dialog', { name: 'Advanced network settings' })
-    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Friend app TCP port' }), { target: { value: '5133' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Address and ports Edit network' }))
+    const dialog = screen.getByRole('dialog', { name: 'Address and ports' })
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: /^Friend app TCP port/u }), { target: { value: '5133' } })
     view.rerender(<HostSettingsTools {...input} busy />)
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
     const cancel = new Event('cancel', { cancelable: true })

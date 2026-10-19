@@ -9,7 +9,7 @@ import { notificationEventKinds, parseNotificationPreferences, parseUpdatePrepar
   type NotificationPreferenceChange, type NotificationPreferences, type UpdatePreparation, type UpdateReminderDuration } from './desktopPreferencesWire'
 
 const eventLabels: Record<NotificationEventKind, string> = { Lifecycle: 'Server starts and stops', Backup: 'Backups and shared saves',
-  Access: 'Friend access', Connections: 'Pairing and connections', Network: 'Connection help', Recovery: 'Recovery',
+  Access: 'Access', Connections: 'Saved servers', Network: 'Network', Recovery: 'Recovery',
   Countdown: 'Shutdown timer', Players: 'Player count changes', Maintenance: 'Maintenance', Configuration: 'Server files',
   AddOns: 'Add-ons', Remote: 'Friend actions', Update: 'App updates' }
 export type DesktopNotificationServer = { id: string; name: string; connectionId?: string | null }

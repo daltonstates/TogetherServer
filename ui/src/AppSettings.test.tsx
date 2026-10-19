@@ -60,6 +60,7 @@ describe('App Settings pages', () => {
     expect(input.onClearNotice).toHaveBeenCalledOnce()
     expect(screen.getByText('PC defaults only')).toBeInTheDocument()
     expect(screen.queryByText('Server selector supplied')).not.toBeInTheDocument()
+    expect(screen.getByText('Choose a server on Servers to change its individual alerts.')).toBeInTheDocument()
   })
 
   it('preserves onClose and prevents fallback navigation or closing during a notification save', () => {

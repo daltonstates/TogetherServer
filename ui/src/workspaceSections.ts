@@ -16,10 +16,9 @@ export const appSections: SectionItem<AppSection>[] = [
 ]
 
 export const hostPcSections: SectionItem<HostPcSection>[] = [
-  { id: 'access', label: 'Friend access', icon: 'users' },
-  { id: 'stop', label: 'Stop & timer', icon: 'clock' },
-  { id: 'network', label: 'Connection help', icon: 'link' },
-  { id: 'diagnostics', label: 'Diagnostics', icon: 'logs' },
+  { id: 'access', label: 'Access', icon: 'users' },
+  { id: 'stop', label: 'Shutdown', icon: 'clock' },
+  { id: 'network', label: 'Network', icon: 'link' },
   { id: 'advanced', label: 'Advanced', icon: 'settings' }
 ]
 
@@ -28,9 +27,7 @@ export const joinSections: SectionItem<JoinSection>[] = [
   { id: 'chat', label: 'Chat', icon: 'chat' },
   { id: 'logs', label: 'Logs', icon: 'logs' },
   { id: 'shared-saves', label: 'Shared saves', icon: 'archive' },
-  { id: 'network', label: 'Connection help', icon: 'link' },
-  { id: 'connection', label: 'Connection settings', icon: 'settings' },
-  { id: 'pairing', label: 'Add a Host', icon: 'plus' }
+  { id: 'connection', label: 'Settings', icon: 'settings' }
 ]
 
 export type WorkspaceDestination =
@@ -47,9 +44,9 @@ export function workspaceDestination(target: DesktopNotificationTarget): Workspa
     return { workspace: 'host', scope: 'pc', section: target.section, profileId: target.profileId }
   }
   if (target.workspace === 'join') {
-    return { workspace: 'join', section: target.section === 'overview' ? 'play' : target.section as JoinSection,
+    return { workspace: 'join', section: target.section === 'overview' ? 'play' : target.section === 'network' ? 'connection' : target.section as JoinSection,
       profileId: target.profileId, connectionId: target.connectionId }
   }
-  return { workspace: 'host', scope: hostPcSections.some(section => section.id === target.section) ? 'pc' : 'server',
+  return { workspace: 'host', scope: target.section === 'diagnostics' || hostPcSections.some(section => section.id === target.section) ? 'pc' : 'server',
     section: target.section, profileId: target.profileId }
 }

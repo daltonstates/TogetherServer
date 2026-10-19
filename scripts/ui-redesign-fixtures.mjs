@@ -117,6 +117,7 @@ function makeRun(p, state = 'Ready', count = 2) {
     onlinePlayers: ready ? count : null, maxPlayers: ready ? 10 : null, playerCountTrusted: ready && count !== null,
     playerObservationSource: ready && count !== null ? 'FixtureReady' : null,
     playerCountObservedUtc: ready && count !== null ? fixtureNow : null,
+    playerCountRefreshing: false, playerCountFailureCount: 0,
     hostAddedTime: false, friendAddedMinutes: 0, addedShutdownMinutes: 0, autoShutdownAtUtc: null,
     autoShutdownReason: ready && count > 0 ? 'Waiting for the server to be empty.' : 'Player count is Unknown.' };
 }
@@ -136,6 +137,9 @@ function publicProfile(p, r) {
   return { id: p.id, runOperationId: r.runOperationId, name: p.name, kind: p.kind, gameKind: p.kind,
     state: r.state, joinAddress: r.state === 'Ready' ? `192.0.2.10:${p.gamePort}` : null,
     onlinePlayers: r.onlinePlayers, maxPlayers: r.maxPlayers, canStart: true, canStop: true,
+    playerCountTrusted: r.playerCountTrusted, playerObservationSource: r.playerObservationSource,
+    playerCountObservedUtc: r.playerCountObservedUtc, playerCountRefreshing: r.playerCountRefreshing ?? false,
+    playerCountFailureCount: r.playerCountFailureCount ?? 0,
     canStopNow: r.state === 'Ready' && r.onlinePlayers === 0, stopReason: r.onlinePlayers === 0 ? null : 'Players are online.',
     canRestartNow: r.state === 'Ready' && r.onlinePlayers === 0, restartReason: r.onlinePlayers === 0 ? null : 'Players are online.', canExtendTimer: true,
     timerExtensionMinutes: 15, timerExtensionRemainingMinutes: 60, canViewLogs: true,
@@ -269,6 +273,44 @@ function sharing(state) {
       revoked: false, accessExpiresUtc: null, isSelf: d.id === ids.device })) : [] };
 }
 
+// Display-only combined workspace projection. It reads only this synthetic
+// in-memory state and carries no addresses, permissions, scripts, or file paths.
+function serverDirectory(state) {
+  const now = Date.parse(state.now ?? fixtureNow);
+  const fresh = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) &&
+    Date.parse(value) <= now && now - Date.parse(value) <= 10000;
+  const row = (profile, run, current = true) => {
+    const trusted = current && run?.state === 'Ready' && run.playerCountTrusted === true &&
+      Number.isSafeInteger(run.onlinePlayers) && run.onlinePlayers >= 0 && fresh(run.playerCountObservedUtc);
+    const observed = current ? run?.playerCountObservedUtc ?? null : null;
+    return { id: profile.id, name: profile.name, kind: profile.gameKind ?? profile.kind, state: !current ? 'Unknown' :
+      run?.state === 'Ready' && !fresh(observed) ? 'Unknown' : run?.state ?? 'Unknown',
+    onlinePlayers: trusted ? run.onlinePlayers : null, maxPlayers: trusted ? run.maxPlayers ?? null : null,
+    playerCountTrusted: trusted, playerObservationSource: current ? run?.playerObservationSource ?? null : null,
+    playerCountObservedUtc: observed, playerCountRefreshing: current && run?.playerCountRefreshing === true,
+    playerCountFailureCount: current ? run?.playerCountFailureCount ?? 0 : 0,
+    separateCopySourceProfileId: profile.separateCopySourceProfileId ?? null, sourceName: null, sourceHostName: null };
+  };
+  const connections = state.friend.connections?.length ? state.friend.connections : [state.friend];
+  const friendHosts = connections.filter(host => host.connectionId && !/first-use|firstuse|setup/.test(state.scenario))
+    .slice(0, 100).map(host => ({ connectionId: host.connectionId, hostId: host.hostId ?? null,
+      connectionName: host.connectionName ?? 'Friend Host', hostProfileName: host.hostProfileName ?? null,
+      state: host.state, connectionCode: host.connectionCode ?? null, lastConnectedUtc: host.lastConnectedUtc ?? null,
+      servers: host.state === 'Revoked' || host.connectionCode === 'Revoked' || host.state === 'Access expired' || host.connectionCode === 'AccessExpired'
+        ? [] : host.profiles.slice(0, 100).map(profile => row(profile, profile,
+          ['Connected', 'Disabled'].includes(host.state) && fresh(host.lastConnectedUtc))) }));
+  const localServers = state.host.settings.profiles.slice(0, 100)
+    .map(profile => row(profile, state.host.runs.find(run => run.profileId === profile.id)));
+  for (const local of localServers) if (local.separateCopySourceProfileId) {
+    const sourceHost = friendHosts.find(host => host.state !== 'Revoked' && host.connectionCode !== 'Revoked' &&
+      host.servers.some(profile => profile.id === local.separateCopySourceProfileId));
+    local.sourceName = sourceHost?.servers.find(profile => profile.id === local.separateCopySourceProfileId)?.name ??
+      localServers.find(profile => profile.id === local.separateCopySourceProfileId && !profile.separateCopySourceProfileId)?.name ?? null;
+    local.sourceHostName = sourceHost?.hostProfileName ?? sourceHost?.connectionName ?? null;
+  }
+  return { localServers, friendHosts };
+}
+
 /** Return null for unknown routes; the caller MUST reject them, never proxy them. */
 export function routeFixture(state, request) {
   const method = (request.method ?? 'GET').toUpperCase();
@@ -280,6 +322,11 @@ export function routeFixture(state, request) {
   let body = request.body ?? {};
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return { status: 400, body: { code: 'SyntheticInvalidJson', message: 'Invalid synthetic request body.' } }; } }
   state.requests.push({ method, path });
+  if (path === '/api/local/servers' && method === 'GET') {
+    if (url.search || Object.keys(body).length) return { status: 400,
+      body: { code: 'InvalidServerDirectoryRequest', message: 'The saved server list accepts no query or request body.' } };
+    return reply(serverDirectory(state));
+  }
   const reviewRequest = { method, path, body, query: url.search };
   const reviewResponse = worldReview.route(state, reviewRequest, reviewHelpers) ?? accessReview.route(state, reviewRequest, reviewHelpers);
   if (reviewResponse) return reviewResponse;
@@ -351,7 +398,14 @@ export function routeFixture(state, request) {
   if (path === '/api/local/friend/pair' && method === 'POST') {
     const paired = createFixtureState('friend-connected').friend; state.friend = paired; state.mode = 'Friend'; return reply(result());
   }
-  if (/^\/api\/local\/friend\/connections\/[^/]+\/select$/.test(path) && method === 'POST') return reply(result());
+  if (/^\/api\/local\/friend\/connections\/[^/]+\/select$/.test(path) && method === 'POST') {
+    const connectionId = path.split('/')[5];
+    const saved = state.friend.connections?.length ? state.friend.connections : [state.friend];
+    const selected = saved.find(host => host.connectionId === connectionId);
+    if (!selected) return { status: 404, body: { ok: false, code: 'UnknownConnection', message: boundary } };
+    state.friend = { ...clone(selected), connections: state.friend.connections ? clone(saved) : null };
+    return reply(result());
+  }
   const match = /^\/api\/local\/(profiles|friend)\/([^/]+)\/(.+)$/.exec(path);
   const chatMatch = /^\/api\/local\/friend\/connections\/[^/]+\/servers\/([^/]+)\/(chat.*)$/.exec(path);
   if (match || chatMatch) {

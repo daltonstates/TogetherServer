@@ -7,10 +7,12 @@ import type { Grants } from './HostSharingPermissions'
 import './developmentDemo.css'
 
 export const developmentDemoScenes = {
-  'host-sharing': 'Host · sharing permissions',
-  'friend-hosting': 'Join · host this save',
-  'friend-missing-server': 'Join · missing server app',
-  'friend-offline': 'Join · owner offline, verified copy'
+  'host-sharing': 'Your servers · sharing permissions',
+  'friend-hosting': 'Friend servers · host this save',
+  'friend-missing-server': 'Friend servers · missing server app',
+  'friend-offline': 'Friend servers · owner offline, verified copy',
+  'players-refreshing': 'Players · checking quietly',
+  'players-repeated-issue': 'Players · repeated lookup issue'
 } as const
 export type DevelopmentDemoScene = keyof typeof developmentDemoScenes
 export type DevelopmentDemoController = { reset: (scene?: DevelopmentDemoScene) => void; uninstall: () => void }
@@ -72,15 +74,16 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
   const baseRun = state.host.runs[0]
   state.host.runs = [profile, second].map(item => ({ ...structuredClone(baseRun), profileId: item.id, state: 'Offline',
     processId: null, runOperationId: null, onlinePlayers: null, maxPlayers: null, playerCountTrusted: false,
-    playerCountObservedUtc: null, playerObservationSource: null, detail: demoBoundary, autoShutdownAtUtc: null }))
+    playerCountObservedUtc: null, playerObservationSource: null, playerCountRefreshing: false, playerCountFailureCount: 0,
+    detail: demoBoundary, autoShutdownAtUtc: null }))
   state.host.evidence = demoBoundary
   state.host.managedWorldsRoot = `${demoRoot}\\worlds`
   Object.assign(state.host.settings, { companionPort: instance.companionPort, autoShutdownEnabled: false,
     companionEndpoint: `https://192.0.2.10:${instance.companionPort}` })
   state.host.passwordConfigured[ids.secondary] = false
   if (state.host.backups?.[ids.primary]) state.host.backups[ids.secondary] = { ...state.host.backups[ids.primary], profileId: ids.secondary }
-  Object.assign(state.friend.profiles[0], { name: profile.name, state: 'Ready', joinAddress: `192.0.2.10:${instance.valheimPort}` })
-  Object.assign(state.friend, { connectionName: 'Morgan’s Host · DEMO', detail: demoBoundary, hostName: 'Morgan Demo' })
+  Object.assign(state.friend.profiles[0], { name: 'Morgan’s Meadow · DEMO', state: 'Ready', joinAddress: `192.0.2.10:${instance.valheimPort}` })
+  Object.assign(state.friend, { connectionName: 'Morgan’s Host · DEMO', detail: demoBoundary, hostProfileName: 'Morgan' })
   state.devices.forEach((device, index) => {
     device.name = index === 0 ? 'Riley’s desktop · DEMO' : 'Mira’s laptop · DEMO'
     device.profileName = index === 0 ? 'Riley Demo' : 'Mira Demo'
@@ -89,7 +92,7 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
   state.consented = scene === 'friend-offline'
   state.receivedSaveState = state.consented ? 'verified' : null
   state.sharingEnabled = true
-  state.mode = scene === 'host-sharing' ? 'Host' : 'Friend'
+  state.mode = scene.startsWith('friend-') ? 'Friend' : 'Host'
   state.desktopPreferences = { available: false, startupAvailable: false, launchAtLogin: false, closeToTray: false }
   if (scene === 'friend-offline') {
     Object.assign(state.friend, { state: 'Disconnected', lastConnectedUtc: null,
@@ -97,6 +100,12 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
     state.friend.profiles.forEach(item => Object.assign(item, { state: 'Unknown', onlinePlayers: null,
       maxPlayers: null, joinAddress: null, canStopNow: false, canRestartNow: false }))
   }
+  if (scene === 'players-refreshing' || scene === 'players-repeated-issue') Object.assign(state.host.runs[0], {
+    state: 'Unknown', processId: 4242, runOperationId: ids.session, playerCountRefreshing: scene === 'players-refreshing',
+    playerCountFailureCount: scene === 'players-repeated-issue' ? 2 : 0,
+    playerObservationSource: scene === 'players-refreshing' ? 'ObservationPending' : 'BuiltInQuery',
+    detail: 'DEMO: waiting for a reliable player count. No real server is queried.'
+  })
   if (state.host.hostingPower) Object.assign(state.host.hostingPower, { managedServerRunning: false, message: demoBoundary })
   return { scene, state, clockOffset: Date.now() - FIXED_NOW, revision: ++nextRevision, rosterRevision: 1,
     prepared: false, running: false, serverInstalled: scene !== 'friend-missing-server', instance: structuredClone(instance),
@@ -112,11 +121,11 @@ function hostingStatus(session: DemoSession): LocalHostingStatus {
   const prepared = session.prepared && allowed
   return { ok: true, code: !allowed ? 'HostingNotAllowed' : session.running ? 'LocalHostingRunning' :
     prepared ? 'LocalHostingPrepared' : 'NeedsPreparation',
-  message: !allowed ? 'DEMO: turn on Can host this save for Riley’s desktop in Host sharing.' :
+  message: !allowed ? 'DEMO: turn on Can host this save for Riley’s desktop in the server’s sharing settings.' :
     session.running ? 'DEMO: this local server is simulated; no game process is running.' : prepared ?
       'DEMO: the fake copy is prepared. Start server is a separate simulated action.' :
       'DEMO: approve a local copy and prepare this PC. Nothing is installed or copied.',
-  allowed, consented: session.state.consented, game: 'Valheim', name: 'Meadow friends · DEMO',
+  allowed, consented: session.state.consented, game: 'Valheim', name: 'Morgan’s Meadow · DEMO',
   needsServerFile: !session.serverInstalled, needsPassword: !session.serverInstalled,
   serverFile: session.serverInstalled ? `${demoRoot}\\Valheim\\valheim_server.exe` : null, gameVersion: 'Demo version',
   gamePort: session.instance.valheimPort + 2, controlPort: session.instance.companionPort,
@@ -138,6 +147,7 @@ function changeRun(session: DemoSession, profileId: string, running: boolean): R
     runOperationId: running ? ids.session : null, onlinePlayers: running ? 0 : null, maxPlayers: running ? 10 : null,
     playerCountTrusted: running, playerObservationSource: running ? 'FixtureReady' : null,
     playerCountObservedUtc: running ? new Date(FIXED_NOW).toISOString() : null, detail: demoBoundary,
+    playerCountRefreshing: false, playerCountFailureCount: 0,
     autoShutdownAtUtc: null, autoShutdownReason: 'DEMO: automatic shutdown is off.' })
   if (session.state.host.hostingPower) session.state.host.hostingPower.managedServerRunning = session.state.host.runs.some(item => item.state === 'Ready')
   return run
@@ -182,7 +192,7 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
       state.sharingEnabled = true; state.host.settings.profiles[0].sharedSavesEnabled = true
     }
     session.rosterRevision++
-    return reply(result({ message: 'DEMO: fake hosting permission saved. Open Join to try hosting on this PC.' }))
+    return reply(result({ message: 'DEMO: fake hosting permission saved. Select Morgan’s server to try hosting on this PC.' }))
   }
   const hostShared = `/api/local/profiles/${ids.primary}/shared-world`
   if (path === `${hostShared}/governance` && method === 'GET') return reply({ revision: session.rosterRevision, ownerOverride: true,
@@ -209,8 +219,8 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     }
     state.consented = true; state.receivedSaveState = 'verified'; session.prepared = true
     if (!state.host.settings.profiles.some(item => item.id === ids.third)) {
-      const copy = { ...structuredClone(state.host.settings.profiles[0]), id: ids.third, name: 'Meadow friends · local DEMO copy',
-        serverName: 'Meadow friends · local DEMO copy', worldId: 'demo-meadow-separate', worldDirectory: `${demoRoot}\\worlds\\separate`,
+      const copy = { ...structuredClone(state.host.settings.profiles[0]), id: ids.third, name: 'Morgan’s Meadow · local DEMO copy',
+        serverName: 'Morgan’s Meadow · local DEMO copy', worldId: 'demo-meadow-separate', worldDirectory: `${demoRoot}\\worlds\\separate`,
         gamePort: session.instance.valheimPort + 2, separateCopySourceProfileId: ids.primary, separateCopyBranchHash: branchHash }
       state.host.settings.profiles.push(copy)
       state.host.runs.push({ ...structuredClone(state.host.runs[0]), profileId: ids.third })
@@ -236,6 +246,7 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
       return denied('DEMO: shared copies use the guarded Host this save action with current permission.', 'HostingChecksRequired')
     if (action === 'stop') { changeRun(session, id, false); if (id === ids.third) session.running = false }
     if (action === 'start' || action === 'restart') changeRun(session, id, true)
+    if (action === 'players/refresh' && state.host.runs.find(run => run.profileId === id)?.state !== 'Offline') changeRun(session, id, true)
     return reply(result({ snapshot: state.host }))
   }
   return null

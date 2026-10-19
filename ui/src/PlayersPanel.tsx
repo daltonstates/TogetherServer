@@ -3,30 +3,12 @@ import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import type { ActivityEvent, Run } from './contracts'
 import type { Profile } from './GameProfile'
+import { playerCountPresentation } from './playerCountPresentation'
+export { playerCountAvailability } from './playerCountPresentation'
 import './players.css'
 
-export function playerCountAvailability(run: Run, nowMs: number): {
-  count: number | null; reason: string; state: 'Fresh' | 'Stale' | 'Unavailable' | 'DisplayOnly'
-} {
-  const observed = run.playerCountObservedUtc ? Date.parse(run.playerCountObservedUtc) : NaN
-  if (run.playerObservationSource === 'CustomScriptReady') return {
-    count: null, state: 'DisplayOnly', reason: 'The Custom script count is display only until this setup is owner-certified.'
-  }
-  if (run.playerObservationSource === 'ObservationStale' ||
-      (Number.isFinite(observed) && Number.isFinite(nowMs) && nowMs - observed > 10_000)) return {
-    count: null, state: 'Stale', reason: 'The player observation is stale. Refresh for a current game-server count.'
-  }
-  if (run.state !== 'Ready' || !run.playerCountTrusted || run.onlinePlayers === null ||
-      !Number.isSafeInteger(run.onlinePlayers) || run.onlinePlayers < 0 ||
-      !Number.isFinite(observed) || !Number.isFinite(nowMs) || observed > nowMs ||
-      run.playerObservationSource === 'ObservationPending') return {
-    count: null, state: 'Unavailable', reason: 'A fresh trusted game-server count is not available.'
-  }
-  return { count: run.onlinePlayers, state: 'Fresh', reason: 'Fresh game-server observation.' }
-}
-
-function countLabel(run: Run, count: number | null) {
-  if (count === null) return 'Unavailable'
+function countLabel(run: Run, count: number | null, refreshing: boolean) {
+  if (count === null) return refreshing ? 'Checking…' : 'Unavailable'
   return run.maxPlayers === null ? `${count} online` : `${count} / ${run.maxPlayers} online`
 }
 
@@ -100,7 +82,7 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
   profile, onOpenLogs, onCheckHealth, onOpenHelp }: PlayersPanelProps) {
   const recent = activity.filter(item => item.profileId === run.profileId && item.category === 'Players')
     .sort((a, b) => Date.parse(b.occurredUtc) - Date.parse(a.occurredUtc)).slice(0, 5)
-  const evidence = playerCountAvailability(run, nowMs)
+  const evidence = playerCountPresentation(run, nowMs, refreshing)
   const trustedNow = evidence.count !== null
   const deadline = evidence.count === 0 ? run.autoShutdownAtUtc : null
   const deadlineMs = deadline ? Date.parse(deadline) : NaN
@@ -114,14 +96,14 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
     aria-labelledby={`players-${run.profileId}`}>
     <div className="players-heading">
       <h3 id={`players-${run.profileId}`}>Players</h3>
-      <Button className="secondary" disabled={disabled || refreshing} onClick={onRefresh}>
-        <Icon name={refreshing ? 'loader' : 'refresh'} />{refreshing ? 'Refreshing…' : 'Refresh count'}
+      <Button className="secondary" disabled={disabled || evidence.refreshing} onClick={onRefresh}>
+        <Icon name={evidence.refreshing ? 'loader' : 'refresh'} />{evidence.refreshing ? 'Checking…' : 'Refresh count'}
       </Button>
     </div>
     <div className="players-overview">
       <div className="players-stat" role="group" aria-labelledby={`players-count-${run.profileId}`}>
         <div className="players-stat-heading"><Icon name="users" size={19} /><h4 id={`players-count-${run.profileId}`}>Players online</h4></div>
-        <strong className="players-count-value">{countLabel(run, evidence.count)}</strong>
+        <strong className="players-count-value">{countLabel(run, evidence.count, evidence.refreshing)}</strong>
       </div>
       <div className="players-stat" role="group" aria-labelledby={`players-timer-${run.profileId}`}>
         <div className="players-stat-heading"><Icon name="clock" size={19} /><h4 id={`players-timer-${run.profileId}`}>Empty-server timer</h4></div>
@@ -133,17 +115,17 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
           : 'Waiting for a fresh trusted count.'}</p>
       </div>
     </div>
-    {!trustedNow && <DismissibleNotice className="players-warning" role="note" scope={run.profileId} noticeKey={evidence.state}>
+    {evidence.showWarning && <DismissibleNotice className="players-warning" role="note" scope={run.profileId} noticeKey={evidence.state}>
       <Icon name="warning" size={19} />
       <div>
-        <strong>{evidence.state === 'Stale' ? 'Player observation is stale'
-          : evidence.state === 'DisplayOnly' ? 'Custom player count is display only' : 'Player count unavailable'}</strong>
+        <strong>Player count unavailable after repeated checks</strong>
         <p>Friend and automatic Stop remain blocked.</p>
       </div>
     </DismissibleNotice>}
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{trustedNow
       ? `${evidence.count} players reported by the game server.`
-      : 'Player count unavailable. Friend and automatic Stop remain blocked.'}</span>
+      : evidence.showWarning ? 'Player count unavailable after repeated checks. Friend and automatic Stop remain blocked.'
+        : 'Waiting for a current player count. Friend and automatic Stop remain blocked.'}</span>
     <div className="players-disclosures">
       <details className="players-disclosure">
         <summary>Count source & timer details</summary>

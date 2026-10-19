@@ -1,0 +1,25 @@
+.server-directory { display: grid; gap: 12px; min-width: 0; }
+.server-directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.server-directory-heading h2 { margin: 0; font-size: 18px; }
+.server-directory-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.server-directory-actions > .ui-button { flex: 1 1 auto; padding: 8px; min-height: 36px; }
+.server-directory-group { display: grid; gap: 4px; }
+.server-directory-group > h3 { margin: 8px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--color-text-muted); }
+.server-directory .server-directory-row { width: 100%; min-width: 0; display: flex; align-items: flex-start; justify-content: flex-start; gap: 9px; padding: 10px; text-align: left; background: transparent; border: 1px solid transparent; }
+.server-directory .server-directory-row.selected { background: var(--color-accent-soft); border-color: var(--color-border); }
+.server-directory-row > svg { flex: 0 0 auto; margin-top: 2px; }
+.server-directory-row > span { display: grid; gap: 3px; min-width: 0; }
+.server-directory-row strong { font-weight: 600; overflow-wrap: anywhere; }
+.server-directory-row small { color: var(--color-text-muted); font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+.server-directory-row .guest-hosting-badge { color: var(--color-accent-text); font-weight: 600; }
+.server-directory-host h4 { margin: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--color-text-muted); }
+.server-directory-host h4 small { display: block; }
+.server-directory-empty { margin: 4px 10px; color: var(--color-text-muted); font-size: 12px; }
+.server-directory-removed { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-muted); }
+.guest-hosting-label { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--color-border); background: var(--color-accent-soft); border-radius: 8px; color: var(--color-accent-text); }
+.guest-hosting-label span { display: grid; gap: 3px; }
+.guest-hosting-label small { color: var(--color-text-muted); }
+.server-sections-disclosure { border-top: 1px solid var(--color-border); padding-top: 12px; }
+.server-sections-disclosure > summary { cursor: pointer; font-size: 12px; color: var(--color-text-muted); }
+.server-sections-disclosure[open] { display: grid; gap: 10px; }
+.server-directory-selected { margin: 8px 0 0; font-size: 12px; color: var(--color-text-muted); overflow-wrap: anywhere; }

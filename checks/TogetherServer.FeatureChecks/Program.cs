@@ -8,6 +8,8 @@ Directory.CreateDirectory(root);
 var groups = new (string Name, Func<Task> Run)[]
 {
     ("Isolated native development demo", () => DemoInstanceChecks.RunAsync(root)),
+    ("Passive grouped server directory", () => ServerDirectoryChecks.RunAsync(root)),
+    ("Calm completed player-count observations", () => { PlayerCountPresentationChecks.Run(); return Task.CompletedTask; }),
     ("Versioned required feature setup", () => RequiredFeatureSetupChecks.RunAsync(root)),
     ("Protected person profiles and authenticated name exchange", () => UserProfileChecks.RunAsync(root)),
     ("Atomic world protection settings", () => ProtectionSettingsChecks.RunAsync(root)),

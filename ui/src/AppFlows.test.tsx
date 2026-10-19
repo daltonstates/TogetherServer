@@ -11,6 +11,7 @@ import type { NotificationPreferences } from './desktopPreferencesWire'
 import type { DesktopUpdateDetails } from './desktopPreferencesWire'
 import type { LocalHostingStatus } from './FriendLocalHosting'
 import { App } from './main'
+import { directoryWithSnapshot } from './ServerDirectory'
 import themeCss from './theme.css?inline'
 import baseCss from './style.css?inline'
 import companionCss from './companion.css?inline'
@@ -21,9 +22,10 @@ import settingsIntegrationCss from './settings-integration.css?inline'
 import friendAccessCss from './friend-access.css?inline'
 import redesignCss from './redesign.css?inline'
 import taskFirstPagesCss from './TaskFirstPages.css?inline'
+import directoryCss from './ServerDirectory.css?inline'
 
 // vitest.config.ts explicitly enables these inline imports; load the whole cascade.
-const shellCss = [themeCss, baseCss, companionCss, qolCss, coreCss, settingsCss, settingsIntegrationCss, friendAccessCss, redesignCss, taskFirstPagesCss].join('\n')
+const shellCss = [themeCss, baseCss, companionCss, qolCss, coreCss, settingsCss, settingsIntegrationCss, friendAccessCss, redesignCss, taskFirstPagesCss, directoryCss].join('\n')
 
 // Exercise the real shell, selection, guards and handlers. Leaf data/workflows have their own suites.
 const transport = vi.hoisted(() => ({ read: vi.fn(), change: vi.fn(), flush: vi.fn(), failures: { logs: false, sessions: false, files: false } }))
@@ -99,6 +101,8 @@ vi.mock('./ServerFilesPanel', async () => {
 
 const id = hostWire.settings.profiles[0].id
 let state: Snapshot
+let localDirectorySnapshot: HostSnapshot
+let friendDirectorySnapshot: FriendSnapshot
 let recoveryBlocked: boolean
 const instance = {
   kind: 'Production', displayName: 'TogetherServer', isStaging: false, freshWorldsOnly: false,
@@ -126,8 +130,13 @@ beforeEach(() => {
   host().runs[0].state = 'Offline'
   host().runs[0].detail = 'The exact recorded process is offline.'
   host().runs[0].playerCountObservedUtc = new Date().toISOString()
+  localDirectorySnapshot = host()
+  friendDirectorySnapshot = friend()
   transport.read.mockReset().mockImplementation(async (path: string) => {
     if (path === '/api/local/snapshot') return state
+    if (path === '/api/local/servers') return directoryWithSnapshot(
+      directoryWithSnapshot(null, state.mode === 'Host' ? state : localDirectorySnapshot),
+      state.mode === 'Friend' ? state : friendDirectorySnapshot)
     if (path === '/api/local/profile') return { displayName: 'Alex' }
     if (path === '/api/local/required-setup') return { features: [{ id: 'profile-name', revision: 1, title: 'Your name', description: 'Share your name.', completed: true }] }
     if (path === '/api/local/data-recovery') return { lifecycleBlocked: recoveryBlocked, notices: [] }
@@ -138,7 +147,11 @@ beforeEach(() => {
     if (path === '/api/local/desktop/notifications') return structuredClone(notificationPreferences)
     throw new Error('Synthetic leaf data unavailable')
   })
-  transport.change.mockReset().mockImplementation(async () => ({ ok: true, code: 'Requested', message: 'Request accepted.', snapshot: state }))
+  transport.change.mockReset().mockImplementation(async (path: string) => {
+    if (path === '/api/local/mode/friend') { if (state.mode === 'Host') localDirectorySnapshot = state; state = friendDirectorySnapshot }
+    if (path === '/api/local/mode/host') { if (state.mode === 'Friend') friendDirectorySnapshot = state; state = localDirectorySnapshot }
+    return { ok: true, code: 'Requested', message: 'Request accepted.', snapshot: state }
+  })
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('No network in shell tests') }))
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { callback(0); return 1 })
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
@@ -365,7 +378,15 @@ function serverSections() {
 }
 
 function joinSections() {
-  return within(screen.getByRole('navigation', { name: 'Join sections' }))
+  return serverSections()
+}
+
+function directory() { return within(screen.getByRole('complementary', { name: 'Server navigation' })) }
+
+function pcSections() {
+  const disclosure = directory().getByText('This PC settings').closest('details')!
+  if (!disclosure.open) fireEvent.click(disclosure.querySelector('summary')!)
+  return within(directory().getByRole('navigation', { name: 'This Host PC sections' }))
 }
 
 function workspaces() {
@@ -445,7 +466,7 @@ describe('Task-first app and Host PC navigation', () => {
     fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
     await screen.findByRole('region', { name: 'App Settings' })
     expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
-    fireEvent.click(workspaces().getByRole('button', { name: 'Host' }))
+    fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
     await screen.findByRole('region', { name: 'Contract fixture workspace' })
     expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
     fireEvent.click(workspaces().getByRole('button', { name: 'Attention' }))
@@ -464,10 +485,12 @@ describe('Task-first app and Host PC navigation', () => {
     await openHost()
     for (const mode of ['Host', 'Join', 'Host']) {
       if (mode === 'Join') {
-        fireEvent.click(workspaces().getByRole('button', { name: 'Join' }))
+        fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Open Synthetic world on Evening Host' }))
         await screen.findByRole('region', { name: 'Play' })
       } else if (state.mode === 'Friend') {
-        fireEvent.click(workspaces().getByRole('button', { name: 'Host' }))
+        fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Open Contract fixture on this PC' }))
         await screen.findByRole('region', { name: 'Contract fixture workspace' })
       }
       await act(async () => { await Promise.resolve() })
@@ -535,7 +558,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1')!)).toMatchObject({ theme: 'light', density: 'compact' })
     expectNoMutation()
     await act(async () => {
-      fireEvent.click(workspaces().getByRole('button', { name: mode === 'Host' ? 'Host' : 'Join' }))
+      fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
     })
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
     expect(state.mode).toBe(mode)
@@ -566,7 +589,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(screen.getByRole('textbox', { name: 'Your name' })).toHaveValue('Sam')
     fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
     await screen.findByText('Profile saved. Your name is shared with connected PCs.')
-    fireEvent.click(workspaces().getByRole('button', { name: mode === 'Host' ? 'Host' : 'Join' }))
+    fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
     expect(screen.getByText('Sharing as', { exact: false })).toHaveTextContent('Sharing as Sam')
     expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/profile'])
@@ -576,14 +599,14 @@ describe('Task-first app and Host PC navigation', () => {
 
   it('opens Friend access from This Host PC and returns to the same selected server', async () => {
     const workspace = await openHost()
-    const sections = screen.getByRole('navigation', { name: 'This Host PC sections' })
-    expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Friend access', 'Stop & timer', 'Connection help', 'Diagnostics', 'Advanced'
+    const sections = pcSections()
+    expect(sections.getAllByRole('button').map(button => button.textContent)).toEqual([
+      'Access', 'Shutdown', 'Network', 'Advanced'
     ])
-    fireEvent.click(within(sections).getByRole('button', { name: 'Friend access' }))
+    fireEvent.click(sections.getByRole('button', { name: 'Access' }))
     const pc = await screen.findByRole('region', { name: 'This Host PC' })
-    expect(workspaces().getByRole('button', { name: 'Host' })).toHaveAttribute('aria-current', 'page')
-    expect(within(sections).getByRole('button', { name: 'Friend access' })).toHaveAttribute('aria-current', 'page')
+    expect(workspaces().getByRole('button', { name: 'Servers' })).toHaveAttribute('aria-current', 'page')
+    expect(sections.getByRole('button', { name: 'Access' })).toHaveAttribute('aria-current', 'page')
     expect(workspace).not.toBeInTheDocument()
     expect(within(pc).getByRole('heading', { name: 'Friend access' })).toBeVisible()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -594,17 +617,25 @@ describe('Task-first app and Host PC navigation', () => {
   })
 
   it.each([
-    ['access', 'Friend access'], ['stop', 'Stop & timer'], ['network', 'Connection help'],
-    ['diagnostics', 'Diagnostics'], ['advanced', 'Advanced']
+    ['access', 'Access'], ['stop', 'Shutdown'], ['network', 'Network'], ['advanced', 'Advanced']
   ])('routes the old native Settings/%s alias to This Host PC', async (section, label) => {
     const notify = nativeNotifications()
     await openHost()
     await notify({ workspace: 'settings', section, profileId: null, connectionId: null })
     await screen.findByRole('region', { name: 'This Host PC' })
-    expect(workspaces().getByRole('button', { name: 'Host' })).toHaveAttribute('aria-current', 'page')
-    expect(within(screen.getByRole('navigation', { name: 'This Host PC sections' })).getByRole('button', { name: label }))
+    expect(workspaces().getByRole('button', { name: 'Servers' })).toHaveAttribute('aria-current', 'page')
+    expect(pcSections().getByRole('button', { name: label }))
       .toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('region', { name: 'App Settings' })).not.toBeInTheDocument()
+    expectNoMutation()
+  })
+
+  it('keeps legacy native diagnostics links reachable inside PC settings without a separate navigation item', async () => {
+    const notify = nativeNotifications()
+    await openHost()
+    await notify({ workspace: 'settings', section: 'diagnostics', profileId: id, connectionId: null })
+    await screen.findByRole('heading', { name: 'Preflight & diagnostics' })
+    expect(pcSections().queryByRole('button', { name: 'Diagnostics' })).not.toBeInTheDocument()
     expectNoMutation()
   })
 
@@ -632,7 +663,7 @@ describe('Task-first app and Host PC navigation', () => {
     await screen.findByRole('region', { name: 'Play' })
     await notify({ workspace: 'settings', section: 'access', profileId: null, connectionId: null })
     await screen.findByRole('region', { name: 'This Host PC' })
-    expect(workspaces().getByRole('button', { name: 'Host' })).toHaveAttribute('aria-current', 'page')
+    expect(workspaces().getByRole('button', { name: 'Servers' })).toHaveAttribute('aria-current', 'page')
     expect(transport.change).toHaveBeenCalledWith('/api/local/mode/host', 'POST', expect.any(Function), undefined, undefined)
     expect(mutationCalls()).toHaveLength(1)
     expectNoServerAction()
@@ -648,10 +679,9 @@ describe('Task-first app and Host PC navigation', () => {
     fireEvent.change(editor, { target: { value: 'Protected final keystroke' } })
     const navigate = () => {
       if (destination === 'pc') {
-        fireEvent.click(within(screen.getByRole('navigation', { name: 'This Host PC sections' })).getByRole('button', { name: 'Friend access' }))
+        fireEvent.click(pcSections().getByRole('button', { name: 'Access' }))
       } else {
-        fireEvent.click(screen.getByLabelText('Selected server: Contract fixture'))
-        fireEvent.click(screen.getByRole('button', { name: /^Second synthetic server/ }))
+        fireEvent.click(directory().getByRole('button', { name: 'Open Second synthetic server on this PC' }))
       }
     }
     transport.flush.mockResolvedValue(false)
@@ -693,7 +723,7 @@ describe('Task-first app and Host PC navigation', () => {
       { quietMode: true }, expect.any(AbortSignal))
     const navigate = async () => {
       if (destination === 'section') fireEvent.click(within(sections).getByRole('button', { name: 'Appearance' }))
-      else if (destination === 'workspace') fireEvent.click(workspaces().getByRole('button', { name: 'Join' }))
+      else if (destination === 'workspace') fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
       else await notify({ workspace: 'settings', section: 'access', profileId: null, connectionId: null })
     }
     await act(async () => { await navigate() })
@@ -708,15 +738,9 @@ describe('Task-first app and Host PC navigation', () => {
     expect(quiet).toBeChecked()
     // The blocked navigation is deliberately retried, rather than replayed implicitly.
     expect(workspaces().getByRole('button', { name: 'App Settings' })).toHaveAttribute('aria-current', 'page')
-    if (destination === 'workspace') {
-      transport.change.mockImplementation(async (path: string) => {
-        if (path === '/api/local/mode/friend') state = friend()
-        return { ok: true, code: 'Requested', message: 'Mode changed.', snapshot: state }
-      })
-    }
     await act(async () => { await navigate() })
     if (destination === 'section') expect(await screen.findByRole('combobox', { name: 'Theme' })).toBeVisible()
-    else await screen.findByRole('region', { name: destination === 'workspace' ? 'Play' : 'This Host PC' })
+    else await screen.findByRole('region', { name: destination === 'workspace' ? 'Contract fixture workspace' : 'This Host PC' })
     expectNoServerAction()
   })
 
@@ -734,7 +758,7 @@ describe('Task-first app and Host PC navigation', () => {
       { profileId: id, connectionId: null, allowedEvents: [] }, expect.any(AbortSignal))
     fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
     await act(async () => { await Promise.resolve() })
-    expect(workspaces().getByRole('button', { name: 'Host' })).toHaveAttribute('aria-current', 'page')
+    expect(workspaces().getByRole('button', { name: 'Servers' })).toHaveAttribute('aria-current', 'page')
     expect(notifications).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'App Settings' })).not.toBeInTheDocument()
     expect(mutationCalls()).toHaveLength(1)
@@ -945,13 +969,17 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
-  it('keeps comparison out of a single-server flow and makes it available without changing the selected server', async () => {
+  it('keeps local and friend servers visible together without changing the selected server', async () => {
     host().settings.profiles.push({ ...host().settings.profiles[0], id: '22222222-2222-4222-8222-222222222222', name: 'Second synthetic server' })
     await openHost()
     expect(screen.queryByRole('dialog', { name: 'All servers' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Compare all servers' }))
-    expect(await screen.findByRole('dialog', { name: 'All servers' })).toBeInTheDocument()
+    expect(directory().getByRole('heading', { name: 'Your servers' })).toBeVisible()
+    expect(directory().getByRole('heading', { name: 'Friend servers' })).toBeVisible()
+    expect(directory().getByRole('button', { name: 'Open Contract fixture on this PC' })).toHaveAttribute('aria-current', 'true')
+    expect(directory().getByRole('button', { name: 'Open Second synthetic server on this PC' })).toBeVisible()
+    expect(directory().getByRole('button', { name: 'Open Synthetic world on Evening Host' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Contract fixture workspace' })).toBeInTheDocument()
+    expectNoMutation()
   })
 
   it('keeps backup and maintenance tools reachable in their owning pane, without adding them to chat or logs', async () => {
@@ -1106,7 +1134,7 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
-  it('keeps staging rehearsal out of first setup and reachable through Connection help', async () => {
+  it('keeps staging rehearsal out of first setup and reachable through Network troubleshooting', async () => {
     host().settings.profiles = []
     host().runs = []
     const read = transport.read.getMockImplementation()!
@@ -1115,8 +1143,9 @@ describe('Host task structure', () => {
     render(<App />)
     expect(await screen.findByRole('region', { name: 'Host or join a server' })).toBeInTheDocument()
     expect(screen.queryByText('Test with another owned PC')).not.toBeInTheDocument()
-    const sections = await screen.findByRole('navigation', { name: 'This Host PC sections' })
-    fireEvent.click(within(sections).getByRole('button', { name: 'Connection help' }))
+    fireEvent.click(pcSections().getByRole('button', { name: 'Network' }))
+    expect(screen.queryByText('Test with another owned PC')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByText('Troubleshooting'))
     expect(await screen.findByText('Test with another owned PC')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Prepare rehearsal' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Test with another owned PC Open rehearsal' }))
@@ -1221,8 +1250,7 @@ function withPcs(devices: Device[]) {
 
 async function openAccess() {
   await openHost()
-  const sections = await screen.findByRole('navigation', { name: 'This Host PC sections' })
-  fireEvent.click(within(sections).getByRole('button', { name: 'Friend access' }))
+  fireEvent.click(pcSections().getByRole('button', { name: 'Access' }))
   await screen.findByRole('region', { name: 'This Host PC' })
 }
 
@@ -1384,7 +1412,7 @@ describe('Friend task structure', () => {
   it.each(['Revoked', 'AccessExpired', 'ApprovalPending'])('does not expose local hosting after explicit %s', async connectionCode => {
     state = { ...friend(), connectionCode }
     render(<App />)
-    await screen.findByRole('navigation', { name: 'Join sections' })
+    await screen.findByRole('navigation', { name: 'Selected server sections' })
     expect(screen.queryByRole('button', { name: 'Host on this PC' })).not.toBeInTheDocument()
     expect(transport.read.mock.calls.some(([path]) => path.endsWith('/shared-world/hosting'))).toBe(false)
     expectNoMutation()
@@ -1397,7 +1425,7 @@ describe('Friend task structure', () => {
     state = connected
     render(<App />)
     await screen.findByRole('region', { name: 'Play' })
-    fireEvent.click(joinSections().getByRole('button', { name: 'Add a Host' }))
+    fireEvent.click(directory().getByRole('button', { name: 'Connect' }))
     const invite = await screen.findByLabelText('Server code')
     fireEvent.change(invite, { target: { value: 'TS3-synthetic-unsent-private-invite' } })
     expect(invite).toHaveAttribute('type', 'password')
@@ -1407,7 +1435,7 @@ describe('Friend task structure', () => {
     expect(chat).toHaveAttribute('data-profile-id', id)
     expect(joinSections().getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByLabelText('Server code')).not.toBeInTheDocument()
-    fireEvent.click(joinSections().getByRole('button', { name: 'Add a Host' }))
+    fireEvent.click(directory().getByRole('button', { name: 'Connect' }))
     const retainedInvite = await screen.findByLabelText('Server code')
     expect(retainedInvite).toHaveValue('TS3-synthetic-unsent-private-invite')
     expect(retainedInvite).toHaveAttribute('type', 'password')
@@ -1426,14 +1454,15 @@ describe('Friend task structure', () => {
     const connected = friend()
     connected.hostCapabilities.push('shared-worlds-v2')
     connected.profiles = [{ ...connected.profiles[0], id: secondId, name: 'Shared Join world B' }]
+    friendDirectorySnapshot = connected
     transport.change.mockImplementation(async (path: string) => {
       if (path === '/api/local/mode/friend') state = connected
       else if (path === '/api/local/mode/host') state = localHost
       return { ok: true, code: 'Requested', message: 'Mode changed.', snapshot: state }
     })
     await openHost()
-    expect(screen.getByLabelText('Selected server: Contract fixture')).toBeVisible()
-    fireEvent.click(workspaces().getByRole('button', { name: 'Join' }))
+    expect(directory().getByRole('button', { name: 'Open Contract fixture on this PC' })).toHaveAttribute('aria-current', 'true')
+    fireEvent.click(directory().getByRole('button', { name: 'Open Shared Join world B on Evening Host' }))
     await screen.findByRole('region', { name: 'Play' })
     fireEvent.click(joinSections().getByRole('button', { name: 'Shared saves' }))
     const shared = await openAdvancedSharedSaves()
@@ -1441,16 +1470,15 @@ describe('Friend task structure', () => {
     fireEvent.click(within(shared).getByRole('button', { name: destination === 'setup' ? 'Open Host setup' : 'Open Host controls' }))
     if (destination === 'setup') {
       const pc = await screen.findByRole('region', { name: 'This Host PC' })
-      expect(within(screen.getByRole('navigation', { name: 'This Host PC sections' }))
-        .getByRole('button', { name: 'Connection help' })).toHaveAttribute('aria-current', 'page')
-      expect(screen.getByLabelText('Selected server: Local shared world B')).toBeVisible()
+      expect(pcSections().getByRole('button', { name: 'Network' })).toHaveAttribute('aria-current', 'page')
+      expect(directory().getByRole('button', { name: 'Open Local shared world B on this PC' })).toHaveAttribute('aria-current', 'true')
       await waitFor(() => expect(JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1')!).selectedServer).toBe(secondId))
       fireEvent.click(within(pc).getByRole('button', { name: 'Return to selected server' }))
     }
     expect(await screen.findByRole('region', { name: 'Local shared world B workspace' })).toBeVisible()
     expect(screen.queryByRole('region', { name: 'Contract fixture workspace' })).not.toBeInTheDocument()
     expect(serverSections().getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByLabelText('Selected server: Local shared world B')).toBeVisible()
+    expect(directory().getByRole('button', { name: 'Open Local shared world B on this PC' })).toHaveAttribute('aria-current', 'true')
     await waitFor(() => expect(JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1')!).selectedServer).toBe(secondId))
     expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/mode/friend', '/api/local/mode/host'])
     expectNoServerAction()
@@ -1467,20 +1495,22 @@ describe('Friend task structure', () => {
     const editor = await screen.findByRole('textbox', { name: 'Test chat draft' })
     fireEvent.change(editor, { target: { value: 'Keep this message with its original server' } })
     transport.flush.mockResolvedValue(false)
-    const picker = screen.getByRole('combobox', { name: 'Selected server' })
-    fireEvent.change(picker, { target: { value: secondId } })
+    const target = directory().getByRole('button', { name: 'Open Second assigned world on Evening Host' })
+    fireEvent.click(target)
     await waitFor(() => expect(transport.flush).toHaveBeenCalledOnce())
-    expect(picker).toHaveValue(id)
+    expect(directory().getByRole('button', { name: 'Open Synthetic world on Evening Host' })).toHaveAttribute('aria-current', 'true')
     expect(editor).toHaveValue('Keep this message with its original server')
     expect(screen.getByRole('region', { name: 'Server chat' })).toHaveAttribute('data-profile-id', id)
     let finish!: (value: boolean) => void
     transport.flush.mockImplementationOnce(() => new Promise<boolean>(resolve => { finish = resolve }))
-    fireEvent.change(picker, { target: { value: secondId } })
+    fireEvent.click(target)
     await waitFor(() => expect(transport.flush).toHaveBeenCalledTimes(2))
-    expect(picker).toHaveValue(id)
+    expect(directory().getByRole('button', { name: 'Open Synthetic world on Evening Host' })).toHaveAttribute('aria-current', 'true')
     await act(async () => { finish(true) })
-    await waitFor(() => expect(picker).toHaveValue(secondId))
-    expect(screen.getByRole('region', { name: 'Server chat' })).toHaveAttribute('data-profile-id', secondId)
+    await waitFor(() => expect(target).toHaveAttribute('aria-current', 'true'))
+    expect(await screen.findByRole('region', { name: 'Play' })).toBeVisible()
+    fireEvent.click(joinSections().getByRole('button', { name: 'Chat' }))
+    expect(await screen.findByRole('region', { name: 'Server chat' })).toHaveAttribute('data-profile-id', secondId)
     expect(joinSections().getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-current', 'page')
     expectNoMutation()
   })
@@ -1516,7 +1546,7 @@ describe('Friend task structure', () => {
     expect(screen.queryByRole('region', { name: 'Server chat' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Server logs' })).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Shared worlds' })).not.toBeInTheDocument()
-    fireEvent.change(screen.getByRole('combobox', { name: 'Selected server' }), { target: { value: secondId } })
+    fireEvent.click(directory().getByRole('button', { name: 'Open Second assigned world on Evening Host' }))
     expect(await screen.findByRole('heading', { name: 'Second assigned world' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Synthetic world' })).not.toBeInTheDocument()
     fireEvent.click(joinSections().getByRole('button', { name: 'Chat' }))
@@ -1542,7 +1572,7 @@ describe('Friend task structure', () => {
     expect(screen.queryByRole('region', { name: 'Play' })).not.toBeInTheDocument()
     fireEvent.click(joinSections().getByRole('button', { name: 'Play' }))
     expect(await screen.findByRole('region', { name: 'Play' })).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'Selected server' })).toHaveValue(secondId)
+    expect(directory().getByRole('button', { name: 'Open Second assigned world on Evening Host' })).toHaveAttribute('aria-current', 'true')
     expect(screen.getByRole('heading', { name: 'Second assigned world' })).toBeVisible()
     expect(saves).not.toBeInTheDocument()
     expectNoMutation()
@@ -1552,8 +1582,7 @@ describe('Friend task structure', () => {
     state = friend()
     render(<App />)
     await screen.findByRole('region', { name: 'Play' })
-    fireEvent.click(joinSections().getByRole('button', { name: 'Connection settings' }))
-    fireEvent.click(await screen.findByText('Connection identity and recovery'))
+    fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Forget this Host' }))
     const confirmation = await screen.findByRole('dialog', { name: 'Forget this saved Host?' })
     expect(confirmation).toHaveTextContent('TogetherServer will first try to revoke this PC on the Host.')
@@ -1577,8 +1606,8 @@ describe('Friend task structure', () => {
     if (start) { expect(start).toBeDisabled(); fireEvent.click(start) }
     expect(within(play).queryByRole('button', { name: 'Stop server' })).not.toBeInTheDocument()
     expect(joinSections().queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
-    fireEvent.click(joinSections().getByRole('button', { name: 'Connection settings' }))
-    await screen.findByText('Connection identity and recovery')
+    fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('textbox', { name: /^Saved connection name/u })
     const restart = screen.queryByRole('button', { name: 'Restart server' })
     if (restart) { expect(restart).toBeDisabled(); fireEvent.click(restart) }
     expect(screen.queryByRole('button', { name: /Add \d+ minutes/ })).not.toBeInTheDocument()
@@ -1602,8 +1631,8 @@ describe('Friend task structure', () => {
       expect(within(play).queryByRole('region', { name: 'Connection details' })).not.toBeInTheDocument()
       expect(screen.getByText('Last known / Unknown')).toBeVisible()
     }
-    fireEvent.click(joinSections().getByRole('button', { name: 'Connection settings' }))
-    await screen.findByText('Connection identity and recovery')
+    fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('textbox', { name: /^Saved connection name/u })
     for (const name of ['Restart server', 'Add 15 minutes']) {
       const action = screen.queryByRole('button', { name })
       if (action) { expect(action).toBeDisabled(); fireEvent.click(action) }
@@ -1630,7 +1659,7 @@ describe('Friend task structure', () => {
     state = friend()
     render(<App />)
     const play = await screen.findByRole('region', { name: 'Play' })
-    expect(screen.queryByText('Connection identity and recovery')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: /^Saved connection name/u })).not.toBeInTheDocument()
     expect(joinSections().getByRole('button', { name: 'Play' })).toHaveAttribute('aria-current', 'page')
     const support = within(play).getByLabelText('Server tools and connection help').closest('details')!
     fireEvent.click(support.querySelector('summary')!)
@@ -1642,7 +1671,7 @@ describe('Friend task structure', () => {
       expect(summary.closest('details')).toHaveAttribute('open')
       expect(summary).toHaveFocus()
     })
-    expect(joinSections().getByRole('button', { name: 'Connection help' })).toHaveAttribute('aria-current', 'page')
+    expect(joinSections().getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
     expectNoServerAction()
   })
@@ -1651,7 +1680,7 @@ describe('Friend task structure', () => {
     state = friend()
     render(<App />)
     await screen.findByRole('region', { name: 'Play' })
-    fireEvent.click(joinSections().getByRole('button', { name: 'Add a Host' }))
+    fireEvent.click(directory().getByRole('button', { name: 'Connect' }))
     const code = await screen.findByLabelText('Server code')
     fireEvent.change(code, { target: { value: 'Synthetic unsent code' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel and return to saved Host' }))
@@ -1678,8 +1707,8 @@ describe('Friend task structure', () => {
     expect(screen.getByText('The Host ended access for this PC at the saved time.')).toBeVisible()
     expect(within(play).queryByText(/Open Minecraft from Windows Start/)).not.toBeInTheDocument()
     expect(within(play).queryByRole('button', { name: 'Copy Server IP' })).not.toBeInTheDocument()
-    fireEvent.click(joinSections().getByRole('button', { name: 'Connection settings' }))
-    expect(await screen.findByText('Connection identity and recovery')).toBeInTheDocument()
+    fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('textbox', { name: /^Saved connection name/u })).toBeVisible()
     expect(screen.getByRole('textbox', { name: /^Saved connection name/ })).toHaveValue('Evening Host')
     expectNoMutation()
   })
@@ -1725,19 +1754,16 @@ describe('current profiles and removed access', () => {
     expectNoServerAction()
   })
 
-  it('puts running servers ahead of a pinned offline selection without changing the selected workspace', async () => {
+  it('preserves the selected server and lists both local worlds without recreating the old favorite picker', async () => {
     const activeId = '33333333-3333-4333-8333-333333333333'
     host().settings.profiles.push({ ...host().settings.profiles[0], id: activeId, name: 'Running world' })
     host().runs.push({ ...host().runs[0], profileId: activeId, state: 'Ready' })
     localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ selectedServer: id,
       favoriteServers: [id], serverOrder: [id, activeId] }))
     await openHost()
-    const picker = screen.getByLabelText('Selected server: Contract fixture').closest('details')!
-    picker.open = true
-    const choices = within(screen.getByLabelText('Selected server choices')).getAllByRole('button')
-      .filter(button => button.querySelector('strong'))
-    expect(choices[0]).toHaveTextContent('Running world')
-    expect(choices[1]).toHaveTextContent('Contract fixture')
+    expect(directory().getByRole('button', { name: 'Open Running world on this PC' })).toBeVisible()
+    expect(directory().getByRole('button', { name: 'Open Contract fixture on this PC' })).toHaveAttribute('aria-current', 'true')
+    expect(screen.queryByLabelText('Selected server choices')).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Contract fixture workspace' })).toBeInTheDocument()
     expect(host().settings.profiles.map(profile => profile.id)).toEqual([id, activeId])
     expectNoServerAction()
@@ -1756,15 +1782,15 @@ describe('current profiles and removed access', () => {
     expect(screen.queryByText('Old Host')).not.toBeInTheDocument()
     expect(screen.queryByText('Revoked')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Synthetic world' })).not.toBeInTheDocument()
-    const picker = screen.getByLabelText('Selected Host: None selected').closest('details')!
-    picker.open = true
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Show removed Hosts' }))
-    expect(await screen.findByRole('button', { name: 'Delete saved Host Old Host' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Delete saved Host Old Host' }))
+    fireEvent.click(directory().getByRole('checkbox', { name: 'Show removed access' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Synthetic world on Old Host' }))
+    await screen.findByRole('region', { name: 'Play' })
+    fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Forget this Host' }))
     fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete this saved Host?' })).getByRole('button', { name: 'Delete Host' }))
     await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/friend/connections/${removed.connectionId}/forget`, 'POST', expect.any(Function), undefined, undefined))
     await waitFor(() => expect(screen.queryByText('Old Host')).not.toBeInTheDocument())
-    expect(screen.getByLabelText('Selected Host: Current Host')).toBeInTheDocument()
+    expect(directory().getByRole('button', { name: 'Open Synthetic world on Current Host' })).toHaveAttribute('aria-current', 'true')
     expectNoServerAction()
   })
 })

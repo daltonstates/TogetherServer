@@ -13,7 +13,8 @@ public sealed record RunView(Guid ProfileId, string State, string Detail, int? P
     bool HostAddedTime = false, IReadOnlyList<string>? PlayerNames = null,
     bool PlayerCountTrusted = false, int FriendAddedMinutes = 0,
     long AddedShutdownMinutes = 0, string? PlayerObservationSource = null,
-    DateTimeOffset? PlayerCountObservedUtc = null, Guid? RunOperationId = null);
+    DateTimeOffset? PlayerCountObservedUtc = null, Guid? RunOperationId = null,
+    bool PlayerCountRefreshing = false, int PlayerCountFailureCount = 0);
 public sealed record HostSnapshot(HostSettings Settings, IReadOnlyList<RunView> Runs,
     string Evidence, string Mode, IReadOnlyDictionary<Guid, bool> PasswordConfigured, string ManagedWorldsRoot,
     IReadOnlyDictionary<Guid, CustomCertificationState>? CustomCertifications = null,
@@ -63,6 +64,7 @@ public sealed partial class HostManager
     private readonly Dictionary<Guid, long> addedShutdownMinutes = [];
     private readonly Dictionary<Guid, int> friendAddedMinutes = [];
     private readonly Dictionary<Guid, ServerObservation> observations = [];
+    private readonly Dictionary<Guid, PlayerCountRefreshState> playerCountRefreshes = [];
     private readonly HashSet<Guid> resumeRevalidationProfiles = [];
     // Held only while an offline world copy runs outside the lifecycle gate.
     // The backup stage and restore journal provide crash recovery on disk.
@@ -197,6 +199,7 @@ public sealed partial class HostManager
                     MaxPlayers = null,
                     PlayerNames = null,
                     PlayerCountTrusted = false,
+                    PlayerObservationSource = "ObservationStale",
                     AutoShutdownAtUtc = null
                 }
                 : run).ToList()
@@ -235,9 +238,9 @@ public sealed partial class HostManager
             await observationRefresh.WaitAsync();
         else if (!await observationRefresh.WaitAsync(0))
             return;
+        List<(ManagedRun Run, IGameServerDriver Driver)> targets = [];
         try
         {
-            List<(ManagedRun Run, IGameServerDriver Driver)> targets;
             await gate.WaitAsync();
             try
             {
@@ -252,8 +255,16 @@ public sealed partial class HostManager
                         continue;
                     }
                     if (identity == "Matched" && games.TryGet(run.Kind, out var driver))
+                    {
                         targets.Add((run, driver));
+                        var prior = playerCountRefreshes.GetValueOrDefault(run.ProfileId);
+                        playerCountRefreshes[run.ProfileId] =
+                            (prior is { } existing && existing.OperationId == run.OperationId
+                                ? existing : new PlayerCountRefreshState(run.OperationId)) with
+                            { Refreshing = true };
+                    }
                 }
+                PublishCountRefreshPresentation();
             }
             finally { gate.Release(); }
 
@@ -271,6 +282,8 @@ public sealed partial class HostManager
                 var currentIds = runs.Select(run => run.ProfileId).ToHashSet();
                 foreach (var removed in observations.Keys.Where(id => !currentIds.Contains(id)).ToList())
                     observations.Remove(removed);
+                foreach (var removed in playerCountRefreshes.Keys.Where(id => !currentIds.Contains(id)).ToList())
+                    playerCountRefreshes.Remove(removed);
                 resumeRevalidationProfiles.RemoveWhere(id => !currentIds.Contains(id));
                 foreach (var result in checkedRuns)
                 {
@@ -282,6 +295,10 @@ public sealed partial class HostManager
                         previousObservation.PlayerCountTrusted
                             ? previousObservation.OnlinePlayers
                             : run.LastTrustedOnlinePlayers;
+                    var previousCountState = playerCountRefreshes.GetValueOrDefault(result.ProfileId);
+                    var countState = (previousCountState is { } existingCount && existingCount.OperationId == result.OperationId
+                        ? existingCount : new PlayerCountRefreshState(result.OperationId)).Completed(result.Health, run.WasReady);
+                    playerCountRefreshes[result.ProfileId] = countState;
                     observations[result.ProfileId] = ToObservation(result.ProfileId, result.OperationId,
                         result.Health, clock.GetUtcNow());
                     resumeRevalidationProfiles.Remove(result.ProfileId);
@@ -301,7 +318,15 @@ public sealed partial class HostManager
                     }
                     if (RecordTrustedPlayerObservation(run, result.Health))
                         runsChanged = true;
-                    if (previousState is not null && !string.Equals(previousState, result.Health.State, StringComparison.Ordinal))
+                    if (countState.FailureCount == PlayerCountRefreshState.WarningThreshold &&
+                        (previousCountState?.FailureCount ?? 0) < PlayerCountRefreshState.WarningThreshold)
+                        Activity("Players", "CountUnavailable",
+                            "The player count stayed unavailable across repeated checks. TogetherServer keeps retrying; Friend and automatic Stop remain blocked.",
+                            ActivitySeverity.Warning, result.ProfileId,
+                            visibility: ActivityVisibility.AssignedFriends);
+                    if (PlayerCountRefreshState.ShouldRecordLifecycleChange(
+                        previousObservation?.OperationId == result.OperationId ? previousObservation : null,
+                        result.Health, run.WasReady, previousCountState?.FailureCount ?? 0))
                     {
                         var profileName = settings.Profiles.SingleOrDefault(item => item.Id == result.ProfileId)?.Name ?? "Server";
                         Activity("Lifecycle", "StateChanged", $"{profileName} changed from {previousState} to {result.Health.State}.",
@@ -334,7 +359,19 @@ public sealed partial class HostManager
             }
             finally { gate.Release(); }
         }
-        finally { observationRefresh.Release(); }
+        finally
+        {
+            await gate.WaitAsync();
+            try
+            {
+                foreach (var target in targets)
+                    if (playerCountRefreshes.TryGetValue(target.Run.ProfileId, out var state) &&
+                        state.OperationId == target.Run.OperationId)
+                        playerCountRefreshes[target.Run.ProfileId] = state with { Refreshing = false };
+                PublishCountRefreshPresentation();
+            }
+            finally { gate.Release(); observationRefresh.Release(); }
+        }
     }
 
     private static async Task<GameHealthResult> ProbeHealthWithRetriesAsync(ManagedRun run,
@@ -1296,6 +1333,7 @@ public sealed partial class HostManager
         try
         {
             observations.Clear();
+            playerCountRefreshes.Clear();
             shutdownDeadlines.Clear();
             resumeRevalidationProfiles.Clear();
             foreach (var run in runs.Where(run => Identity(run) == "Matched"))
@@ -2045,6 +2083,13 @@ public sealed partial class HostManager
                 return Result(false, "UnsupportedGame", "This managed run uses an unavailable game driver.");
 
             var health = ObservedHealth(run);
+            var countState = playerCountRefreshes.GetValueOrDefault(profileId);
+            if ((health.State is "Ready" or "Starting" or "Unknown") &&
+                (health.State != "Ready" || health.OnlinePlayers is null) &&
+                (countState?.OperationId != run.OperationId ||
+                 countState.FailureCount < PlayerCountRefreshState.WarningThreshold))
+                return Result(true, "PlayerCountPending",
+                    "Still checking players. TogetherServer keeps retrying automatically; Friend and automatic Stop wait for a fresh trusted count.");
             if (health.State != "Ready")
                 return Result(false, "ServerNotReady",
                     $"{profile.Name} is {health.State.ToLowerInvariant()}. TogetherServer will keep checking automatically.");
@@ -2062,6 +2107,9 @@ public sealed partial class HostManager
 
     private ActionResult DriverHealth(ManagedRun run, GameHealthResult health)
     {
+        var previous = playerCountRefreshes.GetValueOrDefault(run.ProfileId);
+        playerCountRefreshes[run.ProfileId] = (previous is { } existing && existing.OperationId == run.OperationId
+            ? existing : new PlayerCountRefreshState(run.OperationId)).Completed(health, run.WasReady);
         observations[run.ProfileId] = ToObservation(run.ProfileId, run.OperationId, health, clock.GetUtcNow());
         return Result(health.Ok, health.Code, health.Detail);
     }
@@ -2295,11 +2343,32 @@ public sealed partial class HostManager
     {
         observations.TryGetValue(profileId, out var observation);
         var matchingObservation = observation?.OperationId == run.OperationId ? observation : null;
+        var countState = playerCountRefreshes.GetValueOrDefault(profileId);
+        var matchingCountState = countState?.OperationId == run.OperationId ? countState : null;
         return new(profileId, health.State, health.Detail, run.ProcessId, run.DeclaredPorts,
             health.OnlinePlayers, health.MaxPlayers, PlayerNames: health.PlayerNames,
             PlayerCountTrusted: health.PlayerCountTrusted,
-            PlayerObservationSource: matchingObservation?.Source,
-            PlayerCountObservedUtc: matchingObservation?.ObservedUtc);
+            PlayerObservationSource: health.Code is "ObservationPending" or "ObservationStale"
+                ? health.Code : matchingObservation?.Source,
+            PlayerCountObservedUtc: matchingObservation?.ObservedUtc,
+            PlayerCountRefreshing: matchingCountState?.Refreshing == true,
+            PlayerCountFailureCount: matchingCountState?.FailureCount ?? 0);
+    }
+
+    // Refreshing updates display metadata only. Keep an already fresh count until
+    // its normal expiry; stale/unknown evidence still blocks every safe Stop.
+    private void PublishCountRefreshPresentation()
+    {
+        HostSnapshot? WithPresentation(HostSnapshot? snapshot) => snapshot is null ? null : snapshot with
+        {
+            Runs = snapshot.Runs.Select(run => run.RunOperationId is { } operationId &&
+                playerCountRefreshes.TryGetValue(run.ProfileId, out var state) &&
+                state.OperationId == operationId
+                ? run with { PlayerCountRefreshing = state.Refreshing, PlayerCountFailureCount = state.FailureCount }
+                : run with { PlayerCountRefreshing = false, PlayerCountFailureCount = 0 }).ToList()
+        };
+        Volatile.Write(ref lastOwnerSnapshot, WithPresentation(lastOwnerSnapshot));
+        Volatile.Write(ref lastCompanionSnapshot, WithPresentation(lastCompanionSnapshot));
     }
 
     private void CancelCountdown(Guid profileId, string reason, bool discardAddedTime = false)
@@ -2867,6 +2936,7 @@ public sealed partial class HostManager
         addedShutdownMinutes.Remove(run.ProfileId);
         friendAddedMinutes.Remove(run.ProfileId);
         observations.Remove(run.ProfileId);
+        playerCountRefreshes.Remove(run.ProfileId);
         if (!preserveRecoveryState)
             crashRecovery.RemoveAll(item => item.ProfileId == run.ProfileId);
         SaveRunsState();
