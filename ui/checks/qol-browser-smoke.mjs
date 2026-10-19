@@ -533,6 +533,25 @@ async function selectServer(page, name, tab = 'Overview') {
   await selectWorkspaceSection(page, 'Selected server sections', label, value)
   return page.getByRole('region', { name: `${name} workspace`, exact: true })
 }
+async function closeCommandPalette(palette, action, label) {
+  // showModal/close is effect-driven. Hidden geometry precedes the native close
+  // event, whose React handler can otherwise close a freshly reopened palette.
+  const previous = await palette.evaluate(dialog => {
+    if (dialog.dataset.qolCloseReceipts === undefined) {
+      dialog.dataset.qolCloseReceipts = '0'
+      dialog.addEventListener('close', () => {
+        dialog.dataset.qolCloseReceipts = String(Number(dialog.dataset.qolCloseReceipts) + 1)
+      })
+    }
+    return Number(dialog.dataset.qolCloseReceipts)
+  })
+  await action()
+  await eventually(() => palette.evaluate(dialog => ({ receipts: Number(dialog.dataset.qolCloseReceipts), open: dialog.open,
+    expanded: dialog.querySelector('[aria-label="Search commands"]')?.getAttribute('aria-expanded') })),
+  current => current.receipts > previous && !current.open && current.expanded === 'false', `${label}: native palette close receipt`)
+  await palette.waitFor({ state: 'hidden' })
+  report.dialogs.push({ type: 'command-palette', outcome: 'native-close-received', action: label })
+}
 async function acceptAppConfirmation(page, title, confirmLabel) {
   const dialog = page.getByRole('dialog', { name: title, exact: true })
   await dialog.waitFor({ state: 'visible' })
@@ -865,31 +884,31 @@ async function routingAndAppearance(page, profiles) {
     'Connect opens the Friend pairing flow inside Servers.')
   await selectHostServer(page, profiles.valheim.name)
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
+  await page.getByRole('region', { name: 'App Settings', exact: true }).waitFor({ state: 'visible' })
   await page.keyboard.press('Control+k')
-  const palette = page.getByRole('dialog', { name: 'Command palette' })
-  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Attention')
-  await page.keyboard.press('Enter')
-  await palette.waitFor({ state: 'hidden' })
-  assert.equal(await navigation.getByRole('button', { name: 'Open Attention Center', exact: true, includeHidden: true }).getAttribute('aria-current'), 'page')
+  const palette = page.getByRole('dialog', { name: 'Command palette', exact: true, includeHidden: true })
+  const search = palette.getByRole('combobox', { name: 'Search commands', exact: true })
+  await search.fill('Open Attention')
+  await closeCommandPalette(palette, () => search.press('Enter'), 'Open Attention command')
+  await eventually(() => navigation.getByRole('button', { name: 'Open Attention Center', exact: true, includeHidden: true }).getAttribute('aria-current'),
+    value => value === 'page', 'Attention command destination renders before another palette request')
   await page.keyboard.press('Control+k')
-  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Connect server')
-  await page.keyboard.press('Enter')
-  await palette.waitFor({ state: 'hidden' })
+  await search.fill('Connect server')
+  await closeCommandPalette(palette, () => search.press('Enter'), 'Connect server command')
   await page.getByLabel('Server code', { exact: true }).waitFor({ state: 'visible' })
   await page.keyboard.press('Control+k')
-  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Servers')
-  await page.keyboard.press('Enter')
-  await palette.waitFor({ state: 'hidden' })
+  await search.fill('Open Servers')
+  await closeCommandPalette(palette, () => search.press('Enter'), 'Open Servers command')
   await eventually(() => navigation.getByRole('button', { name: 'Servers', exact: true }).getAttribute('aria-current'),
     value => value === 'page', 'Servers palette navigation from Friend pairing')
   assert.equal(await page.getByLabel('Server code', { exact: true }).isVisible(), true,
     'Open Servers preserves the current Friend pairing mode.')
   await selectHostServer(page, profiles.valheim.name)
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
+  await page.getByRole('region', { name: 'App Settings', exact: true }).waitFor({ state: 'visible' })
   await page.keyboard.press('Control+k')
-  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Synthetic Bedrock B')
-  await palette.getByRole('option').filter({ hasText: /files/iu }).click()
-  await palette.waitFor({ state: 'hidden' })
+  await search.fill('Synthetic Bedrock B')
+  await closeCommandPalette(palette, () => palette.getByRole('option').filter({ hasText: /files/iu }).click(), 'Open selected server files command')
   await page.getByRole('region', { name: 'Synthetic Bedrock B workspace', exact: true }).waitFor()
   assert.equal(await page.locator('.server-detail').getAttribute('data-server-tab'), 'files')
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
@@ -942,7 +961,7 @@ async function headerOverlayRegression(page, host) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
   const notifications = page.locator('.notification-menu > summary')
   const appSettings = page.locator('.header-tools .app-settings-trigger')
-  const palette = page.getByRole('dialog', { name: 'Command palette' })
+  const palette = page.getByRole('dialog', { name: 'Command palette', exact: true, includeHidden: true })
   const viewports = [{ width: 1180, height: 774 }, { width: 1440, height: 900 }, { width: 641, height: 844 },
     { width: 700, height: 844 }, { width: 390, height: 844 }, { width: 900, height: 400 }]
   const box = async (locator, name, observeOnly = false) => {
@@ -1069,10 +1088,9 @@ async function headerOverlayRegression(page, host) {
         await page.getByRole('button', { name: 'Commands', exact: true }).click()
         await palette.waitFor({ state: 'visible' })
         assert.equal(await page.locator('.notification-menu').evaluate(element => element.open), false, 'Opening Commands closes Notifications.')
-        await page.keyboard.press('Escape')
-        await palette.waitFor({ state: 'hidden' })
+        await closeCommandPalette(palette, () => page.keyboard.press('Escape'), 'Escape closes Commands')
         await page.getByRole('button', { name: 'Commands', exact: true }).click()
-        const search = palette.getByRole('combobox', { name: 'Search commands' })
+        const search = palette.getByRole('combobox', { name: 'Search commands', exact: true })
         await search.waitFor()
         const options = palette.getByRole('option'), count = await options.count()
         assert(count >= 32, 'The actual command palette must contain at least 32 destinations.')
@@ -1089,7 +1107,7 @@ async function headerOverlayRegression(page, host) {
           `${suffix}: the last keyboard-selected command must be inside the list scrollport.`)
         const close = palette.getByRole('button', { name: 'Close commands', exact: true })
         await box(close, `command-close-${suffix}`)
-        await close.click(); await palette.waitFor({ state: 'hidden' })
+        await closeCommandPalette(palette, () => close.click(), 'Close commands button')
         if (viewport.width <= 700) {
           const mobileControls = await navigation.locator(':scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
             const bounds = element.getBoundingClientRect(), icon = element.querySelector('svg')?.getBoundingClientRect()
@@ -1388,7 +1406,7 @@ async function lifecycleLogsAndSessions(page, host, profiles) {
     value => value === 'Offline', 'selected Host observes completed Stop before Restore review')
   await selectServer(page, profiles.valheim.name, 'Sessions')
   const weekly = page.locator('.weekly-summary')
-  const completed = weekly.getByRole('button', { name: /^Completed sessions:/u })
+  const completed = weekly.getByRole('button', { name: /^Ended sessions:/u })
   await completed.click()
   assert.equal(await completed.getAttribute('aria-pressed'), 'true')
   assert.match(run.operationId, /^[\da-f-]{36}$/iu, 'The actual managed run must have an archive identity.')
@@ -1420,7 +1438,7 @@ async function backupCatalog(page, host, profiles) {
   await catalog.getByRole('button', { name: 'Clear filters', exact: true }).click()
   await catalog.getByText('Preview which backups are kept', { exact: true }).click()
   await catalog.getByLabel('Preview unpinned copies to keep', { exact: true }).fill('1')
-  await catalog.getByText(/Changing this preview removes nothing/u).waitFor()
+  await catalog.getByText(/This preview does not delete anything\./u).waitFor()
   assert((await api(host, '/api/local/snapshot')).runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Offline'),
     'Restore-cancellation sentinels are written only while the disposable fixture is Offline.')
   const currentDb = 'Current synthetic DB after backups; cancel must preserve this.'
@@ -1560,7 +1578,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
       value => value === 'page', 'Join navigation completes before chat recovery')
     recoveryDiagnostics.joinReached = true
     await chat.waitFor({ state: 'visible' })
-    const recover = chat.getByRole('button', { name: 'Use recovered message', exact: true })
+    const recover = chat.getByRole('button', { name: 'Use saved draft', exact: true })
     await recover.waitFor({ state: 'visible' })
     recoveryDiagnostics.recoveryPromptVisible = true
     await recover.click()
@@ -1570,7 +1588,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   } finally {
     recoveryDiagnostics.activeWorkspace = await navigation.locator('button[aria-current="page"]').evaluate(element => element.getAttribute('aria-label') || element.textContent.trim()).catch(() => null)
     recoveryDiagnostics.composerDomCount = await chat.count().catch(() => null)
-    recoveryDiagnostics.recoveryButtonDomCount = await chat.getByRole('button', { name: 'Use recovered message', exact: true }).count().catch(() => null)
+    recoveryDiagnostics.recoveryButtonDomCount = await chat.getByRole('button', { name: 'Use saved draft', exact: true }).count().catch(() => null)
   }
   const selected = await api(friend, '/api/local/snapshot')
   assert.equal(selected.connectionId, paired.connectionId, 'Recovered compose must stay on the selected saved Host.')
@@ -1667,9 +1685,9 @@ async function attentionAndLargeText(page) {
   await history.waitFor({ state: 'visible' })
   if (!await history.evaluate(element => element.open)) await history.locator(':scope > summary').click()
   await attention.getByRole('combobox', { name: /^History time/u }).selectOption('day')
-  await attention.getByLabel('Search attention', { exact: true }).fill('Synthetic')
+  await attention.getByRole('searchbox', { name: 'Search activity', exact: true }).fill('Synthetic')
   await attention.getByRole('button', { name: 'Mark read', exact: true }).first().click()
-  await attention.getByText('History notice marked read.', { exact: true }).waitFor()
+  await attention.getByText('Marked read.', { exact: true }).waitFor()
   await attention.getByRole('button', { name: 'Dismiss notice', exact: true }).first().click()
   await screenshot(page, 'attention-narrow', { width: 390, height: 844 })
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()

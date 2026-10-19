@@ -368,7 +368,7 @@ public static class TogetherServerQolWindowCheck {
     }
     private static void AssertDraftRejection(IntPtr dialog, IntPtr owner, int processId, long ticks, string expectedPath) {
         AssertOwnedDialog(dialog, owner, processId, ticks, expectedPath, "TogetherServer");
-        const string expectedMessage = "TogetherServer is still open because unfinished edits could not be confirmed as protected drafts. Review the draft message in the window, retry saving it, or deliberately discard it before quitting.";
+        const string expectedMessage = "Your draft could not be saved. Review the message in TogetherServer, then save or discard your changes before quitting.";
         var matched = 0;
         foreach (var window in Descendants(dialog)) {
             uint controlOwner; GetWindowThreadProcessId(window, out controlOwner);
