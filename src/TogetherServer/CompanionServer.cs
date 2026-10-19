@@ -102,7 +102,8 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
             if (!pairing.HasInviteOrCredential() &&
                 !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint) &&
-                !manager.HasSuccessorRouteCandidate(settings) && PeerWorlds?.HasEnabledGroups != true)
+                !manager.HasSuccessorRouteCandidate(settings) && !manager.HasPendingHandoffPreparation(settings) &&
+                PeerWorlds?.HasEnabledGroups != true)
             {
                 await StopCoreAsync();
                 Warning = null;
@@ -243,6 +244,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
 
     private void MapRoutes(WebApplication app)
     {
+        MapHandoffRequestRoutes(app, Authenticate, AuthenticationStatus);
         static int AuthenticationStatus(PairingDecision decision) =>
             decision.Code == "RateLimited" ? StatusCodes.Status429TooManyRequests :
             decision.Code is "Revoked" or "ApprovalPending" or "AccessExpired"

@@ -8,7 +8,7 @@ public sealed record WorldPeerContactCard(int Schema, SharedWorldPeerRoot Root, 
 
 internal sealed partial class WorldPeerService
 {
-    private static byte[] ContactBasis(WorldPeerContactCard card) => JsonSerializer.SerializeToUtf8Bytes(new
+    internal static byte[] ContactBasis(WorldPeerContactCard card) => JsonSerializer.SerializeToUtf8Bytes(new
     {
         domain = "TogetherServer world peer contact v1",
         card.Schema,
@@ -36,9 +36,13 @@ internal sealed partial class WorldPeerService
     // A contact is a pinned address/key hint. The owner-rooted handshake must
     // separately prove current membership before any roster or world exchange.
     private bool ValidContact(Group group, WorldPeerContactCard card)
+        => card.Root == group.Root && VerifyContact(card);
+
+    internal static bool VerifyContact(WorldPeerContactCard card)
     {
-        if (card.Schema != 1 || card.Root != group.Root || card.Revision < 1 || card.Routes is null ||
+        if (card.Schema != 1 || !SharedWorldPeerTrust.ValidRoot(card.Root) || card.Revision < 1 || card.Routes is null ||
             card.Routes.Count is < 1 or > 4 || card.Routes.Any(route => !SharedWorldPeerTrust.ValidRoute(route)) ||
+            card.Routes.Select(route => route.Address).Distinct(StringComparer.Ordinal).Count() != card.Routes.Count ||
             !SharedWorldRosterTrust.ValidKey(card.PublicKey) ||
             card.Signature is not { Length: >= 80 and <= 192 }) return false;
         try

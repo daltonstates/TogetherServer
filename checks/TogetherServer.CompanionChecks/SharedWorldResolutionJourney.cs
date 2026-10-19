@@ -87,7 +87,9 @@ internal static partial class SharedWorldJourney
                 "/api/local/friend/pair", new(code))).Ok, "voter-only Friend C did not pair");
             var deviceC = (await DeviceIdsAsync(owner, profile.Id)).Single(id =>
                 id != deviceA && id != deviceB);
-            await Task.WhenAll(PollAsync(aLocal), PollAsync(bLocal));
+            var initialConnections = await Task.WhenAll(PollAsync(aLocal), PollAsync(bLocal));
+            var aConnectionId = initialConnections[0].ConnectionId;
+            Require(aConnectionId != Guid.Empty, "Friend A did not retain its paired connection");
             Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
                 "owner-override-off sharing was unavailable");
@@ -227,14 +229,21 @@ internal static partial class SharedWorldJourney
             friendA = null;
             StopApp(friendB);
             friendB = null;
+            FriendConfiguration aCredentials;
+            using (var savedFriend = new LocalData(aData))
+                aCredentials = savedFriend.LoadProtectedJson<FriendConfiguration>(
+                    $"friend-{aConnectionId:N}.protected") ??
+                    throw new Exception("disposable Friend A credential could not be read");
 
             host = StartApp(appPath, "--host", hostPort, hostData);
             await WaitLocalAsync(hostPort);
             File.WriteAllText(Path.Combine(world, "world.dat"), "override off: second save");
             await StartReadyAsync(owner, profile.Id);
-            var prepared = await PostAsync<PreparePlannedHandoffRequest, PlannedHandoffResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world/handoff/prepare",
-                new(deviceA, aCandidateEndpoint));
+            var movePreparation = await RequestPreparedHandoffAsync(owner, aCredentials,
+                aData, profile.Id, recoveryVersion, valheimFixturePath);
+            var prepared = await PostAsync<PlannedHandoffContinueRequest, PlannedHandoffResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/handoff/continue",
+                new(movePreparation.RequestId));
             Require(prepared is { Ok: true, Version: { Number: 6 } } &&
                 prepared.Version!.ParentHash == recoveryVersion.VersionHash,
                 $"override-off independent final save failed: {prepared.Code} {prepared.Message}");
@@ -243,8 +252,16 @@ internal static partial class SharedWorldJourney
             await PollAsync(aLocal);
             await WaitVersionAsync(aLocal, profile.Id, 6);
             await WaitCopiesAsync(owner, profile.Id, 1);
-            var completed = await PostAsync<object, PlannedHandoffResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world/handoff/complete", new { });
+            using (var recipient = PinnedFriendClient(aCredentials))
+            {
+                var finalPreparation = await CompanionPostAsync<PlannedHandoffPreparation, PlannedHandoffResult>(recipient,
+                    $"api/companion/servers/{profile.Id}/shared-world/handoff/prepared",
+                    movePreparation with { VersionHash = prepared.Version!.VersionHash });
+                Require(finalPreparation.Ok,
+                    $"override-off recipient did not prepare the exact final copy: {finalPreparation.Code} {finalPreparation.Message}");
+            }
+            var completed = await PostAsync<PlannedHandoffContinueRequest, PlannedHandoffResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/handoff/complete", new(movePreparation.RequestId));
             Require(completed is { Ok: true, Authority: { } } &&
                 WorldAuthorityTrust.Verify(completed.Authority),
                 $"override-off planned authority failed: {completed.Code} {completed.Message}");

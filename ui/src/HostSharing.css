@@ -9,13 +9,30 @@
   border-radius: .85rem;
   background: var(--color-surface-raised);
 }
-.host-sharing-summary-copy { flex: 1 1 18rem; min-inline-size: 0; }
-.host-sharing-summary-copy > p { margin: .35rem 0 0; }
+.host-sharing-summary-copy { display: grid; gap: .5rem; flex: 1 1 18rem; min-inline-size: 0; }
+.host-sharing-summary .host-sharing-summary-copy > p { margin: 0; line-height: 1.55; }
+.host-sharing-summary-copy > small { display: block; }
 .host-sharing-summary-title { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; }
 .host-sharing-summary-title > .icon { color: var(--color-accent-light); }
 .host-sharing-summary .actions { margin: 0; gap: .5rem; }
 .host-sharing-badge { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .55rem; border: 1px solid var(--color-border); border-radius: .45rem; color: var(--color-text-secondary); font-size: .7rem; font-weight: 650; line-height: 1.5; }
 .host-sharing-summary small, .host-sharing-hint { color: var(--color-text-muted); font-size: .75rem; line-height: 1.55; }
+.host-sharing-direct-people { display: grid; gap: .6rem; min-inline-size: 0; }
+.host-sharing-direct-people > :is(h3, p) { margin: 0; line-height: 1.55; }
+.host-sharing-direct-people > p { color: var(--color-text-secondary); }
+.host-sharing-direct-people > .host-sharing-people { margin-block-start: .4rem; }
+
+.host-sharing-handoff { display: grid; gap: 1rem; min-inline-size: 0; }
+.host-sharing-handoff > :is(h3, h4, p, ol, .actions),
+.shared-world-workspace .settings-dialog-body .host-sharing-handoff > p { margin: 0; }
+.host-sharing-handoff :is(p, li, small) { line-height: 1.6; overflow-wrap: anywhere; }
+.host-sharing-handoff-field { display: grid; gap: .6rem; min-inline-size: 0; }
+.host-sharing-handoff-field > .ui-select { inline-size: 100%; min-inline-size: 0; box-sizing: border-box; }
+.host-sharing-handoff > details { padding: 1rem; border: 1px solid var(--color-border-subtle); border-radius: .65rem; }
+.host-sharing-handoff > details > summary { cursor: pointer; color: var(--color-text-secondary); }
+.host-sharing-handoff > details[open] > summary { margin-block-end: .75rem; }
+.host-sharing-handoff > .actions { gap: .75rem; flex-wrap: wrap; }
+.host-sharing-handoff > .ui-button { justify-self: start; max-inline-size: 100%; }
 
 .settings-dialog:has(.host-sharing-manager) { max-block-size: min(46rem, calc(100dvh - 2rem)); }
 .settings-dialog:has(.host-sharing-manager) > .settings-dialog-body { display: flex; min-block-size: 0; padding: 0; overflow: hidden; }
@@ -35,16 +52,16 @@
 .host-sharing-pane-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: .6rem; margin-block-end: 1rem; }
 .host-sharing-pane-heading h3 { margin: 0; font-size: 1rem; }
 .host-sharing-pane-heading p { margin: .3rem 0 0; color: var(--color-text-muted); }
-.host-sharing-people { display: grid; gap: .8rem; }
-.host-sharing-person { min-inline-size: 0; padding: .95rem; border: 1px solid var(--color-border); border-radius: .8rem; background: var(--color-surface-raised); }
-.host-sharing-person > header { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-block-end: .65rem; }
+.host-sharing-people { display: grid; gap: 1rem; }
+.host-sharing-person { display: grid; gap: .875rem; min-inline-size: 0; padding: 1rem; border: 1px solid var(--color-border); border-radius: .8rem; background: var(--color-surface-raised); }
+.host-sharing-person > header { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin: 0; }
 .host-sharing-person > header > div { flex: 1; min-inline-size: 8rem; }
 .host-sharing-person h4 { margin: 0; font-size: .9rem; }
 .host-sharing-person header p { margin: .2rem 0 0; color: var(--color-text-muted); font-size: .75rem; }
 .host-sharing-avatar { display: grid; place-items: center; flex: none; inline-size: 2.65rem; block-size: 2.65rem; border: 1px solid var(--color-accent-border); border-radius: .8rem; background: var(--color-accent-soft); color: var(--color-accent-text); font-size: .85rem; font-weight: 800; }
-.host-sharing-permission { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; min-inline-size: 0; padding: .8rem; border: 1px solid var(--color-border-subtle); border-radius: .6rem; background: var(--color-field); }
+.host-sharing-permission { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; min-inline-size: 0; padding: 1rem; border: 1px solid var(--color-border-subtle); border-radius: .6rem; background: var(--color-field); }
 .host-sharing-host-permission { align-items: center; border-color: var(--color-accent-border); background: var(--color-accent-soft); }
-.host-sharing-permission > span { display: grid; min-inline-size: 0; gap: .3rem; }
+.host-sharing-permission > span { display: grid; min-inline-size: 0; gap: .5rem; }
 .host-sharing-permission strong { color: var(--color-text); font-size: .8rem; }
 .host-sharing-host-permission strong { font-size: .9rem; }
 .host-sharing-permission small { color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
@@ -53,8 +70,11 @@
 .host-sharing-advanced-permissions { display: grid; gap: .5rem; padding-block-start: .6rem; }
 .host-sharing-details { margin-block-start: .8rem; border-block-start: 1px solid var(--color-border-subtle); padding-block-start: .65rem; }
 .host-sharing-details > summary { inline-size: fit-content; color: var(--color-text-secondary); cursor: pointer; font-weight: 650; }
-.host-sharing-details > p { color: var(--color-text-muted); }
+.host-sharing-details > p { margin: .75rem 0 0; color: var(--color-text-muted); line-height: 1.6; }
 .host-sharing-details code { overflow-wrap: anywhere; }
+.host-sharing-person > .host-sharing-hint { margin: 0; }
+.host-sharing-person > .host-sharing-details { margin-block-start: 0; padding-block-start: .85rem; }
+.host-sharing-pane > .host-sharing-hint { margin-block: .875rem 0; }
 .host-sharing-owner-choice { margin-block-start: 1rem; padding: .9rem; border: 1px solid var(--color-border-subtle); border-radius: .65rem; }
 .host-sharing-owner-choice > summary { cursor: pointer; font-weight: 700; }
 .host-sharing-owner-choice .host-sharing-permission { margin-block-start: .75rem; }

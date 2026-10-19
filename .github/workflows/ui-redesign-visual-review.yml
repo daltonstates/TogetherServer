@@ -43,7 +43,13 @@ jobs:
         working-directory: ui
         run: npx --no-install playwright install chromium
       - name: Render actual bundled UI with synthetic fixtures
-        run: node scripts/render-ui-redesign.mjs --allow-isolated-browser-tests --hosted-runner github-actions
+        shell: pwsh
+        env:
+          MOVE_HOSTING_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-move-hosting-') }}
+        run: |
+          $reviewArguments = @('--allow-isolated-browser-tests', '--hosted-runner', 'github-actions')
+          if ($env:MOVE_HOSTING_REVIEW -eq 'true') { $reviewArguments += '--move-hosting-only' }
+          node scripts/render-ui-redesign.mjs @reviewArguments
       - name: Record hosted job outcome
         if: always()
         shell: pwsh

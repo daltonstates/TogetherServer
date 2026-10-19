@@ -289,14 +289,19 @@ const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups',
   'host-first-use', 'join-play', 'join-play-instructions-expanded', 'join-play-tools-expanded', 'join-shared-saves', 'join-first-pairing', 'attention-issues', 'settings-appearance',
   'tooltip-hover', 'tooltip-keyboard', 'host-server-file-editor', 'host-server-file-review', 'host-server-files-checkpoints',
   'dialog-protection', 'dialog-access-access-time', 'host-live-save-acceptance', 'join-peers-conflict',
-  ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation/.test(testCase.id)).map(testCase => testCase.id)]);
-const plans = [...cases, ...dialogs].flatMap(testCase => [
+  ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation|^move-hosting-/.test(testCase.id)).map(testCase => testCase.id)]);
+const reviewCases = args.includes('--move-hosting-only')
+  ? [...cases, ...dialogs].filter(testCase => testCase.id.startsWith('move-hosting-'))
+  : [...cases, ...dialogs];
+const plans = reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
-  ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
+  ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
-manifest.coverage = { mainPages: cases.length, dialogAndTooltipCases: dialogs.length, variants: variants.map(item => item.id),
-  text150Pages: [...largeTextPages], plannedCaptures: plans.length };
+manifest.coverage = { scope: args.includes('--move-hosting-only') ? 'move-hosting' : 'all',
+  mainPages: reviewCases.filter(testCase => !isDialogReview(testCase)).length,
+  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: variants.map(item => item.id),
+  text150Pages: reviewCases.filter(testCase => largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
 manifest.acceptanceBoundaries = [
   'Finite source inventory of pages, reachable dialogs, disclosures and representative states; not every combinatorial data value.',
   'Native startup/runtime/close messages and OS file/folder pickers require approved native Windows acceptance and are not represented as browser screenshots.',
@@ -972,6 +977,49 @@ try {
         else await pickerEvidence(page, record);
       }
       record.layoutFindings.push(...await layoutFindings(page));
+      if (testCase.id.startsWith('move-hosting-')) {
+        const spacing = await page.evaluate(() => {
+          const results = [];
+          const check = (first, next, minimum, label) => {
+            if (!first || !next) return;
+            const a = first.getBoundingClientRect(), b = next.getBoundingClientRect();
+            if (!a.width || !a.height || !b.width || !b.height) return;
+            results.push({ label, minimum, actual: Math.round((b.top - a.bottom) * 100) / 100 });
+          };
+          for (const copy of document.querySelectorAll('.host-sharing-summary-copy')) {
+            check(copy.querySelector('.host-sharing-summary-title'), copy.querySelector('p'), 6, 'save title to status');
+            check(copy.querySelector('p'), copy.querySelector('small'), 6, 'save status to explanation');
+          }
+          for (const people of document.querySelectorAll('.host-sharing-direct-people')) {
+            check(people.querySelector('h3'), people.querySelector('p'), 6, 'sharing heading to explanation');
+            check(people.querySelector('p'), people.querySelector('.host-sharing-people'), 12, 'sharing explanation to PC cards');
+          }
+          for (const person of document.querySelectorAll('.host-sharing-person')) {
+            check(person.querySelector('header'), person.querySelector('.host-sharing-host-permission'), 12, 'PC heading to hosting permission');
+            const permission = person.querySelector('.host-sharing-host-permission');
+            check(permission?.querySelector('strong'), permission?.querySelector('small'), 6, 'permission title to explanation');
+            check(permission, permission?.nextElementSibling, 12, 'hosting permission to following detail');
+          }
+          for (const field of document.querySelectorAll('.host-sharing-handoff-field, .local-hosting-flow > label:not(.local-hosting-consent), .local-hosting-fix > label')) {
+            // A text node's range measures the actual label ink above its control.
+            const label = [...field.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+            if (label) {
+              const range = document.createRange(); range.selectNodeContents(label);
+              check(range, field.querySelector('select, input:not([type="checkbox"])'), 6, 'hosting field label to control');
+            }
+          }
+          for (const card of document.querySelectorAll('.local-hosting-card'))
+            check(card.querySelector('h3'), card.querySelector('p'), 4, 'local hosting heading to explanation');
+          for (const item of document.querySelectorAll('.local-hosting-checks li'))
+            check(item.querySelector('strong'), item.querySelector('p'), 4, 'preflight title to explanation');
+          return results;
+        });
+        record.assertions.push({ sharingSpacing: spacing });
+        record.layoutFindings.push(...spacing.filter(item => item.actual < item.minimum)
+          .map(item => ({ kind: 'cramped-sharing-spacing', ...item })));
+        if (hasDialog && await page.getByLabel("Next PC's HTTPS address and port", { exact: true }).count())
+          throw new Error('Move hosting still asks the owner to enter the paired PC address.');
+      }
       const filename = `${record.id}.png`;
       await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
       record.screenshots.push({ file: filename, kind: 'viewport' });

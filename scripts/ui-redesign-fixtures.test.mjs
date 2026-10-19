@@ -36,6 +36,7 @@ const { parseChatRoomWithNotice, parsePinnedNoticeFields } = await import(new UR
 const { parseNotificationPreferences, parseDesktopUpdateDetails, parseUpdatePreparation } = await import(new URL('desktopPreferencesWire.ts', sourceRoot).href);
 const { parseProtectedDraftResult } = await import(new URL('protectedUiDrafts.ts', sourceRoot).href);
 const { normalizedDirectIpHttpsEndpoint } = await import(new URL('sharedWorldUx.ts', sourceRoot).href);
+const { parsePlannedHandoffStatus } = await import(new URL('plannedHandoff.ts', sourceRoot).href);
 const ts = createRequire(new URL('../package.json', sourceRoot))('typescript');
 
 // Extract actual pure decoders into memory, excluding components and all imports.
@@ -61,7 +62,7 @@ const live = pureDecoders('LiveSaveControls.tsx', ['record', 'text', 'parseAttem
   ContractError: contracts.ContractError, stageLabels: Object.fromEntries(['completion', 'snapshot', 'transfer', 'load', 'change', 'restart'].map(id => [id, id]))
 });
 const shared = pureDecoders('SharedWorldControls.tsx', ['record', 'boolean', 'numberOrNull', 'textOrNull', 'timestampOrNull',
-  'shortText', 'guid', 'hash', 'captureKind', 'parseRecoveryStatus', 'parseHandoffStatus', 'parseGrants', 'parseRosterMember',
+  'shortText', 'guid', 'hash', 'captureKind', 'parseRecoveryStatus', 'parseGrants', 'parseRosterMember',
   'parseHostSharedWorldStatus', 'parseAuthorityHead', 'parseAuthorityStatus', 'parseFriendSharedWorldStatus', 'parseFriendResult', 'parseRoster', 'parseSharingView'], {
   deviceIdPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   parseLiveSaveStatus: live.parseLiveSaveStatus, parseBasicResult: contracts.parseBasicResult
@@ -70,6 +71,11 @@ const files = pureDecoders('ServerFilesPanel.tsx', ['entry', 'field', 'flag', 'p
   { ContractError: contracts.ContractError });
 const addons = pureDecoders('ServerAddOnsPanel.tsx', ['object', 'string', 'boolean', 'parseAddOns'], { ContractError: contracts.ContractError });
 const readiness = pureDecoders('SharedWorldReadinessPanel.tsx', ['parseRestoreStatus'], { normalizedDirectIpHttpsEndpoint });
+const localHosting = pureDecoders('FriendLocalHosting.tsx', ['boundedText', 'parseLocalHostingStatus'], {
+  stepKeys: ['permission', 'server', 'save', 'ports', 'connection'],
+  guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  hashPattern: /^[0-9a-f]{64}$/i, parsePlannedHandoffStatus
+});
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
 const peers = pureDecoders('WorldPeerPanel.tsx', ['object', 'text', 'flag', 'count', 'identity', 'date', 'list',
   'parsePeer', 'parseBranch', 'parseSession', 'parseSelection', 'parseWorldPeerGroups'], {
@@ -292,7 +298,7 @@ test('Host and Friend shared-save primary views pass actual inline decoders', ()
   const hostBase = `/api/local/profiles/${fixtureIds.primary}/shared-world`;
   shared.parseHostSharedWorldStatus(get(host, hostBase));
   shared.parseRoster(get(host, `${hostBase}/governance`));
-  shared.parseHandoffStatus(get(host, `${hostBase}/handoff`));
+  parsePlannedHandoffStatus(get(host, `${hostBase}/handoff`));
   const friendBase = `/api/local/friend/${fixtureIds.primary}/shared-world`;
   shared.parseFriendSharedWorldStatus(get(friend, friendBase));
   shared.parseRecoveryStatus(get(friend, `${friendBase}/recovery`));
@@ -314,6 +320,21 @@ test('ordinary Friend fixtures have no shared-world lineage while shared scenari
   const sharedStatus = shared.parseFriendSharedWorldStatus(get(createFixtureState('friend-shared'), path));
   assert.equal(sharedStatus.rosterRevision, 1);
   assert.equal(sharedStatus.trust, 'VerifiedSignedRoster');
+});
+
+test('recipient request and accepted fixtures preserve missing consent/setup and never manufacture Start readiness', () => {
+  for (const scenario of ['friend-world-hosting-request', 'friend-world-hosting-accepted']) {
+    const state = createFixtureState(scenario);
+    const view = localHosting.parseLocalHostingStatus(get(state,
+      `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`));
+    assert.equal(view.allowed, true);
+    assert.equal(view.consented, false);
+    assert.equal(view.readyForManualStart, false);
+    assert.equal(view.localProfileId, null);
+    assert.equal(view.branchHash, null);
+    assert.equal(view.handoffRequest.recipientState, scenario.endsWith('-request') ? 'Requested' : 'Accepted');
+    assert.equal(view.handoffRequest.canComplete, false);
+  }
 });
 
 test('verified-copy and Receiving landings decode without creating signed Host or Start authority', () => {
@@ -560,7 +581,12 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   const assignment = ast.statements.find(node => ts.isExpressionStatement(node) && node.expression.left?.getText(ast) === 'manifest.inventory');
   assert.ok(assignment, 'test the actual emitted inventory mapping, including object spread order');
   const { plans, inventory } = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
-    { manifest: {}, worldReviewCases, accessReviewCases });
+    { manifest: {}, worldReviewCases, accessReviewCases, args: [] });
+  const focused = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
+    { manifest: {}, worldReviewCases, accessReviewCases, args: ['--move-hosting-only'] });
+  assert.equal(focused.plans.length, 35, 'seven move/sharing surfaces each cover five viewport/text variants');
+  assert.equal(focused.inventory.length, focused.plans.length);
+  assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const captures = new Set(plans.map(plan => plan.testCase.id));
   for (const expected of [
     ...['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'].map(id => `host-${id}`),
@@ -646,8 +672,8 @@ test('hosted workflow pins dependencies and runs source-only checks before rende
   assert.match(source, /branches: \['review\/ui-redesign-\*'\]/u);
   assert.match(source, /runs-on: windows-latest/u);
   for (const command of ['npm ci --ignore-scripts', 'node --test scripts/ui-redesign-fixtures.test.mjs',
-    'npm run build', 'npx --no-install playwright install chromium', '--allow-isolated-browser-tests --hosted-runner github-actions'])
+    'npm run build', 'npx --no-install playwright install chromium', '--allow-isolated-browser-tests', '--hosted-runner', 'github-actions'])
     assert.ok(source.includes(command), `workflow retains ${command}`);
   assert.ok(source.includes('if: always()'), 'failure evidence is uploaded');
-  assert.ok(source.indexOf('node --test') < source.indexOf('run: node scripts/render-ui-redesign.mjs'), 'Node checks precede renderer');
+  assert.ok(source.indexOf('node --test') < source.indexOf('node scripts/render-ui-redesign.mjs'), 'Node checks precede renderer');
 });

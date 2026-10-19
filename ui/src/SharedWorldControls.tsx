@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
-import { Button, Input, Select, TextArea } from './Controls'
+import { Button, Input, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import { SettingsDialog } from './SettingsPresentation'
 import { HostSharingPermissions } from './HostSharingPermissions'
+import { OwnerHostingMove } from './OwnerHostingMove'
+import { parsePlannedHandoffStatus as parseHandoffStatus, type PlannedHandoffStatus as HandoffStatus } from './plannedHandoff'
 import { parseSharedHostingIdentity, parseSharedSuccessorIdentity, SharedHostingIdentityView } from './SharedHostingIdentity'
 import './SharedWorld.css'
 import './SharedWorldFriendPresentation.css'
@@ -14,7 +16,7 @@ import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 import { WorldLoadRehearsalPanel } from './WorldLoadRehearsal'
 import { LiveSaveControls, parseLiveSaveStatus, type LiveSaveStatus } from './LiveSaveControls'
 import { SharedWorldRouteDetails } from './SharedWorldRouteDetails'
-import { formatSharedBytes, normalizedDirectIpHttpsEndpoint, plannedHandoffChecklist,
+import { formatSharedBytes, normalizedDirectIpHttpsEndpoint,
   sharedSaveAge, sharedTransferPhase, sharedHostObservation, type SharedSignedHost, type SharedGame, type TransferPhase } from './sharedWorldUx'
 export { normalizedDirectIpHttpsEndpoint } from './sharedWorldUx'
 
@@ -85,8 +87,6 @@ const grantFields: { key: keyof Grants; label: string }[] = [
   { key: 'recoveryVoter', label: 'Recovery voter' }, { key: 'manageSharing', label: 'Manage sharing' },
   { key: 'reshare', label: 'Forward verified saves' }]
 const deviceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-type HandoffStatus = { pending: boolean; code: string; message: string; successorDeviceId: string | null;
-  finalVersion: number | null; receiptConfirmed: boolean; canComplete: boolean; canCancel: boolean }
 type RecoveryOffer = { proposal: { profileId: string; candidateAddress: string; candidatePublicKey: string };
   version: { number: number; versionHash: string; captureKind: CaptureKind; createdUtc?: string }; candidateReceipt: { deviceId: string } }
 type RecoveryStatus = { state: 'NoOffer' | 'OfferArmed' | 'OfferClosed' | 'MajorityRecorded' |
@@ -195,16 +195,6 @@ function parseCurrentOfferCode(value: unknown, profileId: string) {
   const source = record(value, 'Current offer code')
   return { proposalHash: hash(source.proposalHash, 'Recovery proposal hash'),
     offer: parseRecoveryOffer(source.offer, profileId) }
-}
-function parseHandoffStatus(value: unknown): HandoffStatus {
-  const source = record(value, 'Planned handoff')
-  const code = shortText(source.code, 'Handoff state')
-  return { pending: boolean(source.pending, 'Pending handoff'), code,
-    message: shortText(source.message, 'Handoff message'),
-    successorDeviceId: source.successorDeviceId === null || source.successorDeviceId === undefined ? null :
-      guid(source.successorDeviceId, 'Next PC'), finalVersion: numberOrNull(source.finalVersion ?? null, 'Final version'),
-    receiptConfirmed: boolean(source.receiptConfirmed, 'Receipt'),
-    canComplete: boolean(source.canComplete, 'Complete permission'), canCancel: boolean(source.canCancel, 'Cancel permission') }
 }
 function parseGrants(value: unknown): Grants {
   const source = record(value, 'Sharing grants')
@@ -422,12 +412,30 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const [liveOrphan, setLiveOrphan] = useState<LiveOrphanReview | null>(null)
   const [liveOrphanError, setLiveOrphanError] = useState('')
   const [handoff, setHandoff] = useState<HandoffStatus | null>(null)
+  const [handoffObservedAt, setHandoffObservedAt] = useState<number | null>(null)
+  const handoffReadSequence = useRef(0)
+  const observeHandoff = useCallback((value: HandoffStatus | null) => {
+    setHandoff(value); setHandoffObservedAt(value ? Date.now() : null)
+  }, [])
   const [handoffOpen, setHandoffOpen] = useState(false)
   const [successorId, setSuccessorId] = useState('')
-  const [successorAddress, setSuccessorAddress] = useState('')
   const [handoffMessage, setHandoffMessage] = useState('')
+  const handoffRequest = useRef(0)
+  const handoffScope = useRef({ profileId })
+  if (handoffScope.current.profileId !== profileId) handoffScope.current = { profileId }
+  const handoffToken = handoffScope.current
+  const [moveOperation, setMoveOperation] = useState<{ requestId: string; until: number } | null>(null)
+  const moveFlight = useRef(false)
+  const moveAttempt = useRef('')
+  const moveController = useRef<AbortController | null>(null)
+  const moveAuthorization = useRef(moveOperation)
+  moveAuthorization.current = moveOperation
+  const pauseMove = useCallback((reason: string) => {
+    moveAuthorization.current = null
+    moveController.current?.abort(); moveController.current = null; moveFlight.current = false
+    setMoveOperation(null); setBusy(false); setHandoffMessage(reason)
+  }, [])
   const shareAddress = normalizedDirectIpHttpsEndpoint(currentAddress ?? '')
-  const reviewedSuccessorAddress = normalizedDirectIpHttpsEndpoint(successorAddress.trim())
   const copyAddress = async () => {
     if (!shareAddress) return
     try {
@@ -435,13 +443,17 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       setMessage('Host address copied. Share it privately. Friends will check the saved Host identity before changing their connection.')
     } catch { setMessage('Could not copy the Host address. Check the address in Host connection settings.') }
   }
-  const refreshHandoff = async () => setHandoff(await getLocalJson(
-    `/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus))
+  const refreshHandoff = async () => {
+    const next = await getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)
+    if (handoffScope.current === handoffToken) observeHandoff(next)
+    return next
+  }
   const refreshHost = async () => {
     const [nextStatus, nextHandoff] = await Promise.all([
       getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus),
       getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus)])
-    setStatus(nextStatus); setHandoff(nextHandoff)
+    if (handoffScope.current === handoffToken) { setStatus(nextStatus); observeHandoff(nextHandoff) }
+    return nextHandoff
   }
   const refreshLiveOrphan = async (clearError = true) => {
     if (clearError) setLiveOrphanError('')
@@ -468,8 +480,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   useEffect(() => {
     let active = true
     const controller = new AbortController()
-    setStatus(null); setHandoff(null); setRoster(null); setManageOpen(false); setManagePane('people'); setHandoffOpen(false)
-    setSuccessorId(''); setSuccessorAddress(''); setMessage(''); setHandoffMessage('')
+    setStatus(null); observeHandoff(null); setRoster(null); setManageOpen(false); setManagePane('people'); setHandoffOpen(false)
+    setMoveOperation(null); moveFlight.current = false; moveAttempt.current = ''; ++handoffRequest.current; setBusy(false)
+    setSuccessorId(''); setMessage(''); setHandoffMessage('')
     setPendingResolutions([]); setResolutionMessage('')
     void getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal)
       .then(value => { if (active) setStatus(value) })
@@ -477,17 +490,16 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     void getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster, controller.signal)
       .then(value => { if (active) setRoster(value) })
       .catch(error => { if (active) setMessage(errorMessage(error)) })
-    void getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)
-      .then(value => { if (active) setHandoff(value) })
-      .catch(error => { if (active) setHandoffMessage(errorMessage(error)) })
-    return () => { active = false; controller.abort() }
-  }, [profileId])
+    return () => { active = false; controller.abort(); moveController.current?.abort() }
+  }, [profileId, observeHandoff])
   useEffect(() => {
     if (!open) return
     let active = true
     const controller = new AbortController()
+    const sequences = handoffReadSequence
     let timer: number | undefined
     const refresh = async () => {
+      const sequence = ++handoffReadSequence.current
       const [nextStatus, nextHandoff] = await Promise.allSettled([
         getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal),
         getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)
@@ -495,14 +507,99 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       if (active) {
         if (nextStatus.status === 'fulfilled') { setStatus(nextStatus.value); setMessage('') }
         else { setStatus(null); setMessage(errorMessage(nextStatus.reason)) }
-        if (nextHandoff.status === 'fulfilled') setHandoff(nextHandoff.value)
-        else { setHandoff(null); setHandoffMessage(errorMessage(nextHandoff.reason)) }
+        if (sequence === handoffReadSequence.current) {
+          if (nextHandoff.status === 'fulfilled') observeHandoff(nextHandoff.value)
+          else {
+            observeHandoff(null)
+            if (!moveFlight.current) { moveAuthorization.current = null; setMoveOperation(null) }
+            setHandoffMessage(errorMessage(nextHandoff.reason))
+          }
+        }
         timer = window.setTimeout(() => void refresh(), 2000)
       }
     }
     void refresh()
-    return () => { active = false; window.clearTimeout(timer); controller.abort() }
-  }, [open, profileId])
+    return () => { active = false; window.clearTimeout(timer); controller.abort(); ++sequences.current }
+  }, [open, profileId, observeHandoff])
+  useEffect(() => {
+    if (handoffObservedAt === null) return
+    const timer = window.setTimeout(() => {
+      observeHandoff(null)
+      if (!moveFlight.current) { moveAuthorization.current = null; setMoveOperation(null) }
+      ++handoffReadSequence.current
+      setHandoffMessage('The hosting request could not be rechecked. Recheck the request before continuing.')
+    }, Math.max(0, handoffObservedAt + 6000 - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [handoffObservedAt, observeHandoff])
+  useEffect(() => {
+    if (!moveOperation) return
+    const timer = window.setTimeout(() => {
+      pauseMove('The move is paused. The server may already be stopped. Recheck the current request before resuming.')
+    }, Math.max(0, moveOperation.until - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [moveOperation, pauseMove])
+  useEffect(() => {
+    if (!moveOperation || !handoff || moveOperation.requestId !== handoff.requestId || moveFlight.current || busy) return
+    if (handoff.recipientState === 'Declined' || handoff.recipientState === 'Canceled' ||
+      handoff.recipientState === 'Completed' || status?.authority?.state === 'OldHostFenced') {
+      setMoveOperation(null)
+      return
+    }
+    if (!status?.enabled || !status.canManageSharing ||
+      status.authority?.state === 'CompetingHistories' || status.authority?.state === 'ReviewRequired' ||
+      ['HandoffReviewRequired', 'SuccessorAccessChanged'].includes(handoff.code)) {
+      pauseMove('Current sharing permission or hosting status needs review. Recheck the request before resuming.')
+      return
+    }
+    const successorAllowed = devices.some(device => device.id === handoff.successorDeviceId && device.paired &&
+      !device.revoked && !device.approvalPending && !device.accessExpired && device.assignedProfileIds.includes(profileId) &&
+      device.sharedWorldKeyEnrolled && device.sharedWorldGrants?.[profileId]?.receive &&
+      device.sharedWorldGrants[profileId].eligibleHost)
+    if (!successorAllowed) {
+      pauseMove('The selected PC\'s hosting permission changed. Review its current access before resuming.')
+      return
+    }
+    if (handoff.recipientState !== 'Prepared' || handoff.pending && !handoff.canComplete) return
+    const attempt = JSON.stringify([handoff.requestId, handoff.recipientState, handoff.pending, handoff.finalVersion,
+      handoff.preparedVersionHash, handoff.canComplete])
+    if (moveAttempt.current === attempt) return
+    moveAttempt.current = attempt
+    moveFlight.current = true
+    setBusy(true); setHandoffMessage('')
+    const authorization = moveOperation
+    const controller = new AbortController()
+    moveController.current = controller
+    const timeout = window.setTimeout(() => {
+      if (moveController.current === controller) pauseMove(
+        'The move did not finish checking in time. The server may already be stopped. Recheck the current request before resuming.')
+    }, Math.min(120000, Math.max(0, authorization.until - Date.now())))
+    const continueMove = async () => {
+      try {
+        const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/handoff/continue`,
+          'POST', parseBasicResult, { requestId: authorization.requestId }, controller.signal)
+        if (handoffScope.current !== handoffToken || moveAuthorization.current !== authorization) return
+        setHandoffMessage(result.message)
+        if (!result.ok) { setMoveOperation(null); return }
+        const [nextStatus, nextHandoff] = await Promise.all([
+          getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus, controller.signal),
+          getLocalJson(`/api/local/profiles/${profileId}/shared-world/handoff`, parseHandoffStatus, controller.signal)])
+        if (handoffScope.current !== handoffToken || moveAuthorization.current !== authorization) return
+        setStatus(nextStatus); observeHandoff(nextHandoff)
+        if (nextStatus.authority?.state === 'OldHostFenced' || nextHandoff.requestId !== authorization.requestId)
+          setMoveOperation(null)
+      } catch (error) {
+        if (handoffScope.current === handoffToken && moveAuthorization.current === authorization) {
+          setMoveOperation(null); setHandoffMessage(errorMessage(error))
+        }
+      } finally {
+        window.clearTimeout(timeout)
+        if (handoffScope.current === handoffToken && moveController.current === controller) {
+          moveController.current = null; moveFlight.current = false; setBusy(false)
+        }
+      }
+    }
+    void continueMove()
+  }, [moveOperation, handoff, profileId, handoffToken, status, devices, observeHandoff, busy, pauseMove])
   const changeSharing = async (enabled: boolean) => {
     setBusy(true); setMessage('')
     try {
@@ -569,17 +666,29 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     device.assignedProfileIds.includes(profileId)).sort((a, b) => Number(a.accessExpired) - Number(b.accessExpired))
   const successors = eligible.filter(device => !device.accessExpired && device.sharedWorldKeyEnrolled &&
     device.sharedWorldGrants?.[profileId]?.receive && device.sharedWorldGrants[profileId].eligibleHost)
-  const runHandoff = async (action: 'prepare' | 'complete' | 'cancel') => {
+  useEffect(() => {
+    if (successorId && !successors.some(device => device.id === successorId)) setSuccessorId('')
+  }, [successorId, successors])
+  const runHandoff = async (action: 'request' | 'complete' | 'cancel') => {
+    if (busy || !handoff || !status?.enabled || !status.canManageSharing ||
+      action === 'request' && !successors.some(device => device.id === successorId)) return
+    const sequence = ++handoffRequest.current
     setBusy(true); setHandoffMessage('')
     try {
       const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/handoff/${action}`,
-        'POST', parseBasicResult, action === 'prepare' ?
-          { successorDeviceId: successorId, successorAddress: reviewedSuccessorAddress } : undefined)
+        'POST', parseBasicResult, action === 'request' ?
+          { successorDeviceId: successorId } : action === 'cancel' && handoff.requestId ? { requestId: handoff.requestId } : undefined)
+      if (handoffScope.current !== handoffToken || sequence !== handoffRequest.current) return
       setHandoffMessage(result.message)
-      if (result.ok) await refreshHost()
+      if (result.ok) {
+        const next = await refreshHost()
+        if (handoffScope.current !== handoffToken || sequence !== handoffRequest.current) return
+        if (action === 'request' && next.requestId) setMoveOperation({ requestId: next.requestId, until: Date.now() + 10 * 60 * 1000 })
+        if (action === 'cancel') setMoveOperation(null)
+      }
       else await refreshHandoff()
-    } catch (error) { setHandoffMessage(errorMessage(error)) }
-    finally { setBusy(false) }
+    } catch (error) { if (handoffScope.current === handoffToken && sequence === handoffRequest.current) setHandoffMessage(errorMessage(error)) }
+    finally { if (handoffScope.current === handoffToken && sequence === handoffRequest.current) setBusy(false) }
   }
   const loadPendingResolutions = async () => {
     try { setPendingResolutions(await getLocalJson(
@@ -645,43 +754,17 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     {status?.error && !manageOpen && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.error}</DismissibleNotice>}
     {message && !manageOpen && <DismissibleNotice as="p" scope={noticeScope} role="status">{message}</DismissibleNotice>}
     <Button className="text-button" disabled={busy} onClick={() => void Promise.all([refreshHost(), getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster).then(setRoster)]).catch(error => setMessage(errorMessage(error)))}>Refresh shared save</Button>
-    {handoffOpen && <SettingsDialog title="Move hosting" description="Move the final save to another PC. Your friend chooses when to Start there."
-      busy={busy} onClose={() => setHandoffOpen(false)} wide>
-    {status?.enabled && status.canManageSharing && <section aria-label="Planned handoff">
-      <h4>Move hosting to another PC</h4>
-      <p>Choose an approved PC. This stops the server safely and shares a verified final save. Keep this server stopped until the other PC confirms receipt. Loading the save in the game still needs testing.</p>
-      {handoff?.pending && (handoff.code === 'HandoffReviewRequired' ? <DismissibleNotice as="p" scope={noticeScope} role="alert">{handoff.message}
-        {handoff.finalVersion != null && ` Final save version ${handoff.finalVersion}.`}
-        {handoff.receiptConfirmed && ' Receipt confirmed.'}</DismissibleNotice> :
-        <p role="status">{handoff.message}{handoff.finalVersion != null && ` Final save version ${handoff.finalVersion}.`}
-          {handoff.receiptConfirmed && ' Receipt confirmed.'}</p>)}
-      {handoff && !fenced && !review && <ol aria-label="Planned handoff checklist">
-        {plannedHandoffChecklist(handoff, devices.find(item => item.id === handoff.successorDeviceId)?.name ?? 'Next Host PC')
-          .map(step => <li key={step.id} aria-current={step.current ? 'step' : undefined}>
-            <strong>{step.done ? 'Done' : step.current ? 'Next' : 'Later'} · {step.pc}</strong>: {step.text}
-          </li>)}
-      </ol>}
-      {fenced && <p role="note">Next: the chosen PC restores its verified copy and finishes setup and connection checks. Hosting stays blocked here. The other PC must choose Start.</p>}
-      {!handoff?.pending && handoff !== null && <p className="helper-text">No handoff is pending. If hosting was blocked on this PC, review its shared-world status first.</p>}
-      {!handoff?.pending && !fenced && !review && <><label>Next host PC <Select value={successorId} disabled={busy || handoff === null}
-        onChange={event => setSuccessorId(event.target.value)}><option value="">Choose a PC</option>
-        {successors.map(device => <option key={device.id} value={device.id}>{device.name}</option>)}</Select></label>
-        {successors.length === 0 && <p className="helper-text">Turn on Can host this save for an approved PC, then ask your friend to connect and finish sharing setup.</p>}
-        <details><summary>Connection details</summary>
-          <label>Next PC's HTTPS address and port<Input value={successorAddress}
-            disabled={busy || handoff === null} onChange={event => setSuccessorAddress(event.target.value)}
-            placeholder="https://192.0.2.10:5131" /></label>
-          <p>This address is saved in the handoff. Confirm it with the next PC's owner.</p>
-          {successorAddress.trim() && !reviewedSuccessorAddress && <DismissibleNotice as="p" scope={noticeScope} noticeKey={successorAddress} className="helper-text" role="alert">Enter an HTTPS IP address and port, without a page path or sign-in details.</DismissibleNotice>}
-        </details>
-        <div className="actions"><Button className="secondary" disabled={busy || handoff === null || !successorId || !reviewedSuccessorAddress}
-          onClick={() => void runHandoff('prepare')}>Stop and prepare final save</Button></div></>}
-      {handoff?.pending && <><p className="helper-text">After the chosen PC confirms receipt of this save, finish the handoff. The app checks the confirmation before allowing the new Host. You can continue after reopening the app.</p>
-        <div className="actions"><Button className="secondary" disabled={busy || fenced || review || !handoff.canComplete} onClick={() => void runHandoff('complete')}>Finish handoff</Button>
-          <Button className="text-button" disabled={busy || fenced || review || !handoff.canCancel} onClick={() => void runHandoff('cancel')}>Cancel handoff</Button></div></>}
-      {handoffMessage && <DismissibleNotice as="p" scope={noticeScope} role="status">{handoffMessage}</DismissibleNotice>}
-    </section>}
-    </SettingsDialog>}
+    {handoffOpen && <OwnerHostingMove worldName={worldName} busy={busy} fenced={fenced} review={review}
+      available={status?.enabled === true && status.canManageSharing} handoff={handoff} successors={successors}
+      successorName={devices.find(device => device.id === handoff?.successorDeviceId)?.name || 'Selected PC'}
+      successorId={successorId} active={moveOperation !== null} message={handoffMessage} noticeScope={noticeScope}
+      onSelect={setSuccessorId} onClose={() => { setHandoffOpen(false); setMoveOperation(null) }}
+      onRequest={() => void runHandoff('request')} onCancel={() => void runHandoff('cancel')}
+      onFinishLegacy={() => void runHandoff('complete')} onResume={() => {
+        if (!handoff?.requestId) return
+        moveAttempt.current = ''; setHandoffMessage('')
+        setMoveOperation({ requestId: handoff.requestId, until: Date.now() + 10 * 60 * 1000 })
+      }} onRecheck={() => void refreshHost().catch(error => setHandoffMessage(errorMessage(error)))} />}
     {manageOpen && <SettingsDialog title="Manage sharing" description={worldName ? `People, save sharing and recovery for ${worldName}.` : 'People, save sharing and recovery for this world.'}
       busy={busy} onClose={() => setManageOpen(false)} wide footer={<><span className="host-sharing-hint">Changes save immediately.</span>
         <Button className="secondary" disabled={busy} onClick={() => setManageOpen(false)}>Done</Button></>}>

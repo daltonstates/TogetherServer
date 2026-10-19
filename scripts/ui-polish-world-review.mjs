@@ -17,6 +17,25 @@ const hostCase = (id, scenario, steps, screen) => ({ id, scenario, workspace: 'H
 const region = name => ({ role: 'region', name });
 
 export const extraCases = [
+  hostCase('move-hosting-sharing-spacing', 'host-world-sharing-layout', sharingSteps,
+    region('Who can host this save')),
+  hostCase('move-hosting-expanded-permissions', 'host-world-sharing-layout', [
+    ...sharingSteps, { summary: /Advanced permissions for/ },
+  ], region('Who can host this save')),
+  hostCase('move-hosting-paired-pc-dialog', 'host-world-sharing-layout', [
+    ...sharingSteps, { button: 'Move hosting', first: true },
+  ], { role: 'dialog', name: 'Move hosting' }),
+  hostCase('move-hosting-no-paired-pcs-dialog', 'host-world-sharing-empty', [
+    ...sharingSteps, { button: 'Move hosting', first: true },
+  ], { role: 'dialog', name: 'Move hosting' }),
+  { id: 'move-hosting-recipient-request', scenario: 'friend-world-hosting-request', workspace: 'Join',
+    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Host on this PC') },
+  { id: 'move-hosting-recipient-consent', scenario: 'friend-world-hosting-request', workspace: 'Join',
+    section: ['Join sections', 'shared-saves', 'Shared saves'], steps: [{ button: 'Review hosting request' }],
+    screen: { role: 'dialog', name: 'Hosting request' } },
+  { id: 'move-hosting-recipient-setup', scenario: 'friend-world-hosting-accepted', workspace: 'Join',
+    section: ['Join sections', 'shared-saves', 'Shared saves'], steps: [{ button: 'Continue hosting move' }],
+    screen: { role: 'dialog', name: 'Host on this PC' } },
   hostCase('world-backup-review-tools', 'host-world-review-offline', [{ button: 'Review backup', first: true }],
     { css: '.backup-library-review-tools.is-open', text: 'Backup checks' }),
   hostCase('world-backup-compare-two', 'host-world-review-offline', [
@@ -134,6 +153,12 @@ export function configure(state, helpers) {
   if (!profile) throw new Error('World review requires an existing synthetic Host profile.');
   profile.sharedSavesEnabled = true;
   state.sharingEnabled = true;
+  if (state.scenario === 'host-world-sharing-layout') {
+    state.devices[0].name = 'Friend PC with a longer display name';
+    state.devices[0].sharedWorldGrants[helpers.ids.primary].eligibleHost = true;
+    state.devices[1].sharedWorldKeyEnrolled = false;
+  }
+  if (state.scenario === 'host-world-sharing-empty') state.devices = [];
   if (!state.scenario.startsWith('host-world-live-')) {
     for (const run of state.host.runs) Object.assign(run, { state: 'Offline', runOperationId: null, processId: null,
       onlinePlayers: null, playerCountTrusted: false, playerCountObservedUtc: null, playerObservationSource: null });
@@ -150,6 +175,23 @@ export function route(state, request, helpers) {
   const { method, path, body } = request;
   const { reply, result, ids, hash, root, fixtureNow, boundary } = helpers;
   const profileBase = `/api/local/profiles/${ids.primary}`;
+  if (state.scenario.startsWith('friend-world-hosting-') && method === 'GET' &&
+      path === `/api/local/friend/${ids.primary}/shared-world/hosting`) {
+    const requested = state.scenario.endsWith('-request');
+    return reply({ ok: true, code: 'LocalServerSetupRequired', message: 'Choose the installed server and finish this PC\'s setup.',
+      allowed: true, consented: false, game: 'Valheim', name: 'Weekend Valheim', needsServerFile: true,
+      needsPassword: true, serverFile: null, gameVersion: null, gamePort: 2456, controlPort: 5131,
+      localProfileId: null, branchHash: null, readyForManualStart: false, running: false,
+      steps: ['permission', 'server', 'save', 'ports', 'connection'].map(key => ({ key,
+        state: key === 'permission' ? 'Ready' : 'ActionRequired',
+        message: ({ permission: 'This PC is allowed to host this save.', server: 'Choose the installed Valheim dedicated server.',
+          save: 'Allow this PC to receive and verify the save.', ports: 'Ports are checked when you prepare this PC.',
+          connection: 'Configure and check the incoming connection on this PC.' })[key] })),
+      handoffRequest: { pending: false, code: requested ? 'WaitingForRecipient' : 'RecipientSetupRequired',
+        message: requested ? 'The current Host would like this PC to host the save.' : 'You accepted hosting. Finish the game setup checks on this PC.',
+        successorDeviceId: ids.device, requestId: ids.session, recipientState: requested ? 'Requested' : 'Accepted',
+        preparedVersionHash: null, finalVersion: null, receiptConfirmed: false, canComplete: false, canCancel: true } });
+  }
   if (method === 'GET' && path === `/api/local/world-peers/${hash}/live-tests`)
     return reply([{ testId: ids.session, versionHash: hash, payloadDirectory: `${root}\\private-test-copy`,
       message: `${boundary} Mock separate-PC transfer and private-copy receipt.` }]);

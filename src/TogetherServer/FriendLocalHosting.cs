@@ -8,14 +8,16 @@ public sealed record LocalHostingStatus(bool Ok, string Code, string Message,
     bool Allowed, bool Consented, string? Game, string Name, bool NeedsServerFile,
     bool NeedsPassword, string? ServerFile, string? GameVersion, int GamePort, int ControlPort,
     Guid? LocalProfileId, string? BranchHash, bool ReadyForManualStart, bool Running,
-    IReadOnlyList<LocalHostingStep> Steps);
+    IReadOnlyList<LocalHostingStep> Steps, PlannedHandoffStatus? HandoffRequest = null);
 public sealed record LocalHostingPrepareRequest(bool AllowReceiving, bool AcceptSplitWarning,
-    string? ServerFile = null, string? GamePassword = null);
+    string? ServerFile = null, string? GamePassword = null, Guid? RequestId = null,
+    bool AcceptedTerms = false);
 
 // One local action composes the existing signed-grant, receive, fresh restore
 // and Finish gates. It never starts a process or changes an incoming listener.
-internal sealed class FriendLocalHostingService(LocalData data, FriendService friend, HostManager manager,
-    Func<string, IReadOnlyList<string>>? discoverServers = null, LocalHostingRouteCheck? routeCheck = null)
+internal sealed partial class FriendLocalHostingService(LocalData data, FriendService friend, HostManager manager,
+    Func<string, IReadOnlyList<string>>? discoverServers = null, LocalHostingRouteCheck? routeCheck = null,
+    Func<Task>? synchronizeListener = null)
 {
     private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
         JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;
@@ -36,9 +38,9 @@ internal sealed class FriendLocalHostingService(LocalData data, FriendService fr
         var fields = new HashSet<string>(StringComparer.Ordinal);
         foreach (var field in root.EnumerateObject())
         {
-            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword"))
+            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword" or "requestId" or "acceptedTerms"))
                 throw new InvalidDataException("The preparation request contains unexpected fields.");
-            if (field.Name is "allowReceiving" or "acceptSplitWarning")
+            if (field.Name is "allowReceiving" or "acceptSplitWarning" or "acceptedTerms")
             {
                 if (field.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                     throw new InvalidDataException("The preparation choices must be explicit.");
@@ -54,15 +56,23 @@ internal sealed class FriendLocalHostingService(LocalData data, FriendService fr
         if (path is not null && (path.Length is 0 or > 4096 || path.Any(char.IsControl) || !Path.IsPathFullyQualified(path)) ||
             password is not null && (password.Length is < 5 or > 64 || password.Any(char.IsControl)))
             throw new InvalidDataException("The local setup field is invalid.");
-        return new(root.GetProperty("allowReceiving").GetBoolean(), root.GetProperty("acceptSplitWarning").GetBoolean(), path, password);
+        var requestText = Optional("requestId");
+        Guid? requestId = requestText is null ? null : Guid.TryParse(requestText, out var parsed) && parsed != Guid.Empty ? parsed :
+            throw new InvalidDataException("Choose the exact hosting request.");
+        return new(root.GetProperty("allowReceiving").GetBoolean(), root.GetProperty("acceptSplitWarning").GetBoolean(), path, password,
+            requestId, root.TryGetProperty("acceptedTerms", out var terms) && terms.GetBoolean());
     }
 
     internal async Task<LocalHostingStatus> StatusAsync(Guid profileId,
         CancellationToken cancellationToken = default, string? selectedFile = null)
     {
         using var connection = friend.RetainLocalHostingConnection();
-        return connection is null ? Unavailable("NotPaired", "Choose a saved Host connection first.") :
-            await StatusForConnectionAsync(connection, profileId, cancellationToken, selectedFile);
+        if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        var handoff = await connection.Link.HandoffRequestAsync(profileId, cancellationToken) ??
+            await LocalCompletedHandoffAsync(connection, profileId, cancellationToken);
+        return handoff?.RequestId is not null && handoff.RecipientState is "Requested" or "Accepted" or "Prepared" or "Completed" ?
+            await PlannedStatusAsync(connection, profileId, handoff, cancellationToken) :
+            (await StatusForConnectionAsync(connection, profileId, cancellationToken, selectedFile)) with { HandoffRequest = handoff };
     }
 
     private async Task<LocalHostingStatus> StatusForConnectionAsync(FriendService.LocalHostingConnection connection,
@@ -154,6 +164,10 @@ internal sealed class FriendLocalHostingService(LocalData data, FriendService fr
         using var connection = friend.RetainLocalHostingConnection();
         if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
         var link = connection.Link;
+        if (request.RequestId is not null)
+            return await PreparePlannedAsync(connection, profileId, request, cancellationToken);
+        if ((await link.HandoffRequestAsync(profileId, cancellationToken)) is { RecipientState: "Requested" or "Accepted" or "Prepared" or "Completed" })
+            return Unavailable("HostingRequestConfirmationRequired", "Review and accept the planned hosting request before preparing this PC.");
         bool SameConnection() => friend.CurrentLocalHostingConnection(connection);
         Task<LocalHostingStatus> Status() => StatusForConnectionAsync(connection, profileId, cancellationToken, request.ServerFile);
         async Task<LocalHostingStatus> Result(string code, string message, bool? ok = false)

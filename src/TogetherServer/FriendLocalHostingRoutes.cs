@@ -32,7 +32,8 @@ internal static class FriendLocalHostingRoutes
         SemaphoreSlim modeGate, Func<bool> friendMode, Func<bool> unavailable)
     {
         var service = new FriendLocalHostingService(data, friend, manager,
-            routeCheck: LocalHostingRouteCheck.Create(data, manager, companion, externalProbe));
+            routeCheck: LocalHostingRouteCheck.Create(data, manager, companion, externalProbe),
+            synchronizeListener: companion.SyncAsync);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
         app.MapGet(route, async (HttpContext context, Guid profileId) =>
         {
@@ -59,6 +60,26 @@ internal static class FriendLocalHostingRoutes
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
             { return Results.BadRequest(FriendLocalHostingService.Unavailable("LocalHostingRequestRejected", "Use the fixed local hosting preparation action.")); }
+            finally { modeGate.Release(); }
+        });
+        app.MapPost("/api/local/friend/{profileId:guid}/shared-world/handoff/respond", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Fixed(context)) return Results.StatusCode(403);
+            await modeGate.WaitAsync(context.RequestAborted);
+            try
+            {
+                if (!friendMode()) return Results.Conflict(new PlannedHandoffResult(false, "HostMode", "Open Join to review the hosting request."));
+                if (unavailable()) return Results.Conflict(new PlannedHandoffResult(false, "AppBusy", "Wait for the current app operation."));
+                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 1024, context.RequestAborted);
+                var request = PlannedHandoffInputs.Response(bytes ?? []);
+                using var connection = friend.RetainLocalHostingConnection();
+                if (connection is null) return Results.Conflict(new PlannedHandoffResult(false, "NotPaired", "Choose the saved Host connection first."));
+                var result = await connection.Link.RespondHandoffRequestAsync(profileId, request, context.RequestAborted);
+                return friend.CurrentLocalHostingConnection(connection) ? Results.Json(result) :
+                    Results.Conflict(new PlannedHandoffResult(false, "ConnectionChanged", "The selected Host changed. Review the hosting request again."));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ArgumentException)
+            { return Results.BadRequest(new PlannedHandoffResult(false, "HostingRequestRejected", "Accept or decline the exact current hosting request.")); }
             finally { modeGate.Release(); }
         });
         app.MapPost("/api/local/profiles/{localProfileId:guid}/shared-world/hosting/start",

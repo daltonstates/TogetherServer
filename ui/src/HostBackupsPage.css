@@ -1,5 +1,5 @@
 .host-backups-page { display: grid; gap: 24px; min-width: 0; isolation: isolate; }
-.host-backups-page :is(h2,h3,p) { margin: 0; }
+.host-backups-page :where(h2,h3,p) { margin: 0; }
 .host-protection-heading, .protection-section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
 .host-protection-heading > div:first-child, .protection-section-heading > div:first-child { display: grid; gap: 8px; min-width: 0; }
 .host-protection-heading h2 { font-size: clamp(1.4rem, 2vw, 1.8rem); letter-spacing: -.035em; }

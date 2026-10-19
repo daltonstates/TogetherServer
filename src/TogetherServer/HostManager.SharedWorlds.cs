@@ -7,20 +7,28 @@ public sealed record PlannedHandoffResult(bool Ok, string Code, string Message,
 public sealed record PlannedHandoffStatus(bool Pending, string Code, string Message,
     Guid? SuccessorDeviceId = null, long? FinalVersion = null,
     string? FinalVersionHash = null, bool ReceiptConfirmed = false,
-    bool CanComplete = false, bool CanCancel = false);
+    bool CanComplete = false, bool CanCancel = false, Guid? RequestId = null,
+    string? RecipientState = null, string? PreparedVersionHash = null,
+    PlannedHandoffSource? Source = null);
 public sealed record SharedWorldAuthorityHead(Guid GroupId, long Epoch, string RecordHash,
     string VersionHash, Guid HostDeviceId, string HostPublicKey, string HostAddress);
 public sealed record SharedWorldAuthorityStatus(string State, string Message,
     SharedWorldAuthorityHead? Head = null,
     IReadOnlyList<SharedWorldAuthorityHead>? CompetingHeads = null,
     bool ExactManagedProcessRunning = false);
-public sealed record PreparePlannedHandoffRequest(Guid SuccessorDeviceId, string SuccessorAddress);
+public sealed record PreparePlannedHandoffRequest(Guid SuccessorDeviceId);
 
 internal sealed record PendingPlannedHandoff(int Schema, Guid ProfileId, Guid GroupId,
-    string VersionHash, string RosterHash, Guid SuccessorDeviceId, string SuccessorAddress);
+    string VersionHash, string RosterHash, Guid SuccessorDeviceId, string SuccessorAddress,
+    string? SuccessorTlsFingerprint = null);
 
 public sealed partial class HostManager
 {
+    // Legacy callers cannot supply a move destination. Selection now follows a
+    // paired-PC request and its authenticated, signed connection metadata.
+    public Task<PlannedHandoffResult> PreparePlannedHandoffAsync(Guid profileId,
+        Guid successorDeviceId, string successorAddress) => Task.FromResult(new PlannedHandoffResult(false,
+            "PairedPcSelectionRequired", "Select an approved paired PC and wait for its hosting preparation."));
     private static readonly JsonSerializerOptions SharedVersionRangeJson = new(JsonSerializerDefaults.Web);
 
     private static string PlannedHandoffName(Guid profileId) =>
@@ -32,10 +40,11 @@ public sealed partial class HostManager
         try
         {
             var name = PlannedHandoffName(profileId);
-            if (!data.HasProtected(name))
-                return new(false, "NoPendingHandoff", "There is no planned handoff waiting for this world.");
             try
             {
+                var invitation = ReadHandoffInvitation(profileId);
+                if (!data.HasProtected(name))
+                    return invitation is null ? new(false, "NoPendingHandoff", "There is no planned handoff waiting for this world.") : InvitationStatus(invitation);
                 var bytes = data.LoadProtected(name);
                 var pending = bytes is null ? null : JsonSerializer.Deserialize<PendingPlannedHandoff>(bytes);
                 if (pending is not { Schema: 1 } || pending.ProfileId != profileId ||
@@ -61,13 +70,16 @@ public sealed partial class HostManager
                     pending.SuccessorDeviceId, roster!);
                 var currentAccess = pairing.TryCommitPlannedHandoff(profileId,
                     pending.SuccessorDeviceId, roster!, () => { });
-                return new(true, receipt is null ? "WaitingForSuccessorCopy" :
+                var prepared = invitation is { State: "Prepared" } && invitation.PreparedVersionHash == version!.VersionHash;
+                return new(true, receipt is null ? "WaitingForSuccessorCopy" : !prepared ? "RecipientSetupRequired" :
                     currentAccess ? "ReadyToComplete" : "SuccessorAccessChanged",
                     receipt is null ? "The successor has not confirmed the exact post-Stop file copy yet." :
+                    !prepared ? "The receiving PC must finish preparation for the exact final save before hosting moves." :
                     currentAccess ? "The exact copy is confirmed. The owner can complete the signed handoff." :
                     "The successor's current access changed. Cancel and review permissions.",
                     pending.SuccessorDeviceId, version!.Number, version.VersionHash,
-                    receipt is not null, receipt is not null && currentAccess, true);
+                    receipt is not null, receipt is not null && currentAccess && prepared, true,
+                    invitation?.RequestId, invitation?.State, invitation?.PreparedVersionHash, invitation?.Source);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or
                 UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or JsonException)
@@ -80,7 +92,7 @@ public sealed partial class HostManager
     }
 
     public async Task<PlannedHandoffResult> PreparePlannedHandoffAsync(Guid profileId,
-        Guid successorDeviceId, string successorAddress)
+        Guid successorDeviceId, Guid? requestId = null)
     {
         await gate.WaitAsync();
         try
@@ -91,36 +103,59 @@ public sealed partial class HostManager
             if (data.HasProtected(PlannedHandoffName(profileId)) || authority.HasState(profileId) ||
                 SharedAuthorityBlocked(profileId, out _))
                 return new(false, "HandoffAlreadyPending", "Review the current handoff or authority history first.");
-            if (successorAddress is null || successorAddress.Length is < 3 or > 255 ||
-                !HostIdentity.TryEndpoint(successorAddress, out var address) ||
-                !SharedWorldRouteTrust.DirectIpAddress(successorAddress))
-                return new(false, "InvalidSuccessorAddress", "Enter the successor's direct HTTPS IP address and port.");
-            successorAddress = address.GetLeftPart(UriPartial.Authority);
+            var invitation = ReadHandoffInvitation(profileId);
+            if (invitation is not { State: "Prepared" } || invitation.SuccessorDeviceId != successorDeviceId ||
+                requestId is not null && invitation.RequestId != requestId ||
+                !CurrentHandoffInvitation(invitation, out _))
+                return new(false, "RecipientPreparationRequired", "Wait for the selected PC to accept and finish preparation before stopping this Host.");
             var roster = sharedWorlds.ReadRoster(profile);
             var member = roster?.Members.SingleOrDefault(item => item.DeviceId == successorDeviceId);
             if (roster is null || member is not { Revoked: false, Grants: { Receive: true, EligibleHost: true } } ||
                 member.AccessExpiresUtc is { } expiry && expiry <= clock.GetUtcNow() ||
                 !pairing.TryCommitPlannedHandoff(profileId, successorDeviceId, roster, () => { }))
                 return new(false, "SuccessorNotEligible", "Choose an approved PC allowed to receive and host this world.");
+            var successorAddress = HandoffSuccessorAddress(roster, successorDeviceId);
+            if (successorAddress is null)
+                return new(false, "RecipientConnectionRequired", "The selected PC must finish its incoming connection setup and share its signed address.");
+            if (sharedWorlds.Status(profile).Latest?.VersionHash != invitation.PreparedVersionHash)
+                return new(false, "RecipientPreparationRequired", "The receiving PC must prepare the current signed save before this Host stops.");
+            if (invitation.Source is null || HandoffSource(profile).SetupIdentity != invitation.Source.SetupIdentity)
+                return new(false, "LocalServerSetupRequired", "The source game setup changed. Review and send a fresh hosting request.");
             var before = sharedWorlds.Status(profile).Latest?.VersionHash;
-            var stopped = await StopUnderGateAsync(profileId, null);
-            if (!stopped.Ok || stopped.Code == "StoppedBackupFailed")
-                return new(false, "FinalSaveUnconfirmed", "The exact game process or its final backup was not confirmed. " + stopped.Message);
+            if (runs.Any(run => run.ProfileId == profileId))
+            {
+                var stopped = await StopUnderGateAsync(profileId, null);
+                if (!stopped.Ok || stopped.Code == "StoppedBackupFailed")
+                    return new(false, "FinalSaveUnconfirmed", "The exact game process or its final backup was not confirmed. " + stopped.Message);
+            }
+            else
+            {
+                // An already Offline world uses the same owner-only reviewed
+                // backup gate. No process or graceful-exit evidence is invented.
+                if (PrepareManualBackupUnderGate(profileId, out _, out var saveDirectory) is { } denied)
+                    return new(false, "FinalSaveUnconfirmed", denied.Message);
+                var backup = backups.Create(profile, BackupKinds.Rolling, saveDirectory!);
+                if (!backup.Ok || backup.Backup is null)
+                    return new(false, "FinalSaveUnconfirmed", backup.Message);
+                var published = sharedWorlds.PublishAfterStop(profile, backup.Backup.Id);
+                if (!published.Ok) return new(false, "FinalSaveUnconfirmed", published.Message);
+            }
             var after = sharedWorlds.Status(profile).Latest;
             if (after is null || after.VersionHash == before || after.GroupId != roster.GroupId ||
                 after.SigningPublicKey != roster.OwnerPublicKey)
                 return new(false, "FinalSaveUnconfirmed", "The game stopped, but its hash-verified post-Stop file copy was not published. Keep this PC offline and review the backup.");
             var pending = new PendingPlannedHandoff(1, profileId, roster.GroupId,
                 after.VersionHash, WorldAuthorityTrust.RosterHash(roster), successorDeviceId,
-                successorAddress);
+                successorAddress, invitation.PreparedContact?.Routes.SingleOrDefault(item => item.Address == successorAddress)?.CertificateSha256);
             data.SaveProtected(PlannedHandoffName(profileId), JsonSerializer.SerializeToUtf8Bytes(pending));
+            SaveHandoffInvitation(invitation with { State = "Accepted", PreparedVersionHash = null });
             return new(true, "WaitingForSuccessorCopy",
                 "The hash-verified post-Stop file copy is available. Game load has not been checked. Wait for the successor's exact-copy confirmation before completing the handoff.", after);
         }
         finally { gate.Release(); }
     }
 
-    public async Task<PlannedHandoffResult> CompletePlannedHandoffAsync(Guid profileId)
+    public async Task<PlannedHandoffResult> CompletePlannedHandoffAsync(Guid profileId, Guid? requestId = null)
     {
         await gate.WaitAsync();
         try
@@ -143,6 +178,14 @@ public sealed partial class HostManager
                 version.GroupId != pending.GroupId || version.VersionHash != pending.VersionHash ||
                 WorldAuthorityTrust.RosterHash(roster) != pending.RosterHash)
                 return new(false, "HandoffChanged", "The post-Stop file copy or signed permissions changed. Review before continuing.");
+            var invitation = ReadHandoffInvitation(profileId);
+            if (invitation is not { State: "Prepared" } || invitation.SuccessorDeviceId != pending.SuccessorDeviceId ||
+                requestId is not null && invitation.RequestId != requestId ||
+                invitation.PreparedVersionHash != version.VersionHash || !CurrentHandoffInvitation(invitation, out _) ||
+                HandoffSuccessorAddress(roster, pending.SuccessorDeviceId) != pending.SuccessorAddress ||
+                pending.SuccessorTlsFingerprint is null || invitation.PreparedContact?.Routes.SingleOrDefault(item =>
+                    item.Address == pending.SuccessorAddress)?.CertificateSha256 != pending.SuccessorTlsFingerprint)
+                return new(false, "RecipientPreparationRequired", "The receiving PC must prepare this exact final save and unchanged signed connection before hosting moves.");
             var receipt = sharedWorlds.VerifiedReceipt(profile, version, pending.SuccessorDeviceId, roster);
             if (receipt is null)
                 return new(false, "WaitingForSuccessorCopy", "The successor has not confirmed this exact hash-verified file copy yet.", version);
@@ -158,6 +201,7 @@ public sealed partial class HostManager
                 return new(false, "SuccessorAccessChanged",
                     "The successor's access or signed membership changed. Cancel this unsigned handoff and review permissions.");
             data.DeleteProtected(name);
+            SaveHandoffInvitation(invitation with { State = "Completed" });
             Activity("Backup", "PlannedHandoffFenced",
                 "The post-Stop file copy and successor receipt were verified. Game load has not been checked. This PC is fenced from starting or sharing this world.",
                 ActivitySeverity.Important, profileId);
@@ -168,14 +212,22 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    public async Task<PlannedHandoffResult> CancelPlannedHandoffAsync(Guid profileId)
+    public async Task<PlannedHandoffResult> CancelPlannedHandoffAsync(Guid profileId, Guid? requestId = null)
     {
         await gate.WaitAsync();
         try
         {
+            if (requestId is not null && ReadHandoffInvitation(profileId)?.RequestId != requestId)
+                return new(false, "HostingRequestChanged", "Review the current hosting request before canceling.");
             var name = PlannedHandoffName(profileId);
             if (!data.HasProtected(name))
-                return new(false, "NoPendingHandoff", "There is no pending planned handoff to cancel.");
+            {
+                var invitation = ReadHandoffInvitation(profileId);
+                if (invitation is null || invitation.State is "Completed" or "Canceled")
+                    return new(false, "NoPendingHandoff", "There is no pending planned handoff to cancel.");
+                SaveHandoffInvitation(invitation with { State = "Canceled", PreparedVersionHash = null });
+                return new(true, "HandoffCanceled", "The hosting request was canceled. The current Host and all saves were kept.");
+            }
             var bytes = data.LoadProtected(name);
             var pending = bytes is null ? null : JsonSerializer.Deserialize<PendingPlannedHandoff>(bytes);
             if (pending is not { Schema: 1 } || pending.ProfileId != profileId ||
@@ -189,6 +241,8 @@ public sealed partial class HostManager
                 WorldAuthorityTrust.RosterHash(roster) != pending.RosterHash)
                 return new(false, "HandoffReviewRequired", "The post-Stop file copy or signed permissions changed. Keep this world offline until reviewed.");
             data.DeleteProtected(name);
+            if (ReadHandoffInvitation(profileId) is { } canceled)
+                SaveHandoffInvitation(canceled with { State = "Canceled", PreparedVersionHash = null });
             Activity("Backup", "PlannedHandoffCanceled",
                 "The owner canceled the unsigned handoff. Copies already received remain with their PCs.",
                 ActivitySeverity.Important, profileId);

@@ -4618,7 +4618,7 @@ await Check("shared recovery delegated revision supports a majority with the own
 await Check("shared retained receipt retry repairs interrupted pointer and confirms exact copy", () =>
     SharedSaveReceiptRetryChecks.RunAsync(Path.Combine(root, "shared-retained-retry"), fixture));
 
-await Check("planned handoff validates the complete successor address before Stop", async () =>
+await Check("planned handoff validates the signed successor contact before Stop", async () =>
 {
     using var data = Data("planned-route-validation");
     var profile = Profile("route-validation", "route-world", FreePort());
@@ -4626,7 +4626,37 @@ await Check("planned handoff validates the complete successor address before Sto
     profile.SharedSavesEnabled = true;
     profile.Backups = new() { Enabled = true, MinimumFreeSpaceMb = 0 };
     data.SaveSettings(Settings(profile));
-    var manager = Manager(data);
+    using var successor = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var successorId = Guid.NewGuid();
+    var publicKey = Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo());
+    data.SavePairingState(new PairingPersistentState
+    {
+        Devices = [new PairedDevice
+        {
+            Id = successorId, ProfileId = Guid.Empty, AssignedProfileIds = [profile.Id],
+            CredentialHash = new string('A', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(10),
+            SharedWorldPublicKey = publicKey,
+            SharedWorldGrants = new() { [profile.Id] = new(Receive: true, EligibleHost: true) }
+        }]
+    });
+    var pairing = new PairingService(data);
+    var manager = new HostManager(data, Games(data), TimeProvider.System,
+        new NullHostingPowerGuard(), pairing: pairing);
+    var shares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
+    var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    Require((await manager.RequestPlannedHandoffAsync(profile.Id, successorId)).Ok,
+        "signed-route fixture request failed");
+    var request = await manager.PlannedHandoffStatusAsync(profile.Id);
+    var requestId = request.RequestId!.Value;
+    Require((await manager.RespondPlannedHandoffAsync(profile.Id, successorId, new(requestId, true))).Ok,
+        "signed-route fixture recipient did not accept");
+    WorldPeerContactCard Contact(string address)
+    {
+        var draft = new WorldPeerContactCard(1, new(roster.OwnerPublicKey, profile.Id, roster.GroupId),
+            successorId, publicKey, 1, [new(address, new string('A', 64))], "");
+        return draft with { Signature = Convert.ToBase64String(successor.SignData(
+            WorldPeerService.ContactBasis(draft), HashAlgorithmName.SHA256)) };
+    }
     foreach (var address in new[]
     {
         "https://192.0.2.10:5131/page", "https://192.0.2.10:5131?target=world",
@@ -4635,11 +4665,13 @@ await Check("planned handoff validates the complete successor address before Sto
         "https://127.0.0.1:5131", "https://[::1]:5131",
         "https://0.0.0.0:5131", "https://[::]:5131", "https://192.0.2.10:0"
     })
-        Require((await manager.PreparePlannedHandoffAsync(profile.Id, Guid.NewGuid(), address)).Code ==
-            "InvalidSuccessorAddress", "an invalid successor route passed the pre-Stop check");
+        Require((await manager.ConfirmHandoffPreparationAsync(profile.Id, successorId,
+            new(requestId, null, Contact(address), request.Source!.SetupIdentity))).Code ==
+            "RecipientConnectionRequired", "an invalid signed successor route passed the pre-Stop check");
     foreach (var address in new[] { "https://192.0.2.10:5131/", "https://[2001:db8::10]:5131" })
-        Require((await manager.PreparePlannedHandoffAsync(profile.Id, Guid.NewGuid(), address)).Code ==
-            "SuccessorNotEligible", "a valid direct IP route did not reach the eligibility check");
+        Require((await manager.ConfirmHandoffPreparationAsync(profile.Id, successorId,
+            new(requestId, null, Contact(address), request.Source!.SetupIdentity))).Ok,
+            "an eligible selected PC's valid signed direct-IP route was rejected");
     Require(!data.HasProtected($"planned-handoff-{profile.Id:N}.protected") &&
         new WorldBackupService(data, TimeProvider.System).List(profile.Id).Count == 0,
         "invalid route validation changed the save or handoff state");
@@ -4789,16 +4821,50 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "handoff fixture settings failed");
     var shares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
     var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    var requestId = Guid.Empty;
+    var sourceIdentity = "";
+    WorldPeerContactCard SuccessorContact()
+    {
+        var draft = new WorldPeerContactCard(1, new(roster.OwnerPublicKey, profile.Id, roster.GroupId),
+            successorId, successorKey, 1, [new("https://192.0.2.1:5132", new string('A', 64))], "");
+        return draft with { Signature = Convert.ToBase64String(successor.SignData(
+            WorldPeerService.ContactBasis(draft), HashAlgorithmName.SHA256)) };
+    }
+    SharedWorldReceipt ReceiptFor(SharedWorldVersion current)
+    {
+        var draft = new SharedWorldReceipt(1, current.GroupId, profile.Id, current.VersionHash,
+            successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+        return draft with { Signature = Convert.ToBase64String(successor.SignData(
+            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+    }
+    async Task RequestAndPrepareAsync()
+    {
+        Require((await manager.RequestPlannedHandoffAsync(profile.Id, successorId)).Ok,
+            "the owner could not request the selected paired PC");
+        var current = await manager.PlannedHandoffStatusAsync(profile.Id);
+        Require(current is { RequestId: not null, Source: not null, RecipientState: "Requested" },
+            "the recipient did not receive exact request-bound preliminary setup metadata");
+        requestId = current.RequestId!.Value;
+        sourceIdentity = current.Source!.SetupIdentity;
+        Require((await manager.RespondPlannedHandoffAsync(profile.Id, successorId, new(requestId, true))).Ok,
+            "the selected recipient did not accept the current request");
+        var latest = shares.Status(profile).Latest;
+        if (latest is not null)
+            Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, ReceiptFor(latest))).Ok,
+                "the recipient did not acknowledge the available preflight copy");
+        Require((await manager.ConfirmHandoffPreparationAsync(profile.Id, successorId,
+            new(requestId, latest?.VersionHash, SuccessorContact(), sourceIdentity))).Ok,
+            "the recipient did not confirm current setup and its signed connection before Stop");
+    }
     Require((await manager.StartAsync(profile.Id)).Ok, "handoff fixture Start failed");
+    await RequestAndPrepareAsync();
     driver.StopBehavior = FixtureStopBehavior.Failed;
-    var failedHandoffStop = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://192.0.2.1:5132");
+    var failedHandoffStop = await manager.ContinuePlannedHandoffAsync(profile.Id, requestId);
     var failedHandoffPersisted = data.HasProtected($"planned-handoff-{profile.Id:N}.protected");
     Require(failedHandoffStop.Code == "FinalSaveUnconfirmed" && !failedHandoffPersisted,
         $"failed Stop left a prepared handoff: code={failedHandoffStop.Code}, persisted={failedHandoffPersisted}");
     driver.StopBehavior = FixtureStopBehavior.Normal;
-    var prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://192.0.2.1:5132");
+    var prepared = await manager.ContinuePlannedHandoffAsync(profile.Id, requestId);
     var pendingStart = await manager.StartAsync(profile.Id);
     Require(prepared.Ok && prepared.Version is { Number: 1 } &&
         pendingStart.Code == "PlannedHandoffPending",
@@ -4814,15 +4880,15 @@ await Check("planned handoff requires exact final save receipt before durable ol
         pendingStatus.FinalVersion == 1 &&
         pendingStatus.FinalVersionHash == prepared.Version!.VersionHash,
         "restart did not recover typed pending handoff status");
-    Require((await manager.CompletePlannedHandoffAsync(profile.Id)).Code ==
+    Require((await manager.ContinuePlannedHandoffAsync(profile.Id, requestId)).Code ==
         "WaitingForSuccessorCopy", "handoff succeeded before receipt");
-    Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled" &&
+    Require((await manager.CancelPlannedHandoffAsync(profile.Id, requestId)).Code == "HandoffCanceled" &&
         !new WorldAuthorityStore(data).HasState(profile.Id) &&
         (await manager.StartAsync(profile.Id)).Ok,
         "owner could not cancel an unsigned handoff and resume its exact world");
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second final marker");
-    prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://192.0.2.1:5132");
+    await RequestAndPrepareAsync();
+    prepared = await manager.ContinuePlannedHandoffAsync(profile.Id, requestId);
     Require(prepared.Ok && prepared.Version is { Number: 2 } &&
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
         "retry did not capture a fresh final save and hold Start");
@@ -4840,13 +4906,17 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "wrong version receipt was accepted");
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
         "exact successor receipt was rejected");
+    Require((await manager.ContinuePlannedHandoffAsync(profile.Id, requestId)).Code == "RecipientSetupRequired" &&
+        (await manager.ConfirmHandoffPreparationAsync(profile.Id, successorId,
+            new(requestId, version.VersionHash, SuccessorContact(), sourceIdentity))).Ok,
+        "a final receipt bypassed the recipient's exact final-save preparation");
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
     { Code: "ReadyToComplete", ReceiptConfirmed: true, CanComplete: true, CanCancel: true },
         "owner status did not expose exact signed receipt readiness");
     Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
         new SharedWorldGrants(Receive: false, EligibleHost: false)).Ok,
         "successor grant withdrawal failed");
-    Require((await manager.CompletePlannedHandoffAsync(profile.Id)).Code ==
+    Require((await manager.ContinuePlannedHandoffAsync(profile.Id, requestId)).Code ==
         "SuccessorAccessChanged" && !new WorldAuthorityStore(data).HasState(profile.Id) &&
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
         "a stale signed roster and receipt handed authority to a revoked successor");
@@ -4856,10 +4926,10 @@ await Check("planned handoff requires exact final save receipt before durable ol
         CanComplete: false, CanCancel: true
     },
         "owner status offered completion after successor revocation");
-    Require((await manager.CancelPlannedHandoffAsync(profile.Id)).Code == "HandoffCanceled",
+    Require((await manager.CancelPlannedHandoffAsync(profile.Id, requestId)).Code == "HandoffCanceled",
         "dirty roster prevented safe owner cancellation");
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
-    { Pending: false, Code: "NoPendingHandoff" },
+    { Pending: false, RecipientState: "Canceled", CanComplete: false },
         "cancelled handoff remained pending in owner status");
     Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
         new SharedWorldGrants(Receive: true, EligibleHost: true)).Ok,
@@ -4869,8 +4939,8 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require((await manager.StartAsync(profile.Id)).Ok,
         "cancelled handoff did not release Start after permissions were reviewed");
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "third final marker");
-    prepared = await manager.PreparePlannedHandoffAsync(profile.Id, successorId,
-        "https://192.0.2.1:5132");
+    await RequestAndPrepareAsync();
+    prepared = await manager.ContinuePlannedHandoffAsync(profile.Id, requestId);
     Require(prepared.Ok && prepared.Version is { Number: 3 },
         "reviewed retry did not publish another final save");
     version = prepared.Version!;
@@ -4908,7 +4978,10 @@ await Check("planned handoff requires exact final save receipt before durable ol
     };
     Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, receipt)).Ok,
         "reviewed successor receipt was rejected");
-    var completed = await manager.CompletePlannedHandoffAsync(profile.Id);
+    Require((await manager.ConfirmHandoffPreparationAsync(profile.Id, successorId,
+        new(requestId, version.VersionHash, SuccessorContact(), sourceIdentity))).Ok,
+        "reviewed recipient did not prepare the exact final signed copy");
+    var completed = await manager.CompletePlannedHandoffAsync(profile.Id, requestId);
     Require(completed.Ok && completed.Code == "OldHostFenced" &&
         WorldAuthorityTrust.Verify(completed.Authority) &&
         completed.Authority!.SuccessorReceipt == receipt &&
@@ -4940,7 +5013,8 @@ await Check("planned handoff requires exact final save receipt before durable ol
         (await restarted.SharedWorldReadAsync(profile.Id)).Status.Latest is null,
         "old Host resumed Start or sharing after restart");
     var oldHostStatus = await restarted.SharedWorldStatusAsync(profile.Id);
-    Require((await restarted.PlannedHandoffStatusAsync(profile.Id)).Code == "NoPendingHandoff" &&
+    Require(await restarted.PlannedHandoffStatusAsync(profile.Id) is
+        { Pending: false, Code: "OldHostFenced", RecipientState: "Completed" } &&
         oldHostStatus.Authority is
         {
             State: "OldHostFenced", ExactManagedProcessRunning: false,

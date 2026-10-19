@@ -1,7 +1,7 @@
 .local-hosting-card { display: flex; gap: .85rem; align-items: center; padding: 1rem; border: 1px solid var(--color-border); border-radius: .8rem; background: var(--color-surface-raised); }
-.local-hosting-card > div { flex: 1; min-width: 0; }
+.local-hosting-card > div { display: grid; gap: .5rem; flex: 1; min-width: 0; }
 .local-hosting-card h3, .local-hosting-card p { margin: 0; }
-.local-hosting-card p { margin-top: .35rem; color: var(--color-text-secondary); line-height: 1.5; }
+.local-hosting-card p { color: var(--color-text-secondary); line-height: 1.5; }
 .local-hosting-flow { display: grid; gap: 1rem; min-width: 0; }
 .local-hosting-flow > p { margin: 0; line-height: 1.5; }
 .local-hosting-checks { display: grid; gap: .75rem; list-style: none; padding: 0; margin: 0; }
@@ -14,6 +14,10 @@
 .local-hosting-consent small { display: block; color: var(--color-text-secondary); margin-top: .25rem; }
 .local-hosting-fix { display: grid; gap: .5rem; padding: .85rem; border: 1px solid var(--color-border); border-radius: .6rem; }
 .local-hosting-fix p { margin: 0; }
+.local-hosting-flow > label:not(.local-hosting-consent), .local-hosting-fix > label { display: grid; gap: .5rem; min-inline-size: 0; }
+.local-hosting-flow > label > .ui-input:not([type="checkbox"]) { inline-size: 100%; min-inline-size: 0; box-sizing: border-box; }
+.local-hosting-fix .field-with-button { display: flex; align-items: center; gap: .65rem; min-inline-size: 0; }
+.local-hosting-fix .field-with-button > .ui-input { flex: 1; min-inline-size: 0; }
 .local-hosting-advanced { margin-top: 1rem; }
 @media (max-width: 560px) {
   .local-hosting-card { flex-wrap: wrap; }

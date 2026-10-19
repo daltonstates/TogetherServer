@@ -485,9 +485,11 @@ internal static partial class SharedWorldJourney
             WindowsListenerOwners.RequireTogetherServerOwner(companionPort, host);
             File.WriteAllText(Path.Combine(world, "world.dat"), "old Host split save retained");
             await StartReadyAsync(owner, profile.Id);
-            var planned = await PostAsync<PreparePlannedHandoffRequest, PlannedHandoffResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world/handoff/prepare",
-                new(deviceA, candidateAEndpoint));
+            var movePreparation = await RequestPreparedHandoffAsync(owner, aCredentials,
+                friendAData, profile.Id, secondVersion, valheimFixturePath);
+            var planned = await PostAsync<PlannedHandoffContinueRequest, PlannedHandoffResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/handoff/continue",
+                new(movePreparation.RequestId));
             Require(planned is { Ok: true, Code: "WaitingForSuccessorCopy", Version: { Number: 3 } } &&
                 planned.Version.ParentHash == secondVersion.VersionHash &&
                 planned.Version.VersionHash != decision.Version.VersionHash,
@@ -499,8 +501,16 @@ internal static partial class SharedWorldJourney
             await PollAsync(aLocal);
             await WaitVersionAsync(aLocal, profile.Id, 3);
             await WaitCopiesAsync(owner, profile.Id, 1);
-            var handoff = await PostAsync<object, PlannedHandoffResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world/handoff/complete", new { });
+            using (var recipient = PinnedFriendClient(aCredentials))
+            {
+                var finalPreparation = await CompanionPostAsync<PlannedHandoffPreparation, PlannedHandoffResult>(recipient,
+                    $"api/companion/servers/{profile.Id}/shared-world/handoff/prepared",
+                    movePreparation with { VersionHash = splitVersion.VersionHash });
+                Require(finalPreparation.Ok,
+                    $"recipient did not prepare the exact final copy: {finalPreparation.Code} {finalPreparation.Message}");
+            }
+            var handoff = await PostAsync<PlannedHandoffContinueRequest, PlannedHandoffResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/handoff/complete", new(movePreparation.RequestId));
             Require(handoff is { Ok: true, Code: "OldHostFenced", Authority: { } } &&
                 WorldAuthorityTrust.Verify(handoff.Authority) &&
                 handoff.Authority.Proposal.Kind == "Planned" &&
@@ -720,10 +730,100 @@ internal static partial class SharedWorldJourney
     private static WorldAuthorityRecord? ReadRecordedAuthority(string path, string hash) =>
         ReadRecordedAuthorities(path).SingleOrDefault(record => record.RecordHash == hash);
 
+    // This partition fixture keeps the recipient app stopped until the old
+    // Host has produced its independent final branch. Its protocol adapter uses
+    // only that disposable PC's saved consent, verified bytes, configured route,
+    // signing key and TLS identity. It does not prove a real game or route works.
+    private static async Task<PlannedHandoffPreparation> RequestPreparedHandoffAsync(HttpClient owner,
+        FriendConfiguration credentials, string receivingRoot, Guid profileId,
+        SharedWorldVersion expectedVersion, string serverFile)
+    {
+        var requested = await PostAsync<PlannedHandoffRequest, PlannedHandoffResult>(owner,
+            $"/api/local/profiles/{profileId}/shared-world/handoff/request", new(credentials.DeviceId));
+        Require(requested.Ok, $"paired-PC hosting request failed: {requested.Code} {requested.Message}");
+        using var recipient = PinnedFriendClient(credentials);
+        var request = await recipient.GetFromJsonAsync<PlannedHandoffStatus>(
+            $"api/companion/servers/{profileId}/shared-world/handoff/request", Json) ??
+            throw new Exception("the recipient's authenticated hosting request was empty");
+        Require(request is { RequestId: not null, Source: not null, RecipientState: "Requested" } &&
+            request.SuccessorDeviceId == credentials.DeviceId &&
+            request.Source.SetupIdentity == FriendLocalHostingService.PortableSetupIdentity(
+                request.Source.Game, request.Source.WorldId, request.Source.PortableSetup),
+            "the selected PC did not receive exact preliminary setup metadata");
+        var requestId = request.RequestId ?? throw new Exception("the hosting request had no identity");
+        var source = request.Source ?? throw new Exception("the hosting request had no preliminary setup");
+        var accepted = await CompanionPostAsync<PlannedHandoffResponse, PlannedHandoffResult>(recipient,
+            $"api/companion/servers/{profileId}/shared-world/handoff/respond", new(requestId, true));
+        Require(accepted.Ok, $"the selected PC did not accept hosting: {accepted.Code} {accepted.Message}");
+        var roster = await recipient.GetFromJsonAsync<SharedWorldRoster>(
+            $"api/companion/servers/{profileId}/shared-world/roster", Json) ??
+            throw new Exception("the recipient's current signed roster was empty");
+        Require(SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == profileId &&
+            roster.OwnerPublicKey == credentials.SharedWorldSigningKeys.GetValueOrDefault(profileId) &&
+            roster.GroupId == credentials.ApprovedSharedWorldGroups.GetValueOrDefault(profileId),
+            "the hosting preflight did not retain its pinned owner and world");
+        using var receiving = new LocalData(receivingRoot);
+        Require(credentials.ConsentedSharedWorldProfiles.Contains(profileId),
+            "the recipient had not consented to keep the shared save");
+        var vault = ReceiverRoot(receivingRoot, credentials.DeviceId, profileId);
+        var copied = FriendLink.ReadReceivedLatest(vault);
+        Require(copied?.VersionHash == expectedVersion.VersionHash &&
+            source.SetupIdentity == FriendLocalHostingService.PortableSetupIdentity(
+                expectedVersion.Game, expectedVersion.WorldId, expectedVersion.PortableSetup),
+            "the recipient preflight did not use its exact verified current copy and setup");
+        var settings = receiving.LoadSettings();
+        Require(SharedWorldPeerTrust.ValidRoute(new(settings.CompanionEndpoint, new string('A', 64))),
+            "the recipient's configured incoming route was not a direct IP address");
+        var setup = new TakeoverLocalSetup(serverFile, expectedVersion.PortableSetup.GameVersion,
+            expectedVersion.PortableSetup.AddOns, true, settings.CompanionPort, AvailableGamePort());
+        var preflight = SharedWorldReadiness.Check(vault, Path.Combine(receivingRoot, "shared-world-rehearsals"),
+            setup, new(true, true, true, true, true, true), roster.OwnerPublicKey, roster.GroupId,
+            requiredCopies: 3, authorityRecords: new WorldAuthorityStore(receiving).Read(profileId));
+        Require(preflight.Ready, "the disposable recipient's local preflight failed: " + string.Join(" ", preflight.Reasons));
+        var privateKey = receiving.LoadProtected($"shared-world-pc-signing-{credentials.DeviceId:N}.protected") ??
+            throw new Exception("the disposable recipient's enrolled signing key was missing");
+        using var key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(privateKey, out _);
+        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        Require(roster.Members.Single(member => member.DeviceId == credentials.DeviceId).PublicKey == publicKey,
+            "the receiving PC's local key did not match its enrolled identity");
+        var receipt = new SharedWorldReceipt(1, roster.GroupId, profileId, expectedVersion.VersionHash,
+            credentials.DeviceId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+        receipt = receipt with { Signature = Convert.ToBase64String(key.SignData(
+            SharedWorldReceiptTrust.Basis(receipt), HashAlgorithmName.SHA256)) };
+        var acknowledged = await CompanionPostAsync<SharedWorldReceipt, SharedWorldReceiptResult>(recipient,
+            $"api/companion/servers/{profileId}/shared-world/receipts", receipt);
+        Require(acknowledged.Ok, $"the recipient's preflight receipt failed: {acknowledged.Code}");
+        using var certificate = new HostIdentity(receiving).Ensure(settings.CompanionEndpoint);
+        var contact = new WorldPeerContactCard(1, new(roster.OwnerPublicKey, profileId, roster.GroupId),
+            credentials.DeviceId, publicKey, 1,
+            [new(settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate))], "");
+        contact = contact with { Signature = Convert.ToBase64String(key.SignData(
+            WorldPeerService.ContactBasis(contact), HashAlgorithmName.SHA256)) };
+        var preparation = new PlannedHandoffPreparation(requestId, expectedVersion.VersionHash,
+            contact, source.SetupIdentity);
+        var prepared = await CompanionPostAsync<PlannedHandoffPreparation, PlannedHandoffResult>(recipient,
+            $"api/companion/servers/{profileId}/shared-world/handoff/prepared", preparation);
+        Require(prepared.Ok, $"the recipient's signed setup acknowledgement failed: {prepared.Code} {prepared.Message}");
+        return preparation;
+    }
+
+    private static async Task<TResponse> CompanionPostAsync<TRequest, TResponse>(HttpClient client,
+        string path, TRequest body)
+    {
+        using var response = await client.PostAsJsonAsync(path, body, Json);
+        var result = await response.Content.ReadFromJsonAsync<TResponse>(Json) ??
+            throw new Exception($"empty companion response: {(int)response.StatusCode}");
+        Require(response.IsSuccessStatusCode, $"companion protocol request failed: {path}: {(int)response.StatusCode}");
+        return result;
+    }
+
     private static HttpClient PinnedFriendClient(FriendConfiguration friend)
     {
         var handler = new HttpClientHandler
         {
+            AllowAutoRedirect = false,
+            UseProxy = false,
             ServerCertificateCustomValidationCallback = (_, certificate, _, _) =>
                 certificate is not null && CryptographicOperations.FixedTimeEquals(
                     SHA256.HashData(certificate.RawData), Convert.FromHexString(friend.Fingerprint))

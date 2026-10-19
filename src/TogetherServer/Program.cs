@@ -1116,12 +1116,41 @@ app.MapGet("/api/local/profiles/{id:guid}/shared-world/handoff",
     (HttpContext context, Guid id) => OwnerGet(context,
         () => manager.PlannedHandoffStatusAsync(id), "Planned handoff details"));
 app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/prepare",
-    (Guid id, PreparePlannedHandoffRequest request) => HostOnly(() =>
-        manager.PreparePlannedHandoffAsync(id, request.SuccessorDeviceId, request.SuccessorAddress)));
+    (HttpContext context, Guid id) => FixedHandoffMutation(context, id,
+        requestId => manager.ContinuePlannedHandoffAsync(id, requestId)));
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/request", async (HttpContext context, Guid id) =>
+{
+    if (!FriendLocalHostingRoutes.Fixed(context)) return Results.StatusCode(403);
+    try
+    {
+        var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 1024, context.RequestAborted);
+        var deviceId = PlannedHandoffInputs.Selection(bytes ?? []);
+        return await HostOnly(() => manager.RequestPlannedHandoffAsync(id, deviceId));
+    }
+    catch (Exception error) when (error is IOException or InvalidDataException or JsonException)
+    { return Results.BadRequest(new { ok = false, code = "HostingRequestRejected", message = "Choose an approved paired PC." }); }
+});
+async Task<IResult> FixedHandoffMutation(HttpContext context, Guid id, Func<Guid, Task<PlannedHandoffResult>> action)
+{
+    if (!FriendLocalHostingRoutes.Fixed(context)) return Results.StatusCode(403);
+    try
+    {
+        var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 1024, context.RequestAborted);
+        var requestId = PlannedHandoffInputs.Continuation(bytes ?? []);
+        return await HostOnly(() => action(requestId));
+    }
+    catch (Exception error) when (error is IOException or InvalidDataException or JsonException)
+    { return Results.BadRequest(new { ok = false, code = "HostingRequestRejected", message = "Review the current hosting request." }); }
+}
+app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/continue",
+    (HttpContext context, Guid id) => FixedHandoffMutation(context, id,
+        requestId => manager.ContinuePlannedHandoffAsync(id, requestId)));
 app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/complete",
-    (Guid id) => HostOnly(() => manager.CompletePlannedHandoffAsync(id)));
+    (HttpContext context, Guid id) => FixedHandoffMutation(context, id,
+        requestId => manager.CompletePlannedHandoffAsync(id, requestId)));
 app.MapPost("/api/local/profiles/{id:guid}/shared-world/handoff/cancel",
-    (Guid id) => HostOnly(() => manager.CancelPlannedHandoffAsync(id)));
+    (HttpContext context, Guid id) => FixedHandoffMutation(context, id,
+        requestId => manager.CancelPlannedHandoffAsync(id, requestId)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/manual", (Guid id) =>
     HostOnly(() => manager.CreateManualBackupAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/shared-world/live/save", async (Guid id, LiveSaveRequest request, HttpContext context) =>

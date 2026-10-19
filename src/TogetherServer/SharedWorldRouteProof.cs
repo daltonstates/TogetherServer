@@ -24,7 +24,9 @@ internal static class SharedWorldRouteTrust
     internal static SharedWorldRouteChallenge SignChallenge(WorldAuthorityRecord record,
         string nonce, Guid observerId, ECDsa observerKey)
     {
-        if (!ValidNonce(nonce) || observerId == Guid.Empty) throw new InvalidDataException("Invalid route challenge.");
+        if (!ValidNonce(nonce) || observerId == Guid.Empty &&
+            (record.Proposal.Kind != "Planned" || Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()) != record.Roster.OwnerPublicKey))
+            throw new InvalidDataException("Invalid route challenge.");
         var draft = new SharedWorldRouteChallenge(1, record.Proposal.ProfileId,
             record.RecordHash, nonce, observerId,
             Convert.ToBase64String(observerKey.ExportSubjectPublicKeyInfo()), "");
@@ -41,17 +43,20 @@ internal static class SharedWorldRouteTrust
         if (challenge is null || challenge.Schema != 1 || !ValidNonce(challenge.Nonce) ||
             challenge.ProfileId != record.Proposal.ProfileId ||
             challenge.RecordHash != record.RecordHash || !WorldAuthorityTrust.Verify(record)) return false;
+        var ownerObserver = challenge.ObserverDeviceId == Guid.Empty && record.Proposal.Kind == "Planned" &&
+            challenge.ObserverPublicKey == record.Roster.OwnerPublicKey &&
+            challenge.ObserverPublicKey != WorldAuthorityTrust.CandidateDevicePublicKey(record.Proposal);
         var observer = record.Roster.Members.SingleOrDefault(item =>
             item.DeviceId == challenge.ObserverDeviceId);
-        if (observer is not { Revoked: false } ||
+        if (!ownerObserver && (observer is not { Revoked: false } ||
             observer.PublicKey != challenge.ObserverPublicKey ||
             !(observer.Grants.Receive || observer.Grants.RecoveryVoter) ||
             observer.AccessExpiresUtc is { } end && end <= now ||
-            observer.PublicKey == WorldAuthorityTrust.CandidateDevicePublicKey(record.Proposal)) return false;
+            observer.PublicKey == WorldAuthorityTrust.CandidateDevicePublicKey(record.Proposal))) return false;
         try
         {
             using var key = ECDsa.Create();
-            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(observer.PublicKey), out _);
+            key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(challenge.ObserverPublicKey), out _);
             return key.VerifyData(ChallengeBasis(challenge),
                 Convert.FromBase64String(challenge.Signature), HashAlgorithmName.SHA256);
         }
