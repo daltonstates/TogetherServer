@@ -26,3 +26,12 @@ Validation on 2026-10-19:
 Ignored local logs: `local-data/quiet-count-ui-all.log`, `quiet-count-final-focused.log`, `quiet-count-ui-lint.log`, `quiet-count-ui-build.log`, `quiet-count-code-only.log`, `quiet-count-final-build.log`, and `quiet-count-final-source.log`.
 
 No app, game, fixture, browser, native dialog or listener was launched. Source/JSDOM evidence does not prove native viewport, real game, Friend-PC, public network or save acceptance; those checks remain for a separate approved test session. The worker used the configured inherited workhorse for bounded backend changes and a read-only review; shared builds, integration and commits stayed with the coordinator.
+
+Delivered isolated demo from source commit `4582ced`:
+
+- `local-data/quiet-player-checks-demo-20261019-4582ced/TogetherServer DEVELOPMENT DEMO.exe`
+- Publish passed. Static package verification passed Windows GUI subsystem 2, exact compressed-bundle assembly equality and hashes of all seven current embedded UI assets. The verifier reads bytes without loading or executing the assembly.
+- EXE SHA-256: `80A88A8A7B8116F2F6904614F506A0C4C8DCCC03CB11F65528B9E6561BD77FA8`. Authenticode: `NotSigned`.
+- Evidence is beside the EXE in `package-evidence.json`; logs are `local-data/quiet-count-demo-publish.log` and `quiet-count-demo-package.log`.
+
+The package remains closed. Close the earlier demo before opening this one because they share the dedicated demo port/storage. Production can remain running.
