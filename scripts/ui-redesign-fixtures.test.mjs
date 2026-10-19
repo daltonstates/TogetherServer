@@ -616,7 +616,8 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     { manifest: {}, worldReviewCases, accessReviewCases, args: ['--sidebar-only'] });
   for (const id of ['sidebar-host-long-names', 'sidebar-join-long-names', 'sidebar-settings']) {
     const variants = sidebars.plans.filter(plan => plan.testCase.id === id);
-    assert.equal(variants.length, 7, `${id} covers desktop, wide, tablet, narrow, short and 150 percent text`);
+    assert.equal(variants.length, 8, `${id} covers desktop, wide, tablet, narrow, short, compact density and 150 percent text`);
+    assert.ok(variants.some(plan => plan.variant.density === 'compact'), `${id} exercises compact pane spacing`);
     assert.ok(variants.every(plan => plan.testCase.sidebarReview), `${id} performs real resize checks on the hosted runner`);
   }
   const captures = new Set(plans.map(plan => plan.testCase.id));

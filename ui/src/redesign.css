@@ -234,6 +234,7 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .sidebar-resizer:is(:hover, :focus-visible) > span, [data-resizing] > .sidebar-resizer > span { background: var(--color-accent); }
 body:has([data-resizing]) { cursor: col-resize; user-select: none; }
 .app-shell .context-content { min-width: 0; display: grid; gap: 12px; }
+.app-shell .app-settings-workspace > .context-content { margin: 0; border: 0; }
 .app-shell .context-content > * { min-width: 0; }
 .app-shell .context-sidebar { align-content: start; }
 .section-sidebar-group { min-width: 0; }

@@ -40,6 +40,7 @@ $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $displayName = 'TogetherServer DEVELOPMENT'
 $processes = [Collections.Generic.List[object]]::new()
 $results = [Collections.Generic.List[object]]::new()
+$shellObservations = [Collections.Generic.List[object]]::new()
 $app = $null
 $failure = $null
 
@@ -135,21 +136,98 @@ function Click-Element($Element, [switch]$Double) {
         if ($Double -and $click -eq 0) { Start-Sleep -Milliseconds 80 }
     }
 }
-function Shell-Buttons([IntPtr]$Handle) {
+function Shell-Elements([IntPtr]$Handle) {
     if ($Handle -eq [IntPtr]::Zero) { return @() }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($Handle)
-    $condition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
-    return @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+    return @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition))
+}
+function Shell-Buttons([IntPtr]$Handle) {
+    return @(Shell-Elements $Handle | Where-Object {
+        $_.Current.ControlType -in @([System.Windows.Automation.ControlType]::Button,
+            [System.Windows.Automation.ControlType]::ListItem, [System.Windows.Automation.ControlType]::TabItem) -or
+        ($_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Custom -and
+            $_.Current.ClassName -match 'TaskListButton|TaskbarButton|NotifyItem')
+    })
+}
+function Safe-ShellText([string]$Text) {
+    $safe = $Text -replace '[\x00-\x1f\x7f]', ' '
+    $safe = $safe -replace '(?i)(?:https?://|[a-z]:\\|\\\\)\S+', '[private location]'
+    $safe = $safe -replace '(?i)\b(?:gh[pousr]_[a-z0-9_]+|github_pat_[a-z0-9_]+|(?:bearer|token|password|secret)[=: ]+\S+)', '[redacted]'
+    if ($safe.Length -gt 180) { $safe = $safe.Substring(0, 180) }
+    return $safe
+}
+function Shell-Description($Element) {
+    $current = $Element.Current
+    $rectangle = $current.BoundingRectangle
+    return [pscustomobject]@{
+        name = Safe-ShellText $current.Name
+        type = $current.ControlType.ProgrammaticName
+        className = Safe-ShellText $current.ClassName
+        automationId = Safe-ShellText $current.AutomationId
+        offscreen = $current.IsOffscreen
+        bounds = @($rectangle.Left, $rectangle.Top, $rectangle.Width, $rectangle.Height)
+    }
+}
+function Save-ShellDiagnostics {
+    $shells = [Collections.Generic.List[object]]::new()
+    foreach ($kind in @('Shell_TrayWnd', 'Shell_SecondaryTrayWnd', 'NotifyIconOverflowWindow', 'TopLevelWindowForOverflowXamlIsland')) {
+        $handle = [TogetherServerChromeSmoke]::FindWindow($kind, $null)
+        if ($handle -eq [IntPtr]::Zero) { continue }
+        $items = [Collections.Generic.List[object]]::new()
+        try {
+            foreach ($element in @(Shell-Elements $handle | Select-Object -First 300)) {
+                try { $items.Add((Shell-Description $element)) }
+                catch { $items.Add([pscustomobject]@{ error = $_.Exception.GetType().Name }) }
+            }
+            $shells.Add([pscustomobject]@{ windowClass = $kind; descendants = $items })
+        } catch { $shells.Add([pscustomobject]@{ windowClass = $kind; error = $_.Exception.GetType().Name }) }
+    }
+    [ordered]@{ observations = $shellObservations; shells = $shells } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'shell-diagnostics.json') -Encoding UTF8
+    foreach ($shell in $shells) {
+        Write-Host "Shell diagnostic $($shell.windowClass): $(@($shell.descendants).Count) descendants"
+        foreach ($item in @($shell.descendants | Where-Object { $_.name } | Select-Object -First 40)) {
+            Write-Host "  $($item.type) | $($item.className) | $($item.name)"
+        }
+    }
 }
 function Taskbar-Button {
     $taskbar = [TogetherServerChromeSmoke]::FindWindow('Shell_TrayWnd', $null)
     Require ($taskbar -ne [IntPtr]::Zero) 'Explorer taskbar is unavailable; direct taskbar acceptance cannot run in this session.'
-    $buttons = @(Shell-Buttons $taskbar | Where-Object {
-        $_.Current.Name.Contains($displayName) -and !$_.Current.Name.Contains('Hosting:') -and !$_.Current.IsOffscreen
-    })
-    Require ($buttons.Count -eq 1) "Expected one disposable app taskbar button, found $($buttons.Count)."
-    return $buttons[0]
+    $registration = [Diagnostics.Stopwatch]::StartNew()
+    $polls = 0
+    $lastCount = 0
+    $lastError = $null
+    do {
+        $polls++
+        try {
+            $buttons = @(Shell-Buttons $taskbar | Where-Object {
+                $current = $_.Current
+                $rectangle = $current.BoundingRectangle
+                # Windows may use the EXE's product name for the taskbar label
+                # rather than its full native staging title. The disposable
+                # runner has one TogetherServer instance; ambiguity still fails.
+                $current.Name.IndexOf('TogetherServer', [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                    !$current.Name.Contains('Hosting:') -and !$current.IsOffscreen -and
+                    !$rectangle.IsEmpty -and $rectangle.Width -gt 0 -and $rectangle.Height -gt 0
+            })
+            $exact = @($buttons | Where-Object { $_.Current.Name.Contains($displayName) })
+            if ($exact.Count -gt 0) { $buttons = $exact }
+            $lastCount = $buttons.Count
+            if ($buttons.Count -eq 1) {
+                $description = Shell-Description $buttons[0]
+                $shellObservations.Add([pscustomobject]@{ action = 'Taskbar button discovered'; polls = $polls;
+                    elapsedMilliseconds = $registration.ElapsedMilliseconds; element = $description })
+                Write-Host "Taskbar item after $polls polls: $($description.type) | $($description.className) | $($description.name)"
+                return $buttons[0]
+            }
+        } catch { $lastError = $_.Exception.GetType().Name }
+        Start-Sleep -Milliseconds 250
+    } while ($registration.ElapsedMilliseconds -lt 15000)
+    $shellObservations.Add([pscustomobject]@{ action = 'Taskbar discovery failed'; polls = $polls;
+        elapsedMilliseconds = $registration.ElapsedMilliseconds; candidates = $lastCount; error = $lastError })
+    throw "Expected one disposable app taskbar item after bounded shell registration wait, found $lastCount (polls=$polls, error=$lastError)."
 }
 function Tray-Button {
     $taskbar = [TogetherServerChromeSmoke]::FindWindow('Shell_TrayWnd', $null)
@@ -161,6 +239,7 @@ function Tray-Button {
         Click-Element $expand[0]
         Start-Sleep -Milliseconds 300
         $overflow = [TogetherServerChromeSmoke]::FindWindow('NotifyIconOverflowWindow', $null)
+        if ($overflow -eq [IntPtr]::Zero) { $overflow = [TogetherServerChromeSmoke]::FindWindow('TopLevelWindowForOverflowXamlIsland', $null) }
         $icon = @(Shell-Buttons $overflow | Where-Object { $_.Current.Name.Contains($displayName) -and $_.Current.Name.Contains('Hosting:') })
     }
     Require ($icon.Count -eq 1) 'The disposable app tray icon was not found uniquely.'
@@ -189,6 +268,15 @@ function Capture-Chrome([string]$Name) {
     try {
         $graphics.CopyFromScreen($rectangle.Left, $rectangle.Top, 0, 0, [Drawing.Size]::new($width, $height))
         $bitmap.Save((Join-Path $evidenceRoot ($Name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
+    } finally { $graphics.Dispose(); $bitmap.Dispose() }
+}
+function Capture-DesktopFailure {
+    $rectangle = [Windows.Forms.SystemInformation]::VirtualScreen
+    $bitmap = [Drawing.Bitmap]::new($rectangle.Width, $rectangle.Height)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($rectangle.Left, $rectangle.Top, 0, 0, $rectangle.Size)
+        $bitmap.Save((Join-Path $evidenceRoot 'failure-desktop.png'), [Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 
@@ -265,6 +353,8 @@ try {
 } catch {
     $failure = $_
     $results.Add([pscustomobject]@{ name = 'Native window chrome acceptance'; status = 'FAIL'; reason = $_.Exception.Message })
+    try { Save-ShellDiagnostics } catch { Write-Host "Shell diagnostics unavailable: $($_.Exception.GetType().Name)" }
+    try { Capture-DesktopFailure } catch { Write-Host "Failure desktop capture unavailable: $($_.Exception.GetType().Name)" }
 } finally {
     foreach ($tracked in $processes) {
         $process = $tracked.Process
@@ -277,7 +367,7 @@ try {
         } else { throw 'Disposable cleanup refused a changed process identity.' }
     }
     [ordered]@{ candidateSha256 = $candidateHash; candidate = $candidate; caseId = $caseId;
-        source = 'Approved separate Windows desktop only'; results = $results; passed = $null -eq $failure } |
+        source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations; passed = $null -eq $failure } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'result.json') -Encoding UTF8
     Write-Host "Window chrome evidence: $evidenceRoot"
 }

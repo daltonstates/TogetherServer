@@ -304,6 +304,7 @@ const plans = reviewCases.flatMap(testCase => [
   ...(testCase.sidebarReview ? [
     { testCase, variant: { id: 'darkdesktop150', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 150 } },
     { testCase, variant: { id: 'darkwide', viewport: { width: 1600, height: 1000 }, theme: 'dark', scale: 100 } },
+    { testCase, variant: { id: 'darkcompact', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100, density: 'compact' } },
   ] : []),
   ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') || testCase.sidebarReview ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
@@ -967,7 +968,7 @@ try {
   browser = await chromium.launch({ headless: true });
   const runPlan = async ({ testCase, variant }) => {
     const record = { id: `${testCase.id}--${variant.id}`, scenario: testCase.scenario, workspace: testCase.workspace,
-      viewport: variant.viewport, theme: variant.theme, scale: variant.scale, status: 'running',
+      viewport: variant.viewport, theme: variant.theme, scale: variant.scale, density: variant.density ?? 'comfortable', status: 'running',
       actions: [], assertions: [], skippedSelectors: [], failedSelectors: [], jsErrors: [], consoleErrors: [],
       unhandledFixtures: [], deliberateFailures: [], blockedNetwork: [], failedRequests: [], httpFailures: [], layoutFindings: [], screenshots: [], apiRequests: [] };
     manifest.cases.push(record);
@@ -1032,13 +1033,13 @@ try {
       page.on('response', response => {
         if (response.status() >= 400 && !deliberatelyFailedURLs.has(response.url())) record.httpFailures.push({ url: response.url(), status: response.status() });
       });
-      await page.addInitScript(({ theme, scale, now }) => {
+      await page.addInitScript(({ theme, scale, now, density = 'comfortable' }) => {
         // Fixed synthetic observation time; keep real timers for visible-state waits.
         const RealDate = Date, fixed = RealDate.parse(now);
         globalThis.Date = class extends RealDate { constructor(...values) { super(...(values.length ? values : [fixed])); } static now() { return fixed; } };
         let fakeId = 0;
         Object.defineProperty(globalThis.crypto, 'randomUUID', { value: () => `aaaaaaaa-aaaa-4aaa-8aaa-${String(++fakeId).padStart(12, '0')}` });
-        localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ theme, density: 'comfortable', textScale: scale, highContrast: false, quietMode: false, selectedServer: '', favoriteServers: [], favoriteHosts: [], serverOrder: [], serverTabs: {} }));
+        localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ theme, density, textScale: scale, highContrast: false, quietMode: false, selectedServer: '', favoriteServers: [], favoriteHosts: [], serverOrder: [], serverTabs: {} }));
       }, { ...variant, now: fixtureNow });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
       await visible(page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }));
