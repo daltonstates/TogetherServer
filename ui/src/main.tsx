@@ -19,6 +19,7 @@ import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessEx
 import { Button, Input, Select } from './Controls'
 import { FriendConnectionDoctor, FriendGameCheckResult, friendGameCheckIdentity } from './FriendConnectionDoctor'
 import { FriendPlayFlow, effectiveFriendPermissions, friendConnectionExplanation } from './FriendPlayFlow'
+import { FriendLocalHosting } from './FriendLocalHosting'
 import { FriendRemoteRehearsal } from './RemoteRehearsal'
 import { ConnectionDetails } from './ConnectionDetails'
 import { GameCompatibilityPanel } from './GameCompatibilityPanel'
@@ -322,6 +323,7 @@ export function App() {
   const [appSection, setAppSection] = useState<AppSection>('appearance')
   const [hostScope, setHostScope] = useState<'server' | 'pc'>('server')
   const [joinSection, setJoinSection] = useState<JoinSection>('play')
+  const [advancedSharedScope, setAdvancedSharedScope] = useState<string | null>(null)
   const [selectedFriendProfileId, setSelectedFriendProfileId] = useState('')
   const [serverToolsProfileId, setServerToolsProfileId] = useState('')
   const [showAllServers, setShowAllServers] = useState(false)
@@ -1348,6 +1350,16 @@ export function App() {
       if (profileId) setActionNotices(current => ({ ...current, [profileId]: { good: false, text: errorMessage(error) } }))
     } finally { setPending('') }
   }
+  const startLocalProfile = async (profile: Profile) => {
+    if (pending || dirty || hasUnsavedServerEdits || dataRecovery?.lifecycleBlocked) return
+    if (profile.separateCopySourceProfileId && profile.separateCopyBranchHash) {
+      if (!await confirm({ title: 'Host this save on this PC?', confirmLabel: 'Start server',
+        description: 'This PC keeps its own save progress. If another Host is running, both histories stay separate.' })) return
+      await run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/shared-world/hosting/start`, 'POST', {
+        branchHash: profile.separateCopyBranchHash, acceptSplitWarning: true
+      })
+    } else await run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')
+  }
   const loadBackups = async (profileId: string) => {
     const announce = !pending
     if (announce) setPending(`backups-${profileId}`)
@@ -1916,6 +1928,8 @@ export function App() {
         : 'App preferences for hosting and joining on this PC.'
 
   const resumeHosting = async (profileId: string) => {
+    const profile = snapshot?.mode === 'Host' ? snapshot.settings.profiles.find(item => item.id === profileId) : null
+    if (profile?.separateCopySourceProfileId) { await startLocalProfile(profile); return }
     if (await confirm({ title: 'Resume hosting?', confirmLabel: 'Resume hosting', description: 'TogetherServer uses the normal Start checks and will never start a second copy of a process it reattached to.' }))
       void run(`resume-${profileId}`, `/api/local/profiles/${profileId}/resume-hosting`, 'POST')
   }
@@ -2115,6 +2129,14 @@ export function App() {
                 onStop={() => void friendAction(profile.id, 'stop')}
                 onRefresh={() => void friendAction(profile.id, 'refresh')}
                 onOpenConnectionDoctor={openFriendConnectionDoctor}
+                localHostingAction={profile.kind !== 'Custom' && <FriendLocalHosting key={`local-hosting-${connectionKey}`}
+                  profileId={profile.id} connectionId={snapshot.connectionId} worldName={profile.name}
+                  available
+                  accessBlocked={['Revoked', 'AccessExpired', 'ApprovalPending'].includes(snapshot.connectionCode ?? '')}
+                  disabled={!!pending || operationBusy}
+                  onBrowseServerFile={game => browseSharedServerFile(profile.id, game)}
+                  onOpenConnectionHelp={localProfileId => void openSharedHost(localProfileId, true)}
+                  onOpenHost={localProfileId => void openSharedHost(localProfileId, false)} />}
                 startNotice={<FriendStartConnectionNotice />}
                 connectionDetails={profile.joinAddress && <ConnectionDetails kind={profile.gameKind ?? profile.kind}
                 endpointFieldId={addressKey} onCopyPart={async (part, value) => {
@@ -2158,7 +2180,17 @@ export function App() {
               {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
               {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</DismissibleNotice>}
               {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
-              {joinSection === 'shared-saves' && !peerRecovery && profile.kind !== 'Custom' && <FriendSharedWorlds profileId={profile.id} connectionId={snapshot.connectionId} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
+              {joinSection === 'shared-saves' && !peerRecovery && profile.kind !== 'Custom' && <>
+                <FriendLocalHosting key={`local-hosting-${connectionKey}`} presentation="card"
+                  profileId={profile.id} connectionId={snapshot.connectionId} worldName={profile.name}
+                  available
+                  accessBlocked={['Revoked', 'AccessExpired', 'ApprovalPending'].includes(snapshot.connectionCode ?? '')}
+                  disabled={!!pending || operationBusy}
+                  onBrowseServerFile={game => browseSharedServerFile(profile.id, game)}
+                  onOpenConnectionHelp={localProfileId => void openSharedHost(localProfileId, true)}
+                  onOpenHost={localProfileId => void openSharedHost(localProfileId, false)} />
+                <details key={connectionKey} className="local-hosting-advanced" onToggle={event => setAdvancedSharedScope(event.currentTarget.open ? connectionKey : null)}><summary>Save copies, people &amp; advanced sharing</summary>
+                {advancedSharedScope === connectionKey && <FriendSharedWorlds profileId={profile.id} connectionId={snapshot.connectionId} game={profile.gameKind ?? profile.kind} worldName={profile.name} showWorldHeading={false}
                 serverState={profile.state} serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint}
                 connectedHostName={snapshot.connectionName || 'Saved Host'} onOpenPlay={() => selectJoinSection('play')} onPairHost={() => selectJoinSection('pairing')}
                 onOpenHostControls={() => void openSharedHost(profile.id, false)}
@@ -2166,6 +2198,7 @@ export function App() {
                 onBrowseServerFile={game => browseSharedServerFile(profile.id, game)} onOpenHostSetup={() => void openSharedHost(profile.id, true)}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')}
                 onAddressChange={openFriendAddressRecovery} />}
+                </details></>}
               {joinSection === 'chat' && <div className="friend-chat-surface">
                 {<PaneErrorBoundary title="Server chat" resetKey={profile.id}>
                   <ServerChat profileId={profile.id} host={false} connectionId={snapshot.connectionId} hostId={snapshot.hostId}
@@ -2279,7 +2312,7 @@ export function App() {
                   <div className="actions server-actions" aria-label="Server controls">
                     {(status?.state === 'Offline' || pending === `start-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || hasUnsavedServerEdits || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : dirty ? 'Save or cancel setup changes first.' : hasUnsavedServerEdits ? 'Save or discard file changes before starting.' : undefined} onClick={() => {
                       if ([...draftGuards.current].some(([key, guard]) => key !== 'chat' && (guard.dirty || guard.saving))) return
-                      void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')
+                      void startLocalProfile(profile)
                     }}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
                     {pending !== `start-${profile.id}` && (['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(status?.state ?? '') || pending === `stop-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || status?.state === 'Stopping'} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` || status?.state === 'Stopping' ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
                     {['Unknown', 'Failed'].includes(status?.state ?? 'Unknown') && <Button className="secondary" onClick={() => selectHostTab('logs')}><Icon name="warning" />Review server</Button>}
@@ -2341,7 +2374,7 @@ export function App() {
                   profileId={profile.id} state={status?.state ?? 'Unknown'} maintenance={!!profile.maintenance?.enabled}
                   busy={profileWorkBusy || dirty} recoveryBlocked={!!dataRecovery?.lifecycleBlocked}
                   onDraftGuardChange={keepEditorGuard} onPrepareMaintenance={() => selectHostTab('setup')}
-                  onStart={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}
+                  onStart={() => void startLocalProfile(profile)}
                   onOpenDoctor={() => openHostSettings('network')} /></PaneErrorBoundary>} />}
                 <PaneErrorBoundary title="Recent sessions" resetKey={profile.id}><RecentSessions profileId={profile.id}
                   visible={workspacePage === 'host' && hostServerTab === 'sessions'} /></PaneErrorBoundary>
@@ -2416,7 +2449,7 @@ export function App() {
                   onToggle={enabled => void saveMaintenance(profile, enabled)}
                   onStop={() => void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST')}
                   onBackup={() => void createManualBackup(profile.id)}
-                  onStart={() => void run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')}
+                  onStart={() => void startLocalProfile(profile)}
                   onOpenDoctor={() => openHostSettings('network')} /></div>
 
 

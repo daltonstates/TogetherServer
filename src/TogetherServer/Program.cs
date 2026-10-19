@@ -179,6 +179,8 @@ static bool HasSensitiveLocalGetHeader(HttpContext context) =>
 
 WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
     () => friendMode, () => updatePending || shutdownPending);
+FriendLocalHostingRoutes.Map(app, data, friend, manager, companionServer, externalPortProbe, modeGate,
+    () => friendMode, () => updatePending || shutdownPending);
 ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
     () => !friendMode && !updatePending && !shutdownPending);
 UserProfileLocalRoutes.Map(app, data.UserProfile, modeGate,
@@ -1997,13 +1999,7 @@ app.MapPut("/api/local/devices/{id:guid}/shared-world/{profileId:guid}/grants",
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
-        if (!await manager.SharedRosterManagementAvailableAsync(profileId))
-            return Results.Conflict(SuccessorRosterReadOnly());
-        if (!(await manager.SharedWorldStatusAsync(profileId)).Enabled)
-            return Results.Conflict(new { code = "SharingOff" });
-        var result = pairing.SetSharedWorldGrants(id, profileId, request.Grants);
-        if (result.Ok) await PublishRosterAndConfirmAsync(profileId,
-            ownerEdit: new(id, Grants: request.Grants, Revoked: false));
+        var result = await manager.SetSharedWorldGrantsAsync(id, profileId, request.Grants);
         return Results.Json(result);
     }
     finally { modeGate.Release(); }

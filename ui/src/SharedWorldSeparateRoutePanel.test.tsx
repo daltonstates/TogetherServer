@@ -8,6 +8,32 @@ const proof = { branchHash: 'A'.repeat(64), offer: {
   version: { number: 3 } }, signature: 'signed candidate proof' }
 const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
 
+it('opens the exact prepared history with detected setup values and leaves Start to the guided flow', async () => {
+  const requests: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    requests.push(url)
+    if (url.includes('/hosting/')) return reply({ recorded: true, restored: false,
+      readyForManualStart: false, reviewRequired: false, running: false,
+      message: 'Finish the matching local setup.', localProfileId: profile,
+      branchHash: proof.branchHash, preparedServerRoot: 'C:\\synthetic\\managed', requiredAddOns: [] })
+    return reply([proof, { ...proof, branchHash: 'B'.repeat(64) }])
+  }))
+  render(<SharedWorldSeparateRoutePanel profileId={profile} separateCopies={2} game="MinecraftJava"
+    selectedBranchHash={proof.branchHash} expanded allowStart={false}
+    suggestedSetup={{ serverFile: 'C:\\synthetic\\server.jar', gameVersion: '1.22', controlPort: 5141, gamePort: 25567 }} />)
+  await screen.findByText('Finish the matching local setup.')
+  expect(screen.getByLabelText('Installed game version')).toHaveValue('1.22')
+  expect(screen.getByLabelText('Future Friend control port')).toHaveValue('5141')
+  expect(screen.getByLabelText('Future game port')).toHaveValue('25567')
+  expect(screen.getByPlaceholderText('Path to installed server file')).toHaveValue('C:\\synthetic\\server.jar')
+  expect(screen.queryByRole('button', { name: 'Show recovery copies on this PC' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Start recovery copy' })).not.toBeInTheDocument()
+  expect(requests).toEqual([
+    `/api/local/friend/${profile}/shared-world/recovery/separate`,
+    `/api/local/friend/${profile}/shared-world/recovery/separate/hosting/${proof.branchHash}`
+  ])
+})
+
 it('shares a signed fork and sends an exact proof only after local review', async () => {
   const sent: unknown[] = []
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {

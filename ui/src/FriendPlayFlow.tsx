@@ -152,6 +152,7 @@ export type FriendPlayFlowProps = {
   onRefresh?: () => void
   onOpenConnectionDoctor?: () => void
   startNotice?: ReactNode
+  localHostingAction?: ReactNode
   connectionDetails?: ReactNode
   requirements?: ReactNode
   showServerNotifications?: boolean
@@ -160,7 +161,7 @@ export type FriendPlayFlowProps = {
 
 // Compose the existing actions. No polling, implicit Start, query or game launch is added.
 export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction = null, nowMs, identityKey, onStart, onStop, onRefresh,
-  onOpenConnectionDoctor, startNotice, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
+  onOpenConnectionDoctor, startNotice, localHostingAction, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
   const headingId = useId()
   const [notificationsOpened, setNotificationsOpened] = useState(false)
   const connection = friendConnectionExplanation(snapshot, nowMs)
@@ -180,6 +181,7 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
       {(currentProfile?.state === 'Offline' || pendingAction === 'start' && currentProfile?.state === 'Starting') && permissions.currentAccess && onStart && <Button className="server-primary-action" disabled={busy || !permissions.actions.start.available}
         title={!permissions.actions.start.available ? permissions.actions.start.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.start.available) onStart() }}><Icon name={pendingAction === 'start' ? 'loader' : 'play'} />{pendingAction === 'start' ? 'Starting…' : 'Start server'}</Button>}
+      {localHostingAction}
       {canJoin && currentProfile && <OpenGameButton profileId={profile.id} kind={currentProfile.gameKind ?? currentProfile.kind}
         connectionId={snapshot.connectionId} identityKey={identityKey} available={!busy}
         disabledReason="Wait for the current action to finish." />}

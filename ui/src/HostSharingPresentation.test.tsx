@@ -20,9 +20,9 @@ const noHandoff = { pending: false, code: 'NoPendingHandoff', message: 'No pendi
   successorDeviceId: null, finalVersion: null, receiptConfirmed: false, canComplete: false, canCancel: false }
 
 function setup({ enabled = true, canManage = true, authority = null, signedGrants = emptyGrants,
-  device = friend, rollingBackupEnabled = true }:
+  device = friend, rollingBackupEnabled = true, denyGrantChange = false }:
   { enabled?: boolean; canManage?: boolean; authority?: unknown; signedGrants?: Grants;
-    device?: Device; rollingBackupEnabled?: boolean } = {}) {
+    device?: Device; rollingBackupEnabled?: boolean; denyGrantChange?: boolean } = {}) {
   const status = { enabled, canManageSharing: canManage, authority, confirmedCopies: 1, error: null,
     latest: { number: 3, versionHash: 'A'.repeat(64), createdUtc: '2020-01-01T00:00:00Z', captureKind: 'PostStopBackup' },
     liveSave: { available: false, message: 'This installation needs its private save test.', code: 'GameAcceptanceRequired', game: 'Valheim' } }
@@ -35,7 +35,11 @@ function setup({ enabled = true, canManage = true, authority = null, signedGrant
     if (init?.method) {
       const body: unknown = init.body == null ? null : JSON.parse(String(init.body))
       mutations.push({ path: url, method: init.method, body })
-      if (url === grantsPath) roster.members[0].grants = (body as { grants: Grants }).grants
+      if (url === grantsPath) {
+        if (denyGrantChange) return reply({ ok: false, code: 'PermissionDenied', message: 'Sharing permission change denied.' })
+        roster.members[0].grants = (body as { grants: Grants }).grants
+        if (roster.members[0].grants.receive && roster.members[0].grants.eligibleHost) status.enabled = true
+      }
       else if (url === base) status.enabled = (body as { enabled: boolean }).enabled
       else if (url === `${base}/governance`) {
         roster.ownerOverride = (body as { ownerOverride: boolean }).ownerOverride
@@ -69,7 +73,7 @@ async function openSharing() {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('Host sharing presentation', () => {
-  it('opens People first with separate everyday grants and keeps advanced controls out of the initial view', async () => {
+  it('opens People with one hosting permission per PC and keeps individual grants and identity under Advanced', async () => {
     const { mutations } = setup()
     expect(screen.queryByRole('region', { name: 'Live save sharing' })).not.toBeInTheDocument()
     const { dialog, opener } = await openSharing()
@@ -78,13 +82,13 @@ describe('Host sharing presentation', () => {
     expect(within(navigation).getAllByRole('button')).toHaveLength(3)
     expect(within(dialog).getByRole('checkbox', { name: 'Share completed saves from this server' })).toBeChecked()
     const person = within(dialog).getByRole('article', { name: 'Mira PC sharing permissions' })
-    expect(within(person).getByText('Signing identity enrolled')).toBeInTheDocument()
-    expect(within(person).getByText('Receive saves')).toBeInTheDocument()
-    expect(within(person).getByText('Host on this PC')).toBeInTheDocument()
-    expect(within(person).getByRole('checkbox', { name: 'Receive for Mira PC' })).toBeEnabled()
-    expect(within(person).getByRole('checkbox', { name: 'Eligible host for Mira PC' })).not.toBeChecked()
+    expect(within(person).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeEnabled()
+    expect(within(person).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
+    expect(within(person).queryByRole('checkbox', { name: 'Eligible host for Mira PC' })).not.toBeInTheDocument()
+    expect(within(person).getByRole('checkbox', { name: 'Receive for Mira PC' })).not.toBeVisible()
     expect(within(person).getByRole('checkbox', { name: 'Forward verified saves for Mira PC' })).not.toBeVisible()
-    expect(within(person).getByText('More permissions for Mira PC').closest('details')).not.toHaveAttribute('open')
+    expect(within(person).getByText('Advanced permissions for Mira PC').closest('details')).not.toHaveAttribute('open')
+    expect(within(person).getByText('Signing identity for Mira PC')).not.toBeVisible()
     expect(within(dialog).queryByRole('region', { name: 'Resolve competing copies' })).not.toBeInTheDocument()
     expect(mutations).toEqual([])
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
@@ -96,47 +100,140 @@ describe('Host sharing presentation', () => {
     const signedGrants = { ...emptyGrants, recoveryVoter: true }
     const { mutations, changed } = setup({ signedGrants })
     const { dialog } = await openSharing()
+    fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
     const receive = within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })
     fireEvent.click(receive)
     expect(within(dialog).getByRole('button', { name: 'Done' })).toBeDisabled()
-    expect(within(dialog).getByRole('checkbox', { name: 'Eligible host for Mira PC' })).toBeDisabled()
+    expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeDisabled()
     await waitFor(() => expect(receive).toBeChecked())
     expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
       grants: { ...signedGrants, receive: true },
     } }])
     expect(changed).toHaveBeenCalledTimes(1)
-    expect(within(dialog).getByRole('checkbox', { name: 'Eligible host for Mira PC' })).not.toBeChecked()
-    fireEvent.click(within(dialog).getByText('More permissions for Mira PC'))
+    expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
+    expect(within(dialog).getByText('Copies only')).toBeInTheDocument()
     expect(within(dialog).getByRole('checkbox', { name: 'Recovery voter for Mira PC' })).toBeChecked()
     expect(within(dialog).getByRole('checkbox', { name: 'Forward verified saves for Mira PC' })).not.toBeChecked()
     expect(within(dialog).getByText(/Receiving stays off until that PC's owner opts in/)).toBeInTheDocument()
   })
 
-  it('keeps completed-save enablement separate from every per-PC grant', async () => {
+  it('grants receiving and hosting in one request from fresh signed permissions without adding advanced rights', async () => {
+    const { mutations, roster, changed } = setup()
+    const { dialog } = await openSharing()
+    roster.members[0].grants = { ...emptyGrants, recoveryVoter: true }
+    const hosting = within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })
+    fireEvent.click(hosting)
+    await waitFor(() => expect(hosting).toBeChecked())
+    expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
+      grants: { ...emptyGrants, receive: true, eligibleHost: true, recoveryVoter: true },
+    } }])
+    expect(changed).toHaveBeenCalledTimes(1)
+    expect(within(dialog).getByText('Hosting allowed')).toBeInTheDocument()
+    expect(within(dialog).getByText(/Your friend approves storage and finishes setup before Start/)).toBeInTheDocument()
+  })
+
+  it('withdraws hosting while preserving receiving, existing advanced rights and already received saves', async () => {
+    const signedGrants = { ...emptyGrants, receive: true, eligibleHost: true, reshare: true, manageSharing: true }
+    const { mutations } = setup({ signedGrants })
+    const { dialog } = await openSharing()
+    const hosting = within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })
+    fireEvent.click(hosting)
+    await waitFor(() => expect(hosting).not.toBeChecked())
+    expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
+      grants: { ...signedGrants, eligibleHost: false },
+    } }])
+    expect(within(dialog).getByText('Copies only')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
+    expect(within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })).toBeChecked()
+    expect(within(dialog).getByText(/Copies already received stay on that PC/)).toBeInTheDocument()
+  })
+
+  it('removes receiving and hosting together when Receive is withdrawn in Advanced', async () => {
+    const signedGrants = { ...emptyGrants, receive: true, eligibleHost: true, recoveryVoter: true }
+    const { mutations } = setup({ signedGrants })
+    const { dialog } = await openSharing()
+    fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
+    const receive = within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })
+    fireEvent.click(receive)
+    await waitFor(() => expect(receive).not.toBeChecked())
+    expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
+    expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
+      grants: { ...signedGrants, receive: false, eligibleHost: false },
+    } }])
+  })
+
+  it('does not turn an older hosting-only grant into hosting when the owner selects Receive in Advanced', async () => {
+    const signedGrants = { ...emptyGrants, eligibleHost: true }
+    const { mutations } = setup({ signedGrants })
+    const { dialog } = await openSharing()
+    const hosting = within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })
+    expect(hosting).not.toBeChecked()
+    fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
+    const receive = within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })
+    fireEvent.click(receive)
+    await waitFor(() => expect(receive).toBeChecked())
+    expect(hosting).not.toBeChecked()
+    expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
+      grants: { ...emptyGrants, receive: true },
+    } }])
+  })
+
+  it('keeps the authoritative permission visible and reports a denied withdrawal', async () => {
+    const signedGrants = { ...emptyGrants, receive: true, eligibleHost: true }
+    const { mutations } = setup({ signedGrants, denyGrantChange: true })
+    const { dialog } = await openSharing()
+    const hosting = within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })
+    fireEvent.click(hosting)
+    expect(await within(dialog).findByText('Sharing permission change denied.')).toBeInTheDocument()
+    await waitFor(() => expect(hosting).toBeEnabled())
+    expect(hosting).toBeChecked()
+    expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
+      grants: { ...signedGrants, eligibleHost: false },
+    } }])
+  })
+
+  it('keeps the advanced completed-save switch separate without blocking the primary hosting permission', async () => {
     const { mutations } = setup({ enabled: false })
     await screen.findByText('Sharing off')
     fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
     const dialog = screen.getByRole('dialog', { name: 'Manage sharing' })
     const sharing = within(dialog).getByRole('checkbox', { name: 'Share completed saves from this server' })
     expect(sharing).not.toBeChecked()
-    expect(within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })).toBeDisabled()
+    expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeEnabled()
     fireEvent.click(sharing)
     await waitFor(() => expect(sharing).toBeChecked())
     expect(mutations).toEqual([{ path: base, method: 'PUT', body: { enabled: true } }])
     expect(within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })).not.toBeChecked()
-    expect(within(dialog).getByRole('checkbox', { name: 'Eligible host for Mira PC' })).not.toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
+  })
+
+  it('offers one direct hosting action while sharing and rolling backup are off', async () => {
+    const { mutations, changed } = setup({ enabled: false, rollingBackupEnabled: false })
+    await screen.findByText('Sharing off')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const people = screen.getByRole('region', { name: 'Who can host this save' })
+    const hosting = within(people).getByRole('checkbox', { name: 'Can host this save for Mira PC' })
+    expect(hosting).toBeEnabled()
+    fireEvent.click(hosting)
+    await waitFor(() => expect(hosting).toBeChecked())
+    expect(await screen.findByText('Sharing on')).toBeInTheDocument()
+    expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: {
+      grants: { ...emptyGrants, receive: true, eligibleHost: true },
+    } }])
+    expect(changed).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('keeps forwarding and owner decision changes explicit in their own advanced controls', async () => {
     const signedGrants = { ...emptyGrants, receive: true, recoveryVoter: true }
     const { mutations, roster } = setup({ signedGrants })
     const { dialog } = await openSharing()
-    fireEvent.click(within(dialog).getByText('More permissions for Mira PC'))
+    fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
     const forwarding = within(dialog).getByRole('checkbox', { name: 'Forward verified saves for Mira PC' })
     fireEvent.click(forwarding)
     await waitFor(() => expect(forwarding).toBeChecked())
     expect(mutations).toEqual([{ path: grantsPath, method: 'PUT', body: { grants: { ...signedGrants, reshare: true } } }])
-    expect(within(dialog).getByRole('checkbox', { name: 'Eligible host for Mira PC' })).not.toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
     fireEvent.click(within(dialog).getByText('Owner decision rules'))
     const override = within(dialog).getByRole('checkbox', { name: 'Owner has final say on save conflicts' })
     expect(override).toBeChecked()
@@ -159,8 +256,8 @@ describe('Host sharing presentation', () => {
       const { dialog } = await openSharing()
       expect(within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })).toBeChecked()
       expect(within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })).toBeDisabled()
-      expect(within(dialog).getByRole('checkbox', { name: 'Eligible host for Mira PC' })).toBeDisabled()
-      fireEvent.click(within(dialog).getByText('More permissions for Mira PC'))
+      expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeDisabled()
+      fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
       expect(within(dialog).getByRole('checkbox', { name: 'Forward verified saves for Mira PC' })).toBeDisabled()
       if (condition !== 'expired PC') expect(within(dialog).getByRole('checkbox', { name: 'Share completed saves from this server' })).toBeDisabled()
       expect(mutations).toEqual([])
@@ -192,6 +289,7 @@ describe('Host sharing presentation', () => {
   it('retains signing identity reset as a separate explicit action without widening grants', async () => {
     const { mutations, changed } = setup({ signedGrants: { ...emptyGrants, receive: true } })
     const { dialog } = await openSharing()
+    fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
     fireEvent.click(within(dialog).getByText('Signing identity for Mira PC'))
     expect(mutations).toEqual([])
     fireEvent.click(within(dialog).getByRole('button', { name: "Reset Mira PC's signing identity and grants" }))
@@ -213,10 +311,10 @@ describe('Host sharing presentation', () => {
       'Mira PC sharing permissions', 'Pending PC sharing permissions', 'Expired PC sharing permissions',
     ])
     const pendingCard = screen.getByRole('article', { name: 'Pending PC sharing permissions' })
-    expect(within(pendingCard).getByText('Signing identity pending')).toBeInTheDocument()
+    expect(within(pendingCard).getByText('Waiting for friend')).toBeInTheDocument()
     expect(within(pendingCard).getByRole('checkbox', { name: 'Receive for Pending PC' })).toBeChecked()
-    expect(within(pendingCard).getByRole('checkbox', { name: 'Eligible host for Pending PC' })).toBeChecked()
-    expect(within(pendingCard).getByText(/Checked permissions are saved choices, awaiting your friend's signing enrollment/)).toHaveTextContent('open TogetherServer and connect to this Host')
+    expect(within(pendingCard).getByRole('checkbox', { name: 'Can host this save for Pending PC' })).toBeChecked()
+    expect(within(pendingCard).getByText(/Ask your friend to open TogetherServer/)).toHaveTextContent('connect to this Host')
     expect(within(pendingCard).getByText(/Receiving also needs their local consent/)).toBeInTheDocument()
     expect(change).not.toHaveBeenCalled()
   })

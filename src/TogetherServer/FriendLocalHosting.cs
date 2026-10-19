@@ -1,0 +1,278 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+
+namespace TogetherServer;
+
+public sealed record LocalHostingStep(string Key, string State, string Message);
+public sealed record LocalHostingStatus(bool Ok, string Code, string Message,
+    bool Allowed, bool Consented, string? Game, string Name, bool NeedsServerFile,
+    bool NeedsPassword, string? ServerFile, string? GameVersion, int GamePort, int ControlPort,
+    Guid? LocalProfileId, string? BranchHash, bool ReadyForManualStart, bool Running,
+    IReadOnlyList<LocalHostingStep> Steps);
+public sealed record LocalHostingPrepareRequest(bool AllowReceiving, bool AcceptSplitWarning,
+    string? ServerFile = null, string? GamePassword = null);
+
+// One local action composes the existing signed-grant, receive, fresh restore
+// and Finish gates. It never starts a process or changes an incoming listener.
+internal sealed class FriendLocalHostingService(LocalData data, FriendService friend, HostManager manager,
+    Func<string, IReadOnlyList<string>>? discoverServers = null, LocalHostingRouteCheck? routeCheck = null)
+{
+    private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
+        JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;
+
+    internal static bool CurrentSignedControlRoute(bool verified, WorldSeparateCopyBranch? branch,
+        LocalHostingRouteEvidence? current) => verified && branch is not null &&
+        current?.Identity is { Enabled: true, Active: true, ListenerOwned: true,
+            ListenerState: CompanionListenerStates.Listening } identity &&
+        identity.Endpoint.TrimEnd('/') == branch.Offer.Proposal.CandidateAddress.TrimEnd('/') &&
+        string.Equals(identity.CertificateFingerprint, branch.Offer.CandidateTlsFingerprint, StringComparison.OrdinalIgnoreCase);
+
+    internal static LocalHostingPrepareRequest ParseRequest(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length is 0 or > 8192) throw new InvalidDataException("The preparation request is invalid.");
+        using var document = JsonDocument.Parse(bytes.ToArray(), new() { MaxDepth = 4 });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Use a fixed preparation request.");
+        var fields = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var field in root.EnumerateObject())
+        {
+            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword"))
+                throw new InvalidDataException("The preparation request contains unexpected fields.");
+            if (field.Name is "allowReceiving" or "acceptSplitWarning")
+            {
+                if (field.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    throw new InvalidDataException("The preparation choices must be explicit.");
+            }
+            else if (field.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                throw new InvalidDataException("The local setup field is invalid.");
+        }
+        if (!fields.Contains("allowReceiving") || !fields.Contains("acceptSplitWarning"))
+            throw new InvalidDataException("The preparation choices are required.");
+        string? Optional(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        var path = Optional("serverFile");
+        var password = Optional("gamePassword");
+        if (path is not null && (path.Length is 0 or > 4096 || path.Any(char.IsControl) || !Path.IsPathFullyQualified(path)) ||
+            password is not null && (password.Length is < 5 or > 64 || password.Any(char.IsControl)))
+            throw new InvalidDataException("The local setup field is invalid.");
+        return new(root.GetProperty("allowReceiving").GetBoolean(), root.GetProperty("acceptSplitWarning").GetBoolean(), path, password);
+    }
+
+    internal async Task<LocalHostingStatus> StatusAsync(Guid profileId,
+        CancellationToken cancellationToken = default, string? selectedFile = null)
+    {
+        using var connection = friend.RetainLocalHostingConnection();
+        return connection is null ? Unavailable("NotPaired", "Choose a saved Host connection first.") :
+            await StatusForConnectionAsync(connection, profileId, cancellationToken, selectedFile);
+    }
+
+    private async Task<LocalHostingStatus> StatusForConnectionAsync(FriendService.LocalHostingConnection connection,
+        Guid profileId, CancellationToken cancellationToken, string? selectedFile = null)
+    {
+        var access = await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
+        var snapshot = await manager.CompanionSnapshotAsync();
+        var branches = connection.Link.SeparateCopyBranches(profileId);
+        var restored = snapshot.Settings.Profiles.Where(profile => profile.SeparateCopySourceProfileId == profileId &&
+            branches.Any(branch => branch.BranchHash == profile.SeparateCopyBranchHash)).ToArray();
+        var runningProfiles = restored.Where(profile => snapshot.Runs.Any(run => run.ProfileId == profile.Id &&
+            run.ProcessId is not null)).ToArray();
+        var existing = runningProfiles.Length == 1 ? runningProfiles[0] : restored.Length == 1 ? restored[0] : null;
+        var choices = existing is null && restored.Length == 0 ? branches.Where(branch =>
+            branch.Offer.Version.VersionHash == access.Version?.VersionHash).ToArray() : [];
+        var branch = existing is not null ? branches.Single(item => item.BranchHash == existing.SeparateCopyBranchHash) :
+            choices.Length == 1 ? choices[0] : null;
+        var ambiguous = runningProfiles.Length > 1 || restored.Length > 1 && existing is null || choices.Length > 1;
+        var version = branch?.Offer.Version ?? access.Version;
+        var game = version?.Game ?? access.Game;
+        var gameVersion = version?.PortableSetup.GameVersion;
+        var manualSetup = existing is null && (game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock ||
+            (version?.PortableSetup.AddOns?.Count ?? 0) > 0);
+        var serverFile = existing is not null ? existing.Kind == GameKinds.MinecraftJava ?
+            existing.Minecraft?.ServerJarPath : existing.ExecutablePath :
+            version is null || manualSetup ? selectedFile : await Task.Run(() => FindServer(version, snapshot.Settings.Profiles, selectedFile), cancellationToken);
+        if (serverFile is not null && (!File.Exists(serverFile) || !ManagedImportFiles.PlainFile(serverFile))) serverFile = null;
+        var ports = version is null ? new LocalHostingPortPlan(2456, snapshot.Settings.CompanionPort, null, false) :
+            await manager.LocalHostingPortsAsync(version, existing, cancellationToken);
+        var hosted = branch is null ? null : await manager.RecordedLocalHostingStatusAsync(profileId,
+            branch.BranchHash, cancellationToken);
+        var running = hosted?.Running == true;
+        var saveReady = hosted is { Restored: true, ReviewRequired: false } && (hosted.ReadyForManualStart || running);
+        var ready = access.Allowed && access.Consented && !ambiguous && !running &&
+            saveReady && ports.Available && serverFile is not null && !manualSetup &&
+            hosted is { ReadyForManualStart: true };
+        var endpointValid = HostIdentity.TryEndpoint(snapshot.Settings.CompanionEndpoint, out var endpoint);
+        var localOnly = endpointValid && System.Net.IPAddress.IsLoopback(System.Net.IPAddress.Parse(endpoint.Host));
+        var currentRoute = routeCheck is null ? null : await routeCheck.CurrentAsync(cancellationToken);
+        var connectionStep = CurrentSignedControlRoute(hosted?.ControlRouteVerified == true, branch, currentRoute) ? new LocalHostingStep("connection", "Ready",
+            "Another approved PC verified this local history's pinned HTTPS control route. A real game join remains separate.") :
+            currentRoute is not null ? currentRoute.Step :
+            new LocalHostingStep("connection", "Unknown", !endpointValid || localOnly ?
+                "Hosting can be prepared for this PC. Configure this PC's Friend connection before inviting others; no incoming listener is enabled here." :
+                "This PC has an address configured. A real incoming connection and game join still need checking; preparation changes no network settings.");
+        var serverMessage = manualSetup ?
+            "This save needs a matching Minecraft server setup or reviewed add-ons. Open shared-save setup to finish it; installation requires your own terms consent." :
+            serverFile is null ? "Install or select the matching dedicated server already on this PC. No command-line tool is required for an installed Valheim server." :
+            existing is not null ? "The server file passed preparation. Start repeats its current checks." :
+            "The matching server file is available on this PC. Start repeats its checks.";
+        var code = ambiguous ? "HostingHistoryChoiceRequired" : !access.Allowed ? access.Code :
+            hosted?.ReviewRequired == true ? "LocalHostingReviewRequired" : ready ? "LocalHostingPrepared" :
+            running ? "LocalHostingRunning" : manualSetup ? "LocalServerSetupRequired" :
+            !access.Consented ? "LocalConsentRequired" : !saveReady ? hosted?.Restored == true ?
+                "LocalHostingPreparationRequired" : "SharedSaveRequired" :
+            serverFile is null ? "InstalledServerRequired" : !ports.Available ? "LocalPortsRequired" : "LocalHostingPreparationRequired";
+        var message = ambiguous ? "More than one local history is available. Choose a history in shared-save setup; every save is preserved." :
+            !access.Allowed ? access.Message : hosted?.ReviewRequired == true ? hosted.Message :
+            running ? "This shared save is already hosted on this PC. Its local world is preserved." :
+            ready ? "This PC is prepared. Start server remains your explicit next action." :
+            manualSetup ? serverMessage : "Prepare this PC to receive a verified save and finish local hosting checks.";
+        var result = new LocalHostingStatus(ready || running, code, message, access.Allowed, access.Consented, game,
+            access.Name, version is not null && serverFile is null && !manualSetup, false, serverFile, gameVersion,
+            ports.GamePort, ports.ControlPort, existing?.Id ?? hosted?.LocalProfileId, branch?.BranchHash,
+            ready, running,
+            [new("permission", access.Allowed ? "Ready" : "ActionRequired", access.Message),
+             new("server", serverFile is not null && !manualSetup ? "Ready" : "ActionRequired", serverMessage),
+             new("save", saveReady ? "Ready" : "ActionRequired", ambiguous ? "Choose an exact shared history before continuing." :
+                saveReady ? "Preparation verified this retained signed save. Start repeats current checks; existing local progress is preserved." :
+                hosted?.Restored == true ? "The existing local world is preserved. Prepare again to repeat its verification checks." :
+                !access.Consented ? "Prepare can allow shared saves on this PC after your consent." : "Receive a complete verified save from an approved reachable PC."),
+             new("ports", ports.Available ? "Ready" : "ActionRequired", running ?
+                $"This PC's running server uses game port {ports.GamePort}." : ports.Available ?
+                $"Local game port {ports.GamePort} is selected; Start repeats every declared game-port check." : "Local game ports need attention before preparation."),
+             connectionStep]);
+        return friend.CurrentLocalHostingConnection(connection) ? result :
+            Unavailable("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+    }
+
+    internal static LocalHostingStatus Unavailable(string code, string message) => new(false, code, message,
+        false, false, null, "Shared server", false, false, null, null, 2456, 5131, null, null, false, false,
+        [new("permission", "ActionRequired", message), new("server", "Unknown", "Check this PC's server setup."),
+         new("save", "Unknown", "No save was selected."), new("ports", "Unknown", "Local ports have not been checked."),
+         new("connection", "Unknown", "Incoming connections and game joins have not been checked.")]);
+
+    internal async Task<LocalHostingStatus> PrepareAsync(Guid profileId, LocalHostingPrepareRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var connection = friend.RetainLocalHostingConnection();
+        if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        var link = connection.Link;
+        bool SameConnection() => friend.CurrentLocalHostingConnection(connection);
+        Task<LocalHostingStatus> Status() => StatusForConnectionAsync(connection, profileId, cancellationToken, request.ServerFile);
+        async Task<LocalHostingStatus> Result(string code, string message, bool? ok = false)
+        {
+            var status = await Status();
+            return status with { Ok = ok ?? status.Ok, Code = code, Message = message,
+                ReadyForManualStart = (ok ?? status.Ok) && status.ReadyForManualStart };
+        }
+        try
+        {
+            var access = await link.LocalHostingAccessAsync(profileId, true, cancellationToken);
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+            if (!access.Allowed) return await Result(access.Code, access.Message);
+            if (!access.Consented)
+            {
+                if (!request.AllowReceiving) return await Result("LocalConsentRequired", "Allow shared saves on this PC to prepare hosting.");
+                var consent = await link.SetSharedWorldConsentAsync(profileId, true);
+                if (!consent.Ok) return await Result(consent.Code, "Shared-save storage consent could not be saved. Review it before continuing.");
+            }
+            var status = await Status();
+            if (status.Code == "HostingHistoryChoiceRequired" || status.Running) return status;
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+            // Once a local world exists, its own history wins this local resume
+            // decision. Never pull a newer source over that world or re-restore it.
+            if (status.LocalProfileId is null && link.View().State is "Connected" or "Disabled")
+            {
+                var pulled = await link.PullSharedWorldAsync(profileId, cancellationToken);
+                if (!pulled.Ok && pulled.Code != "NetworkUnavailable")
+                    return await Result(pulled.Code, "The shared save could not be verified. Review shared-save status before hosting.");
+            }
+            access = await link.LocalHostingAccessAsync(profileId, false, cancellationToken, verifyFiles: status.LocalProfileId is null);
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+            if (!access.Allowed || !access.Consented) return await Result("HostingPermissionChanged", "Sharing permission or local consent changed. Review this server again.");
+            status = await Status();
+            var manualSetup = status.Code == "LocalServerSetupRequired";
+            if (status.LocalProfileId is null && !access.SaveVerified)
+                return await Result("SharedSaveRequired", "A complete verified save is not available yet. Keep an approved source reachable and retry.");
+            if (status.ServerFile is null && !manualSetup)
+                return await Result("InstalledServerRequired", "Install or select the matching dedicated server, then prepare again.");
+            if (!request.AcceptSplitWarning && status.BranchHash is null)
+                return await Result("SplitWarningRequired", "Confirm that this PC will keep a separate history if another Host is running.");
+            if (!await manager.EnsureLocalHostingEndpointAsync(cancellationToken))
+                return await Result("LocalConnectionSetupRequired", "Review this PC's Friend connection address before preparing hosting.");
+            if (status.BranchHash is null)
+            {
+                var offer = await link.PrepareSoloRecoveryOfferAsync(profileId);
+                if (!offer.Ok) return await Result(offer.Code, "The exact signed save could not be prepared. Review shared-save status.");
+                if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+                var declared = await link.DeclareSoloRecoveryAsync(profileId, request.AcceptSplitWarning);
+                if (!declared.Ok) return await Result(declared.Code, "This PC's signed local continuation could not be recorded. Existing saves were kept.");
+                status = await Status();
+            }
+            if (manualSetup)
+            {
+                if (routeCheck is not null) await routeCheck.CheckAsync(cancellationToken);
+                return await Status();
+            }
+            var branch = link.SeparateCopyBranches(profileId).SingleOrDefault(item => item.BranchHash == status.BranchHash);
+            if (branch is null || !SameConnection()) return await Result("LocalHostingReviewRequired", "The selected shared history changed. Existing saves were kept.");
+            var snapshot = await manager.CompanionSnapshotAsync();
+            var existing = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == status.LocalProfileId);
+            var ports = await manager.LocalHostingPortsAsync(branch.Offer.Version, existing, cancellationToken);
+            if (!ports.Available) return await Result("LocalPortsRequired", "A complete local game-port plan is unavailable. Review the running servers and retry.");
+            var setup = new TakeoverLocalSetup(status.ServerFile, branch.Offer.Version.PortableSetup.GameVersion,
+                branch.Offer.Version.PortableSetup.AddOns ?? [], true, ports.ControlPort, ports.GamePort);
+            if (existing is null)
+            {
+                var password = branch.Offer.Version.Game == GameKinds.Valheim ? request.GamePassword ??
+                    Convert.ToHexString(RandomNumberGenerator.GetBytes(12)) : null;
+                var restored = await manager.RestoreSeparateCopyAsync(profileId, new(branch.BranchHash, setup,
+                    access.Name, access.Name, password, FactorioRconPort: ports.FactorioRconPort), cancellationToken);
+                if (!restored.Ok) return await Result(restored.Code, restored.PendingChecks?.FirstOrDefault() ?? restored.Message);
+            }
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+            var finished = await manager.FinishSeparateCopyAsync(profileId, new(branch.BranchHash, setup));
+            if (!finished.Ok)
+            {
+                await manager.InvalidateLocalHostingPreparationAsync(profileId, branch.BranchHash, cancellationToken);
+                return await Result(finished.Code, finished.Message);
+            }
+            if (routeCheck is not null) await routeCheck.CheckAsync(cancellationToken);
+            return await Result("LocalHostingPrepared", "This PC is prepared with a verified save. Choose Start server to host it.", null);
+        }
+        catch (Exception error) when (ExpectedFailure(error))
+        { return await Result("LocalHostingReviewRequired", "Preparation stopped safely. Existing saves were kept; review the checks and retry."); }
+    }
+
+    private string? FindServer(SharedWorldVersion version, IReadOnlyList<ServerProfile> profiles, string? selectedFile)
+    {
+        var candidates = new List<string>();
+        if (selectedFile is not null) candidates.Add(selectedFile);
+        candidates.AddRange(profiles.Where(profile => profile.Kind == version.Game)
+            .Select(profile => version.Game == GameKinds.MinecraftJava ? profile.Minecraft?.ServerJarPath ?? "" : profile.ExecutablePath));
+        if (discoverServers is not null) candidates.AddRange(discoverServers(version.Game));
+        else if (version.Game == GameKinds.Valheim)
+            candidates.AddRange(ValheimSetup.Scan(includeWorlds: false).Installations.Select(item => item.ExecutablePath));
+        else if (version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock)
+            candidates.AddRange(MinecraftSetup.ScanManaged(data, profiles).Installations.Where(item => item.Kind == version.Game)
+                .Select(item => item.ArtifactPath));
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (!Path.IsPathFullyQualified(candidate) || !File.Exists(candidate) ||
+                    !ManagedImportFiles.PlainFile(candidate)) continue;
+                if (version.Game == GameKinds.Fixture) return candidate;
+                if (version.Game == GameKinds.MinecraftJava)
+                {
+                    if (!MinecraftSetup.IsSupportedVanillaServerJar(candidate, Path.GetDirectoryName(candidate)!)) continue;
+                    using var stream = File.OpenRead(candidate);
+                    if (string.Equals(Convert.ToHexString(SHA256.HashData(stream)), version.PortableSetup.JavaServerJarSha256,
+                        StringComparison.OrdinalIgnoreCase)) return candidate;
+                }
+                else if (version.PortableSetup.GameVersion is { Length: > 0 } required && required != "Unknown" &&
+                    ServerAddOns.GameVersion(new() { Kind = version.Game, ExecutablePath = candidate }) == required)
+                    return candidate;
+            }
+            catch (Exception error) when (ExpectedFailure(error)) { }
+        }
+        return null;
+    }
+}

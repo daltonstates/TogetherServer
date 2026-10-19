@@ -90,10 +90,13 @@ function action(value: unknown): Action {
   return item as Action
 }
 
-export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game, onBrowseServerFile, expanded = false, onOpenHostControls, onOpenSeparateHostControls, apiBase }:
+export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game, onBrowseServerFile, expanded = false, onOpenHostControls, onOpenSeparateHostControls, apiBase,
+  selectedBranchHash, suggestedSetup, allowStart = true, onPrepared, onBusyChange }:
   { profileId: string; separateCopies: number; game?: SharedGame;
     onBrowseServerFile?: (game: SharedGame) => Promise<string | null>;
-    expanded?: boolean; onOpenHostControls?: () => void; onOpenSeparateHostControls?: (localProfileId: string) => void; apiBase?: string }) {
+    expanded?: boolean; onOpenHostControls?: () => void; onOpenSeparateHostControls?: (localProfileId: string) => void; apiBase?: string;
+    selectedBranchHash?: string; suggestedSetup?: { serverFile: string | null; gameVersion: string | null; gamePort: number; controlPort: number };
+    allowStart?: boolean; onPrepared?: () => void; onBusyChange?: (busy: boolean) => void }) {
   const base = apiBase ?? `/api/local/friend/${profileId}/shared-world/recovery/separate`
   const scope = useRef(profileId)
   scope.current = profileId
@@ -115,17 +118,37 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   const [result, setResult] = useState<RouteCheck | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false) }, [busy, onBusyChange])
   const effectiveGame = game ?? shown?.offer.version.game
   const fields = futureHostFields(effectiveGame)
   const knownGame = ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(effectiveGame ?? '')
   useEffect(() => { if (!game) setGamePort(futureHostFields(effectiveGame).gamePort) }, [effectiveGame, game])
   const noticeScope = JSON.stringify([profileId, game, shown?.branchHash])
   useEffect(() => {
-    setOwnBranches([]); setShown(null); setHosting(null); setServerFile(''); setGameVersion('')
-    setControlPort('5131'); setGamePort(futureHostFields(game).gamePort); setNewPasswordSet(false); setGamePassword('')
+    setOwnBranches([]); setShown(null); setHosting(null); setServerFile(suggestedSetup?.serverFile ?? ''); setGameVersion(suggestedSetup?.gameVersion ?? '')
+    setControlPort(String(suggestedSetup?.controlPort ?? 5131)); setGamePort(String(suggestedSetup?.gamePort ?? futureHostFields(game).gamePort)); setNewPasswordSet(false); setGamePassword('')
     setExecutable(''); setFactorioRconPort('27015'); setSplitAccepted(false); setHostAction(null)
     setPasted(''); setResult(null); setError(''); setBusy(false)
+  // Suggested values seed a new world only; background checks must not replace a draft.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileId, game])
+  useEffect(() => {
+    if (!selectedBranchHash) return
+    let active = true
+    const abort = new AbortController()
+    setBusy(true); setError('')
+    void (async () => {
+      try {
+        const list = await getLocalJson(base, value => branches(value, profileId), abort.signal)
+        const selected = list.find(item => item.branchHash === selectedBranchHash)
+        if (!selected) throw new Error('The exact prepared save is unavailable. Retry local hosting checks.')
+        const current = await getLocalJson(`${base}/hosting/${selected.branchHash}`, hostStatus, abort.signal)
+        if (active) { setOwnBranches(list); setShown(selected); setHosting(current) }
+      } catch (cause) { if (active) setError(errorMessage(cause)) }
+      finally { if (active) setBusy(false) }
+    })()
+    return () => { active = false; abort.abort() }
+  }, [base, profileId, selectedBranchHash])
   const load = async () => {
     setBusy(true); setError('')
     try {
@@ -168,6 +191,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
         'POST', action, body)
       setHostAction(next)
       await refreshHost(shown)
+      if (next.ok && kind !== 'start') onPrepared?.()
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
@@ -186,11 +210,11 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
     } catch (cause) { if (scope.current === profileId) setError(errorMessage(cause)) }
     finally { if (scope.current === profileId) setBusy(false) }
   }
-  return <details className="shared-separate-copy" open={expanded || undefined}><summary>Recovery copies on this PC</summary>
+  return <details className="shared-separate-copy" open={expanded || undefined}><summary>{selectedBranchHash ? 'Finish the matching server setup' : 'Recovery copies on this PC'}</summary>
     <p>Recovery keeps a separate history. Restore locally, finish setup, then Start manually.</p>
     <details className="separate-copy-guidance"><summary>Recovery steps and route checks</summary>
       <p>Restore a signed recovery branch into a fresh local world, finish local setup, then choose Start manually. A second-PC route check is optional evidence; it does not settle the split or prove the game route.</p></details>
-    {separateCopies > 0 && <><Button className="secondary" disabled={busy}
+    {separateCopies > 0 && !selectedBranchHash && <><Button className="secondary" disabled={busy}
       onClick={() => void load()}>Show recovery copies on this PC</Button>
       {ownBranches.map(item => <div key={item.branchHash}>
         <p>Recovery save {item.offer.version.number} · captured {sharedSaveAge(item.offer.version.createdUtc)}. No age cutoff applies to a complete verified copy.</p>
@@ -241,7 +265,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
             hosting.restored ? 'finish' : 'restore')}>
             {hosting.restored ? 'Finish local setup checks' : 'Restore into a fresh managed world'}</Button></>}
         </div>
-        {hosting.readyForManualStart && <div className="separate-copy-start-review"><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Local setup passed. Game load, a real game join and saved restart remain unverified. Other sessions may still run; this copy does not change the group's default history.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
+        {hosting.readyForManualStart && allowStart && <div className="separate-copy-start-review"><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Local setup passed. Game load, a real game join and saved restart remain unverified. Other sessions may still run; this copy does not change the group's default history.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
           onChange={event => setSplitAccepted(event.target.checked)} /> I understand another server may still be running</label>
           <Button disabled={busy || !splitAccepted} onClick={() => void hostChange('start')}>
             Start recovery copy</Button></div>}
@@ -258,7 +282,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
       <Button className="text-button" disabled={busy} onClick={() => void select(shown)}>
         Refresh separate-copy status</Button>
     </section>}
-    <details hidden={!!apiBase}><summary>Optional check from another PC</summary>
+    <details hidden={!!apiBase || !!selectedBranchHash}><summary>Optional check from another PC</summary>
     <p>This checks a deliberately enabled pinned control listener. It is separate from solo recovery and game reachability.</p>
     <label>Proof code from candidate PC<TextArea rows={3}
       maxLength={512 * 1024} value={pasted} onChange={event => setPasted(event.target.value)} /></label>

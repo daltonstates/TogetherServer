@@ -90,6 +90,20 @@ describe('Friend state and permission explanations', () => {
 })
 
 describe('the composed play flow', () => {
+  it('places local hosting beside Start without granting remote Start permission', () => {
+    const stopped = { ...profile, state: 'Offline', joinAddress: null, canStart: false }
+    const hostHere = vi.fn()
+    render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [stopped] }} profile={stopped} nowMs={nowMs}
+      onStart={vi.fn()} showServerNotifications={false}
+      localHostingAction={<button onClick={hostHere}>Host on this PC</button>} />)
+    const start = screen.getByRole('button', { name: 'Start server' })
+    const local = screen.getByRole('button', { name: 'Host on this PC' })
+    expect(start).toBeDisabled()
+    expect(start.parentElement).toBe(local.parentElement)
+    fireEvent.click(local)
+    expect(hostHere).toHaveBeenCalledOnce()
+  })
+
   it('retains the Unknown-player Stop guard after dismissal and repeats the warning for another connection', () => {
     const onStop = vi.fn()
     const unknown = { ...profile, onlinePlayers: null, joinAddress: null }

@@ -1,5 +1,11 @@
 # TogetherServer
 
+Shared hosting starts with **Can host this save** on the owner's sharing page.
+Approved Friends get **Host on this PC** beside Start server, with guided
+installation, verified-copy and port checks in one dialog. See
+[simple shared hosting delivery](docs/30-SIMPLE-SHARED-HOSTING.md) for scope and
+acceptance boundaries.
+
 Shared worlds now retain their identity across Hosts. Approved app members can
 exchange signed addresses, sessions and save histories through reachable peers
 while the original owner is offline. Game-only friend/join codes do not enroll

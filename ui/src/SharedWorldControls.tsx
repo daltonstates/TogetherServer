@@ -513,17 +513,18 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
     } catch (error) { setMessage(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  const changeGrant = async (deviceId: string, field: keyof Grants, enabled: boolean) => {
+  const changeGrant = async (deviceId: string, changes: Partial<Grants>) => {
     setBusy(true); setMessage('')
     try {
       const current = await getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster)
       const signedGrants = current?.members.find(member => member.deviceId === deviceId)?.grants
       const pendingGrants = devices.find(device => device.id === deviceId)?.sharedWorldGrants?.[profileId]
-      const grants = { ...emptyGrants, ...(signedGrants ?? pendingGrants), [field]: enabled }
+      const grants = { ...emptyGrants, ...(signedGrants ?? pendingGrants), ...changes }
       const result = await changeJson(`/api/local/devices/${deviceId}/shared-world/${profileId}/grants`,
         'PUT', parseBasicResult, { grants })
       setMessage(result.message)
       await onGrantChanged()
+      setStatus(await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus))
       setRoster(await getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster))
     } catch (error) { setMessage(errorMessage(error)) }
     finally { setBusy(false) }
@@ -633,6 +634,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
           onClick={onOpenHostControls}><Icon name="server" />Open Host controls</Button>}
       </div>
     </section>
+    {!manageOpen && <section className="host-sharing-direct-people" aria-label="Who can host this save">
+      <h3>Who can host this save</h3>
+      <p>Choose an approved PC. Your friend gets Host on this PC beside Start server; the app prepares the save and checks their setup.</p>
+      <HostSharingPermissions profileId={profileId} devices={eligible} members={roster?.members ?? []}
+        enabled={status !== null} canManage={status?.canManageSharing ?? false} busy={busy} blocked={fenced || review}
+        onChange={changeGrant} onResetKey={resetKey} />
+    </section>}
     {authority?.state === 'ThisPcHost' && <p className="host-sharing-hint" role="status">This PC holds the verified current hosting decision.</p>}
     {status?.error && !manageOpen && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.error}</DismissibleNotice>}
     {message && !manageOpen && <DismissibleNotice as="p" scope={noticeScope} role="status">{message}</DismissibleNotice>}
@@ -699,7 +707,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
         <div className="host-sharing-pane-heading"><div><h3>People</h3><p>Choose what each approved PC can do with this world.</p></div>
           <span className="host-sharing-badge">{eligible.length} approved {eligible.length === 1 ? 'PC' : 'PCs'}</span></div>
         <HostSharingPermissions profileId={profileId} devices={eligible} members={roster?.members ?? []}
-          enabled={status?.enabled ?? false} canManage={status?.canManageSharing ?? false} busy={busy} blocked={fenced || review}
+          enabled={status !== null} canManage={status?.canManageSharing ?? false} busy={busy} blocked={fenced || review}
           onChange={changeGrant} onResetKey={resetKey} />
         <p className="host-sharing-hint">Permissions save immediately and are separate from Start, Stop and logs. Receiving stays off until that PC's owner opts in.</p>
         <details className="host-sharing-owner-choice"><summary>Owner decision rules</summary>

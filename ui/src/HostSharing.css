@@ -37,15 +37,16 @@
 .host-sharing-pane-heading p { margin: .3rem 0 0; color: var(--color-text-muted); }
 .host-sharing-people { display: grid; gap: .8rem; }
 .host-sharing-person { min-inline-size: 0; padding: .95rem; border: 1px solid var(--color-border); border-radius: .8rem; background: var(--color-surface-raised); }
-.host-sharing-person > header { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-block-end: .85rem; }
+.host-sharing-person > header { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-block-end: .65rem; }
 .host-sharing-person > header > div { flex: 1; min-inline-size: 8rem; }
 .host-sharing-person h4 { margin: 0; font-size: .9rem; }
 .host-sharing-person header p { margin: .2rem 0 0; color: var(--color-text-muted); font-size: .75rem; }
 .host-sharing-avatar { display: grid; place-items: center; flex: none; inline-size: 2.65rem; block-size: 2.65rem; border: 1px solid var(--color-accent-border); border-radius: .8rem; background: var(--color-accent-soft); color: var(--color-accent-text); font-size: .85rem; font-weight: 800; }
-.host-sharing-primary-permissions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
 .host-sharing-permission { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; min-inline-size: 0; padding: .8rem; border: 1px solid var(--color-border-subtle); border-radius: .6rem; background: var(--color-field); }
+.host-sharing-host-permission { align-items: center; border-color: var(--color-accent-border); background: var(--color-accent-soft); }
 .host-sharing-permission > span { display: grid; min-inline-size: 0; gap: .3rem; }
 .host-sharing-permission strong { color: var(--color-text); font-size: .8rem; }
+.host-sharing-host-permission strong { font-size: .9rem; }
 .host-sharing-permission small { color: var(--color-text-muted); font-size: .75rem; line-height: 1.5; }
 .host-sharing-permission > .ui-input { inline-size: 1.05rem; block-size: 1.05rem; margin: .15rem 0 0; flex: none; accent-color: var(--color-accent); }
 .host-sharing-permission:has(input:disabled) { opacity: .7; }
@@ -65,7 +66,6 @@
 .host-sharing-info-card p { margin: .5rem 0; color: var(--color-text-muted); }
 .host-sharing-pane :is(.ui-button, summary, .ui-input):focus-visible, .host-sharing-navigation > .ui-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 @media (max-width: 640px) {
-  .host-sharing-primary-permissions { grid-template-columns: minmax(0, 1fr); }
   .host-sharing-master, .host-sharing-pane { padding: .9rem; }
   .host-sharing-navigation { padding: .5rem; gap: .2rem; }
   .host-sharing-navigation > .ui-button { flex: 1 1 auto; justify-content: center; padding-inline: .5rem; }
