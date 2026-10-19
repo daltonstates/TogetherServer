@@ -41,7 +41,7 @@ function dateLabel(value: string | null | undefined) {
 }
 
 export function permissionSummary(permissions: PermissionValues): string {
-  const allowed = [permissions.canStart && 'Start', permissions.canStop && 'guarded Stop',
+  const allowed = [permissions.canStart && 'Start', permissions.canStop && 'Stop when empty',
     permissions.canStart && permissions.canStop && 'Restart',
     permissions.canExtendTimer && 'add shutdown time', permissions.canViewLogs && 'view logs'].filter(Boolean)
   return allowed.length ? allowed.join(' · ') : 'Status and connection details only'
@@ -62,12 +62,12 @@ export function effectiveDeviceAccess(device: Device, servers: readonly FriendAc
   else if (!device.paired) { state = 'Unpaired'; label = 'Not paired' }
   else if (device.approvalPending) { state = 'ApprovalPending'; label = 'Waiting for owner approval' }
   else if (device.accessExpired || (Number.isFinite(accessUntil) && accessUntil <= nowMs)) {
-    state = 'AccessExpired'; label = 'Owner access deadline passed'
+    state = 'AccessExpired'; label = 'Access time ended'
   } else if (Number.isFinite(credentialUntil) && credentialUntil <= nowMs) {
-    state = 'CredentialExpired'; label = 'Renewable credential expired'
+    state = 'CredentialExpired'; label = 'Saved access expired'
   } else if (!Number.isFinite(nowMs) || (device.accessExpiresUtc !== null && !Number.isFinite(accessUntil)) ||
       (device.credentialExpiresUtc !== null && !Number.isFinite(credentialUntil))) {
-    state = 'Unknown'; label = 'Access expiry could not be verified'
+    state = 'Unknown'; label = 'Access time unavailable'
   } else if (helper === 'RefreshNeeded') {
     state = 'RefreshNeeded'; label = 'Refresh needed after temporary helper access'
   }
@@ -86,10 +86,10 @@ export function effectiveDeviceAccess(device: Device, servers: readonly FriendAc
     state, label, helper, rows,
     connected: Number.isFinite(heartbeat) && heartbeat <= nowMs && nowMs - heartbeat <= 45_000,
     accessDeadline: device.accessExpiresUtc === null
-      ? device.accessExpired ? 'Owner access ended; deadline time unavailable' : 'No owner access deadline' :
-      `${device.accessExpired || accessUntil <= nowMs ? 'Owner access ended' : 'Owner access ends'}: ${dateLabel(device.accessExpiresUtc)}`,
-    credentialDeadline: device.credentialExpiresUtc === null ? 'Renewable credential expiry unavailable' :
-      `${credentialUntil <= nowMs ? 'Renewable credential expired' : 'Renewable credential expires'}: ${dateLabel(device.credentialExpiresUtc)}`
+      ? device.accessExpired ? 'Access ended; time unavailable' : 'No access time limit' :
+      `${device.accessExpired || accessUntil <= nowMs ? 'Access ended' : 'Access ends'}: ${dateLabel(device.accessExpiresUtc)}`,
+    credentialDeadline: device.credentialExpiresUtc === null ? 'Saved access expiry unavailable' :
+      `${credentialUntil <= nowMs ? 'Saved access expired' : 'Saved access expires'}: ${dateLabel(device.credentialExpiresUtc)}`
   }
 }
 
@@ -100,29 +100,29 @@ export function FriendAccessSummary({ device, servers, nowMs }: FriendAccessSumm
   const view = effectiveDeviceAccess(device, servers, nowMs)
   const exceptions = view.rows.filter(row => row.exception).length
   const grants = view.state === 'Available' && view.rows.length > 0
-    ? `Start: ${view.rows.filter(row => row.effectivePermissions?.canStart).length}/${view.rows.length} · Guarded Stop: ${view.rows.filter(row => row.effectivePermissions?.canStop).length}/${view.rows.length} · Restart: ${view.rows.filter(row => row.effectivePermissions?.canStart && row.effectivePermissions.canStop).length}/${view.rows.length} · Add time: ${view.rows.filter(row => row.effectivePermissions?.canExtendTimer).length}/${view.rows.length} · Logs: ${view.rows.filter(row => row.effectivePermissions?.canViewLogs).length}/${view.rows.length}`
+    ? `Start: ${view.rows.filter(row => row.effectivePermissions?.canStart).length}/${view.rows.length} · Stop when empty: ${view.rows.filter(row => row.effectivePermissions?.canStop).length}/${view.rows.length} · Restart: ${view.rows.filter(row => row.effectivePermissions?.canStart && row.effectivePermissions.canStop).length}/${view.rows.length} · Add time: ${view.rows.filter(row => row.effectivePermissions?.canExtendTimer).length}/${view.rows.length} · Logs: ${view.rows.filter(row => row.effectivePermissions?.canViewLogs).length}/${view.rows.length}`
     : ''
   return <section className="players-workspace friend-access-summary" aria-labelledby={headingId}>
     <div className="players-heading"><div><h3 id={headingId}>{device.name} · Access summary</h3>
-      <p><strong>{view.label}</strong> · {view.connected ? 'Recent authenticated heartbeat' : 'Connection Unknown'}</p></div>
+      <p><strong>{view.label}</strong> · {view.connected ? 'Recently connected' : 'Connection unavailable'}</p></div>
       <span>{view.rows.length} assigned {view.rows.length === 1 ? 'server' : 'servers'}</span></div>
     <p className="helper-text">{view.accessDeadline}. {view.credentialDeadline}.</p>
     {grants && <p className="helper-text">{grants}</p>}
     {view.helper === 'Active' && <p className="helper-text">{view.state === 'Available'
-      ? `Temporary helper access is active until ${dateLabel(device.temporaryHelperUntilUtc)} on existing assignments.`
-      : `A temporary helper overlay is recorded until ${dateLabel(device.temporaryHelperUntilUtc)}; device access currently blocks its use.`} These are the Host’s projected grants; saved permissions and exceptions are unavailable during the overlay.</p>}
-    {view.helper === 'RefreshNeeded' && <DismissibleNotice as="p" scope={device.id} noticeKey={device.temporaryHelperUntilUtc ?? undefined} className="warning-text">The last snapshot included temporary helper grants. Refresh from the Host to see the saved permissions now; this view cannot infer them.</DismissibleNotice>}
+      ? `Temporary helper access is active until ${dateLabel(device.temporaryHelperUntilUtc)} for its shared servers.`
+      : `Temporary helper access is saved until ${dateLabel(device.temporaryHelperUntilUtc)}, but this PC is currently blocked.`} Saved permissions are hidden while temporary access is active.</p>}
+    {view.helper === 'RefreshNeeded' && <DismissibleNotice as="p" scope={device.id} noticeKey={device.temporaryHelperUntilUtc ?? undefined} className="warning-text">Refresh to see saved permissions after temporary helper access ends.</DismissibleNotice>}
     {view.helper === 'Inactive' && exceptions > 0 && <small>{exceptions} assigned {exceptions === 1 ? 'server has' : 'servers have'} permission exceptions.</small>}
-    {view.rows.length === 0 ? <p className="helper-text">No servers assigned. Device-wide permissions do not grant access to an unassigned server.</p> :
-      <details className="advanced-block"><summary>Effective access by server</summary>
+    {view.rows.length === 0 ? <p className="helper-text">No servers are shared with this PC. Choose a server to give it access.</p> :
+      <details className="advanced-block"><summary>Permissions by server</summary>
         <ul>{view.rows.map(row => <li key={row.profileId}><strong>{row.name}</strong>
           <p>{view.state === 'Available' && row.effectivePermissions ? permissionSummary(row.effectivePermissions) : 'Actions and logs unavailable for this PC.'}</p>
-          {row.exception && <small>Per-server exception to the device defaults.</small>}
-          {view.state !== 'Available' && view.helper === 'Inactive' && <small>Configured grants: {permissionSummary(row.observedPermissions)}.</small>}
+          {row.exception && <small>This server has its own permissions.</small>}
+          {view.state !== 'Available' && view.helper === 'Inactive' && <small>Saved permissions: {permissionSummary(row.observedPermissions)}.</small>}
         </li>)}</ul>
       </details>}
-    <small className="evidence-boundary">Stop and Restart still need a fresh zero-player check. Maintenance and paused remote controls block lifecycle actions; an independent log grant remains read-only. Add time uses the Host’s fixed increment and run limit.</small>
-    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{view.label}. Connection {view.connected ? 'has a recent authenticated heartbeat' : 'Unknown'}. {view.rows.length} servers assigned. {grants}</span>
+    <small className="evidence-boundary">Stop and Restart require an empty server and active remote controls. Log access is separate. Extra time is limited by the Host.</small>
+    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{view.label}. Connection {view.connected ? 'recently connected' : 'Unknown'}. {view.rows.length} servers assigned. {grants}</span>
   </section>
 }
 
@@ -178,7 +178,7 @@ export type FriendAccessReviewProps = {
 
 const reviewActions: { label: string; icon: IconName; allowed: (permissions: PermissionValues) => boolean }[] = [
   { label: 'Start', icon: 'play', allowed: permissions => permissions.canStart },
-  { label: 'Guarded Stop', icon: 'stop', allowed: permissions => permissions.canStop },
+  { label: 'Stop when empty', icon: 'stop', allowed: permissions => permissions.canStop },
   { label: 'Restart', icon: 'refresh', allowed: permissions => permissions.canStart && permissions.canStop },
   { label: 'Add time', icon: 'clock', allowed: permissions => permissions.canExtendTimer },
   { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs }
@@ -220,7 +220,7 @@ function ReviewPermissionSide({ assigned, permissions, label, defaults = false }
   return <div className="friend-review-side" role="group" aria-label={`${label} permissions`}>
     <strong>{label}</strong>
     {!assigned ? <p>Not assigned</p> : permissions ? <ReviewPermissionChips permissions={permissions} /> :
-      <p className="friend-review-unavailable">{defaults ? 'Saved defaults unavailable' : 'Saved permissions unavailable during helper overlay'}</p>}
+      <p className="friend-review-unavailable">{defaults ? 'Saved defaults unavailable' : 'Saved permissions hidden during temporary access'}</p>}
   </div>
 }
 
@@ -247,19 +247,19 @@ export function FriendAccessReview({ before, after, servers, clearsExceptions = 
   return <section className="players-workspace friend-access-review" aria-labelledby={headingId}>
     <h3 id={headingId}><Icon name="shield" />Review access changes</h3>
     <p className="friend-review-intro">{review.changedCount} assigned-server {review.changedCount === 1 ? 'change' : 'changes'}. Changes apply only when you save.</p>
-    <div className="friend-default-review" role="group" aria-label="Device defaults">
-      <strong>Device defaults</strong>
+    <div className="friend-default-review" role="group" aria-label="PC permissions">
+      <strong>PC permissions</strong>
       {review.beforeDefaults && review.afterDefaults ?
-        <PermissionChanges before={review.beforeDefaults} after={review.afterDefaults} label="Device default permission changes" /> :
+        <PermissionChanges before={review.beforeDefaults} after={review.afterDefaults} label="PC permission changes" /> :
         <div className="friend-permission-comparison">
           <ReviewPermissionSide assigned permissions={review.beforeDefaults} label="Before" defaults />
           <ReviewPermissionSide assigned permissions={review.afterDefaults} label="After" defaults />
         </div>}
     </div>
     {review.helperProjection && <DismissibleNotice as="p" scope={before.id} className="warning-text friend-review-note"><Icon name="warning" />
-      <span>End temporary helper access and refresh before editing saved permissions. The current Host view includes the helper overlay.</span></DismissibleNotice>}
+      <span>End temporary helper access, then refresh to edit saved permissions.</span></DismissibleNotice>}
     {clearsExceptions && <DismissibleNotice as="p" scope={before.id} className="friend-review-note"><Icon name="refresh" />
-      <span>This preset replaces all four device defaults and clears per-server exceptions on every assigned server.</span></DismissibleNotice>}
+      <span>This preset replaces all four permissions for every shared server, including any server-specific choices.</span></DismissibleNotice>}
     {changed.length > 0 && <ul className="friend-access-change-list" aria-label="Server access before and after">
       {changed.map(row => <ReviewServerChange key={row.profileId} row={row} />)}
     </ul>}
@@ -270,8 +270,8 @@ export function FriendAccessReview({ before, after, servers, clearsExceptions = 
         {row.afterPermissions && <ReviewPermissionChips permissions={row.afterPermissions} />}
       </li>)}</ul>
     </details>}
-    {review.rows.length === 0 && <p className="friend-review-quiet">No servers are assigned before or after. Defaults alone give no server access.</p>}
-    <small className="friend-review-boundary">Restart requires both Start and Stop. Log and timer grants remain separate; owner access deadlines stay unchanged.</small>
+    {review.rows.length === 0 && <p className="friend-review-quiet">No servers are shared with this PC. Permissions alone do not give server access.</p>}
+    <small className="friend-review-boundary">Restart needs Start and Stop permission. Logs and extra time are separate. Access time limits stay the same.</small>
   </section>
 }
 
@@ -321,7 +321,7 @@ export function FriendPcFilters({ value, servers, resultCount, totalCount, onCha
   return <div className="friend-pc-filters" role="group" aria-label="Filter Friend PCs">
     <label><span className="friend-filter-label"><Icon name="search" size={15} />Search Friend PCs</span><Input type="search" maxLength={200} value={value.search} placeholder="Person, PC or assigned server name" onChange={event => onChange({ ...value, search: event.target.value })} /></label>
     <label><span className="friend-filter-label"><Icon name="monitor" size={15} />PC status</span><Select value={value.status} onChange={event => onChange({ ...value, status: event.target.value as FriendPcFiltersValue['status'] })}>
-      <option value="all">Current PCs</option><option value="connected">Connected</option><option value="unknown">Connection Unknown or refresh needed</option>
+      <option value="all">Current PCs</option><option value="connected">Connected</option><option value="unknown">Connection unavailable or refresh needed</option>
       <option value="approval">Waiting for approval</option><option value="expired">Access expired</option><option value="helper">Temporary helper</option>
       <option value="revoked">Show removed PCs</option><option value="unassigned">No assigned servers</option>
     </Select></label>

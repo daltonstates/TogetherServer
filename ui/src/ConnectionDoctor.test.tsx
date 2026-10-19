@@ -28,8 +28,8 @@ describe('ConnectionDoctor', () => {
     }, [device], Date.parse('2026-09-29T12:00:00Z'))
 
     expect(stages.find(stage => stage.id === 'route')).toMatchObject({ state: 'Reached this PC', complete: true })
-    expect(stages.find(stage => stage.id === 'friend')).toMatchObject({ state: 'Authenticated recently', complete: true })
-    expect(stages.find(stage => stage.id === 'join')).toMatchObject({ state: 'Not proven', complete: false })
+    expect(stages.find(stage => stage.id === 'friend')).toMatchObject({ state: 'Secure connection checked', complete: true })
+    expect(stages.find(stage => stage.id === 'join')).toMatchObject({ state: 'Not confirmed', complete: false })
   })
 
   it('offers fixed local actions and never a router mutation', () => {
@@ -40,11 +40,11 @@ describe('ConnectionDoctor', () => {
       onOpenAccess={vi.fn()} onOpenDiagnostics={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Run checks' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Test outside TCP route' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Test Friend app port from internet' }))
     fireEvent.click(screen.getByRole('button', { name: 'Test with a Friend' }))
     expect(onRefresh).toHaveBeenCalledOnce()
     expect(onTestRoute).toHaveBeenCalledOnce()
-    expect(screen.getByText('Live coordinated check')).toBeInTheDocument()
+    expect(screen.getByText('Test together')).toBeInTheDocument()
     expect(screen.getByText(/does not change firewall, router, DNS/)).toBeInTheDocument()
   })
 })

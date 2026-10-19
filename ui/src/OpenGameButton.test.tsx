@@ -39,7 +39,7 @@ describe('explicit Open game action', () => {
   it('shows a concrete Minecraft fallback without any endpoint call', () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher)
     render(<OpenGameButton profileId="saved" kind="MinecraftJava" available />)
-    expect(screen.getByText(/Windows Start or your own launcher/)).toBeInTheDocument()
+    expect(screen.getByText(/Windows Start or your launcher/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
     expect(fetcher).not.toHaveBeenCalled()
   })

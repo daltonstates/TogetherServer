@@ -236,12 +236,12 @@ internal static class LiveSaveAcceptanceTrust
 
     internal static IReadOnlyList<LiveSaveAcceptanceStage> Stages(LiveSaveAcceptanceRecord? record) =>
     [
-        new("completion", record?.Artifact is null ? "Unverified" : "Passed", "Fixed adapter completion from the exact managed run.", "ObservedExactRun", record?.Artifact?.CompletionUtc),
-        new("snapshot", record?.Artifact is null ? "Unverified" : "Passed", "Protected sealed immutable snapshot; no mutable-world scan by the test publisher.", "VerifiedImmutableSnapshot", record?.Artifact?.SnapshotUtc),
-        new("transfer", record?.Receipt is null ? "Unverified" : "Passed", "Normal signed exact-copy receipt from another currently authorized device.", "SignedSeparateDeviceReceipt", record?.TransferUtc),
-        new("load", record?.LoadUtc is null ? "Unverified" : "Passed", "Owner reports loading this exact private copy in the actual game on the receiving PC.", "OwnerReported", record?.LoadUtc),
-        new("change", record?.ChangeUtc is null ? "Unverified" : "Passed", "Owner reports seeing the recognizable change made before this running save.", "OwnerReported", record?.ChangeUtc),
-        new("restart", record?.RestartUtc is null ? "Unverified" : "Passed", "Owner reports graceful save/stop/restart of the disposable copy and the change surviving.", "OwnerReported", record?.RestartUtc)
+        new("completion", record?.Artifact is null ? "Unverified" : "Passed", "The app confirmed saving finished for this server session.", "ObservedExactRun", record?.Artifact?.CompletionUtc),
+        new("snapshot", record?.Artifact is null ? "Unverified" : "Passed", "The app checked a protected copy, separate from the running world.", "VerifiedImmutableSnapshot", record?.Artifact?.SnapshotUtc),
+        new("transfer", record?.Receipt is null ? "Unverified" : "Passed", "Another approved PC confirmed it received the exact copy.", "SignedSeparateDeviceReceipt", record?.TransferUtc),
+        new("load", record?.LoadUtc is null ? "Unverified" : "Passed", "You confirmed loading this test copy in the game on the receiving PC.", "OwnerReported", record?.LoadUtc),
+        new("change", record?.ChangeUtc is null ? "Unverified" : "Passed", "You confirmed the copy contained the change made before saving.", "OwnerReported", record?.ChangeUtc),
+        new("restart", record?.RestartUtc is null ? "Unverified" : "Passed", "You confirmed the change survived saving, stopping, and restarting the test copy.", "OwnerReported", record?.RestartUtc)
     ];
 
     internal static bool ExpectedFailure(Exception ex) => ex is IOException or InvalidDataException or

@@ -12,10 +12,10 @@ describe('AppErrorBoundary', () => {
 
     render(<AppErrorBoundary><BrokenView /></AppErrorBoundary>)
 
-    expect(screen.getByRole('alert')).toHaveTextContent('The interface needs to reload')
-    expect(screen.getByRole('button', { name: 'Reload interface' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Reload TogetherServer')
+    expect(screen.getByRole('button', { name: 'Reload window' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss interface error' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Reload interface' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Reload window' })).toBeVisible()
   })
 })

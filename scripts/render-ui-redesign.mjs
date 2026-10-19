@@ -53,13 +53,13 @@ const hostTabs = [
   ['players', 'Players', heading('Players')], ['logs', 'Logs', region('Server logs')],
   ['sessions', 'Sessions', heading('Recent sessions')], ['backups', 'Backups', heading('Backups & sharing')],
   ['files', 'Settings & files', heading('Game settings')],
-  ['setup', 'Maintenance & setup', { css: '.maintenance-guide > summary', text: 'Prepare maintenance' }],
+  ['setup', 'Setup & maintenance', { css: '.maintenance-guide > summary', text: 'Prepare maintenance' }],
 ];
 // Server controls is an aria-labelled div (a group screen, not an ARIA region).
 hostTabs[0][2] = { css: '[aria-label="Server controls"]', text: 'Stop server' };
 const pcSections = [
   ['access', 'Friend access', 'Friend access'], ['stop', 'Stop & timer', 'Stop & timer'],
-  ['network', 'Connection help', 'Connection help'], ['diagnostics', 'Diagnostics', 'Preflight & diagnostics'],
+  ['network', 'Connection help', 'Connection help'], ['diagnostics', 'Diagnostics', 'Server diagnostics'],
   ['advanced', 'Advanced', 'Advanced'],
 ];
 const joinSections = [
@@ -76,12 +76,12 @@ const appSections = [
 ];
 const cases = [
   ...extraReviewCases.filter(testCase => !isDialogReview(testCase)),
-  { id: 'app-loading', scenario: 'host-loading', workspace: 'Host', bootOnly: true, pendingState: true, screen: { css: 'main', text: 'Loading local state' } },
-  { id: 'app-load-error', scenario: 'host-load-error', workspace: 'Host', bootOnly: true, screen: { css: '[role="alert"]', text: 'Connection to this local app failed' } },
-  { id: 'host-session-recovery', scenario: 'host-session-recovery', workspace: 'Host', screen: heading('Recovered app session') },
-  { id: 'attention-session-recovery', scenario: 'host-session-recovery', workspace: 'Attention', steps: [{ summary: 'Session recovery' }], screen: heading('Recovered app session') },
+  { id: 'app-loading', scenario: 'host-loading', workspace: 'Host', bootOnly: true, pendingState: true, screen: { css: 'main', text: 'Loading TogetherServer' } },
+  { id: 'app-load-error', scenario: 'host-load-error', workspace: 'Host', bootOnly: true, screen: { css: '[role="alert"]', text: 'Could not connect to TogetherServer' } },
+  { id: 'host-session-recovery', scenario: 'host-session-recovery', workspace: 'Host', screen: heading('App reopened after an interruption') },
+  { id: 'attention-session-recovery', scenario: 'host-session-recovery', workspace: 'Attention', steps: [{ summary: 'Session recovery' }], screen: heading('App reopened after an interruption') },
   ...['recovery', 'warning'].map(state => ({ id: `app-data-${state}`, scenario: `host-data-${state}`, workspace: 'Host', screen: heading('Local data needs review') })),
-  { id: 'host-custom-certification-progress', scenario: 'host-custom-certification-step', workspace: 'Host', section: ['Selected server sections', 'setup', 'Maintenance & setup'], screen: { css: '.custom-certification', text: 'Certification in progress' } },
+  { id: 'host-custom-certification-progress', scenario: 'host-custom-certification-step', workspace: 'Host', section: ['Selected server sections', 'setup', 'Setup & maintenance'], screen: { css: '.custom-certification', text: 'Certification in progress' } },
   { id: 'host-crash-recovery-suspended', scenario: 'host-crash-recovery', workspace: 'Host', screen: { css: '.safety-status', text: 'Crash recovery: Suspended' } },
   ...['downloading', 'blocked', 'failed'].map(state => ({ id: `settings-update-${state}`, scenario: `host-update-${state}`, workspace: 'App Settings',
     section: ['App settings sections', 'updates', 'Updates'], screen: { css: '.update-preparation' } })),
@@ -98,7 +98,7 @@ const cases = [
     screen: { css: '.friend-play-flow details[open]', text: 'Open Valheim, choose your character, then choose Join Game and Join IP.' } },
   { id: 'join-play-tools-expanded', scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', 'play', 'Play'],
     steps: [{ summary: 'Tools & help', within: '.friend-play-flow' }, { summary: /^Your access:/, within: '.friend-play-flow' }],
-    screen: { css: '.friend-play-flow details[open]', text: 'Grants apply only to this server. Readiness and a fresh zero-player check are still required for Stop and Restart.' } },
+    screen: { css: '.friend-play-flow details[open]', text: 'Permissions apply only to this server. Stop and Restart also require a Ready server and a current player count of zero, checked again before stopping.' } },
   { id: 'join-shared-verified-copy', scenario: 'friend-shared-verified-offline', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: heading('Prepare hosting on this PC'), action: 'shared-verified-copy' },
   { id: 'join-shared-receiving', scenario: 'friend-shared-receiving-offline', workspace: 'Join',
@@ -130,7 +130,7 @@ const cases = [
   ...[['sharing', 'Sharing & hosting'], ['settings', 'Protection settings']].map(([id, name]) => ({
     id: `host-protection-${id}`, scenario: 'host-shared-offline', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
     steps: [{ nav: 'World protection sections', button: name }], screen: id === 'sharing' ? region('Shared saves') : heading('Protect this world automatically') })),
-  ...['Name and retention', 'Retention preview', 'Protection and retention details'].map((name, index) => ({
+  ...['Name and pin backup', 'Preview which backups are kept', 'Backup checks and pin limits'].map((name, index) => ({
     id: `host-backup-details-${index}`, scenario: 'host-offline', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
     steps: [{ summary: name }], screen: { css: '.backup-catalog details[open]' } })),
   ...['no-devices', 'removed-devices', 'expired-devices', 'pending-devices'].map(state => ({
@@ -147,14 +147,14 @@ const cases = [
   ...['Host', 'Join'].flatMap(workspace => ['peers', 'peers-conflict', ...(workspace === 'Join' ? ['peers-follower'] : [])].map(state => ({
     id: `${workspace.toLowerCase()}-${state}`, scenario: `${workspace === 'Host' ? 'host' : 'friend'}-${state}`, workspace,
     section: workspace === 'Host' ? ['Selected server sections', 'backups', 'Backups'] : ['Join sections', 'shared-saves', 'Shared saves'],
-    steps: workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }] : [], screen: region('World groups') }))),
-  ...['Save histories and copy claims', 'Contact another group PC', 'Technical details', 'Private live-save test copies'].map((name, index) => ({
+    steps: workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Other Hosts & connections' }] : [], screen: region('World groups') }))),
+  ...['Save histories and reported copies', 'Contact another group PC', 'Technical details', 'Private live-save test copies'].map((name, index) => ({
     id: `join-peer-details-${index}`, scenario: 'friend-peers-conflict', workspace: 'Join', section: ['Join sections', 'shared-saves', 'Shared saves'],
     steps: [{ summary: name, within: '.world-peer-panel' }], screen: { css: '.world-peer-panel details[open]' } })),
   ...['Host', 'Join'].map(workspace => ({ id: `${workspace.toLowerCase()}-peer-save-permissions`, scenario: workspace === 'Host' ? 'host-peers' : 'friend-peers', workspace,
     section: workspace === 'Host' ? ['Selected server sections', 'backups', 'Backups'] : ['Join sections', 'shared-saves', 'Shared saves'],
-    steps: [...(workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }] : []),
-      { summary: 'Save sync & permissions', within: '.world-peer-panel' }], screen: { css: '.world-peer-permissions[open]' } })),
+    steps: [...(workspace === 'Host' ? [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Other Hosts & connections' }] : []),
+      { summary: 'Save sharing & permissions', within: '.world-peer-panel' }], screen: { css: '.world-peer-permissions[open]' } })),
   ...['Host', 'Join'].flatMap(workspace => ['empty', 'notice'].map(state => ({
     id: `${workspace.toLowerCase()}-chat-${state}`, scenario: `${workspace === 'Host' ? 'host' : 'friend'}-chat-${state}`, workspace,
     section: workspace === 'Host' ? ['Selected server sections', 'chat', 'Chat'] : ['Join sections', 'chat', 'Chat'], screen: heading('Server chat') }))),
@@ -165,8 +165,8 @@ const cases = [
   ...['available', 'error'].map(state => ({ id: `settings-updates-${state}`, scenario: `host-update-${state}`, workspace: 'App Settings',
     section: ['App settings sections', 'updates', 'Updates'], screen: heading('App updates') })),
   ...['Files', 'Add-ons', 'Checkpoints'].map(name => ({ id: `host-server-files-${name.toLowerCase()}`, scenario: 'host-java-maintenance', workspace: 'Host',
-    section: ['Selected server sections', 'files', 'Settings & files'], steps: [{ role: 'tab', name: 'Server files' }, { nav: 'Server file sections', button: name }],
-    screen: heading(name === 'Files' ? 'Configuration files' : name === 'Checkpoints' ? 'Setup checkpoints' : 'Add-ons & game version') })),
+    section: ['Selected server sections', 'files', 'Settings & files'], steps: [{ role: 'tab', name: 'Server files' }, { nav: 'Server file sections', button: name === 'Checkpoints' ? 'Setup backups' : name }],
+    screen: heading(name === 'Files' ? 'Settings files' : name === 'Checkpoints' ? 'Setup backups' : 'Add-ons & game version') })),
   { id: 'host-server-file-editor', scenario: 'host-java-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
     steps: [{ role: 'tab', name: 'Server files' }, { button: 'Edit file' }], screen: { role: 'textbox', name: 'File contents' } },
   { id: 'host-server-file-review', scenario: 'host-java-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
@@ -177,9 +177,9 @@ const cases = [
     id: `host-game-settings-${game}-${page.toLowerCase()}`, scenario: `host-${game}-maintenance`, workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
     steps: [{ nav: 'Game settings sections', button: page }], screen: page === 'Players' ? { role: 'combobox', name: 'Player list' } : heading('Game settings') }))),
   { id: 'host-live-save-acceptance', scenario: 'host-live-save', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Live-save setup & acceptance' }, { summary: /Automatic recovery copies/ }], screen: region('Live-save installation test') },
+    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Test sharing while playing' }, { summary: /Automatic recovery copies/ }], screen: region('Live-save installation test') },
   { id: 'host-live-interrupted', scenario: 'host-live-interrupted', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Live-save setup & acceptance' }, { summary: /Automatic recovery copies/ }, { summary: /Private test history/ }], screen: region('Live-save installation test') },
+    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Test sharing while playing' }, { summary: /Automatic recovery copies/ }, { summary: /Private test history/ }], screen: region('Live-save installation test') },
 ];
 const dialogs = [
   ...extraReviewCases.filter(isDialogReview),
@@ -190,7 +190,7 @@ const dialogs = [
     ['power-timer', 'stop', 'Stop & timer', 'Edit countdown', 'Empty-server countdown'],
     ['stop-safety', 'stop', 'Stop & timer', 'Review Stop safety', 'Remote Stop safety'],
     ['friend-route', 'network', 'Connection help', 'Edit connection route', 'Friend connection route'],
-    ['connection-doctor', 'network', 'Connection help', 'Connection Doctor', 'Connection Doctor'],
+    ['connection-doctor', 'network', 'Connection help', 'Connection help', 'Connection help'],
     ['extensions', 'stop', 'Stop & timer', 'Edit extensions', 'Friend timer extensions'],
     ['tcp', 'network', 'Connection help', 'Open connection checks', 'Internet and local connection checks'],
     ['identity', 'advanced', 'Advanced', 'Review Host identity', 'Secure Host identity'],
@@ -237,32 +237,32 @@ const dialogs = [
   { id: 'dialog-move-hosting', scenario: 'host-shared-offline', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'], action: 'manage-sharing',
     steps: [{ nav: 'Sharing sections', button: 'History & recovery' }, { button: 'Move hosting', within: '.settings-dialog[open] [aria-label="Move hosting"]' }], screen: { role: 'dialog', name: 'Move hosting' } },
   { id: 'dialog-peer-default-review', scenario: 'host-peers-conflict', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }, { button: 'Use as group default', first: true }], screen: region('Review group default') },
+    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Other Hosts & connections' }, { button: 'Use as group default', first: true }], screen: region('Review group default') },
   { id: 'dialog-owner-peer-recovery', scenario: 'host-peers-conflict', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Peer sessions & connections' }, { summary: 'Save histories and copy claims', within: '.world-peer-panel' },
+    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Other Hosts & connections' }, { summary: 'Save histories and reported copies', within: '.world-peer-panel' },
       { button: 'Recover this history on the owner PC', first: true }], screen: region('Owner recovery from peer history') },
   ...['Copy status', 'People', 'Recovery', 'Details'].map(name => ({
     id: `dialog-friend-sharing-${name.toLowerCase().replaceAll(' ', '-')}`, scenario: 'friend-shared-verified-offline', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], action: 'manage-sharing',
     steps: [{ nav: 'Shared-save management sections', button: name }], screen: { role: 'dialog', name: 'Manage sharing' } })),
   { id: 'dialog-confirm-restart', scenario: 'host-ready', workspace: 'Host', action: 'server-tools', steps: [{ button: 'Restart server' }], screen: { role: 'dialog', name: 'Restart Weekend Valheim?' } },
-  { id: 'dialog-confirm-safe-restart', scenario: 'host-ready', workspace: 'Host', action: 'server-tools', steps: [{ button: 'Safe restart with checkpoint' }], screen: { role: 'dialog', name: 'Restart with a checkpoint?' } },
+  { id: 'dialog-confirm-safe-restart', scenario: 'host-ready', workspace: 'Host', action: 'server-tools', steps: [{ button: 'Back up and restart' }], screen: { role: 'dialog', name: 'Back up and restart?' } },
   ...[['reload', 'Reload file', 'Reload server file?'], ['discard', 'Discard unsaved file edits', 'Discard file edits?']].map(([id, button, name]) => ({
     id: `dialog-file-${id}`, scenario: 'host-java-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
     steps: [{ role: 'tab', name: 'Server files' }, { button: 'Edit file' }, { fill: 'File contents', value: '# Synthetic unsaved change\nmax-players=12\n' }, { button }],
     screen: { role: 'dialog', name } })),
   { id: 'dialog-restore-setup', scenario: 'host-java-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
-    steps: [{ role: 'tab', name: 'Server files' }, { nav: 'Server file sections', button: 'Checkpoints' }, { button: 'Restore setup' }], screen: { role: 'dialog', name: 'Restore complete setup?' } },
+    steps: [{ role: 'tab', name: 'Server files' }, { nav: 'Server file sections', button: 'Setup backups' }, { button: 'Restore setup' }], screen: { role: 'dialog', name: 'Restore complete setup?' } },
   ...[['reload', 'Reload game settings', 'Reload game settings?'], ['discard', 'Discard unsaved settings', 'Discard unsaved settings?']].map(([id, button, name]) => ({
     id: `dialog-game-settings-${id}`, scenario: 'host-java-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
     steps: [{ fill: 'Maximum players', value: '12' }, { button }], screen: { role: 'dialog', name } })),
   { id: 'dialog-resume-hosting', scenario: 'host-session-recovery', workspace: 'Host', steps: [{ button: 'Resume hosting' }], screen: { role: 'dialog', name: 'Resume hosting?' } },
-  { id: 'dialog-forget-orphaned-session', scenario: 'host-recovery-orphan', workspace: 'Host', steps: [{ button: 'Forget exited record' }], screen: { role: 'dialog', name: 'Forget exited record' } },
+  { id: 'dialog-forget-orphaned-session', scenario: 'host-recovery-orphan', workspace: 'Host', steps: [{ button: 'Forget stopped session' }], screen: { role: 'dialog', name: 'Forget stopped session' } },
   { id: 'dialog-archive-session', scenario: 'host-failed-session', workspace: 'Host', action: 'server-tools', steps: [{ button: 'Archive exited record' }], screen: { role: 'dialog', name: 'Archive this session?' } },
   { id: 'dialog-replace-invite', scenario: 'host-ready', workspace: 'Host', steps: [{ button: 'Invite friends' }, { summary: 'New PCs and replacing the code' },
     { button: 'Replace code and remove old access' }], screen: { role: 'dialog', name: 'Replace the code for Weekend Valheim?' } },
-  { id: 'dialog-revoke-custom-certification', scenario: 'host-custom-certified-offline', workspace: 'Host', section: ['Selected server sections', 'setup', 'Maintenance & setup'],
-    steps: [{ button: 'Revoke certification' }], screen: { role: 'dialog', name: 'Revoke Custom control certification?' } },
+  { id: 'dialog-revoke-custom-certification', scenario: 'host-custom-certified-offline', workspace: 'Host', section: ['Selected server sections', 'setup', 'Setup & maintenance'],
+    steps: [{ button: 'Remove control approval' }], screen: { role: 'dialog', name: 'Remove Custom control approval?' } },
   { id: 'dialog-chat-navigation-guard', scenario: 'host-chat-notice', workspace: 'Host', section: ['Selected server sections', 'chat', 'Chat'],
     steps: [{ button: 'Edit notice' }, { fill: 'Notice text', value: 'Synthetic unsaved room notice' }, { nav: 'TogetherServer workspaces', button: 'Join' }],
     screen: { role: 'dialog', name: 'Discard unsaved chat edits?' } },

@@ -24,7 +24,7 @@ describe('required feature setup', () => {
       .mockImplementationOnce(() => new Promise<Response>(resolve => { finishCheck = resolve }))
     vi.stubGlobal('fetch', fetch)
     render(<Harness />)
-    expect(screen.getByText('Checking required setup…')).toBeInTheDocument()
+    expect(screen.getByText('Checking setup…')).toBeInTheDocument()
     expect(screen.queryByText('App workspace')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByText('Complete Your name'))
     await screen.findByText('Complete New choice')

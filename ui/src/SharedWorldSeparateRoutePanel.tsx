@@ -141,7 +141,7 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
       try {
         const list = await getLocalJson(base, value => branches(value, profileId), abort.signal)
         const selected = list.find(item => item.branchHash === selectedBranchHash)
-        if (!selected) throw new Error('The exact prepared save is unavailable. Retry local hosting checks.')
+        if (!selected) throw new Error('This prepared save is unavailable. Retry the hosting checks.')
         const current = await getLocalJson(`${base}/hosting/${selected.branchHash}`, hostStatus, abort.signal)
         if (active) { setOwnBranches(list); setShown(selected); setHosting(current) }
       } catch (cause) { if (active) setError(errorMessage(cause)) }
@@ -198,10 +198,10 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
   const check = async () => {
     setBusy(true); setError(''); setResult(null)
     try {
-      if (pasted.length < 2 || pasted.length > 512 * 1024) throw new Error('Separate-copy proof code is invalid or too large.')
+      if (pasted.length < 2 || pasted.length > 512 * 1024) throw new Error('The recovery connection code is invalid or too large. Copy it again.')
       let parsed: unknown
       try { parsed = JSON.parse(pasted) as unknown }
-      catch { throw new Error('Separate-copy proof code is invalid. Ask the candidate PC to copy it again.') }
+      catch { throw new Error('The recovery connection code could not be read. Ask the new Host to copy it again.') }
       const proof = branch(parsed, profileId)
       const value = await changeJson(
         `/api/local/friend/${profileId}/shared-world/recovery/separate/route-check`,
@@ -211,28 +211,28 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
     finally { if (scope.current === profileId) setBusy(false) }
   }
   return <details className="shared-separate-copy" open={expanded || undefined}><summary>{selectedBranchHash ? 'Finish the matching server setup' : 'Recovery copies on this PC'}</summary>
-    <p>Recovery keeps a separate history. Restore locally, finish setup, then Start manually.</p>
-    <details className="separate-copy-guidance"><summary>Recovery steps and route checks</summary>
-      <p>Restore a signed recovery branch into a fresh local world, finish local setup, then choose Start manually. A second-PC route check is optional evidence; it does not settle the split or prove the game route.</p></details>
+    <p>Recovery creates a separate save history. Restore it here, finish setup, then choose Start.</p>
+    <details className="separate-copy-guidance"><summary>Recovery steps and connection checks</summary>
+      <p>Restore the recovery copy into a new world folder, finish setup, then choose Start. Testing the app connection from another PC is optional. It does not combine save histories or test the game connection.</p></details>
     {separateCopies > 0 && !selectedBranchHash && <><Button className="secondary" disabled={busy}
       onClick={() => void load()}>Show recovery copies on this PC</Button>
       {ownBranches.map(item => <div key={item.branchHash}>
-        <p>Recovery save {item.offer.version.number} · captured {sharedSaveAge(item.offer.version.createdUtc)}. No age cutoff applies to a complete verified copy.</p>
+        <p>Recovery save {item.offer.version.number} · captured {sharedSaveAge(item.offer.version.createdUtc)}. A complete verified copy can be used at any age.</p>
         <Button className="text-button" disabled={busy}
           onClick={() => void select(item)}>Prepare this recovery copy</Button>
       </div>)}
-      {shown && <details><summary>Signed recovery proof</summary><p>Reviewed local HTTPS identity: {shown.offer.proposal.candidateAddress}</p><Button className="secondary" disabled={busy} onClick={() => void navigator.clipboard.writeText(JSON.stringify(shown))
-        .catch(() => setError('Could not copy this proof. Select the proof code below to copy it manually.'))}>Copy separate-copy proof</Button>
-        <TextArea aria-label="Signed separate-copy proof code" rows={3} readOnly value={JSON.stringify(shown)} /></details>}</>}
+      {shown && <details><summary>Recovery connection details</summary><p>This PC's HTTPS address: {shown.offer.proposal.candidateAddress}</p><Button className="secondary" disabled={busy} onClick={() => void navigator.clipboard.writeText(JSON.stringify(shown))
+        .catch(() => setError('Could not copy the details. Select the code below to copy it.'))}>Copy recovery connection code</Button>
+        <TextArea aria-label="Recovery connection code" rows={3} readOnly value={JSON.stringify(shown)} /></details>}</>}
     {shown && hosting && <section aria-label="Host this separate copy">
       {hosting.reviewRequired ? <DismissibleNotice as="p" scope={noticeScope} role="alert">{hosting.message}</DismissibleNotice> :
         <p role="status">{hosting.message}</p>}
       {!hosting.reviewRequired && <>
-        {!hosting.readyForManualStart && <p>Another game server may still be running. This copy stays separate until the group reviews both save histories.</p>}
+        {!hosting.readyForManualStart && <p>Another game server may still be running. Each copy keeps its own progress.</p>}
         {hosting.requiredAddOns?.length ? <details><summary>Required add-ons</summary>
           <ul>{hosting.requiredAddOns.map(item => <li key={`${item.type}:${item.name}`}>
             {item.name} {item.version} ({item.type})</li>)}</ul>
-          <p>Install these packages in this PC’s managed server folder before restoring.</p>
+          <p>Install these add-ons in this PC's server folder before restoring.</p>
         </details> : null}
         <div className="separate-copy-fields">
         {!hosting.readyForManualStart && !hosting.running && <>
@@ -244,50 +244,50 @@ export function SharedWorldSeparateRoutePanel({ profileId, separateCopies, game,
         {!hosting.restored && <>
           <label>New server name<Input value={serverName}
             onChange={event => setServerName(event.target.value)} /></label>
-          {(effectiveGame === 'MinecraftJava' || !knownGame) && <label>{effectiveGame === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different'}<Input value={executable}
+          {(effectiveGame === 'MinecraftJava' || !knownGame) && <label>{effectiveGame === 'MinecraftJava' ? 'Java program (java.exe)' : 'Game program, if different'}<Input value={executable}
             onChange={event => setExecutable(event.target.value)} /></label>}
-          {hosting.preparedServerRoot && <details className="separate-copy-guidance"><summary>Managed server folder and source settings</summary>
-            <p>Prepare the matching server files and required add-ons in this managed folder: <code>{hosting.preparedServerRoot}</code>.</p>
-            <p>Match the server settings and player allowlist to the signed source; a mismatch blocks restore and Start.</p></details>}
-          {(fields.factorio || !knownGame) && <label>Factorio local RCON port, if used<Input inputMode="numeric"
+          {hosting.preparedServerRoot && <details className="separate-copy-guidance"><summary>Server folder and shared settings</summary>
+            <p>Install the matching server files and add-ons in this folder: <code>{hosting.preparedServerRoot}</code>.</p>
+            <p>Use the shared server settings and player allowlist. Differences block restore and Start.</p></details>}
+          {(fields.factorio || !knownGame) && <label>Factorio RCON control port, if used<Input inputMode="numeric"
             value={factorioRconPort} onChange={event => setFactorioRconPort(event.target.value)} /></label>}
-          {fields.factorio && <p className="helper-text">Keep the RCON port local. Never forward it.</p>}
+          {fields.factorio && <p className="helper-text">Keep the RCON control port private. Never forward it.</p>}
           {fields.password && <label>New game password, if used<Input type="password" value={gamePassword}
             onChange={event => setGamePassword(event.target.value)} /></label>}</>}
-        {!hosting.readyForManualStart && !hosting.running && <><label>Future Friend control port<Input inputMode="numeric"
+        {!hosting.readyForManualStart && !hosting.running && <><label>TogetherServer connection port<Input inputMode="numeric"
           value={controlPort} onChange={event => setControlPort(event.target.value)} /></label>
-          <label>Future game port<Input inputMode="numeric" value={gamePort}
+          <label>Game port<Input inputMode="numeric" value={gamePort}
             onChange={event => setGamePort(event.target.value)} /></label>
           <label className="separate-copy-consent"><Input type="checkbox" checked={newPasswordSet}
             onChange={event => setNewPasswordSet(event.target.checked)} /> {fields.password ?
-              'I set a new game password on this PC' : 'I reviewed local game access and set a new password where this game supports one'}</label>
+              'I set a new game password on this PC' : 'I checked who can join and set a new password if this game supports one'}</label>
           <Button className="secondary" disabled={busy} onClick={() => void hostChange(
             hosting.restored ? 'finish' : 'restore')}>
-            {hosting.restored ? 'Finish local setup checks' : 'Restore into a fresh managed world'}</Button></>}
+            {hosting.restored ? 'Finish setup checks' : 'Restore into a new world folder'}</Button></>}
         </div>
-        {hosting.readyForManualStart && allowStart && <div className="separate-copy-start-review"><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Local setup passed. Game load, a real game join and saved restart remain unverified. Other sessions may still run; this copy does not change the group's default history.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
+        {hosting.readyForManualStart && allowStart && <div className="separate-copy-start-review"><DismissibleNotice scope={noticeScope} className="start-connection-notice" role="note"><strong>Before starting this recovery copy</strong><p>Setup checks passed. Loading the world, joining the game and saving through a restart still need testing. Other Hosts may still be running. This copy does not change the group's default.</p></DismissibleNotice><label><Input type="checkbox" checked={splitAccepted}
           onChange={event => setSplitAccepted(event.target.checked)} /> I understand another server may still be running</label>
           <Button disabled={busy || !splitAccepted} onClick={() => void hostChange('start')}>
             Start recovery copy</Button></div>}
-        {hosting.running && <DismissibleNotice scope={noticeScope} role="note"><p>This recovery session is running. A returning Host does not stop it or replace its history.</p>
+        {hosting.running && <DismissibleNotice scope={noticeScope} role="note"><p>This recovery server is running. If the old Host returns, this server keeps running with its own save history.</p>
           {(onOpenHostControls || onOpenSeparateHostControls) && <Button className="secondary" onClick={() =>
             hosting.localProfileId && onOpenSeparateHostControls ? onOpenSeparateHostControls(hosting.localProfileId) : onOpenHostControls?.()
           }>Open this PC's Host controls</Button>}</DismissibleNotice>}
-        <p className="helper-text">{hosting.controlRouteVerified ? 'Another approved PC observed the pinned control route. A real game join remains unverified.' :
-          'No second-PC control-route observation is recorded. It is optional for solo recovery.'}</p>
+        <p className="helper-text">{hosting.controlRouteVerified ? 'Another approved PC reached TogetherServer here and checked its identity. Joining the game still needs testing.' :
+          'The app connection has not been tested from another PC. You can recover alone without this test.'}</p>
       </>}
       {hostAction && <DismissibleNotice as="p" scope={noticeScope} role={hostAction.ok ? 'status' : 'alert'}>{hostAction.message}</DismissibleNotice>}
       {hostAction?.pendingChecks?.length ? <ul>{hostAction.pendingChecks.map(reason =>
         <li key={reason}>{reason}</li>)}</ul> : null}
       <Button className="text-button" disabled={busy} onClick={() => void select(shown)}>
-        Refresh separate-copy status</Button>
+        Refresh recovery copy status</Button>
     </section>}
     <details hidden={!!apiBase || !!selectedBranchHash}><summary>Optional check from another PC</summary>
-    <p>This checks a deliberately enabled pinned control listener. It is separate from solo recovery and game reachability.</p>
-    <label>Proof code from candidate PC<TextArea rows={3}
+    <p>This tests the new Host's enabled TogetherServer connection and checks its identity. It does not test the game connection. You can recover alone without it.</p>
+    <label>Connection code from the new Host<TextArea rows={3}
       maxLength={512 * 1024} value={pasted} onChange={event => setPasted(event.target.value)} /></label>
     <Button className="secondary" disabled={busy || !pasted.trim()}
-      onClick={() => void check()}>Check candidate control route from this PC</Button>
+      onClick={() => void check()}>Test the new Host's app connection</Button>
     {result && <DismissibleNotice as="p" scope={noticeScope} role={result.controlRouteObserved ? 'status' : 'alert'}>{result.message}</DismissibleNotice>}
     </details>
     {error && <DismissibleNotice as="p" scope={noticeScope} role="alert">{error}</DismissibleNotice>}

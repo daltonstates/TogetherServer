@@ -11,9 +11,9 @@ export type RehearsalReport = {
   stages: { id: string; state: 'Passed' | 'Failed' | 'Unverified' | 'Unavailable'; detail: string; diagnosticCode?: string | null }[]
 }
 const labels: Record<string, string> = {
-  listener: 'Host local listener', outsideTcp: 'Independent outside TCP', connection: 'Pinned and authenticated connection',
-  chat: 'Two-way server chat', transfer: 'Synthetic transfer, hashes and receipt', gameEndpoint: 'Game endpoint query',
-  humanJoinLoad: 'Human game join, load and restart'
+  listener: 'Host app port on its PC', outsideTcp: 'App port from outside the network', connection: 'Secure app connection',
+  chat: 'Two-way server chat', transfer: 'Test file transfer and confirmation', gameEndpoint: 'Game connection check',
+  humanJoinLoad: 'Game join, load and restart confirmed by a person'
 }
 function record(value: unknown, context: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new ContractError(`${context}: expected an object`)
@@ -56,8 +56,8 @@ export function HostRemoteRehearsal() {
     finally { setBusy(false) }
   }
   return <details className="connection-doctor"><summary>Test with another owned PC</summary>
-    <p>Prepare a disposable server with synthetic save data. Pair the development app on the test PC with this server's code, grant Receive, then allow saves on that PC. Production access and game worlds are separate.</p>
-    <Button className="secondary" disabled={busy} onClick={() => void prepare()}>{busy ? 'Preparing…' : 'Prepare rehearsal'}</Button>
+    <p>Prepare a temporary server with test files. On the other PC, open TogetherServer DEVELOPMENT and connect with this server's code. Grant Receive on the Host, then turn on Allow saves on this PC on the other PC. This test uses separate development data and no real world.</p>
+    <Button className="secondary" disabled={busy} onClick={() => void prepare()}>{busy ? 'Preparing…' : 'Prepare connection test'}</Button>
     {message && <DismissibleNotice as="p" noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>
 }
@@ -87,23 +87,23 @@ export function FriendRemoteRehearsal({ snapshot }: { snapshot: FriendSnapshot }
     } catch (error) { showMessage(errorMessage(error)) }
     finally { window.clearTimeout(timer); setBusy(false) }
   }
-  return <details className="connection-doctor"><summary>Run rehearsal</summary>
-    <p>Use a separately paired disposable staging server. Your network choice is recorded as owner reported; the app cannot prove the physical network.</p>
+  return <details className="connection-doctor"><summary>Run connection test</summary>
+    <p>Use the temporary server prepared in TogetherServer DEVELOPMENT and connect with its code. You report which network this PC uses; the app cannot verify that location.</p>
     {candidates.length > 0 ? <>
-      <label>Disposable server<Select value={selected} disabled={busy} onChange={event => { setProfileId(event.target.value); setReport(null) }}>
+      <label>Test server<Select value={selected} disabled={busy} onChange={event => { setProfileId(event.target.value); setReport(null) }}>
         {candidates.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
       </Select></label>
       <label>Test PC network<Select value={context} disabled={busy} onChange={event => { setContext(event.target.value); setReport(null) }}>
-        <option value="Unspecified">Not recorded</option><option value="SameLan">Same LAN as Host</option><option value="SeparateNetwork">Another network, owner confirmed</option>
+        <option value="Unspecified">Not recorded</option><option value="SameLan">Same local network as Host</option><option value="SeparateNetwork">Another network, owner confirmed</option>
       </Select></label>
-      <Button disabled={busy} onClick={() => void run()}>{busy ? 'Running rehearsal…' : 'Run rehearsal'}</Button>
-    </> : <p>Prepare Connection rehearsal on the development Host and pair this development app to its code.</p>}
-    {report && <><p><strong>Environment: {report.networkContext === 'Loopback' ? 'Loopback' : report.networkContext === 'OwnerReportedSameLan' ? 'Same LAN, owner reported' : report.networkContext === 'OwnerReportedSeparateNetwork' ? 'Separate network, owner reported' : 'Not recorded'}</strong></p>
+      <Button disabled={busy} onClick={() => void run()}>{busy ? 'Running test…' : 'Run connection test'}</Button>
+    </> : <p>Prepare a connection test on the development Host, then connect this development app with that server's code.</p>}
+    {report && <><p><strong>Network: {report.networkContext === 'Loopback' ? 'This PC only' : report.networkContext === 'OwnerReportedSameLan' ? 'Same local network, owner reported' : report.networkContext === 'OwnerReportedSeparateNetwork' ? 'Separate network, owner reported' : 'Not recorded'}</strong></p>
       <div className="doctor-stages">{report.stages.map(stage => <article className={`doctor-stage ${stage.state === 'Failed' ? 'error' : 'neutral'}`} key={stage.id}>
         <div><small>{labels[stage.id]}</small><strong>{stage.state}</strong><p>{stage.detail}</p></div>
       </article>)}</div>
       <Button className="text-button" onClick={() => void navigator.clipboard.writeText(JSON.stringify(report, null, 2)).then(
-        () => showMessage('Redacted report copied.'), () => showMessage('Clipboard is unavailable.'))}>Copy redacted report</Button>
+        () => showMessage('Report copied. Private details omitted.'), () => showMessage('Clipboard is unavailable.'))}>Copy report</Button>
     </>}
     {message && <DismissibleNotice as="p" scope={`${snapshot.connectionId}:${selected ?? ''}`} noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>

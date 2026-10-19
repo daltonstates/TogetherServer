@@ -22,16 +22,16 @@ export function SharedWorldRouteDetails({ profileId, onReviewed }:
       setReviewed(details); onReviewed(details)
     } catch (cause) { setError(errorMessage(cause)) }
   }
-  return <section aria-label="Paste route details together">
-    <label>Route details from the new Host<TextArea rows={3} maxLength={4096} value={pasted}
+  return <section aria-label="Paste connection details">
+    <label>Connection details from the new Host<TextArea rows={3} maxLength={4096} value={pasted}
       onChange={event => { setPasted(event.target.value); setReviewed(null); setError(''); onReviewed(null) }} /></label>
-    <Button className="secondary" disabled={!pasted.trim()} onClick={review}>Review pasted route details</Button>
-    {reviewed && <div role="note"><p>Review this shared world with the group before checking its signed connection.</p>
-      {reviewed.endpoint && <p>Proposed direct route: {reviewed.endpoint}</p>}
-      <p>Signed decision: <code style={{ overflowWrap: 'anywhere' }}>{reviewed.recordHash}</code></p>
+    <Button className="secondary" disabled={!pasted.trim()} onClick={review}>Review connection details</Button>
+    {reviewed && <div role="note"><p>Check the world and Host with your group before testing this connection.</p>
+      {reviewed.endpoint && <p>Proposed address: {reviewed.endpoint}</p>}
+      <p>Hosting decision ID: <code style={{ overflowWrap: 'anywhere' }}>{reviewed.recordHash}</code></p>
       <p>Certificate fingerprint: <code style={{ overflowWrap: 'anywhere' }}>{reviewed.tlsFingerprint}</code></p>
-      <p className="helper-text">The signed decision supplies the address used for the check. A pasted address is a review hint.</p>
-      <p className="helper-text">The app still checks signed authority and pinned TLS. Pasting does not change a saved address or grant access.</p>
+      <p className="helper-text">The app tests the address in the verified hosting decision. The pasted address is shown for you to review.</p>
+      <p className="helper-text">The app checks the hosting decision and the Host's saved identity. Pasting details does not change your saved connection or give access.</p>
     </div>}
     {error && <DismissibleNotice as="p" scope={profileId} role="alert">{error}</DismissibleNotice>}
   </section>

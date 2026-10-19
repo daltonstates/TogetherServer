@@ -21,18 +21,18 @@ export function AppearancePreferences({ value, onChange }: {
 }
 
 const explanations: Record<string, string> = {
-  Offline: 'The managed server is stopped. Start it when you are ready to play.',
-  Starting: 'The start request is running. Waiting for the game’s local readiness signal.',
-  'Process running': 'The recorded process is running; the game has not confirmed readiness.',
-  Listening: 'A local game listener answered. A real game join still needs checking.',
-  Ready: 'The game reported local readiness. Outside reachability and a real join are separate checks.',
-  Stopping: 'A graceful stop is in progress. Waiting for the exact managed process to exit.',
-  Failed: 'The last operation failed. Review its explanation and logs before retrying.',
-  Unknown: 'The app cannot currently establish a safe server state. Review the existing health and recovery checks.'
+  Offline: 'The server is stopped. Start it when you are ready to play.',
+  Starting: 'Starting the server. Waiting for the game to report ready.',
+  'Process running': 'The server process has started. Waiting for the game to report ready.',
+  Listening: 'The server is listening on this PC. Test joining in the game.',
+  Ready: 'The game reports ready on this PC. Test joining from another PC.',
+  Stopping: 'Waiting for the game to save and stop.',
+  Failed: 'The last action failed. Check the message and logs before trying again.',
+  Unknown: 'TogetherServer cannot confirm the server state. Review server health and Recovery.'
 }
 
 export function ServerStateExplanation({ state }: { state: string }) {
-  return <p className="server-state-explanation" role="status" aria-live="polite" aria-atomic="true">{explanations[state] ?? 'Refresh status to review the current game-server observation.'}</p>
+  return <p className="server-state-explanation" role="status" aria-live="polite" aria-atomic="true">{explanations[state] ?? 'Refresh to check the server status.'}</p>
 }
 
 export function ActionFeedback({ notice, label = 'Result' }: {
@@ -54,7 +54,7 @@ export function TimerPresets({ minutes, deadline, savedMinutes, busy, onChange, 
   return <div className="timer-presets">
     <div className="actions">{[15, 30, 60].map(value => <Button key={value} className="secondary" disabled={busy} onClick={() => { onChange(String(value)); onAdd(value) }}>+{value} min</Button>)}</div>
     <small>{target && Number.isFinite(target.getTime()) ? `After adding ${amount} minutes: ${target.toLocaleString()}.` :
-      valid ? `After adding: ${savedMinutes + amount} saved minutes for the next exact-zero idle window.` : 'Enter a positive whole number of minutes.'}</small>
+      valid ? `After adding: ${savedMinutes + amount} extra minutes when the server is next empty.` : 'Enter a positive whole number of minutes.'}</small>
   </div>
 }
 
@@ -63,15 +63,15 @@ export function pendingDescription(key: string, profiles: Array<{ id: string; na
   const name = profiles.find(profile => profile.id === profileId || key.includes(profile.id))?.name
   const labels: Array<[string, string]> = [
     ['safe-restart', 'Stopping, backing up, then restarting'], ['manual-backup', 'Creating a world backup'],
-    ['verify-backup', 'Verifying backup integrity'], ['vault-backup', 'Copying a verified backup'],
-    ['rehearse-backup', 'Testing a disposable restore'], ['restore', 'Reviewing and restoring a backup'],
-    ['probe-game', 'Checking the selected game route'], ['friend-start', 'Requesting server start'],
-    ['friend-stop', 'Requesting guarded stop'], ['friend-restart', 'Requesting guarded restart'],
+    ['verify-backup', 'Checking the backup'], ['vault-backup', 'Copying a verified backup'],
+    ['rehearse-backup', 'Testing a backup copy'], ['restore', 'Reviewing and restoring a backup'],
+    ['probe-game', 'Checking the game connection'], ['friend-start', 'Requesting server start'],
+    ['friend-stop', 'Requesting server stop'], ['friend-restart', 'Requesting server restart'],
     ['refresh', 'Refreshing status'], ['start', 'Starting server'], ['stop', 'Stopping server'],
     ['restart', 'Restarting server'], ['extend', 'Adding shutdown time'], ['backups', 'Loading backups'],
     ['invite', 'Preparing the server code'], ['save', 'Saving changes'], ['pair', 'Connecting to the Host'],
-    ['mode', 'Opening workspace'], ['poll', 'Refreshing Host status']
+    ['mode', 'Opening page'], ['poll', 'Refreshing Host status']
   ]
-  const text = labels.find(([prefix]) => key.includes(prefix))?.[1] ?? 'Completing the requested action'
+  const text = labels.find(([prefix]) => key.includes(prefix))?.[1] ?? 'Finishing up'
   return name ? `${text} · ${name}` : text
 }

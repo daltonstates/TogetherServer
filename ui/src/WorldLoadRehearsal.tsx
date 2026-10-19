@@ -62,7 +62,7 @@ const parseList: Decoder<{ ok: boolean; message: string; rehearsals: WorldLoadVi
     throw new ContractError('Invalid load rehearsal list')
   return { ok: source.ok, message: text(source.message), rehearsals: source.rehearsals.map(item => parseWorldLoadView(item)) }
 }
-const outcomeLabel: Record<Outcome, string> = { Unobserved: 'Unobserved', OwnerConfirmed: 'Owner confirmed', OwnerFailed: 'Owner reported failure' }
+const outcomeLabel: Record<Outcome, string> = { Unobserved: 'Not checked', OwnerConfirmed: 'Confirmed by you', OwnerFailed: 'Failure reported by you' }
 
 export function WorldLoadRehearsalPanel({ profileId, backups = [], received = false }:
   { profileId: string; backups?: WorldBackupRecord[]; received?: boolean }) {
@@ -85,7 +85,7 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
   const chosenBackup = backups.some(item => item.id === backupId) ? backupId : backups[0]?.id
   const showMessage = (text: string) => { setMessage(text); setMessageResult(result => result + 1) }
   const adopt = (result: Result) => {
-    showMessage(`${result.code}: ${result.message}`)
+    showMessage(result.message)
     if (result.rehearsal) {
       const item = result.rehearsal
       setRecords(previous => [item, ...previous.filter(record => record.id !== item.id)])
@@ -118,9 +118,9 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
       const revision = confirmationRevision.current
       confirmationPending.current = true
       try {
-        if (!(await requestConfirmation({ title: 'Clean up disposable copy?',
-          description: 'Confirm the disposable game is stopped. Remove only this rehearsal’s working copy and retain its result and original source?',
-          confirmLabel: 'Clean up copy', destructive: true })) || revision !== confirmationRevision.current) return
+        if (!(await requestConfirmation({ title: 'Delete test copy?',
+          description: 'Confirm the test game is stopped. Delete this test copy? The original save and test results will be kept.',
+          confirmLabel: 'Delete test copy', destructive: true })) || revision !== confirmationRevision.current) return
       } finally { confirmationPending.current = false }
     }
     setBusy(true)
@@ -131,38 +131,38 @@ export function WorldLoadRehearsalPanel({ profileId, backups = [], received = fa
   const confirmOutcome = (step: string, passed: boolean) => void action('confirm', { step, passed, gameVersion: gameVersion.trim() || null })
   return <><details className="connection-doctor world-load-rehearsal" onToggle={event => { if (event.currentTarget.open) void refresh() }}>
     <summary>Test a copy in the game</summary>
-    <p>Prepare a fresh disposable copy, load it in the game, make a recognizable change, then save, stop and restart. The source stays intact. Your confirmations are recorded separately from process checks.</p>
-    {!received && <label>Completed backup <Select aria-label="Load rehearsal backup" value={chosenBackup ?? ''}
+    <p>Make a separate test copy, load it in the game and make a visible change. Save, stop and restart to check the change is still there. The original stays unchanged. Game results are recorded as your reports.</p>
+    {!received && <label>Completed backup <Select aria-label="Backup to test" value={chosenBackup ?? ''}
       disabled={busy || backups.length === 0} onChange={event => setBackupId(event.target.value)}>
       {backups.length === 0 && <option value="">Show completed backups first</option>}
       {backups.map(item => <option key={item.id} value={item.id}>{item.backupKind} · {new Date(item.createdUtc).toLocaleString()}</option>)}
     </Select></label>}
-    <div className="actions"><Button className="secondary" disabled={busy || !received && !chosenBackup} onClick={() => void prepare()}>Prepare disposable copy</Button>
+    <div className="actions"><Button className="secondary" disabled={busy || !received && !chosenBackup} onClick={() => void prepare()}>Prepare test copy</Button>
       <Button className="text-button" disabled={busy} onClick={() => void refresh()}>Refresh results</Button></div>
-    {records.length > 1 && <label>Rehearsal <Select value={selected?.id ?? ''} onChange={event => setSelectedId(event.target.value)}>
+    {records.length > 1 && <label>Test <Select value={selected?.id ?? ''} onChange={event => setSelectedId(event.target.value)}>
       {records.map(item => <option key={item.id} value={item.id}>{new Date(item.preparedUtc).toLocaleString()} · {item.state}</option>)}
     </Select></label>}
     {selected && <section aria-label="World load steps">
       <p>{selected.game} · {selected.state}</p><p>{selected.launchReason}</p>
       {!selected.cleaned && <>
-        {selected.canLaunch ? <p>Start this isolated copy. Connect your game to 127.0.0.1:{selected.gamePort}. A listener or Ready state does not confirm world load.</p> :
-          selected.rehearsalProfileId ? <p>Review this isolated setup before another launch. Keep the source and prepare a new rehearsal if the game binary changed.</p> :
-            <p>Manual path: use an owner-installed game in a fresh setup with this working copy as its save folder. Use a separate port and connect locally. Keep the live world and original received or backup files separate. Stop the manual game before cleanup.</p>}
+        {selected.canLaunch ? <p>Start this test copy. Connect your game to 127.0.0.1:{selected.gamePort}. An open port or Ready status does not confirm that the world loaded.</p> :
+          selected.rehearsalProfileId ? <p>Review this test setup before starting again. If the game installation changed, prepare a new test copy.</p> :
+            <p>To test manually, use an installed game with this test copy as its save folder. Use a separate port and connect from this PC. Keep the live world and original save files separate. Stop the test game before deleting the copy.</p>}
         {(selected.canLaunch || selected.rehearsalProfileId != null) && <div className="actions">
-          {selected.canLaunch && <Button disabled={busy} onClick={() => void action('start')}>Start disposable copy</Button>}
-          {selected.rehearsalProfileId != null && <Button className="secondary" disabled={busy} onClick={() => void action('stop')}>Stop disposable copy</Button>}
+          {selected.canLaunch && <Button disabled={busy} onClick={() => void action('start')}>Start test copy</Button>}
+          {selected.rehearsalProfileId != null && <Button className="secondary" disabled={busy} onClick={() => void action('stop')}>Stop test copy</Button>}
         </div>}
-        <label>Game version you observed (optional)<Input value={gameVersion} maxLength={40} onChange={event => setGameVersion(event.target.value)} /></label>
+        <label>Game version you tested (optional)<Input value={gameVersion} maxLength={40} onChange={event => setGameVersion(event.target.value)} /></label>
         <ol><li>Load: {outcomeLabel[selected.loadOutcome]} <Button className="secondary" disabled={busy} onClick={() => confirmOutcome('Load', true)}>I loaded this copy</Button>
           <Button className="text-button" disabled={busy} onClick={() => confirmOutcome('Load', false)}>Load failed</Button></li>
-          <li>Recognizable saved change: {outcomeLabel[selected.changeOutcome]} <Button className="secondary" disabled={busy || selected.loadOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Change', true)}>I saved a recognizable change</Button></li>
+          <li>Visible saved change: {outcomeLabel[selected.changeOutcome]} <Button className="secondary" disabled={busy || selected.loadOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Change', true)}>I saved a visible change</Button></li>
           <li>Restart: {outcomeLabel[selected.restartOutcome]} <Button className="secondary" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Restart', true)}>The change survived restart</Button>
             <Button className="text-button" disabled={busy || selected.changeOutcome !== 'OwnerConfirmed'} onClick={() => confirmOutcome('Restart', false)}>Restart failed</Button></li></ol>
-        <Button className="text-button" disabled={busy} onClick={() => void action('cleanup', { confirmStopped: true })}>Clean up this disposable copy</Button>
+        <Button className="text-button" disabled={busy} onClick={() => void action('cleanup', { confirmStopped: true })}>Delete this test copy</Button>
       </>}
-      <details><summary>Exact copy and setup</summary><p>Copy: <code>{selected.copyIdentity}</code></p><p>App at preparation: {selected.appVersion} · Installed game: {selected.gameVersion}</p>
+      <details><summary>Copy and setup details</summary><p>Copy: <code>{selected.copyIdentity}</code></p><p>App version when prepared: {selected.appVersion} · Installed game: {selected.gameVersion}</p>
         {selected.ownerReportedGameVersion && <p>Owner-reported game version: {selected.ownerReportedGameVersion}</p>}
-        <p className="helper-text">Working folder: {selected.worldDirectory}</p><p>Recorded Starts: {selected.managedStarts} · graceful Stops: {selected.gracefulStops}</p></details>
+        <p className="helper-text">Working folder: {selected.worldDirectory}</p><p>Recorded starts: {selected.managedStarts} · safe stops: {selected.gracefulStops}</p></details>
     </section>}
     {message && <DismissibleNotice as="p" scope={`${received ? 'received' : 'host'}:${profileId}`} noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>{confirmationDialog}</>

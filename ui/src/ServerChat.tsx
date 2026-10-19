@@ -123,7 +123,7 @@ function useProtectedChatDraft(identity: DraftIdentity, enabled: boolean) {
         // Its revision cannot be used to discard that different protected value.
         acceptedSnapshot.current = null; desired.current = null
         setReady(false); setRecovered(saved.current); setFailed(true)
-        setFeedback('Message sent. A newer unfinished message was kept on this PC for review.')
+        setFeedback('Message sent. A newer draft was kept on this PC for review.')
         return false
       }
       setWorking(true)
@@ -147,7 +147,7 @@ function useProtectedChatDraft(identity: DraftIdentity, enabled: boolean) {
           setReady(false)
           if (clearingAcceptedSnapshot !== null && result.text === clearingAcceptedSnapshot) {
             setRecovered(null)
-            setFeedback('Message sent. Its unfinished copy still needs to be cleared. Retry before writing another message.')
+            setFeedback('Message sent. Its saved draft still needs clearing. Retry before writing another message.')
           } else {
             // A confirmed different value belongs to a newer edit; preserve it.
             if (result.text !== null) acceptedSnapshot.current = null
@@ -162,14 +162,14 @@ function useProtectedChatDraft(identity: DraftIdentity, enabled: boolean) {
         // receipt so the navigation guard also renders the confirmed save.
         setReceiptRevision(result.revision)
         setFailed(false)
-        setFeedback(value === null ? '' : 'Unfinished message saved on this PC.')
+        setFeedback(value === null ? '' : 'Draft saved on this PC.')
         if (value === null) { acceptedSnapshot.current = null; setRecovered(null); setReady(true) }
         return true
       } catch (failure) {
         if (!signal.aborted) {
           if (acceptedSnapshot.current !== null) {
             setReady(false); setRecovered(null)
-            setFeedback('Message sent. Its unfinished copy could not be cleared. Retry before writing another message.')
+            setFeedback('Message sent. Could not clear its saved draft. Retry before writing another message.')
           } else setFeedback(errorMessage(failure))
           setFailed(true)
         }
@@ -216,7 +216,7 @@ function useProtectedChatDraft(identity: DraftIdentity, enabled: boolean) {
   const change = (value: string) => { desired.current = value; latestText.current = value; setText(value) }
   const resume = () => {
     if (recovered === null) return
-    change(recovered); setRecovered(null); setReady(true); setFailed(false); setFeedback('Recovered message ready for review.')
+    change(recovered); setRecovered(null); setReady(true); setFailed(false); setFeedback('Saved draft ready for review.')
   }
   const discard = async () => {
     desired.current = null
@@ -339,7 +339,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       if (!discardNotice && !discardQueue) return true
       const label = discardNotice && discardQueue ? 'notice and queued message' : discardNotice ? 'notice' : 'queued message'
       const accepted = await confirm({ title: 'Discard unsaved chat edits?',
-        description: `Discard the unsaved ${label} edits to leave this chat? The published notice and queued messages stay as they are. Your unfinished message is kept on this PC.`,
+        description: `Discard the unsaved ${label} edits to leave this chat? The published notice and queued messages stay as they are. Your message draft is kept on this PC.`,
         confirmLabel: `Discard ${label} edits`, destructive: true })
       if (!accepted || !sameTarget() || latestGuard.current.working) return false
       if (discardNotice) { setNoticeEdit(null); setNoticeError('') }
@@ -457,7 +457,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
     try {
       if (!await draft.flush()) {
         if (!lifetime.current.signal.aborted)
-          setError('The unfinished message could not be confirmed on this PC. Review its draft status before sending.')
+          setError('Could not confirm that your draft was saved. Review the draft status before sending.')
         return
       }
       if (lifetime.current.signal.aborted) return
@@ -527,7 +527,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   return <section className="server-chat" aria-label="Server chat">
     {confirmationDialog}
     <div className="server-chat-heading"><div><h3>Server chat</h3>
-      <p>Talk about this server with the people who have access to its room.</p></div>
+      <p>Chat with the people who have access to this server's room.</p></div>
       <div className="server-chat-sync">
         <Button className="secondary" disabled={busy || syncing || !visible} aria-busy={syncing} aria-label={syncing ? 'Syncing\u2026' : 'Sync now'}
           aria-describedby={syncFeedbackId} onClick={() => void syncNow()}>
@@ -547,10 +547,10 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
             {room.notice?.text ? 'Edit notice' : 'Add notice'}</Button>}
       </div>
       {room.notice?.text ? <><p>{room.notice.text}</p>
-        <small>{!host && room.noticeCached ? 'Cached on this PC · ' : ''}Updated{' '}
+        <small>{!host && room.noticeCached ? 'Saved on this PC · ' : ''}Updated{' '}
           <time dateTime={room.notice.updatedUtc}>{new Date(room.notice.updatedUtc).toLocaleString()}</time></small>
       </> : <p className="helper-text">{room.notice?.text === null ?
-        `${!host && room.noticeCached ? 'Cached on this PC: ' : ''}The Host cleared the notice.` : 'No pinned notice.'}</p>}
+        `${!host && room.noticeCached ? 'Saved on this PC: ' : ''}The Host cleared the notice.` : 'No pinned notice.'}</p>}
       {!host && !room.noticeSupported && room.code === 'ChatSynced' &&
         <p className="helper-text">Update the Host app to see current pinned notices.</p>}
       {editingNotice && <form className="server-chat-notice-editor" onSubmit={event => void saveNotice(event)}>
@@ -575,7 +575,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         <p>{entry.text}</p>
       </div>)}
       {room?.pending.map((queued, index) => <div className="server-chat-message pending" key={queued.id}>
-        <div><strong>You</strong><small>{queued.submitted ? 'Delivery attempted; waiting for Host confirmation' : 'Unsent; waiting to sync'}</small></div><p>{queued.text}</p>
+        <div><strong>You</strong><small>{queued.submitted ? 'Sending; waiting for Host confirmation' : 'Not sent; waiting to connect'}</small></div><p>{queued.text}</p>
         {!host && room.ok && !queued.submitted && <div>
           <Button className="secondary" disabled={busy} aria-label={`Edit queued message ${index + 1}`}
             onClick={() => { setQueueEdit({ id: queued.id, text: queued.text, expectedText: queued.text }); setQueueError('') }}>Edit</Button>
@@ -596,16 +596,16 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         disabled={busy || !room?.pending.some(queued => queued.id === queueEdit.id && !queued.submitted)}
         onChange={event => setQueueEdit({ ...queueEdit, text: event.target.value })} />
       {!room?.pending.some(queued => queued.id === queueEdit.id && !queued.submitted) &&
-        <p className="helper-text">This message left the editable queue. Sync to see its delivery state.</p>}
+        <p className="helper-text">This message was submitted and can no longer be edited. Sync to check delivery.</p>}
       <Button type="submit" disabled={busy || !queueEdit.text.trim() || queueEdit.text.length > messageLimit ||
         !room?.pending.some(queued => queued.id === queueEdit.id && !queued.submitted)}>Save queued message</Button>
       <Button className="secondary" disabled={busy} onClick={() => setQueueEdit(null)}>Keep queued message</Button>
     </form>}
     {queueError && <DismissibleNotice as="p" scope={scope} className="warning-text" role="alert">{queueError}</DismissibleNotice>}
-    {room?.ok && draft.recovering && <DismissibleNotice as="section" scope={scope} noticeKey={draft.recovered ?? undefined} aria-label="Recovered unfinished message">
-      <strong>Review your unfinished message</strong><p>{draft.recovered}</p>
-      <Button className="secondary" disabled={busy || draft.working} onClick={draft.resume}>Use recovered message</Button>
-      <Button className="secondary" disabled={busy || draft.working} onClick={() => void draft.discard()}>Discard recovered message</Button>
+    {room?.ok && draft.recovering && <DismissibleNotice as="section" scope={scope} noticeKey={draft.recovered ?? undefined} aria-label="Saved draft">
+      <strong>Review your saved draft</strong><p>{draft.recovered}</p>
+      <Button className="secondary" disabled={busy || draft.working} onClick={draft.resume}>Use saved draft</Button>
+      <Button className="secondary" disabled={busy || draft.working} onClick={() => void draft.discard()}>Discard saved draft</Button>
     </DismissibleNotice>}
     {room?.ok && <form className="server-chat-compose" onSubmit={event => void send(event)}>
       <label htmlFor={`chat-${profileId}`}>Message</label>
@@ -613,18 +613,18 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
         placeholder="Ask about an issue or share an update" disabled={busy || !draft.ready}
         onChange={event => draft.change(event.target.value)} />
       <div><small>{text.length}/500</small><Button type="submit" disabled={busy || !draft.ready || !text.trim() || text.length > messageLimit}><Icon name={busy ? 'loader' : 'chat'} />Send</Button></div>
-      {!draft.ready && !draft.recovering && !draft.feedback && <small role="status">Checking for an unfinished message…</small>}
-      {(draft.dirty || draft.feedback) && (draft.dirty && !draft.failed ? <small role="status">Saving unfinished message…</small> :
+      {!draft.ready && !draft.recovering && !draft.feedback && <small role="status">Checking for a saved draft…</small>}
+      {(draft.dirty || draft.feedback) && (draft.dirty && !draft.failed ? <small role="status">Saving draft…</small> :
         <DismissibleNotice as="small" scope={scope} role={draft.failed ? 'alert' : 'status'}>{draft.feedback}</DismissibleNotice>)}
       {!draft.ready && !draft.recovering && draft.feedback && <Button className="secondary" disabled={draft.working}
-        onClick={draft.retry}>Retry unfinished message</Button>}
+        onClick={draft.retry}>Retry saving draft</Button>}
     </form>}
     {host && room?.members && <details className="server-chat-members"><summary>People in this room ({room.members.filter(member => member.allowed).length})</summary>
       {room.members.length === 0 ? <p className="helper-text">Invite a friend and assign this server to add them.</p> :
         <ul>{room.members.map(member => <li key={member.deviceId}><span>{member.name}</span>
           <Button className="secondary" disabled={busy} onClick={() => void changeMember(member.deviceId, !member.allowed)}>
             {member.allowed ? 'Remove' : 'Add'}</Button></li>)}</ul>}
-      <small>Removing someone stops new chat sync. Messages already copied to their PC cannot be recalled.</small>
+      <small>Removing someone stops new messages reaching their PC. Messages already copied there cannot be recalled.</small>
     </details>}
   </section>
 }
@@ -638,7 +638,7 @@ export function PinnedNoticePreview({ room, authorized, onOpenChat }: {
   const text = room.notice.text.replace(/\s+/g, ' ').trim()
   return <section className="server-chat-notice-preview" aria-label="Pinned notice preview">
     <strong>Pinned notice</strong><p>{text.length > 180 ? `${text.slice(0, 180)}…` : text}</p>
-    <small>{room.noticeCached ? 'Cached on this PC · ' : ''}Updated{' '}
+    <small>{room.noticeCached ? 'Saved on this PC · ' : ''}Updated{' '}
       <time dateTime={room.notice.updatedUtc}>{new Date(room.notice.updatedUtc).toLocaleString()}</time></small>
     {onOpenChat && <Button className="secondary" onClick={onOpenChat}>Read notice in chat</Button>}
   </section>
@@ -701,6 +701,6 @@ function ChatCardSummary({ profileId, host, connectionId, hostId, authorized, su
     {unread > 0 && <Button className="secondary" onClick={onOpenChat} disabled={!onOpenChat} aria-label={`${unread} unread chat messages`}>
       Chat · {unread} unread</Button>}
     <PinnedNoticePreview room={displayed} authorized={authorized} onOpenChat={onOpenChat} />
-    {failed && <DismissibleNotice as="small" scope={scope} role="status">Chat preview could not be refreshed. Open chat to check current access and updates.</DismissibleNotice>}
+    {failed && <DismissibleNotice as="small" scope={scope} role="status">Could not refresh chat preview. Open chat to check access and new messages.</DismissibleNotice>}
   </div>
 }

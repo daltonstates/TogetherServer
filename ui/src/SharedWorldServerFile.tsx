@@ -21,18 +21,18 @@ export function SharedWorldServerFile({ profileId, game, value, disabled, onChan
     try {
       const chosen = await onBrowseServerFile(game ?? 'Unknown')
       if (mounted.current && scope.current === requestScope && chosen !== null) {
-        onChange(chosen); setMessage('Review this local path and matching game version before checking this PC.')
+        onChange(chosen); setMessage('Check the selected file and game version before continuing.')
       }
     } catch {
       if (mounted.current && scope.current === requestScope)
-        setMessage('The server file could not be selected. Enter its local path or try Browse again.')
+        setMessage('Could not select the server file. Browse again or enter its file location.')
     } finally {
       if (mounted.current && scope.current === requestScope) setChoosing(false)
     }
   }
   return <div>
     <label>{fields.serverFileLabel}<Input id={id} value={value} disabled={disabled || choosing}
-      onChange={event => onChange(event.target.value)} placeholder="Path to installed server file" /></label>
+      onChange={event => onChange(event.target.value)} placeholder="Installed server file location" /></label>
     <p className="helper-text">{fields.serverFileHint}</p>
     {onBrowseServerFile && <Button className="secondary" disabled={disabled || choosing} onClick={() => void browse()}>
       {choosing ? 'Choosing file…' : 'Browse this PC'}</Button>}

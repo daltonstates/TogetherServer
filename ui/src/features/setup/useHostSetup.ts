@@ -548,7 +548,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     setSetupStep('world')
     setMinecraftSetupMode(current => ({ ...current, [id]: 'install' }))
     setShowSetup(true)
-    setNotice({ good: true, text: 'Nonsecret setup reused with a separate world and suggested ports. Choose a new world or source; enter passwords and custom scripts separately.' })
+    setNotice({ good: true, text: 'Settings copied with suggested ports. Choose a world and enter passwords and custom scripts separately.' })
   }
 
   const recoverSetupDraft = () => {
@@ -569,7 +569,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       setPausedSetupProfileId(null)
       protectedSetup.acceptRecovery()
       setShowSetup(true)
-      setNotice({ good: true, text: 'Setup draft restored for review. Re-enter passwords and unsaved custom scripts; game terms are not accepted by recovery.' })
+      setNotice({ good: true, text: 'Draft restored. Enter passwords and unsaved custom scripts again. Review and accept any game terms yourself.' })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
   }
 
@@ -639,7 +639,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     clearSetupSecrets()
     setPausedSetupProfileId(dirty ? activeProfileId : null)
     setShowSetup(false)
-    setNotice({ good: true, text: 'Setup is paused at this step. Nonsecret setup fields are kept in Windows-protected storage on this PC; re-enter passwords and custom scripts when you continue.' })
+    setNotice({ good: true, text: 'Setup saved for later on this PC. Enter passwords and unsaved custom scripts again when you continue.' })
   }
 
   const openSetup = (id: string) => {
@@ -678,7 +678,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
       const result = await changeJson('/api/local/valheim/import', 'POST', parseImportResult, {
         profileId: profile.id, sourceSaveRoot, worldId, sourceFolder
       })
-      setNotice({ good: result.ok, text: `${result.code}: ${result.message}${result.ok ? ' Save the profile next.' : ''}` })
+      setNotice({ good: result.ok, text: `${result.message}${result.ok ? ' Save the server next.' : ''}` })
       if (result.ok && result.worldDirectory) updateProfile(profile.id, {
         name: profile.name || worldId, serverName: profile.serverName || worldId,
         worldId, worldSource: 'Existing', worldDirectory: result.worldDirectory
@@ -730,7 +730,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
     try {
       const result = await changeJson('/api/local/valheim/browse-server', 'POST', parseServerBrowseResult)
       if (result.ok && result.executablePath) updateProfile(profile.id, { executablePath: result.executablePath })
-      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: `${result.code}: ${result.message}` })
+      if (result.code !== 'Canceled') setNotice({ good: result.ok, text: result.message })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
@@ -764,7 +764,7 @@ export function useHostSetup({ snapshot, pending, setPending, setNotice, applySn
         // Native selection prepares a review; copying happens only after Confirm copy.
         importWorld(profile, result.sourceSaveRoot, result.worldId, result.sourceFolder, result as typeof result & {
           sourceFiles?: SetupSourceFile[] | null; totalBytes?: number | null; modifiedUtc?: string | null })
-      } else if (result.code !== 'Canceled') setNotice({ good: false, text: `${result.code}: ${result.message}` })
+      } else if (result.code !== 'Canceled') setNotice({ good: false, text: result.message })
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }

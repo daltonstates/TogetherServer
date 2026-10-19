@@ -6,8 +6,10 @@ import { ContractError, type Decoder } from './contracts'
 import { Icon, type IconName } from './Icon'
 import './LiveSavePresentation.css'
 
-const stageLabels = { completion: 'Game save completion', snapshot: 'Immutable copy', transfer: 'Other-PC transfer and receipt',
-  load: 'Game load on that PC', change: 'Recognizable change', restart: 'Saved restart' }
+const stageLabels = { completion: 'Game finished saving', snapshot: 'Protected save copy', transfer: 'Copy received on another PC',
+  load: 'World loaded on that PC', change: 'Visible saved change', restart: 'Change survived restart' }
+const attemptLabels: Record<string, string> = { Requested: 'Waiting', Capturing: 'Copying', Publishing: 'Sharing',
+  Published: 'Shared', Unchanged: 'No changes', Failed: 'Failed', Canceled: 'Canceled', Withdrawn: 'Canceled' }
 export type LiveSaveAttempt = { requestId: string; state: string; code: string; message: string; versionHash: string | null; versionNumber: number | null }
 export type LiveSaveStatus = { available: boolean; message: string; game: string | null; code: string | null;
   stages: { id: string; state: 'Unverified' | 'Passed'; detail: string; source?: string; observedUtc?: string }[]; resumePending: boolean; lastAttempt: LiveSaveAttempt | null }
@@ -90,7 +92,7 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
     try {
       const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/live/${action}`, 'POST', parseAction,
         action === 'resume' ? undefined : { requestId: action === 'withdraw' ? status.lastAttempt?.requestId : retry.current.id })
-      showMessage(`${result.code}: ${result.message}`)
+      showMessage(result.message)
       if (result.ok || result.attempt && !['Requested', 'Capturing', 'Publishing'].includes(result.attempt.state)) retry.current = null
       await onUpdated()
     } catch (error) { showMessage(errorMessage(error)) }
@@ -101,48 +103,48 @@ export function LiveSaveControls({ profileId, status, onUpdated }:
   const label = busy ? action === 'resume' ? 'Resuming' : action === 'withdraw' ? 'Withdrawing' : 'Saving' :
     status.resumePending ? 'Resume needed' : pending ? 'Saving' : status.available ? 'Ready' : 'Needs setup'
   const icon: IconName = busy ? 'loader' : status.resumePending ? 'warning' : pending ? 'clock' : status.available ? 'archive' : 'shield'
-  const reason = busy ? action === 'resume' ? 'Waiting for the recorded server to acknowledge resumed writes.' :
-    action === 'withdraw' ? 'Canceling this private attempt and keeping signed copies.' : 'Waiting for a verified save and protected copy.' :
-    status.resumePending ? 'Confirm that the previous save hold has resumed before saving again.' :
-    pending ? 'Waiting for save completion; partial copies stay private.' :
-    status.available ? 'Copy a completed save through the approved capture flow.' :
-    status.code === 'GameAcceptanceRequired' ? 'Test this exact installation before enabling live saves.' :
+  const reason = busy ? action === 'resume' ? 'Waiting for the game server to confirm it can save again.' :
+    action === 'withdraw' ? 'Canceling this attempt. Completed signed copies are kept.' : 'Waiting for the game to save and for its copy to be checked.' :
+    status.resumePending ? 'Resume game saving before making another copy.' :
+    pending ? 'Waiting for the game to finish saving. Unfinished copies are not shared.' :
+    status.available ? 'Save and share a verified copy while the server runs.' :
+    status.code === 'GameAcceptanceRequired' ? 'Test this server installation before sharing while it runs.' :
     status.code === 'LiveSaveReviewRequired' ? 'Review the previous attempt before requesting another save.' :
-    'Review the server state and save requirements before capturing a copy.'
-  return <section className="live-save-presentation live-save-status-card" aria-label="Live save sharing" aria-busy={busy}>
+    'Check the server status and save requirements before making a copy.'
+  return <section className="live-save-presentation live-save-status-card" aria-label="Share while running" aria-busy={busy}>
     <div className="live-save-card-heading">
       <span className="live-save-card-icon"><Icon name={icon} size={21} /></span>
-      <div className="live-save-card-title"><h4>Live save sharing</h4>
+      <div className="live-save-card-title"><h4>Share while running</h4>
         <span className="live-save-state" data-tone={status.resumePending ? 'warning' : status.available && !busy && !pending ? 'ready' : 'neutral'}>{label}</span>
       </div>
-      {status.game === 'Fixture' && <span className="live-save-environment">Development fixture</span>}
+      {status.game === 'Fixture' && <span className="live-save-environment">Development test server</span>}
     </div>
     <p className="live-save-reason">{reason}</p>
     <div className="live-save-card-actions">
       {status.resumePending ? <Button className="primary" disabled={busy} onClick={() => void act('resume')}>
-        <Icon name={busy ? 'loader' : 'refresh'} />{busy && action === 'resume' ? 'Resuming…' : 'Retry save resume'}
+        <Icon name={busy ? 'loader' : 'refresh'} />{busy && action === 'resume' ? 'Resuming…' : 'Resume game saving'}
       </Button> : status.available ? <Button className="primary" disabled={busy || !status.available || pending} onClick={() => void act('save')}>
         <Icon name={busy ? 'loader' : 'archive'} />{busy ? 'Working…' : 'Save and share now'}
       </Button> : !pending && <Button className="secondary" aria-controls={detailsId} aria-expanded={detailsOpen}
         onClick={() => setDetailsOpen(true)}><Icon name="shield" />Review requirements</Button>}
       {canWithdraw && <Button className="text-button" disabled={busy} onClick={() => void act('withdraw')}>
-        <Icon name="close" />Withdraw this attempt</Button>}
+        <Icon name="close" />Cancel this attempt</Button>}
     </div>
     {message && <DismissibleNotice as="p" scope={profileId} noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
     <details id={detailsId} className="live-save-disclosure" open={detailsOpen}
       onToggle={event => setDetailsOpen(event.currentTarget.open)}>
-      <summary><Icon name="logs" />Game acceptance checks and save details<Icon name="chevronDown" /></summary>
+      <summary><Icon name="logs" />Game tests and save details<Icon name="chevronDown" /></summary>
       <div className="live-save-disclosure-body">
         <DismissibleNotice as="p" scope={profileId} className="live-save-detail-message">{status.message}</DismissibleNotice>
         {status.code && <p className="live-save-technical">Status: <code>{status.code}</code></p>}
         {status.lastAttempt && <div className="live-save-attempt">
-          <strong>Last attempt: {status.lastAttempt.state}</strong><p>{status.lastAttempt.message}</p>
+          <strong>Last attempt: {attemptLabels[status.lastAttempt.state]}</strong><p>{status.lastAttempt.message}</p>
           {status.lastAttempt.versionNumber !== null && <span>Save {status.lastAttempt.versionNumber}</span>}
         </div>}
         {status.stages.length > 0 && <>
-          <p>{acceptedStages} of {status.stages.length} real-game stages accepted. Owner reports require separate app evidence.</p>
+          <p>{acceptedStages} of {status.stages.length} game checks passed. The app checks saving, copying and transfer; you confirm results in the game.</p>
           <ul className="live-save-evidence-list">{status.stages.map(stage => <li key={stage.id}>
-            <div><strong>{stageLabels[stage.id as keyof typeof stageLabels]}</strong><span>{stage.state}</span></div>
+            <div><strong>{stageLabels[stage.id as keyof typeof stageLabels]}</strong><span>{stage.state === 'Passed' ? 'Passed' : 'Not checked'}</span></div>
             <p>{stage.detail}</p>
           </li>)}</ul>
         </>}

@@ -18,25 +18,25 @@ const defaultSupportReportLoader: SupportReportLoader = () =>
 
 const diagnosticFacts = {
   configuration: { label: 'Saved setup', states: ['Saved', 'Needs attention', 'Driver unavailable', 'Check unavailable'],
-    meaning: 'Saved setup validation does not prove that the game started or a world is healthy.', next: 'Review the saved setup before Start.' },
-  'managed-process': { label: 'Managed process', states: ['Offline', 'Starting', 'Process running', 'Listening', 'Ready', 'Stopping', 'Unknown', 'Failed'],
-    meaning: 'Only the recorded process identity can establish which process is managed.', next: 'Review Overview; resolve uncertain identity before another Start.' },
+    meaning: 'A valid setup does not prove the game started or the world works.', next: 'Review the saved setup before Start.' },
+  'managed-process': { label: 'Server process', states: ['Offline', 'Starting', 'Process running', 'Listening', 'Ready', 'Stopping', 'Unknown', 'Failed'],
+    meaning: 'The app checks the exact server process it recorded when starting.', next: 'Open Overview. Resolve any unknown process before starting again.' },
   'driver-observation': { label: 'Readiness and players', states: ['Not active', 'Player count unavailable', 'Offline', 'Starting', 'Process running', 'Listening', 'Ready', 'Stopping', 'Unknown', 'Failed'],
-    meaning: 'A missing or stale count is Unknown. Remote and automatic Stop require a fresh trusted zero and a final recheck.', next: 'Refresh the player observation in Players.' },
+    meaning: 'A missing or old player count is Unknown. Friend and automatic Stop need a current count of zero, checked again before stopping.', next: 'Refresh the count in Players.' },
   'local-game-ports': { label: 'Local game ports', states: ['Open on PC', 'Closed on PC', 'Opening', 'Waiting', 'Loopback only', 'Unknown', 'Unavailable', 'Relay ready', 'Starting', 'Stopping', 'Failed'],
-    meaning: 'Local socket or relay evidence does not prove an outside game route or a game join.', next: 'Review Network, then test the game separately from a real Friend PC.' },
+    meaning: 'An open port or ready relay does not prove an outside player can join.', next: 'Review Connection help, then try joining the game from a real Friend PC.' },
   'friend-evidence': { label: 'Friend contact', states: ['None recorded', 'Recent', 'Old'],
-    meaning: 'Authenticated app contact does not establish the Friend network location or prove a game join.', next: 'Check the saved Friend connection; test the game join separately.' },
-  'companion-listener': { label: 'Friend app listener', states: ['Off', 'Idle', 'Listening', 'Open on PC', 'Not listening', 'Closed on PC', 'Error', 'Unknown'],
-    meaning: 'A listener on this PC does not establish outside reachability or pinned authentication.', next: 'Review Access and Network.' },
-  'route-diagnostic': { label: 'Outside TCP test', states: ['Not checked', 'Reachable', 'Not reachable', 'Inconclusive', 'Unavailable', 'Previous result expired'],
-    meaning: 'TCP-only evidence does not prove pinned TLS, device access or a game join.', next: 'Review the intended route and ask a Friend on another network to connect.' },
+    meaning: 'A secure app connection does not tell us the Friend’s network or prove they joined the game.', next: 'Check the saved Friend connection, then test the game join separately.' },
+  'companion-listener': { label: 'Friend app port', states: ['Off', 'Idle', 'Listening', 'Open on PC', 'Not listening', 'Closed on PC', 'Error', 'Unknown'],
+    meaning: 'An open port on this PC does not prove Friends can connect securely from outside.', next: 'Review Friend access and Connection help.' },
+  'route-diagnostic': { label: 'App port from internet', states: ['Not checked', 'Reachable', 'Not reachable', 'Inconclusive', 'Unavailable', 'Previous result expired'],
+    meaning: 'A TCP response does not verify the Host identity, a Friend’s access or a game join.', next: 'Check the network setup and ask a Friend on another network to connect.' },
   'data-recovery': { label: 'Local data recovery', states: ['Server controls blocked', 'Review needed', 'No active notice'],
-    meaning: 'Data recovery notices concern app control state; they do not verify a world save.', next: 'Review the Attention Center and resolve recorded processes before acknowledging recovery.' },
+    meaning: 'App recovery checks saved settings and server records. It does not check world files.', next: 'Open Attention and review any recorded servers before confirming recovery.' },
   'update-state': { label: 'Application update', states: ['Current', 'Available', 'Unavailable', 'Checking', 'Unsupported', 'NoRelease'],
-    meaning: 'An update result does not certify game files or world compatibility.', next: 'Review App settings; installation remains owner initiated.' },
-  'server-list-bound': { label: 'Saved server coverage', states: ['Partial'],
-    meaning: 'The diagnostic projection is bounded; additional saved servers are not included.', next: 'Select the affected saved server in the app.' }
+    meaning: 'An app update check does not verify game files or world compatibility.', next: 'Review App settings and choose when to update.' },
+  'server-list-bound': { label: 'Servers included', states: ['Partial'],
+    meaning: 'This report includes only some saved servers.', next: 'Select the affected saved server in the app.' }
 } as const
 
 type DiagnosticFactId = keyof typeof diagnosticFacts
@@ -59,7 +59,7 @@ function diagnosticState(check: OwnerDiagnosticCheck) {
 
 export function ownerDiagnosticExplanation(check: OwnerDiagnosticCheck) {
   const fact = reviewedFact(check)
-  if (!fact) return 'Diagnostic unavailable. Refresh the fixed owner checks.'
+  if (!fact) return 'Check unavailable. Refresh the diagnostics.'
   return `${fact.label}: ${diagnosticState(check)}.\n${fact.meaning}\nNext: ${fact.next}`
 }
 
@@ -75,8 +75,8 @@ export function ownerTroubleshootingReport(view: OwnerDiagnosticsView, selectedP
     return true
   }).slice(0, 10).map(ownerDiagnosticExplanation)
   return ['TogetherServer troubleshooting summary', ...facts,
-    ...(view.truncated ? ['Saved-server coverage is partial.'] : []),
-    'Read-only evidence. No join, saved-world, continuous availability or permission to stop a server is inferred.'].join('\n\n')
+    ...(view.truncated ? ['Only some saved servers are included.'] : []),
+    'These checks do not change the server. They do not verify a game join, saved world or continuous availability, or grant permission to stop.'].join('\n\n')
 }
 
 function DiagnosticCard({ check, onCopy, copyStatus, scope }: {
@@ -153,7 +153,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
     const current = generation.current
     try {
       await navigator.clipboard.writeText(ownerDiagnosticExplanation(check))
-      if (generation.current === current) setExplanationStatus({ check, text: 'Redacted explanation copied.', result: ++resultSequence.current })
+      if (generation.current === current) setExplanationStatus({ check, text: 'Explanation copied. Private details omitted.', result: ++resultSequence.current })
     } catch {
       if (generation.current === current) setExplanationStatus({ check, text: 'Could not copy the explanation. Try again.', result: ++resultSequence.current })
     }
@@ -166,7 +166,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
     setExportStatus(null)
     try {
       await navigator.clipboard.writeText(ownerTroubleshootingReport(diagnostics, selected?.profileId ?? ''))
-      if (generation.current === current) setExportStatus({ tone: 'neutral', text: 'Concise redacted troubleshooting summary copied.', result: ++resultSequence.current })
+      if (generation.current === current) setExportStatus({ tone: 'neutral', text: 'Summary copied. Private details omitted.', result: ++resultSequence.current })
     } catch {
       if (generation.current === current) setExportStatus({ tone: 'error', text: 'Could not copy the troubleshooting summary. Try again.', result: ++resultSequence.current })
     } finally { setExportBusy('') }
@@ -179,7 +179,7 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
       const report = await supportReportLoader()
       if (action === 'copy') {
         await navigator.clipboard.writeText(report.content)
-        setExportStatus({ tone: 'neutral', text: `Redacted support report copied (${report.sizeBytes} bytes).`, result: ++resultSequence.current })
+        setExportStatus({ tone: 'neutral', text: `Support report copied (${report.sizeBytes} bytes). Private details omitted.`, result: ++resultSequence.current })
       } else {
         const url = URL.createObjectURL(new Blob([report.content], { type: report.contentType }))
         try {
@@ -191,19 +191,19 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
         setExportStatus({ tone: 'neutral', text: `Downloaded ${report.fileName} (${report.sizeBytes} bytes).`, result: ++resultSequence.current })
       }
     } catch {
-      setExportStatus({ tone: 'error', text: 'The redacted support report could not be created. No private error details were added.', result: ++resultSequence.current })
+      setExportStatus({ tone: 'error', text: 'Could not create the support report. Try again.', result: ++resultSequence.current })
     } finally { setExportBusy('') }
   }
 
   return <section className="owner-diagnostics" aria-labelledby="owner-diagnostics-title" aria-busy={loading}>
     <div className="owner-diagnostics-toolbar">
-      <div><h3 id="owner-diagnostics-title">Preflight & diagnostics</h3>
-        <p>Read-only owner checks. Opening this view never starts, stops, restarts, or repairs a server.</p></div>
+      <div><h3 id="owner-diagnostics-title">Server diagnostics</h3>
+        <p>Review setup, server status and connection checks. These checks do not change the server.</p></div>
       <Button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? 'Refreshing…' : 'Refresh checks'}</Button>
     </div>
 
     {loadError && <DismissibleNotice scope={selectedProfileId} className="owner-diagnostics-error" role="alert"><strong>Diagnostics unavailable</strong>
-      <p>TogetherServer could not assemble the fixed local checks. No server action was started.</p>
+      <p>Could not load the local checks. Try again.</p>
       <Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
 
     {!loadError && diagnostics && <>
@@ -228,8 +228,8 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
           <DiagnosticCard key={check.id} check={check} onCopy={check => void copyExplanation(check)}
             scope={selected?.profileId ?? selectedProfileId} copyStatus={explanationStatus?.check === check ? explanationStatus : undefined} />)}</div></div>
       <section className="support-export" aria-labelledby="support-export-title">
-        <div><h4 id="support-export-title">Export support report</h4>
-          <p>Copy a short summary or export the full redacted JSON report.</p></div>
+        <div><h4 id="support-export-title">Support report</h4>
+          <p>Copy a short summary or save the full report. Both omit private details.</p></div>
         <div className="actions"><Button className="secondary" disabled={!!exportBusy} onClick={() => void copySummary()}>
           <Icon name="copy" />{exportBusy === 'summary' ? 'Copying…' : 'Copy summary'}</Button>
           <Button disabled={!!exportBusy} onClick={() => void exportReport('copy')}>
@@ -237,8 +237,8 @@ export function OwnerDiagnostics({ selectedProfileId = '', onSelectedProfileIdCh
           <Button className="secondary" disabled={!!exportBusy} onClick={() => void exportReport('download')}>
             <Icon name="download" />{exportBusy === 'download' ? 'Preparing…' : 'Download JSON'}</Button></div>
         <details className="support-export-privacy"><summary>Report contents & privacy</summary>
-          <p>Copy summary keeps only reviewed check states and next steps. Copy report and Download JSON include the larger redacted report.</p>
-          <p>Creates a size-limited JSON report without saving anything on the Host. It leaves out saved access, server codes, passwords, scripts, private paths, addresses, secure identity data, player/chat details, raw logs, worlds, and environment variables.</p>
+          <p>Copy summary includes check results and next steps. Copy report and Download JSON include more diagnostic details.</p>
+          <p>The report leaves out saved access, server codes, passwords, scripts, private paths, addresses, secure identity data, player and chat details, raw logs, worlds and environment variables. Copying creates no file; Download JSON saves the report on this PC.</p>
         </details>
         {exportStatus && <DismissibleNotice as="output" scope={selected?.profileId ?? selectedProfileId} noticeKey={exportStatus.result} className={`support-export-status ${exportStatus.tone}`} role="status">{exportStatus.text}</DismissibleNotice>}
       </section>

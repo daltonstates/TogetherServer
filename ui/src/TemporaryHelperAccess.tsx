@@ -13,8 +13,8 @@ export function TemporaryHelperAccess({ device, busy, nowMs, onGrant, onEnd }: {
   const unavailable = busy || !device.paired || device.approvalPending || device.accessExpired
   return <section className="temporary-helper" aria-label="Temporary helper access">
     <div><strong>Temporary helper access</strong><small>{active
-      ? `This PC can start, request guarded Stop, add time, and view logs until ${new Date(until).toLocaleString()}. Its usual permissions return automatically.`
-      : 'Give this PC helper controls for a short time. Its usual permissions and server assignments stay saved.'}</small></div>
+      ? `This PC can start, stop when empty, add time, and view logs until ${new Date(until).toLocaleString()}. Its usual permissions return automatically.`
+      : 'Temporarily allow Start, Stop when empty, Add time, and View logs for this PC’s assigned servers. Its usual permissions return afterward.'}</small></div>
     <div className="actions">{active
       ? <Button className="secondary" disabled={busy} onClick={onEnd}>End now</Button>
       : <><Button className="secondary" disabled={unavailable} onClick={() => onGrant('OneHour')}>Grant 1 hour</Button>

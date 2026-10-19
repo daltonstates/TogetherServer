@@ -18,7 +18,7 @@ function ScopedOpenGameButton({ profileId, kind, available, disabledReason }: Op
   const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [failed, setFailed] = useState(false)
   const pending = useRef<AbortController | null>(null)
   useEffect(() => () => pending.current?.abort(), [])
-  if (!['Valheim', 'Factorio', 'Terraria'].includes(kind)) return <p className="helper-text">Open {kind === 'MinecraftJava' || kind === 'MinecraftBedrock' ? 'Minecraft from Windows Start or your own launcher, then choose Multiplayer or Servers' : 'your game yourself'}. {kind === 'MinecraftBedrock' ? 'Copy Server address and Port into their separate fields.' : 'Use Copy beside Server IP to enter the address.'}</p>
+  if (!['Valheim', 'Factorio', 'Terraria'].includes(kind)) return <p className="helper-text">Open {kind === 'MinecraftJava' || kind === 'MinecraftBedrock' ? 'Minecraft from Windows Start or your launcher, then choose Multiplayer or Servers' : 'your game manually'}. {kind === 'MinecraftBedrock' ? 'Copy Server address and Port into their separate fields.' : 'Use Copy beside Server IP to enter the address.'}</p>
   async function open() {
     if (pending.current || busy || !available) return
     const controller = new AbortController(); pending.current = controller
@@ -31,8 +31,8 @@ function ScopedOpenGameButton({ profileId, kind, available, disabledReason }: Op
     finally { if (pending.current === controller) pending.current = null; if (!controller.signal.aborted) setBusy(false) }
   }
   return <div className="open-game-action"><Button className="server-primary-action" disabled={busy || !available} onClick={() => void open()}><Icon name={busy ? 'loader' : 'game'} />{busy ? 'Opening game…' : 'Open game'}</Button>
-    <small>Opens an installed game through Steam. Join in the game; opening it does not join the server.</small>
-    {!available && <small>{disabledReason ?? 'Reconnect for fresh access and wait for the server before opening the game.'}</small>}
+    <small>Asks Steam to open an installed game. Join the server from the game.</small>
+    {!available && <small>{disabledReason ?? 'Reconnect and wait for the server to be ready before opening the game.'}</small>}
     {message && <DismissibleNotice as="p" scope={profileId} className={failed ? 'error-text' : 'helper-text'} role={failed ? 'alert' : 'status'}>{message}</DismissibleNotice>}
   </div>
 }

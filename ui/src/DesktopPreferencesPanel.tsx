@@ -57,7 +57,7 @@ export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, 
     try {
       const next = await saver(change, controller.signal)
       if (controller.signal.aborted) return
-      setPreferences(next); setMessage('Notification preferences saved on this PC.')
+      setPreferences(next); setMessage('Notification settings saved on this PC.')
       if ('quietMode' in change) onQuietModeChange?.(next.quietMode)
     } catch { if (!controller.signal.aborted) setError(true) }
     finally { if (!controller.signal.aborted) setBusy(false) }
@@ -71,9 +71,9 @@ export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, 
 
   return <section className="desktop-preferences" aria-labelledby={titleId} aria-busy={busy}>
     <h3 id={titleId}>{selectedServer ? `Notifications for ${selectedServer.name}` : 'Notifications on this PC'}</h3>
-    <p>{selectedServer ? 'Choices for this server on this PC. App updates use the PC default.' : 'Choose which important events can appear in Windows. Hosting and Friend checks keep running.'}</p>
-    {!preferences && !error && <p role="status">Loading notification preferences…</p>}
-    {error && <DismissibleNotice scope={noticeScope} noticeKey={reloadKey} className="error" role="alert"><p>Could not save or read notification preferences. Try again.</p>
+    <p>{selectedServer ? 'Alerts for this server on this PC. App update alerts use your default settings.' : 'Choose which events show Windows alerts.'}</p>
+    {!preferences && !error && <p role="status">Loading notification settings…</p>}
+    {error && <DismissibleNotice scope={noticeScope} noticeKey={reloadKey} className="error" role="alert"><p>Could not load or save notification settings. Try again.</p>
       <Button className="secondary" disabled={busy} onClick={() => setReloadKey(value => value + 1)}>Try again</Button></DismissibleNotice>}
     {preferences && <>
       {!selectedServer && <label className="setting-toggle"><span><strong>Quiet mode</strong><small>Keep events in Attention and pause Windows popups.</small></span>
@@ -82,9 +82,9 @@ export function DesktopPreferencesPanel({ server, quietMode, onQuietModeChange, 
       {selectedServer && <label>Server alerts<Select value={!override ? 'default' : override.allowedEvents.length ? 'custom' : 'off'} disabled={busy}
         onChange={event => void save({ profileId: selectedServer.id, connectionId: selectedServer.connectionId ?? null,
           allowedEvents: event.target.value === 'default' ? null : event.target.value === 'off' ? [] : preferences.allowedEvents.filter(kind => kind !== 'Update') })}>
-        <option value="default">Use PC defaults</option><option value="custom">Custom choices</option><option value="off">Off for this server</option>
+        <option value="default">Use PC defaults</option><option value="custom">Choose alerts</option><option value="off">Off for this server</option>
       </Select></label>}
-      <details className="advanced-block"><summary>Choose notification events</summary>
+      <details className="advanced-block"><summary>Choose alert types</summary>
         {!selectedServer && <p className="helper-text">Default choices for all servers on this PC.</p>}
         {selectedServer && <p className="helper-text">{override ? 'These choices apply only to this server.' : 'This server currently follows the default choices.'}</p>}
         <div className="notification-event-choices">{notificationEventKinds.filter(kind => !selectedServer || kind !== 'Update').map(kind => <label className="check-row" key={kind}>
@@ -164,7 +164,7 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
         <a href={update.releaseNotesUrl!} target="_blank" rel="noopener noreferrer">Open this release on GitHub</a>}
     </details>}
     {update.state === 'Available' && <div className="update-reminder-controls">
-      {update.versionSkipped ? <p>This version's reminder is skipped. A different release will be shown. You can update now.</p> :
+      {update.versionSkipped ? <p>Reminders are off for this version. You can still update now.</p> :
         update.promptSnoozed && update.snoozedUntilUtc && <p>Reminder paused until {new Date(update.snoozedUntilUtc).toLocaleString()}. You can update now.</p>}
       <label>Remind me<Select defaultValue="" disabled={busy || snoozeBusy} onChange={event => { const value = event.target.value;
         if (value) void snooze(value as UpdateReminderDuration); event.target.value = '' }}>
@@ -183,7 +183,7 @@ export function UpdateDetailsPanel({ update, busy = false, onSnoozed, preparatio
         <small>{Math.round(preparation.downloadedBytes / preparation.totalBytes * 100)}% downloaded</small>
       </>}
       {preparation.blocker && <DismissibleNotice as="p" scope={update.latestVersion ?? undefined} className="error" role="alert">{preparation.blocker}</DismissibleNotice>}
-      <Button className="text-button" onClick={downloadReport}>Download preparation report</Button>
+      <Button className="text-button" onClick={downloadReport}>Download update report</Button>
     </div>}
     {message && <DismissibleNotice as="p" scope={update.latestVersion ?? undefined} role="status" aria-live="polite" aria-atomic="true">{message}</DismissibleNotice>}
   </section>

@@ -110,10 +110,10 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
     {section === 'stop' && <>
       <SettingsSectionHeading icon="clock" title="Shutdown" description="Choose when empty servers stop." />
       <label className="setting-toggle"><span><strong>Stop empty servers automatically</strong>
-        <small>Starts after a Ready server reports exactly zero players. A positive or Unknown count cancels the countdown.</small></span>
+        <small>The timer starts when a ready server reports 0 players. Players joining or an unknown count cancel it.</small></span>
         <Input type="checkbox" checked={settings.autoShutdownEnabled} disabled={busy} onChange={event => onAutoShutdown(event.target.checked)} /></label>
       {keepAwake && <label className="setting-toggle"><span><strong>Keep Windows awake while hosting</strong>
-        <small>Prevents idle sleep while an exact managed server is running. Manual sleep can still interrupt hosting.</small>
+        <small>Prevents idle sleep while your server runs. Putting the PC to sleep yourself can still interrupt hosting.</small>
         {keepAwake.detail && <small>{keepAwake.detail}</small>}</span><Input type="checkbox" checked={keepAwake.enabled} disabled={busy || dirty}
           onChange={event => keepAwake.onChange(event.target.checked)} /></label>}
       <div className="settings-card-grid">
@@ -121,7 +121,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
           summary={`${settings.idleMinutes} minutes · ${settings.autoShutdownEnabled ? 'Enabled' : 'Automatic shutdown is off'}`} actionLabel="Edit countdown" disabled={busy || dirty} onOpen={() => open('countdown')} />
       </div>
       <details className="advanced-block"><summary>How safe shutdown works</summary>
-        <p className="helper-text">Friend and automatic Stop require a Ready server, exactly zero reported players, and a final fresh count before graceful Stop. Unknown or positive counts block the request. Your local Stop remains available.</p>
+        <p className="helper-text">Friends and the timer can stop a server only when it is ready and reports 0 players. TogetherServer checks again just before stopping. An unknown count blocks Stop. You can still stop it yourself.</p>
         <p>Remote controls are <strong>{settings.remoteControlsEnabled ? 'on' : 'paused'}</strong>.</p>
         {orderProfiles(settings.profiles, snapshot.runs).map(profile => <div className="settings-detail-row" key={profile.id}><strong>{profile.name}</strong><span>{companion?.stopSafety[profile.id]?.reason ?? 'Player safety check unavailable.'}</span></div>)}
       </details>
@@ -151,27 +151,27 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
       <div className="settings-card-grid">
         {selectedProfile && <SettingsCard icon="bell" title="Server notifications" description={`Windows alerts for ${selectedProfile.name} on this PC.`}
           actionLabel="Edit server notifications" disabled={modalBusy} onOpen={() => open('notifications')} />}
-        <SettingsCard icon="server" title="Hosting limits" description="Maximum number of managed servers running at once."
+        <SettingsCard icon="server" title="Hosting limits" description="How many servers TogetherServer can run at once."
           summary={`${settings.maxConcurrentServers} ${settings.maxConcurrentServers === 1 ? 'server' : 'servers'} at once`} actionLabel="Edit hosting limits" disabled={busy || dirty} onOpen={() => open('limits')} />
         <SettingsCard icon="archive" title="Move hosting to another PC" description="Inspect a verified world move kit and set up the new Host."
           actionLabel="Open move guide" onOpen={() => open('move')} />
       </div>
     </>}
     {tool && <SettingsDialog title={titles[tool]} busy={modalBusy} onClose={() => setTool(null)} wide={tool === 'doctor' || tool === 'rehearsal'}
-      description={editing ? 'Review your changes, then save. Cancel leaves the saved settings in place.' : undefined}
+      description={editing ? 'Review your changes, then save.' : undefined}
       footer={<><Button className="secondary" disabled={modalBusy} onClick={() => setTool(null)}>{editing ? 'Cancel' : 'Done'}</Button>
         {editing && <Button disabled={modalBusy || !changed || !valid} onClick={() => void save()}><Icon name={busy ? 'loader' : 'check'} />{busy ? 'Saving…' : tool === 'countdown' ? 'Save timer' : 'Save settings'}</Button>}</>}>
       {notice && <DismissibleNotice as="p" scope={tool} className={`action-feedback ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
       {tool === 'countdown' && <div className="settings-dialog-fields"><label>Wait after the server reaches 0 players<Input type="number" min="1" max="1440" step="1" value={draft.idleMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, idleMinutes: Number(event.target.value) }))} /><small>Minutes, from 1 to 1440.</small></label>
         <p className="helper-text">At the end, the Host checks the server again and stops only at exactly zero players. Added time stays saved when a count change cancels the countdown.</p>
         <details className="advanced-block" open={extensionsOpen} onToggle={event => setExtensionsOpen(event.currentTarget.open)}><summary>Allow friends to add time</summary>
-          {extensionsOpen && <div className="settings-dialog-fields"><label>Friend extension increment<Input type="number" min="1" max="120" step="1" value={draft.friendTimerExtensionMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, friendTimerExtensionMinutes: Number(event.target.value) }))} /><small>Fixed minutes per approved Friend request, from 1 to 120.</small></label>
-            <label>Friend extension maximum<Input type="number" min={draft.friendTimerExtensionMinutes} max="1440" step="1" value={draft.friendTimerExtensionMaximumMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, friendTimerExtensionMaximumMinutes: Number(event.target.value) }))} /><small>Total minutes per run, up to 1440. The maximum must cover at least one increment.</small></label>
-            <p className="helper-text">Grant Add shutdown time separately for each PC in Access. Friends can add only the fixed increment, including while players are online.</p></div>}
+          {extensionsOpen && <div className="settings-dialog-fields"><label>Minutes added per request<Input type="number" min="1" max="120" step="1" value={draft.friendTimerExtensionMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, friendTimerExtensionMinutes: Number(event.target.value) }))} /><small>From 1 to 120 minutes.</small></label>
+            <label>Maximum minutes friends can add<Input type="number" min={draft.friendTimerExtensionMinutes} max="1440" step="1" value={draft.friendTimerExtensionMaximumMinutes} disabled={busy} onChange={event => setDraft(current => ({ ...current, friendTimerExtensionMaximumMinutes: Number(event.target.value) }))} /><small>Total per server session, up to 1440. Allow enough for at least one request.</small></label>
+            <p className="helper-text">Give each PC Add shutdown time permission in Access. Friends add the set number of minutes, even while players are online.</p></div>}
         </details></div>}
       {tool === 'route' && <div className="settings-dialog-fields"><label>Network route<Select value={draft.connectionRoute.mode} disabled={busy} onChange={event => changeRoute(event.target.value as Settings['connectionRoute']['mode'])}>
-        <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option></Select><small>Use networking you install and manage. Every route still uses pinned Host identity and per-PC permissions.</small></label>
-        {draft.connectionRoute.mode !== 'DirectInternet' && <label>Selected route IPv4<Input value={draft.connectionRoute.address} disabled={busy} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /></label>}
+        <option value="DirectInternet">Direct Internet</option><option value="PrivateMesh">Private mesh</option><option value="AdvancedAddress">Advanced address</option></Select><small>Set up the network yourself. TogetherServer verifies the Host and checks each PC’s permissions on every route.</small></label>
+        {draft.connectionRoute.mode !== 'DirectInternet' && <label>Network IPv4 address<Input value={draft.connectionRoute.address} disabled={busy} onChange={event => changeRoute(draft.connectionRoute.mode, event.target.value)} placeholder="100.64.0.2" /></label>}
         {draft.connectionRoute.mode === 'PrivateMesh' && <label>Detected private-network adapter<Select value="" disabled={busy} onChange={event => event.target.value && changeRoute('PrivateMesh', event.target.value)}><option value="">Choose a detected address</option>
           {routeDiscovery?.privateMeshCandidates.map(candidate => <option key={`${candidate.interfaceName}-${candidate.address}`} value={candidate.address}>{candidate.provider} · {candidate.address} · {candidate.interfaceName}</option>)}</Select></label>}
         <label>Friend app TCP port<Input type="number" min="1024" max="65535" step="1" value={draft.companionPort} disabled={busy} onChange={event => changePort(Number(event.target.value))} /><small>Game ports belong to each server's setup.</small></label>
@@ -179,7 +179,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
           {networkDetailsOpen && <div className="settings-dialog-fields"><label>Custom secure address<Input value={draft.companionEndpoint} disabled={busy} onChange={event => setDraft(current => ({ ...current, companionEndpoint: event.target.value.trim() }))} placeholder="https://127.0.0.1:5131" /></label>
             <label>Bind IP<Input value={draft.companionBindAddress} disabled={busy} onChange={event => setDraft(current => ({ ...current, companionBindAddress: event.target.value }))} placeholder="127.0.0.1" /></label></div>}
         </details><p className="helper-text">TogetherServer reads adapters and saves your selected route. It does not install clients or change firewall, router, DNS, or network policies.</p></div>}
-      {tool === 'doctor' && <><PaneErrorBoundary title="Connection Doctor" resetKey={selectedProfileId}><ConnectionDoctor profile={selectedProfile}
+      {tool === 'doctor' && <><PaneErrorBoundary title="Connection help" resetKey={selectedProfileId}><ConnectionDoctor profile={selectedProfile}
         run={snapshot.runs.find(run => run.profileId === selectedProfile?.id)} ports={ports} routeCheck={routeCheck} devices={companion?.devices ?? []}
         busy={modalBusy} routeMode={settings.connectionRoute.mode} onRefresh={onRefresh} onTestRoute={onTestRoute}
         onOpenAccess={() => { setTool(null); onOpenAccess() }} onOpenDiagnostics={() => { setTool(null); onOpenDiagnostics() }} /></PaneErrorBoundary>
@@ -187,9 +187,9 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
           {networkChecksOpen && <div className="settings-dialog-stack"><div className="settings-detail-row"><strong>Public game address</strong><span>{settings.publicGameIp && settings.publicGameIpCheckedUtc && Date.now() - Date.parse(settings.publicGameIpCheckedUtc) < 3600000 ? `${settings.publicGameIp} · address hint; Friend join untested` : 'Address unavailable or stale'}</span></div>
             {addressError && <DismissibleNotice as="p" scope={settings.companionEndpoint} className="warning-text" role="status">{addressError}</DismissibleNotice>}
             <div className="actions"><Button className="secondary" aria-label="Refresh public address" disabled={modalBusy} onClick={onDetectAddress}><Icon name={detectingAddress ? 'loader' : 'refresh'} />{detectingAddress ? 'Refreshing…' : 'Refresh address'}</Button>
-              <Button className="secondary" aria-label="Test Friend app port from internet" disabled={modalBusy || dirty} onClick={onTestRoute}><Icon name={checkingRoute ? 'loader' : 'search'} />{checkingRoute ? 'Testing…' : 'Test outside TCP'}</Button></div>
+              <Button className="secondary" aria-label="Test Friend app port from internet" disabled={modalBusy || dirty} onClick={onTestRoute}><Icon name={checkingRoute ? 'loader' : 'search'} />{checkingRoute ? 'Testing…' : 'Test internet access'}</Button></div>
             <p className="helper-text">The outside TCP check uses portchecker.io, which sees this PC's public IP and port. No code or saved access is sent.</p>
-            {routeCheck && <DismissibleNotice scope={settings.companionEndpoint} noticeKey={`${routeCheck.checkedUtc}:${routeCheck.state}:${previousRouteVerdict}`} trackMessage={false} className="settings-detail-row" role="status"><strong>{previousRouteVerdict ? 'Previous TCP result' : routeCheck.state} · TCP {routeCheck.port}</strong><span>{routeCheck.detail}</span><small>Checked {new Date(routeCheck.checkedUtc).toLocaleString()}.{previousRouteVerdict && ' This result is stale; test again.'} TCP reachability does not prove pinned pairing or a game join.</small></DismissibleNotice>}
+            {routeCheck && <DismissibleNotice scope={settings.companionEndpoint} noticeKey={`${routeCheck.checkedUtc}:${routeCheck.state}:${previousRouteVerdict}`} trackMessage={false} className="settings-detail-row" role="status"><strong>{previousRouteVerdict ? 'Previous port test' : routeCheck.state} · TCP {routeCheck.port}</strong><span>{routeCheck.detail}</span><small>Checked {new Date(routeCheck.checkedUtc).toLocaleString()}.{previousRouteVerdict && ' This result is old; test again.'} An open port does not prove a secure app connection or game join.</small></DismissibleNotice>}
             {ports?.control.lanForwardDetail && <div className="settings-detail-row"><strong>Router forwarding target on this PC</strong><span>{ports.control.lanForwardDetail}</span>{ports.control.lanAddresses?.map(item => <small key={`${item.interfaceName}-${item.address}`}>{item.address} · {item.interfaceName} · gateway {item.gateway}</small>)}</div>}
             <p className="helper-text">Friend app HTTPS uses TCP {settings.companionPort}. Game ports are separate; Friends connect outbound. Test app connection and game join from another network separately.</p></div>}
         </details></>}
@@ -210,7 +210,7 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
       {tool === 'rehearsal' && <HostRemoteRehearsal />}
       {tool === 'notifications' && selectedProfile && <ServerNotificationPreferences
         server={{ id: selectedProfile.id, name: selectedProfile.name }} onBusyChange={setChildBusy} />}
-      {editing && !valid && <DismissibleNotice as="p" scope={tool} className="warning-text" role="status">{tool === 'countdown' && draft.friendTimerExtensionMaximumMinutes < draft.friendTimerExtensionMinutes ? 'The maximum must cover at least one extension increment.' : 'Enter a whole number within the range shown above.'}</DismissibleNotice>}
+      {editing && !valid && <DismissibleNotice as="p" scope={tool} className="warning-text" role="status">{tool === 'countdown' && draft.friendTimerExtensionMaximumMinutes < draft.friendTimerExtensionMinutes ? 'The maximum must allow at least one request.' : 'Enter a whole number within the range shown above.'}</DismissibleNotice>}
     </SettingsDialog>}
   </section>
 }

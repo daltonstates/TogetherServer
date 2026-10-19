@@ -38,9 +38,9 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
     const revision = current.current.revision
     inFlight.current = true
     try {
-      if (await confirm({ title: 'Forget exited record',
+      if (await confirm({ title: 'Forget stopped session',
         description: 'Forget this saved session only if TogetherServer confirms that its server process is no longer running?',
-        confirmLabel: 'Forget exited record', destructive: true }) && current.current.revision === revision)
+        confirmLabel: 'Forget stopped session', destructive: true }) && current.current.revision === revision)
         onForgetRecordedRun(profileId)
     } finally { inFlight.current = false }
   }
@@ -56,16 +56,16 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
     role={recovery.lifecycleBlocked ? 'alert' : 'status'} aria-labelledby="data-recovery-title">
     <div className="section-heading"><div><h2 id="data-recovery-title">Local data needs review</h2>
       <p>{recovery.lifecycleBlocked
-        ? 'TogetherServer moved unreadable server-control data aside and blocked Start and Restart so it does not control the wrong process.'
-        : 'TogetherServer moved unreadable local data aside. Review the saved files before clearing this notice.'}</p></div>
+        ? 'Some server settings could not be read. They were kept for review. Start and Restart are blocked to avoid controlling the wrong server.'
+        : 'Some app data could not be read. It was kept for review. Check the saved files before clearing this notice.'}</p></div>
       <span className="status error">{recovery.lifecycleBlocked ? 'Server controls blocked' : 'Review needed'}</span>
       <Button className="secondary icon-button" aria-label="Dismiss local data warning" onClick={() => setDismissed(noticeIdentity)}><Icon name="close" /></Button></div>
     <ul className="recovery-file-list">{recovery.notices.map((item, index) => <li key={`${item.detectedUtc}-${index}`}>
       <strong>{safeFileName(item.stateFile)}</strong><span>{item.reason}</span>
       <small>Saved as {safeFileName(item.quarantinedFile)} - {new Date(item.detectedUtc).toLocaleString()}</small>
     </li>)}</ul>
-    {orphanedRuns.length > 0 && <div className="recovery-runs"><strong>Recorded servers without readable settings</strong>
-      <p>Review these saved server processes on this PC. Start and Restart are unavailable until they are resolved.</p>
+    {orphanedRuns.length > 0 && <div className="recovery-runs"><strong>Servers with missing settings</strong>
+      <p>Check these servers on this PC. Resolve their status before using Start or Restart.</p>
       {orphanedRuns.map(run => <div className="recovery-run" key={run.profileId}>
         <div><strong>{run.profileId}</strong><span>{run.state} - {run.detail}</span></div>
         <div className="actions">
@@ -74,8 +74,8 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
             {pending === `recovery-stop-${run.profileId}` ? 'Stopping...' : 'Stop recorded server'}
           </Button>}
           {run.state === 'Failed' && <Button className="secondary" disabled={!!pending}
-            onClick={() => void forget(run.profileId)}>Forget exited record</Button>}
-          {run.state === 'Unknown' && <small>Process identity is uncertain. TogetherServer will not Stop or forget this record until it can prove what happened.</small>}
+            onClick={() => void forget(run.profileId)}>Forget stopped session</Button>}
+          {run.state === 'Unknown' && <small>TogetherServer cannot identify this server process. Stop and Forget are blocked until its status can be confirmed.</small>}
         </div>
       </div>)}</div>}
     {mode === 'Host' ? <div className="recovery-actions">
@@ -84,12 +84,12 @@ export function DataRecoveryPanel({ recovery, mode, runs, configuredProfileIds, 
         onChange={event => onConfirmedChange(event.target.checked)} />{recovery.lifecycleBlocked
           ? 'I confirm no game server managed by TogetherServer is still running.'
           : 'I reviewed the saved files and understand that the affected Friend connection data was disabled.'}</label>
-      {managedRunBlocksAcknowledgement && <small>Stop or resolve every recorded managed server before acknowledging recovery.</small>}
+      {managedRunBlocksAcknowledgement && <small>Stop or resolve all listed servers before confirming.</small>}
       <Button disabled={!!pending || !confirmed || managedRunBlocksAcknowledgement} onClick={onAcknowledge}>
         {pending === 'data-recovery' ? 'Checking...' : recovery.lifecycleBlocked
           ? 'Confirm and re-enable server controls' : 'Confirm review'}
       </Button>
-    </div> : <div className="next-action"><span>Only My server can verify and acknowledge local recovery.</span>
+    </div> : <div className="next-action"><span>Open My server to review and confirm recovery.</span>
       <Button disabled={!!pending} onClick={onSwitchToHost}>Switch to My server</Button></div>}
   </section>)}
     {confirmationDialog}

@@ -167,9 +167,9 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.getAllByText(/Players are online\. Wait/).every(element => element.closest('details'))).toBe(true)
-    expect(screen.getByRole('button', { name: 'Open Connection Doctor' })).not.toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open Connection help' })).not.toBeVisible()
     fireEvent.click(screen.getByLabelText('Server tools and connection help'))
-    fireEvent.click(screen.getByRole('button', { name: 'Open Connection Doctor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connection help' }))
     expect(doctor).toHaveBeenCalledOnce()
   })
   it('groups one explicit Start, then waiting, then existing game/copy/manual steps without automatic actions', () => {
@@ -188,7 +188,7 @@ describe('the composed play flow', () => {
     const starting = { ...profile, state: 'Starting' }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [starting] }} profile={starting} nowMs={nowMs} onStart={onStart} />)
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
-    expect(screen.getByText(/Wait for its readiness observation/, { selector: '.friend-play-flow > p' })).toBeVisible()
+    expect(screen.getByText(/Wait until it reports Ready/, { selector: '.friend-play-flow > p' })).toBeVisible()
     view.rerender(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs}
       connectionDetails={<p>Masked connection controls</p>} requirements={<p>Requirements slot</p>} />)
     expect(screen.getByRole('button', { name: 'Open game' })).toBeInTheDocument()
@@ -205,7 +205,7 @@ describe('the composed play flow', () => {
     const listening = { ...profile, kind: 'Terraria', state: 'Listening', onlinePlayers: null }
     const paused = { ...snapshot, state: 'Disabled', remoteControlsEnabled: false, profiles: [listening] }
     const view = render(<FriendPlayFlow snapshot={paused} profile={listening} nowMs={nowMs} />)
-    expect(screen.getByText(/readiness, player count and a real join remain unverified/, { selector: '.friend-play-flow > p' })).toBeVisible()
+    expect(screen.getByText(/readiness, player count and a real join have not been verified/, { selector: '.friend-play-flow > p' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open game' })).toBeEnabled()
     view.rerender(<FriendPlayFlow snapshot={paused} profile={listening} nowMs={nowMs + 46_000} />)
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
@@ -217,7 +217,7 @@ describe('the composed play flow', () => {
     const offline = { ...profile, state: 'Offline', maintenanceEnabled: true }
     const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [offline] }} profile={offline} nowMs={nowMs} onStart={onStart} />)
     expect(screen.getByRole('button', { name: 'Start server' })).toBeDisabled()
-    expect(screen.getByText(/paused lifecycle controls for maintenance/, { selector: '.friend-play-flow > p' })).toBeVisible()
+    expect(screen.getByText(/paused remote server controls for maintenance/, { selector: '.friend-play-flow > p' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Start server' }))
     expect(onStart).not.toHaveBeenCalled()
     const denied = { ...offline, maintenanceEnabled: false, canStart: false }

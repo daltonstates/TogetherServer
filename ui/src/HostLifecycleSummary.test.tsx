@@ -39,7 +39,7 @@ describe('HostLifecycleSummary', () => {
     render(<HostLifecycleSummary {...input} compact run={{ ...run, state: 'Offline', detail: 'Confirmed process exit.' }} onStart={start} onOpen={open} />)
     expect(screen.getByText('Confirmed process exit.')).toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
-    expect(screen.queryByText('Observed phase')).not.toBeInTheDocument()
+    expect(screen.queryByText('Server status')).not.toBeInTheDocument()
     expect(start).not.toHaveBeenCalled()
     expect(open).not.toHaveBeenCalled()
   })
@@ -49,7 +49,7 @@ describe('HostLifecycleSummary', () => {
     const open = vi.fn()
     render(<HostLifecycleSummary {...input} compact run={{ ...run, state, detail: 'Waiting for fresh driver evidence.' }} onStart={start} onOpen={open} />)
     expect(screen.getByText('Waiting for fresh driver evidence.')).toBeInTheDocument()
-    expect(screen.getByText(state === 'Starting' ? 'Starting · Waiting for game readiness' : 'Unknown · Review needed')).toBeInTheDocument()
+    expect(screen.getByText(state === 'Starting' ? 'Starting · Please wait' : 'Unknown · Review needed')).toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
     expect(start).not.toHaveBeenCalled()
     expect(open).not.toHaveBeenCalled()
@@ -91,8 +91,8 @@ describe('HostLifecycleSummary', () => {
   })
 
   it.each([
-    ['Process running', 'Process running · Waiting for game readiness', 'Review startup', 'recorded process is running'],
-    ['Listening', 'Listening · Game readiness unverified', 'Review connection details', 'Game readiness, player count and a real game join remain unverified']
+    ['Process running', 'Starting · Waiting for the game', 'Review startup', 'server process has started'],
+    ['Listening', 'Listening · Game not confirmed ready', 'Review connection details', 'Readiness, player count, and joining still need checking']
   ])('preserves the observed %s phase and offers review without inferring readiness from a cached count', (state, phase, label, reason) => {
     const start = vi.fn()
     const open = vi.fn()
@@ -141,7 +141,7 @@ describe('HostLifecycleSummary', () => {
   it('shows actual observed detail while Stop waits, without a progress bar or save confirmation', () => {
     render(<HostLifecycleSummary {...input} run={{ ...run, state: 'Stopping', detail: 'Waiting for the exact process to exit.' }} onOpen={vi.fn()} />)
     expect(screen.getByText('Waiting for the exact process to exit.')).toBeInTheDocument()
-    expect(screen.getByText(/does not prove the world was saved/)).toBeInTheDocument()
+    expect(screen.getByText(/still need to check the save in the game/)).toBeInTheDocument()
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
   })
 

@@ -141,7 +141,7 @@ export function accessEntryIssue(kind: string, entry: GameAccessEntry): string |
     entry.name.trim() !== entry.name || /[\p{Cc}\p{Cf}\uD800-\uDFFF]/u.test(entry.name) || entry.ignoresPlayerLimit === null ||
     (entry.identity !== null && !/^[0-9]{1,20}$/u.test(entry.identity))
     ? 'Enter an Xbox gamertag and, if known, its numeric XUID.' : null
-  return 'This game has no reviewed access-list editor.'
+  return 'Player lists cannot be edited for this game.'
 }
 export function accessListIssue(kind: string, entries: GameAccessEntry[]): string | null {
   if (entries.length > maximumAccessEntries) return 'Use at most 128 players in this editor.'

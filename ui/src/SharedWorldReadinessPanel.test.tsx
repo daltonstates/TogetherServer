@@ -28,13 +28,13 @@ it('withdraws manual Start on head changes, ignores deferred old reads, and pres
   expect(screen.getByRole('button', { name: 'Review Start in Host' })).toBeEnabled()
   const values = [
     ['Installed server file', 'C:\\draft\\server.exe'], ['Installed game version', 'unsaved-version'],
-    ['Future Friend control port', '5141'], ['Future game port', '2567']
+    ['TogetherServer connection port', '5141'], ['Game port', '2567']
   ]
   // Unknown-game setup deliberately exposes the generic local server field.
-  const serverField = screen.getByPlaceholderText('Path to installed server file')
+  const serverField = screen.getByPlaceholderText('Installed server file location')
   fireEvent.change(serverField, { target: { value: values[0][1] } })
   for (const [label, value] of values.slice(1)) fireEvent.change(screen.getByLabelText(label), { target: { value } })
-  const access = screen.getByLabelText('I have set a new game password locally')
+  const access = screen.getByLabelText('I set a new game password on this PC')
   fireEvent.click(access)
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
   expect(ready).toHaveBeenLastCalledWith(false)
@@ -44,7 +44,7 @@ it('withdraws manual Start on head changes, ignores deferred old reads, and pres
   await act(async () => { oldRead(reply(handoff)) })
   expect(screen.queryByRole('button', { name: 'Review Start in Host' })).not.toBeInTheDocument()
   expect(ready).toHaveBeenLastCalledWith(false)
-  expect(screen.getByText(/Rechecking signed hosting readiness/)).toBeInTheDocument()
+  expect(screen.getByText(/Checking the hosting decision again/)).toBeInTheDocument()
   await act(async () => { newRead(reply({ ...handoff, recordHash: 'B'.repeat(64) })) })
   expect(ready).toHaveBeenLastCalledWith(true)
   expect(serverField).toHaveValue(values[0][1])
@@ -91,9 +91,9 @@ it('preserves every restore draft field through revision refresh and failed meta
   const view = render(<SharedWorldReadinessPanel profileId={profileId} expanded authorityRevision={1} />)
   await act(async () => {})
   const values = [
-    ['New server name', 'Draft name'], ['Installed game executable, if different from the server file', 'C:\\draft.exe'],
-    ['Prepared Minecraft server folder, if using Minecraft', 'C:\\draft-root'],
-    ['Factorio local RCON port, if using Factorio', '28015'], ['New game password, if this game uses one', 'unsaved-password']
+    ['New server name', 'Draft name'], ['Game program, if different from the server file', 'C:\\draft.exe'],
+    ['New Minecraft server folder, if used', 'C:\\draft-root'],
+    ['Factorio RCON control port, if used', '28015'], ['New game password, if used', 'unsaved-password']
   ]
   for (const [label, value] of values) fireEvent.change(screen.getByLabelText(label), { target: { value } })
   fail = true
@@ -117,7 +117,7 @@ it('requires a fresh exact staged head, including with no parent head, and recov
   const view = render(<SharedWorldReadinessPanel profileId={profileId} expanded onHostingSetupChange={ready}
     onOpenHostControls={vi.fn()} authorityHeadHash={'B'.repeat(64)} />)
   await act(async () => {})
-  expect(screen.getByText(/does not match the current signed hosting decision/)).toBeInTheDocument()
+  expect(screen.getByText(/does not match the current hosting decision/)).toBeInTheDocument()
   expect(ready).toHaveBeenLastCalledWith(false)
   view.rerender(<SharedWorldReadinessPanel profileId={profileId} expanded onHostingSetupChange={ready}
     onOpenHostControls={vi.fn()} authorityHeadHash={null} />)
@@ -161,14 +161,14 @@ it('shows rehearsal limits and keeps takeover unavailable', async () => {
     { status: 200, headers: { 'Content-Type': 'application/json' } })
   }))
   render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111" />)
-  fireEvent.click(screen.getByText('Check this PC for future hosting'))
-  fireEvent.click(screen.getByRole('button', { name: 'Rehearse file restore' }))
+  fireEvent.click(screen.getByText('Check this PC for hosting'))
+  fireEvent.click(screen.getByRole('button', { name: 'Test restoring files' }))
   await waitFor(() => expect(calls.some(url => url.endsWith('/rehearse'))).toBe(true))
-  expect(await screen.findByText('Disposable file restore checked and removed.')).toBeInTheDocument()
+  expect(await screen.findByText('Test files restored, checked and removed. No real game was tested.')).toBeInTheDocument()
   expect(screen.getByText(/real game load, join, and save still need testing/)).toBeInTheDocument()
   expect(screen.getByText(/Fixture process rehearsal is unavailable/)).toBeInTheDocument()
   expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Check direct-IP control route' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Test app connection' })).toBeDisabled()
 })
 
 it('rejects malformed readiness data', () => {
@@ -199,7 +199,7 @@ it('finishes a verified majority with signed add-ons before showing manual Start
   }))
   render(<SharedWorldReadinessPanel profileId="11111111-1111-4111-8111-111111111111"
     onHostingSetupChange={hostingSetupChange} />)
-  fireEvent.click(screen.getByText('Check this PC for future hosting'))
+  fireEvent.click(screen.getByText('Check this PC for hosting'))
   expect(await screen.findByRole('button', { name: 'Finish setup and checks' })).toBeInTheDocument()
   fireEvent.click(screen.getByText('Required add-ons'))
   expect(screen.getByText(/Reviewed mod 1.0/)).toBeInTheDocument()
@@ -211,5 +211,5 @@ it('finishes a verified majority with signed add-ons before showing manual Start
   expect((sent?.setup as { enabledAddOns: unknown[] }).enabledAddOns).toEqual([addOn])
   expect(await screen.findByText(/Before the first Start on this PC/)).toBeInTheDocument()
   await waitFor(() => expect(hostingSetupChange).toHaveBeenLastCalledWith(true))
-  expect(screen.getByText(/Incoming game traffic is still unverified/)).toBeInTheDocument()
+  expect(screen.getByText(/The game connection still needs testing/)).toBeInTheDocument()
 })

@@ -46,7 +46,7 @@ public static class OwnerDiagnostics
                 OwnerDiagnosticTones.Attention));
 
         return new(now,
-            "These checks use saved Host data and do not change the server. Local listeners and outside TCP checks do not prove that a Friend connected, joined the game, or that a world saved correctly.",
+            "These checks leave the server unchanged. Test a Friend connection, game join, and saved progress separately.",
             servers, shared, snapshot.Settings.Profiles.Count > MaximumServers);
     }
 
@@ -73,7 +73,7 @@ public static class OwnerDiagnostics
     {
         if (!games.TryGet(profile.Kind, out var driver))
             return new("configuration", "Saved setup", "Driver unavailable",
-                "The saved game kind has no registered reviewed driver, so its setup cannot be evaluated.",
+                "TogetherServer cannot check the setup for this game.",
                 "Choose a supported game and review the saved setup.", "Host > Setup",
                 OwnerDiagnosticTones.Error);
 
@@ -87,10 +87,10 @@ public static class OwnerDiagnostics
                     "Host > Setup", OwnerDiagnosticTones.Attention);
             var passwordState = profile.Kind == GameKinds.Valheim &&
                 !snapshot.PasswordConfigured.GetValueOrDefault(profile.Id)
-                ? " The protected game password is not currently recorded."
+                ? " The game password has not been saved."
                 : "";
             return new("configuration", "Saved setup", "Saved",
-                $"The existing {driver.DisplayName} start validation accepts the saved configuration.{passwordState}",
+                $"The saved {driver.DisplayName} setup passes its start checks.{passwordState}",
                 "Review Setup before changing the game, world, executable, or ports.", "Host > Setup");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
@@ -98,8 +98,8 @@ public static class OwnerDiagnostics
                                    System.Text.Json.JsonException or ArgumentException)
         {
             return new("configuration", "Saved setup", "Check unavailable",
-                "TogetherServer could not safely evaluate the saved configuration. No server action was started.",
-                "Open Setup and review the saved files and protected configuration.", "Host > Setup",
+                "Could not check the saved setup. The server has not changed.",
+                "Open Setup and review the saved settings.", "Host > Setup",
                 OwnerDiagnosticTones.Error);
         }
     }
@@ -121,44 +121,44 @@ public static class OwnerDiagnostics
             "Starting" or "Stopping" => "Wait for the current server action to finish, then refresh diagnostics.",
             _ => "Use the Start, Stop, and Restart buttons in Overview."
         };
-        return new("managed-process", "Managed process", run.State,
-            Bounded(run.Detail + pid, 320, "Managed process state is unavailable."), next,
+        return new("managed-process", "Server process", run.State,
+            Bounded(run.Detail + pid, 320, "Server process status unavailable."), next,
             "Host > Overview", tone);
     }
 
     private static OwnerDiagnosticCheck ObservationCheck(RunView run)
     {
         if (run.State == "Offline")
-            return new("driver-observation", "Driver readiness and players", "Not active",
-                "The server is offline, so there is no live readiness or player observation. Offline diagnostics do not start it.",
+            return new("driver-observation", "Game status and players", "Not active",
+                "The server is stopped. Start it to check game status and players.",
                 "Start only from Overview when you intend to run the saved server.", "Host > Overview");
 
         if (run.State == "Ready" && run.PlayerCountTrusted && run.OnlinePlayers is { } online)
         {
             var capacity = run.MaxPlayers is { } maximum ? $" of {maximum}" : "";
-            return new("driver-observation", "Driver readiness and players", $"Ready · {online}{capacity} online",
-                "This is the latest player count reported to the Host. It does not identify players or prove that someone joined from outside the network.",
-                "Use the player-count refresh beside the server card if a new observation is needed.", "Host > Players");
+            return new("driver-observation", "Game status and players", $"Ready · {online}{capacity} online",
+                "Latest count from the game. It does not show who joined or which network they used.",
+                "Refresh the player count to check again.", "Host > Players");
         }
 
         if (run.State == "Ready")
-            return new("driver-observation", "Driver readiness and players", "Player count unavailable",
+            return new("driver-observation", "Game status and players", "Player count unavailable",
                 "The server is Ready, but a fresh player count is not available. Remote and automatic Stop stay blocked for safety.",
                 "Refresh the player count and review the game's local status.", "Host > Players",
                 OwnerDiagnosticTones.Attention);
 
-        return new("driver-observation", "Driver readiness and players", run.State,
-            Bounded(run.Detail, 280, "Driver observation is unavailable."),
-            "Refresh diagnostics after the existing Host supervision cycle completes.", "Host > Overview",
+        return new("driver-observation", "Game status and players", run.State,
+            Bounded(run.Detail, 280, "Game status unavailable."),
+            "Wait a moment, then refresh these checks.", "Host > Overview",
             run.State is "Unknown" or "Failed" ? OwnerDiagnosticTones.Error : OwnerDiagnosticTones.Attention);
     }
 
     private static OwnerDiagnosticCheck GamePortsCheck(GamePortCheck? game)
     {
         if (game is null)
-            return new("local-game-ports", "Declared game ports", "Unavailable",
-                "No existing declared-port diagnostic was returned for this saved server.",
-                "Open Network and refresh the existing port checks.", "Servers > This PC settings > Network",
+            return new("local-game-ports", "Game ports", "Unavailable",
+                "Game port checks are unavailable for this server.",
+                "Open Network and refresh the port checks.", "Servers > This PC settings > Network",
                 OwnerDiagnosticTones.Error);
         var declared = game.Ports.Count == 0 ? "No game ports are declared." :
             $"Declared {game.Protocol} {string.Join(", ", game.Ports)}.";
@@ -168,11 +168,11 @@ public static class OwnerDiagnostics
             "Opening" or "Loopback only" => OwnerDiagnosticTones.Attention,
             _ => OwnerDiagnosticTones.Neutral
         };
-        return new("local-game-ports", "Declared game ports", game.State,
+        return new("local-game-ports", "Game ports", game.State,
             Bounded($"{declared} {game.Detail} Seeing a port open on this PC does not prove that a Friend can reach it or join the game.",
                 420, "Local port details are unavailable."),
-            game.State == "Waiting" ? "Start only from Overview when you intend to inspect live local sockets." :
-                "Use Network for routing guidance, then verify the game separately from a real Friend PC.",
+            game.State == "Waiting" ? "Start the server from Overview to check its ports." :
+                "Review Network, then test joining the game from a Friend PC.",
             "Servers > This PC settings > Network", tone);
     }
 
@@ -192,7 +192,7 @@ public static class OwnerDiagnostics
         var current = age <= CurrentHeartbeat;
         return new("friend-evidence", "Recent Friend contact", current ? "Recent" : "Old",
             $"A connected Friend PC contacted the Host at {received:O}. Its network location is unknown, and this does not prove a game join.",
-            current ? "Test the game join separately if connection acceptance is required." :
+            current ? "Test joining the game from a Friend PC." :
                 "Ask the assigned Friend to reopen TogetherServer and check the saved Host connection.",
             "Settings > Friend access", current ? OwnerDiagnosticTones.Neutral : OwnerDiagnosticTones.Attention,
             received);
@@ -220,8 +220,8 @@ public static class OwnerDiagnostics
     {
         if (result is null)
             return new("route-diagnostic", "Outside connection test", "Not checked",
-                "No outside TCP test has been run since TogetherServer opened.",
-                "Run the optional test only after the local Friend listener is open, or ask a Friend on another network to connect.",
+                "No internet port test has run since the app opened.",
+                "Open Friend connections first, then test internet access or ask a Friend on another network to connect.",
                 "Servers > This PC settings > Network");
         var age = now - result.CheckedUtc;
         var current = age >= TimeSpan.Zero && age < CurrentRouteDiagnostic && result.Port == control.Port &&
@@ -229,8 +229,8 @@ public static class OwnerDiagnostics
              string.Equals(result.Endpoint, control.Endpoint, StringComparison.OrdinalIgnoreCase));
         if (!current)
             return new("route-diagnostic", "Outside connection test", "Previous result expired",
-                "The latest outside TCP result is older than five minutes or no longer matches the current Friend connection and server code address.",
-                "Refresh the optional route test, then connect from a real Friend PC.",
+                "The address changed or the internet test is over five minutes old. Test again.",
+                "Run the internet test again, then ask a Friend to connect.",
                 "Servers > This PC settings > Network", OwnerDiagnosticTones.Attention, result.CheckedUtc);
         var tone = result.State switch
         {
@@ -239,11 +239,11 @@ public static class OwnerDiagnostics
             _ => OwnerDiagnosticTones.Neutral
         };
         return new("route-diagnostic", "Outside connection test", result.State,
-            Bounded(result.Detail + " This checks only the TCP route; it does not prove that a Friend connected or joined the game.",
+            Bounded(result.Detail + " This tests the app port. A Friend connection and game join still need checking.",
                 420, "The outside TCP result is unavailable."),
             result.State == "Reachable"
                 ? "Verify Connect from a real Friend PC, then test the game join separately."
-                : "Review the shown route layers manually; TogetherServer will not change firewall, router, or DNS settings.",
+                : "Review the network checks. TogetherServer does not change your firewall, router, or DNS.",
             "Servers > This PC settings > Network", tone, result.CheckedUtc);
     }
 
@@ -272,9 +272,9 @@ public static class OwnerDiagnostics
             _ => OwnerDiagnosticTones.Neutral
         };
         var next = isStaging
-            ? "Replace or rebuild this isolated staging app explicitly; stable automatic updates stay disabled here."
+            ? "Replace or rebuild this development app to update it."
             : update.State == "Available"
-                ? "Review the available version in App settings; installation remains owner-initiated."
+                ? "Review the update in App Settings. You choose when to install it."
                 : "Use Check for updates from App settings when a fresh result is needed.";
         return new("update-state", "Application update", update.State,
             Bounded(update.Message, 300, "Update state is unavailable."), next,

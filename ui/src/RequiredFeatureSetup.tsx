@@ -38,9 +38,9 @@ export const parseRequiredSetupResult: Decoder<RequiredSetupResult> = (value, co
 
 function validateRegistry(view: RequiredSetupView, registry: RequiredFeatureRegistry) {
   if (Object.keys(registry).some(id => !view.features.some(feature => feature.id === id)))
-    throw new Error('Required setup information is missing. Retry to check this app’s requirements.')
+    throw new Error('Could not load setup. Try again.')
   if (view.features.some(feature => registry[feature.id]?.revision !== feature.revision))
-    throw new Error('This required setup step is unavailable in this app version. Retry, or install a compatible app update.')
+    throw new Error('This setup step needs a newer app version. Try again or update TogetherServer.')
   return view
 }
 
@@ -91,14 +91,14 @@ export function RequiredFeatureSetup({ setup, renderStep, safety, appName = 'Tog
 }) {
   const pending = setup.view?.features.find(feature => !feature.completed)
   const step = pending && renderStep(pending, () => setup.complete(pending), setup.busy || setup.loading)
-  const error = setup.error || (pending && !step ? 'This required setup step is unavailable. Retry or install a compatible app update.' : '')
+  const error = setup.error || (pending && !step ? 'This setup step is unavailable. Try again or update TogetherServer.' : '')
   return <div className="shell required-setup-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark">T</span><strong>{appName}</strong></div></header>
     <main className="required-setup-main"><section className="panel required-setup-panel" aria-label="Required app setup" aria-busy={setup.loading || setup.busy}>
       <h1>Let’s get you ready</h1>
-      <p>Complete these settings to use TogetherServer. Your choices are kept on this PC for future updates.</p>
+      <p>Finish setup to get started. Your choices are saved on this PC.</p>
       {setup.view && setup.view.features.length > 1 && <p role="status">{setup.view.features.filter(feature => feature.completed).length} of {setup.view.features.length} steps complete</p>}
-      {setup.loading ? <p role="status">Checking required setup…</p> : <>
+      {setup.loading ? <p role="status">Checking setup…</p> : <>
         {pending && <><h2>{pending.title}</h2><p>{pending.description}</p>{step}</>}
         {error && <p className="warning-text" role="alert">{error}</p>}
         {error && <Button className="secondary" disabled={setup.busy} onClick={() => void setup.reload()}>Retry setup</Button>}

@@ -30,7 +30,7 @@ const routeFailures = new Set(['HostPortClosed', 'HostPortTimedOut', 'HostTimedO
   'HostUnreachable', 'InviteAddressInvalid', 'Disconnected'])
 const credentialStates: Record<string, string> = {
   CredentialExpired: 'Credential expired', CredentialRejected: 'Credential rejected', Revoked: 'Access removed',
-  AccessExpired: 'Owner access ended', HostAccessDenied: 'Access denied'
+  AccessExpired: 'Access deadline reached', HostAccessDenied: 'Access denied'
 }
 const connectedStates = ['Connected', 'Disabled', 'Update required']
 
@@ -78,54 +78,54 @@ export function friendConnectionDoctorStages(snapshot: FriendSnapshot,
   })
   const saved: FriendDoctorStage = {
     id: 'saved', label: 'Saved access', state: snapshot.endpoint ? 'Present' : 'Not connected',
-    detail: snapshot.endpoint ? 'This PC keeps its Host pin and separate device credential in protected local storage.' : 'Paste the current server code from the Host.',
+    detail: snapshot.endpoint ? 'This PC has its own saved access and a saved Host identity, protected by Windows.' : 'Paste the current server code from the Host.',
     tone: snapshot.endpoint ? 'neutral' : 'attention', complete: !!snapshot.endpoint, checkedUtc: null, freshness: 'saved'
   }
   const route = current
-    ? appStage({ id: 'route', label: 'Host TCP route', state: 'Answered', detail: 'The saved Host address answered from this PC.', tone: 'neutral', complete: true })
+    ? appStage({ id: 'route', label: 'Host app port', state: 'Answered', detail: 'The saved Host address answered from this PC.', tone: 'neutral', complete: true })
     : routeFailures.has(issue)
-      ? appStage({ id: 'route', label: 'Host TCP route', state: 'Could not verify', detail: 'Retry the saved connection. Ask the Host to check its listener and the intended network route.', tone: 'error', complete: false })
-      : waiting('route', 'Host TCP route', 'Run checks against the saved Host. An old response does not prove the route still works.')
+      ? appStage({ id: 'route', label: 'Host app port', state: 'Could not verify', detail: 'Retry the saved connection. Ask the Host to check that Friend connections are on and the network settings are correct.', tone: 'error', complete: false })
+      : waiting('route', 'Host app port', 'Run checks for the saved Host. An old response does not prove the connection still works.')
   const identity = current
-    ? appStage({ id: 'identity', label: 'Pinned Host identity', state: 'Matched', detail: 'HTTPS matched a saved certificate pin. No trust bypass was used.', tone: 'neutral', complete: true })
+    ? appStage({ id: 'identity', label: 'Host identity', state: 'Matched', detail: 'The secure connection matched the saved Host certificate.', tone: 'neutral', complete: true })
     : issue === 'HostIdentityMismatch'
-      ? appStage({ id: 'identity', label: 'Pinned Host identity', state: 'Mismatch', detail: 'Ask the Host to review its identity or provide a new code. Do not bypass the saved pin.', tone: 'error', complete: false })
-      : waiting('identity', 'Pinned Host identity', 'A fresh HTTPS response must match a saved Host pin.')
+      ? appStage({ id: 'identity', label: 'Host identity', state: 'Mismatch', detail: 'Ask the Host to check its secure identity or provide a new code. Keep the saved certificate check enabled.', tone: 'error', complete: false })
+      : waiting('identity', 'Host identity', 'The next secure connection must match the saved Host certificate.')
   const credential = current
-    ? appStage({ id: 'credential', label: 'Saved device access', state: 'Authenticated', detail: 'The Host accepted this PC’s separate saved credential.', tone: 'neutral', complete: true })
+    ? appStage({ id: 'credential', label: 'This PC’s access', state: 'Accepted', detail: 'The Host accepted this PC’s own saved access.', tone: 'neutral', complete: true })
     : credentialStates[issue] || issue === 'ApprovalPending' || snapshot.state === 'Awaiting approval'
-      ? appStage({ id: 'credential', label: 'Saved device access', state: credentialStates[issue] ?? 'Awaiting approval',
+      ? appStage({ id: 'credential', label: 'This PC’s access', state: credentialStates[issue] ?? 'Awaiting approval',
           detail: issue === 'AccessExpired' ? 'The Host owner can extend or clear the access deadline. This saved connection remains available.'
-            : issue === 'ApprovalPending' || snapshot.state === 'Awaiting approval' ? 'Ask the Host to approve this PC.' : 'Ask the Host to review this PC’s access. Saved access does not prove current authorization.',
+            : issue === 'ApprovalPending' || snapshot.state === 'Awaiting approval' ? 'Ask the Host to approve this PC.' : 'Ask the Host to review this PC’s access. Saved access may no longer be valid.',
           tone: issue === 'ApprovalPending' || snapshot.state === 'Awaiting approval' ? 'attention' : 'error', complete: false })
-      : waiting('credential', 'Saved device access', 'Authentication must be confirmed after the pinned TLS check.')
+      : waiting('credential', 'This PC’s access', 'After checking the Host identity, confirm that the Host accepts this PC’s saved access.')
   const protocol = current && snapshot.protocolCompatible === true
-    ? appStage({ id: 'protocol', label: 'App protocol', state: 'Compatible', detail: 'Both apps can exchange the reviewed companion contract.', tone: 'neutral', complete: true })
+    ? appStage({ id: 'protocol', label: 'App compatibility', state: 'Compatible', detail: 'These app versions can communicate.', tone: 'neutral', complete: true })
     : snapshot.protocolCompatible === false || snapshot.state === 'Update required'
-      ? appStage({ id: 'protocol', label: 'App protocol', state: 'Update required', detail: 'Update the incompatible app before requesting controls.', tone: 'error', complete: false })
-      : waiting('protocol', 'App protocol', 'Protocol compatibility needs a fresh authenticated Host response.')
+      ? appStage({ id: 'protocol', label: 'App compatibility', state: 'Update required', detail: 'Update the incompatible app before requesting controls.', tone: 'error', complete: false })
+      : waiting('protocol', 'App compatibility', 'Reconnect securely to check whether these app versions can communicate.')
   const assignment = current && profile
-    ? appStage({ id: 'assignment', label: 'Selected server assignment', state: 'Assigned', detail: 'The Host currently assigns this selected server to this PC.', tone: 'neutral', complete: true })
-    : appStage({ id: 'assignment', label: 'Selected server assignment', state: !current ? 'Unknown' : profileId ? 'No longer assigned' : snapshot.profiles.length ? 'Choose a server' : 'None assigned',
-        detail: !current ? 'Assignments need fresh authenticated status.' : profileId || !snapshot.profiles.length
-          ? 'Ask the Host to assign this server under Friend access.' : 'Choose the server whose readiness and game route you want to check.',
+    ? appStage({ id: 'assignment', label: 'Server access', state: 'Assigned', detail: 'The Host currently shares this server with this PC.', tone: 'neutral', complete: true })
+    : appStage({ id: 'assignment', label: 'Server access', state: !current ? 'Unknown' : profileId ? 'No longer assigned' : snapshot.profiles.length ? 'Choose a server' : 'None assigned',
+        detail: !current ? 'Reconnect securely to check which servers the Host shares with this PC.' : profileId || !snapshot.profiles.length
+          ? 'Ask the Host to assign this server under Friend access.' : 'Choose the server you want to check.',
         tone: profileId && current ? 'error' : 'attention', complete: false })
   const controls = !current || snapshot.protocolCompatible !== true || !profile
-    ? waiting('controls', 'Remote controls', 'Current app access, protocol and selected-server assignment are required before controls can be described.')
+    ? waiting('controls', 'Remote controls', 'Reconnect and choose an assigned server to check your available controls.')
     : appStage({ id: 'controls', label: 'Remote controls',
         state: snapshot.state === 'Disabled' || !snapshot.remoteControlsEnabled ? 'Paused by Host' : profile.maintenanceEnabled ? 'Maintenance' : profile.canStart || profile.canStop || profile.canExtendTimer ? 'Granted actions only' : 'Status only',
-        detail: snapshot.state === 'Disabled' || !snapshot.remoteControlsEnabled ? 'The Host paused lifecycle controls. Authenticated status and separately granted chat/log access may continue.'
-          : profile.maintenanceEnabled ? 'The Host paused lifecycle controls for maintenance. Ask the Host when it is finished.'
+        detail: snapshot.state === 'Disabled' || !snapshot.remoteControlsEnabled ? 'The Host paused remote server controls. Status and separately granted chat and log access may continue.'
+          : profile.maintenanceEnabled ? 'The Host paused remote server controls for maintenance. Ask the Host when it is finished.'
             : 'Start, Stop, Add time and View logs are separate permissions for this server. Every request is checked again by the Host.',
         tone: 'neutral', complete: true })
   const readiness = current && profile
     ? appStage({ id: 'readiness', label: 'Host game readiness', state: profile.state === 'Ready' ? 'Ready reported' : profile.state === 'Listening' ? 'Listening only' : profile.state === 'Offline' ? 'Offline' : profile.state === 'Starting' ? 'Starting' : 'Unknown',
-        detail: profile.state === 'Ready' ? 'The Host reports its driver’s readiness observation. Check the game route and join separately.'
-          : profile.state === 'Listening' ? 'Only a listener is reported. Game readiness, players and a real join remain unverified.'
+        detail: profile.state === 'Ready' ? 'The Host reports that the game server is ready. You still need to check the game connection and try joining.'
+          : profile.state === 'Listening' ? 'The game port is open. Game readiness, player count and a real join have not been verified.'
             : profile.state === 'Offline' ? 'Start this server if permitted, or ask the Host. Run the game check after startup.'
-              : 'Wait for a fresh Host readiness observation or ask the Host to review startup.',
+              : 'Wait for the Host to check again or ask the Host to review startup.',
         tone: 'attention', complete: profile.state === 'Ready' })
-    : waiting('readiness', 'Host game readiness', 'Readiness belongs to the selected server and needs fresh Host status.')
+    : waiting('readiness', 'Host game readiness', 'Refresh the selected server’s status to check whether it is ready.')
   if (readiness.complete) readiness.tone = 'neutral'
 
   const raw = profile ? gameResults[profile.id] : undefined
@@ -134,7 +134,7 @@ export function friendConnectionDoctorStages(snapshot: FriendSnapshot,
   const result = scopeMatches ? raw : undefined
   const gameFreshness = friendCheckFreshness(result?.checkedUtc, nowMs)
   const game: FriendDoctorStage = {
-    id: 'game', label: profile?.kind === 'Terraria' ? 'Game TCP port' : 'Game endpoint',
+    id: 'game', label: profile?.kind === 'Terraria' ? 'Game TCP port' : 'Game connection',
     state: 'Not tested', detail: 'Check this selected server from this PC. A reply never proves a player joined.',
     tone: 'attention', complete: false, checkedUtc: timestamp(result?.checkedUtc), freshness: gameFreshness
   }
@@ -145,7 +145,7 @@ export function friendConnectionDoctorStages(snapshot: FriendSnapshot,
       ? 'Valheim’s query needs the following UDP port. Ask the Host to review the game port.'
       : ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind)
       ? 'The fixed check currently needs an IPv4 game address. Use the game’s manual join steps for DNS or IPv6.'
-      : 'This game has no Friend-side fixed endpoint probe. Check the route by joining in the game.'
+      : 'The app cannot test this game connection. Try joining in the game.'
     game.checkedUtc = null; game.freshness = 'unknown'
   } else if (!current || snapshot.protocolCompatible !== true || !['Ready', 'Listening'].includes(profile.state)) {
     game.state = 'Waiting'; game.detail = 'Run the game check after a fresh assigned-server status reports Ready or Listening.'
@@ -158,8 +158,8 @@ export function friendConnectionDoctorStages(snapshot: FriendSnapshot,
     game.complete = result.answered && result.code === expectedCode
     game.state = game.complete ? profile.kind === 'Terraria' ? 'TCP listener reached' : 'Answered from this PC' : 'Did not answer'
     game.detail = game.complete ? profile.kind === 'Terraria'
-      ? 'A TCP listener is reachable. Terraria readiness, player count and a real join remain unverified.'
-      : 'This game’s fixed query replied from this PC. Join in the game to check actual play.'
+      ? 'The TCP port answered. Terraria readiness, player count and a real join have not been verified.'
+      : 'The game server answered this PC’s status query. Try joining in the game to check actual play.'
       : 'No valid reply was received. This does not prove the server is offline. Ask the Host to check the game route, then retry.'
     game.tone = game.complete ? 'neutral' : 'error'
   }
@@ -180,8 +180,8 @@ export function friendDoctorReport(stages: FriendDoctorStage[], nowMs = Date.now
   return ['TogetherServer Friend connection checks', `Generated: ${new Date(nowMs).toISOString()}`,
     ...stages.map(stage => `${stage.label}: ${stage.state}${stage.checkedUtc ? `; checked ${stage.checkedUtc}` : ''}; ${stage.freshness}`),
     `Next: ${friendDoctorTroubleshooting(stages)}`,
-    'App connection, permissions, Host readiness and game route are separate. A reply is not a real join or saved-world check.',
-    'Redacted: no codes, credentials, pins, addresses, IDs, names, paths or player identity.'].join('\n')
+    'App connection, permissions, server readiness and game connection are separate checks. A response does not prove a real join or saved world.',
+    'Private details omitted: codes, credentials, certificate pins, addresses, IDs, names, paths and player identity.'].join('\n')
 }
 
 export type FriendConnectionDoctorProps = FriendDoctorOptions & {
@@ -221,11 +221,11 @@ function FriendDoctorContent(props: FriendConnectionDoctorProps) {
     setCopyState({ key: reportKey, message: '' })
     try {
       await navigator.clipboard.writeText(concise ? friendDoctorTroubleshooting(stages) : friendDoctorReport(stages, nowMs))
-      setCopyState({ key: reportKey, message: concise ? 'Troubleshooting explanation copied.' : 'Redacted report copied.' })
+      setCopyState({ key: reportKey, message: concise ? 'Explanation copied.' : 'Report copied. Private details omitted.' })
     } catch { setCopyState({ key: reportKey, message: 'Could not copy. Clipboard access is unavailable.' }) }
   }
   return <details className="connection-doctor friend-connection-doctor" open={hasIssue}>
-    <summary>Connection Doctor · {hasIssue ? 'Needs attention' : 'Saved connection checks'}{next && ` · ${next.label}: ${next.state}`}</summary>
+    <summary>Connection help · {hasIssue ? 'Needs attention' : 'Saved connection checks'}{next && ` · ${next.label}: ${next.state}`}</summary>
     <div className="connection-doctor-heading"><div><h3>Check this PC’s connection</h3>
       <p>App access, controls, Host readiness and the selected game route are separate checks.</p></div>
       <Button className="secondary" disabled={busy} onClick={onRefresh}><Icon name={busy ? 'loader' : 'refresh'} />{busy ? 'Checking…' : 'Run checks'}</Button></div>
@@ -249,12 +249,12 @@ function FriendDoctorContent(props: FriendConnectionDoctorProps) {
     </article>)}</div>
     {next && <div className="doctor-next"><strong>Next: {next.label}</strong><p>{next.detail}</p></div>}
     <div className="actions"><Button className="secondary" disabled={busy || !canProbe}
-      onClick={() => { if (canProbe && profile) onProbe(profile.id) }}>Check game endpoint</Button>
-      <Button className="text-button" onClick={() => void copy(true)}>Copy troubleshooting explanation</Button>
-      <Button className="text-button" onClick={() => void copy(false)}>Copy redacted report</Button></div>
-    {!canProbe && <small>{profile && !friendGameProbeSupported(profile) ? 'Use the manual game join steps; this fixed probe is unavailable.' : 'Choose an assigned server with fresh Ready or Listening status to check its game route.'}</small>}
+      onClick={() => { if (canProbe && profile) onProbe(profile.id) }}>Check game connection</Button>
+      <Button className="text-button" onClick={() => void copy(true)}>Copy explanation</Button>
+      <Button className="text-button" onClick={() => void copy(false)}>Copy report</Button></div>
+    {!canProbe && <small>{profile && !friendGameProbeSupported(profile) ? 'Follow the game join instructions; the app cannot test this connection.' : 'Choose an assigned server with current Ready or Listening status to check its game connection.'}</small>}
     {copyState.key === reportKey && copyState.message && <DismissibleNotice as="small" scope={reportKey} role="status">{copyState.message}</DismissibleNotice>}
-    <small className="evidence-boundary">A TCP, TLS, authentication, protocol or game-query success never proves a real join or saved change.</small>
+    <small className="evidence-boundary">A successful app or game connection check does not prove that a player joined or a world change was saved.</small>
   </details>
 }
 

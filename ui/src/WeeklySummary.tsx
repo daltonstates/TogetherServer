@@ -68,33 +68,33 @@ export function WeeklySummary({ profileId, visible, refreshKey = 0, loader = def
       aria-pressed={browsing && sessionFilters.metric === view} onClick={() => explore(view)}>{value}</Button> : value}</dd></div>
   return <section hidden={!visible} className="recent-sessions weekly-summary" aria-labelledby={titleId} aria-busy={loading}>
     <div className="recent-sessions-toolbar"><div><h4 id={titleId}>Seven-day summary</h4>
-      <p>Retained session evidence for this server on this Host.</p></div>
+      <p>Saved activity for this server on this Host PC.</p></div>
       <Button className="secondary" disabled={loading || !visible} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh summary'}</Button></div>
     {loading && !result && <p role="status">Loading seven-day summary…</p>}
     {error && <DismissibleNotice scope={profileId} className="error" role="alert"><strong>Seven-day summary unavailable</strong>
-      <p>Could not read this Host’s retained session evidence.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
+      <p>Could not read this Host’s saved session history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
     {!error && summary && <>
       <p>{new Date(summary.windowStartUtc).toLocaleString()} – {new Date(summary.windowEndUtc).toLocaleString()}</p>
-      {summary.archivedSessionCount === 0 && <p>No completed session evidence in these seven days.</p>}
+      {summary.archivedSessionCount === 0 && <p>No ended sessions were recorded in these seven days.</p>}
       <dl className="recent-session-facts">
         {metric('Recorded runtime', 'runtime', duration(summary.recordedRuntimeSeconds))}
-        {metric('Completed sessions', 'completed', summary.completedSessionCount)}
+        {metric('Ended sessions', 'completed', summary.completedSessionCount)}
         {metric('Failed before Ready', 'failedStarts', summary.failedStarts)}
         {metric('Unexpected exits', 'unexpectedExits', summary.unexpectedExits)}
-        {metric('Trusted player peak', 'peak', summary.peakTrustedOnlinePlayers === null ? 'Unavailable' : summary.peakTrustedOnlinePlayers,
+        {metric('Highest reported player count', 'peak', summary.peakTrustedOnlinePlayers === null ? 'Unavailable' : summary.peakTrustedOnlinePlayers,
           summary.peakTrustedOnlinePlayers === null)}
-        {metric('Rolling backups', 'backups', `${summary.rollingBackupsCompleted} completed · ${summary.rollingBackupsFailed} failed`)}
+        {metric('Backups after Stop', 'backups', `${summary.rollingBackupsCompleted} completed · ${summary.rollingBackupsFailed} failed`)}
       </dl>
       <figure className="weekly-runtime-chart">
         <figcaption>Recorded activity by day</figcaption>
-        <p>UTC dates; the first and last days are clipped to this window. Bars show recorded runtime out of 24 hours, not availability. Missing timing stays unavailable.</p>
+        <p>Dates use UTC. Bars show recorded server runtime out of 24 hours. Only time within these seven days is counted. Runtime does not show whether players could join.</p>
         {summary.runtimeByDay ? <ol>
           {summary.runtimeByDay.map(day => {
             const date = day.startUtc.slice(0, 10)
             return <li key={day.startUtc}>
               <Button className="text-button" disabled={day.recordedRuntimeSeconds === null} onClick={() => explore('runtime', date)}
                 aria-label={`Show recorded sessions on ${date} (UTC)`}>{date}</Button>
-              {day.recordedRuntimeSeconds === null ? <span>No timed evidence</span> : <>
+              {day.recordedRuntimeSeconds === null ? <span>No recorded times</span> : <>
                 <svg width="100%" height="8" viewBox="0 0 100 8" preserveAspectRatio="none" role="img"
                   aria-label={`${date}: ${duration(day.recordedRuntimeSeconds)} recorded runtime`}>
                   <rect width="100" height="8" fill="#31343a" />
@@ -105,28 +105,28 @@ export function WeeklySummary({ profileId, visible, refreshKey = 0, loader = def
             </li>
           })}
         </ol> : <p>Daily timing detail is unavailable in this summary. Refresh after updating the app.</p>}
-        <small>Only retained, known start/end intervals contribute. Overlaps count once. Durations round down to whole seconds, so daily and weekly totals can differ by a few seconds.</small>
+        <small>Only saved sessions with known start and end times count. Overlapping time counts once. Daily and weekly totals may differ by a few seconds because times are rounded down.</small>
       </figure>
       {summary.sessions && <details open={browsing} onToggle={event => setBrowsing(event.currentTarget.open)}>
-        <summary>Explore retained sessions</summary>
-        <p>These are the retained records used by the summary. Runtime is clipped; player peaks from sessions that began before this window are excluded.</p>
+        <summary>View saved sessions</summary>
+        <p>These records make up the summary. Only runtime within these seven days counts. Player peaks from sessions that began earlier are left out.</p>
         <SessionHistory key={profileId} entries={summary.sessions} filters={sessionFilters} onFiltersChange={setSessionFilters}
           window={summary} showMetrics />
       </details>}
-      <details><summary>Coverage and missing evidence</summary>
-        <p>Runtime uses saved start and end times, clipped to these seven days. It does not measure continuous availability or time at Ready.</p>
+      <details><summary>What is included and missing</summary>
+        <p>Runtime uses saved start and end times within these seven days. It does not show continuous availability or time spent Ready.</p>
         <ul>
-          <li>{summary.unfinishedRunCount} unfinished run{summary.unfinishedRunCount === 1 ? '' : 's'} excluded from runtime, outcomes, backups and player peaks.</li>
-          <li>{summary.unavailableSessionCount} legacy or incomplete session{summary.unavailableSessionCount === 1 ? '' : 's'} with unavailable metrics.</li>
-          <li>{summary.clippedSessionCount} session{summary.clippedSessionCount === 1 ? '' : 's'} started before the window; their untimed player peaks are excluded.</li>
-          <li>{summary.sessionsWithoutTrustedCounts} completed session{summary.sessionsWithoutTrustedCounts === 1 ? '' : 's'} without a trusted player count.</li>
-          <li>{summary.overlappingSessionCount} overlapping saved interval{summary.overlappingSessionCount === 1 ? '' : 's'} counted once.</li>
-          <li>{summary.undatedArchiveRecordCount} archive record{summary.undatedArchiveRecordCount === 1 ? '' : 's'} could not be placed in time.</li>
+          <li>{summary.unfinishedRunCount} unfinished session{summary.unfinishedRunCount === 1 ? '' : 's'} left out of runtime, outcomes, backups and player peaks.</li>
+          <li>{summary.unavailableSessionCount} older or incomplete session{summary.unavailableSessionCount === 1 ? '' : 's'} with missing details.</li>
+          <li>{summary.clippedSessionCount} session{summary.clippedSessionCount === 1 ? '' : 's'} started before these seven days; their player peaks are left out because the peak times are unknown.</li>
+          <li>{summary.sessionsWithoutTrustedCounts} ended session{summary.sessionsWithoutTrustedCounts === 1 ? '' : 's'} without a reliable player count.</li>
+          <li>{summary.overlappingSessionCount} overlapping session time{summary.overlappingSessionCount === 1 ? '' : 's'} counted once.</li>
+          <li>{summary.undatedArchiveRecordCount} saved record{summary.undatedArchiveRecordCount === 1 ? '' : 's'} with no usable date.</li>
         </ul>
-        <p>Rolling backups: {summary.rollingBackupsNotConfigured} not configured · {summary.rollingBackupsUnsupported} unsupported · {summary.rollingBackupsNotAttempted} not attempted.</p>
-        <p>{summary.archiveLimitReached ? 'The 500-record archive limit was reached; some sessions from this window may be missing.' : 'Only the retained archive is available, with up to 500 records from 30 days. Missing history is not inferred as zero.'}</p>
+        <p>Backups after Stop: {summary.rollingBackupsNotConfigured} not set up · {summary.rollingBackupsUnsupported} unsupported · {summary.rollingBackupsNotAttempted} not attempted.</p>
+        <p>{summary.archiveLimitReached ? 'The 500-record limit was reached. Some sessions from these seven days may be missing.' : 'History keeps up to 500 records from 30 days. Missing history is unknown, not zero.'}</p>
       </details>
     </>}
-    <p className="recent-sessions-boundary">Player peaks are count observations. They do not identify players or prove a game join, saved world, uptime, or permission to stop a server.</p>
+    <p className="recent-sessions-boundary">Past player counts do not identify players, prove a game join or saved world, or allow Stop. This summary does not measure uptime.</p>
   </section>
 }

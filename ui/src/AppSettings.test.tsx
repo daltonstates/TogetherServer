@@ -60,7 +60,7 @@ describe('App Settings pages', () => {
     expect(input.onClearNotice).toHaveBeenCalledOnce()
     expect(screen.getByText('PC defaults only')).toBeInTheDocument()
     expect(screen.queryByText('Server selector supplied')).not.toBeInTheDocument()
-    expect(screen.getByText('Choose a server on Servers to change its individual alerts.')).toBeInTheDocument()
+    expect(screen.getByText('For alerts about one server, open that server’s settings.')).toBeInTheDocument()
   })
 
   it('preserves onClose and prevents fallback navigation or closing during a notification save', () => {
@@ -128,7 +128,7 @@ describe('prerelease update preferences', () => {
     view.rerender(<AppSettings {...input} section="updates" update={legacy} />)
     expect(checkbox).not.toBeChecked()
     expect(checkbox).toBeEnabled()
-    expect(checkbox).toHaveAccessibleDescription(/Applies only to this PC.*may be unvalidated.*requires Update and restart/)
+    expect(checkbox).toHaveAccessibleDescription(/Preview updates for this PC.*may not be fully tested.*Choose Update and restart to install/)
     expect(input.onReviewUpdate).not.toHaveBeenCalled()
   })
 

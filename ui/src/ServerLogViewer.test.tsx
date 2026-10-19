@@ -272,13 +272,13 @@ describe('ServerLogViewer', () => {
     const endedLoader = vi.fn<ServerLogLoader>().mockResolvedValue(result('a'.repeat(32), [], 'cursor', 'Ended', 'EndedLog'))
     const ended = render(<ServerLogViewer endpoint="/ended" visible loader={endedLoader} />)
     expect(await screen.findByText('Ended log state.')).toBeInTheDocument()
-    expect(screen.getAllByText('Ended run').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Past session').length).toBeGreaterThan(0)
     ended.unmount()
 
     const missingLoader = vi.fn<ServerLogLoader>().mockResolvedValue(result(null, [], null, 'Missing', 'NoManagedRunLog', false))
     const missing = render(<ServerLogViewer endpoint="/missing" visible loader={missingLoader} />)
     expect(await screen.findByText('Missing log state.')).toBeInTheDocument()
-    expect(screen.getAllByText('No run log').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('No session log').length).toBeGreaterThan(0)
     missing.unmount()
 
     const errorLoader = vi.fn<ServerLogLoader>().mockRejectedValue(new Error('Host log request failed.'))

@@ -30,7 +30,7 @@ async function readPayload(response: Response): Promise<unknown> {
   if (!body) return null
   try { return JSON.parse(body) as unknown }
   catch (error) {
-    throw new ApiError(response.status, 'InvalidJson', 'The local app returned malformed JSON.', { cause: error })
+    throw new ApiError(response.status, 'InvalidJson', 'TogetherServer could not read the reply. Try again.', { cause: error })
   }
 }
 
@@ -39,20 +39,20 @@ export async function requestJson<T>(path: string, decoder: Decoder<T>, init: Re
   try { response = await fetch(path, init) }
   catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
-    throw new ApiError(0, 'LocalAppUnavailable', 'Could not reach the local TogetherServer service.', { cause: error })
+    throw new ApiError(0, 'LocalAppUnavailable', 'Could not connect to TogetherServer. Reopen the app and try again.', { cause: error })
   }
 
   const payload = await readPayload(response)
   if (!response.ok) {
     const details = errorFields(payload)
     throw new ApiError(response.status, details.code ?? `Http${response.status}`,
-      details.message ?? `The local app returned ${response.status}.`)
+      details.message ?? 'TogetherServer could not finish this request. Try again.')
   }
 
   try { return decoder(payload, path) }
   catch (error) {
     if (error instanceof ContractError)
-      throw new ApiError(response.status, 'InvalidResponse', `The local app returned an unexpected response: ${error.message}`, { cause: error })
+      throw new ApiError(response.status, 'InvalidResponse', 'TogetherServer returned an unexpected reply. Try again or reopen the app.', { cause: error })
     throw error
   }
 }
@@ -76,6 +76,6 @@ export function changeJson<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', d
 }
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) return `${error.code}: ${error.message}`
+  if (error instanceof ApiError) return error.message
   return error instanceof Error ? error.message : String(error)
 }

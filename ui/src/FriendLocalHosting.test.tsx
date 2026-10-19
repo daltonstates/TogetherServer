@@ -132,7 +132,7 @@ it('opens the prepared local server’s connection fix without starting it', asy
   const connectionHelp = vi.fn()
   render(<FriendLocalHosting {...props} onOpenConnectionHelp={connectionHelp} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Network for this PC' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Connection help' }))
   expect(connectionHelp).toHaveBeenCalledExactlyOnceWith(localProfileId)
   expect(screen.queryByRole('dialog', { name: 'Host on this PC' })).not.toBeInTheDocument()
   expect(fetcher).toHaveBeenCalledOnce()

@@ -751,7 +751,7 @@ internal sealed class DesktopWindow
                 {
                     if (!TrySetLoadFailure(GuiLoadError.NavigationFailed)) return;
                     ShowLoadError(window, content, loading,
-                        "TogetherServer could not load its local interface. Close the app and try again.", false);
+                        "TogetherServer could not load. Close the app and try again.", false);
                     CompleteStartupPresentation(window);
                     return;
                 }
@@ -777,7 +777,7 @@ internal sealed class DesktopWindow
                     if (IsLoadTerminal) return;
                 }
                 if (!TrySetLoadFailure(GuiLoadError.RenderProbeTimedOut)) return;
-                ShowLoadError(window, content, loading, "TogetherServer loaded its local page, but the interface did not render. Close the app and try again.", false);
+                ShowLoadError(window, content, loading, "TogetherServer could not display this window. Close the app and try again.", false);
                 CompleteStartupPresentation(window);
             };
             if (!TrySetLoadState(GuiLoadState.Navigating))
@@ -852,7 +852,7 @@ internal sealed class DesktopWindow
             {
                 if (window.IsDisposed || !TrySetLoadFailure(GuiLoadError.StartupTimedOut)) return;
                 ShowLoadError(window, content, loading,
-                    "TogetherServer could not initialize its local interface in time. Close the app and try again.", false);
+                    "TogetherServer took too long to open. Close the app and try again.", false);
                 CompleteStartupPresentation(window);
             }));
         }
@@ -1041,7 +1041,7 @@ internal sealed class DesktopWindow
                 {
                     await ShowAsync();
                     MessageBox.Show(window,
-                        "TogetherServer is still open because unfinished edits could not be confirmed as protected drafts. Review the draft message in the window, retry saving it, or deliberately discard it before quitting.",
+                        "Your draft could not be saved. Review the message in TogetherServer, then save or discard your changes before quitting.",
                         "TogetherServer", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 return;

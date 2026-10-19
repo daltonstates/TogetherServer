@@ -40,9 +40,9 @@ describe('protected editor drafts', () => {
   })
 
   it('keeps pending protected-draft writes visible as progress output', () => {
-    render(<EditorDraftRecovery recovered={null} message="Keeping a protected draft on this PC…"
+    render(<EditorDraftRecovery recovered={null} message="Saving a draft on this PC…"
       status="saving" onRecover={vi.fn()} onDiscard={vi.fn()} />)
-    expect(screen.getByRole('status')).toHaveTextContent('Keeping a protected draft')
+    expect(screen.getByRole('status')).toHaveTextContent('Saving a draft')
     expect(screen.queryByRole('button', { name: 'Dismiss notification' })).not.toBeInTheDocument()
   })
 

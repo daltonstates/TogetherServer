@@ -241,10 +241,10 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
           <Button className="text-button" onClick={() => onOpenFriendServer(event.profileId!)}>Open server</Button>}
         <Button className="text-button" disabled={!opaqueId(event.id)} onClick={() => changeIds({ ...ids,
           readIds: isRead ? ids.readIds.filter(id => id !== event.id) : [...ids.readIds, event.id]
-        }, isRead ? 'History notice marked unread.' : 'History notice marked read.')}>{isRead ? 'Mark unread' : 'Mark read'}</Button>
+        }, isRead ? 'Marked unread.' : 'Marked read.')}>{isRead ? 'Mark unread' : 'Mark read'}</Button>
         <Button className="text-button" disabled={!opaqueId(event.id)} onClick={() => changeIds({ ...ids,
           dismissedIds: isDismissed ? ids.dismissedIds.filter(id => id !== event.id) : [...ids.dismissedIds, event.id]
-        }, isDismissed ? 'History notice restored.' : 'History notice dismissed. Current problems are unchanged.')}>{isDismissed ? 'Restore notice' : 'Dismiss notice'}</Button>
+        }, isDismissed ? 'Notice restored.' : 'Notice dismissed. Current problems still need attention.')}>{isDismissed ? 'Restore notice' : 'Dismiss notice'}</Button>
       </div>
     </div>
   }
@@ -253,7 +253,7 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
       <span>{mode === 'Host' ? `${scopedProblems.length} current problems` : 'Current saved Host activity'} · {unreadCount} unread history notices</span></div>
     </div>
     {mode === 'Host' && <section aria-label="Current problems" className="attention-current"><h3>Current problems · {problems.length}</h3>
-      <p className="helper-text">From the current Host state. Reading or dismissing history cannot resolve these problems. History filters apply only to past events below.</p>
+      <p className="helper-text">These problems need attention now. Dismissing a notice does not fix them.</p>
       {problems.length === 0 ? <p>No current server problems are reported.</p> :
         problems.map(problem => <DismissibleNotice as="article" className="notification-item bad" key={problem.id} scope={activitySource}><span aria-hidden="true"><Icon name="warning" /></span><div><strong>{problem.name}</strong><p>{problem.warning}</p>
           <small>{problemCategory(problem)} · {problemSeverity(problem)}</small>
@@ -264,7 +264,7 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
     <details className="attention-history-disclosure">
       <summary><Icon name="logs" />Activity history · {events.length} notices</summary>
     <div className="settings-grid attention-filters" style={{ padding: '1rem' }}>
-      <label>Search attention<Input type="search" value={filters.search} maxLength={200} placeholder="Server, category or notice" onChange={event => setFilters({ ...filters, search: event.target.value })} /></label>
+      <label>Search activity<Input type="search" value={filters.search} maxLength={200} placeholder="Server, category or notice" onChange={event => setFilters({ ...filters, search: event.target.value })} /></label>
       <label>Server<Select value={filters.serverId} onChange={event => setFilters({ ...filters, serverId: event.target.value })}>
         <option value="all">All servers and app</option><option value="app">App and connection</option>
         {servers.map(server => <option value={server.id} key={server.id}>{server.name}</option>)}
@@ -276,7 +276,7 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
         <option value="all">All severities</option><option value="Info">Information</option><option value="Important">Important</option><option value="Warning">Warning</option>
       </Select></label>
       <label>History time<Select value={filters.time} onChange={event => setFilters({ ...filters, time: event.target.value as AttentionFilters['time'] })}>
-        <option value="all">All retained history</option><option value="hour">Last hour</option><option value="day">Last day</option><option value="week">Last 7 days</option><option value="month">Last 30 days</option>
+        <option value="all">All history</option><option value="hour">Last hour</option><option value="day">Last day</option><option value="week">Last 7 days</option><option value="month">Last 30 days</option>
       </Select></label>
       <label>History notices<Select value={filters.historyState} onChange={event => setFilters({ ...filters, historyState: event.target.value as AttentionFilters['historyState'] })}>
         <option value="visible">Visible notices</option><option value="unread">Unread</option><option value="read">Read</option><option value="dismissed">Dismissed</option><option value="all">All, including dismissed</option>
@@ -287,9 +287,9 @@ function AttentionWorkspaceContent({ mode, activitySource, activity, currentProb
         onClick={() => changeIds({ ...ids, dismissedIds: [...ids.dismissedIds, ...scopedEvents.map(event => event.id)] },
           mode === 'Host' ? 'History cleared for this Host. Current problems remain visible.' : 'History cleared for this saved Host.')}>Clear history</Button></div></div>
     <section aria-label="Activity history" style={{ padding: '0 1rem 1rem' }}><h3>Activity history · {events.length}</h3>
-      <p className="helper-text">Past events can remain after a problem ends. Clear history hides the retained notices on this PC; new events appear normally.</p>
+      <p className="helper-text">History includes past problems. Clear history hides these notices on this PC. New notices still appear.</p>
       <div className="attention-list">
-      {groups.length === 0 ? <p>{scopedEvents.length ? 'No history notices match these filters.' : 'No retained activity for this Host.'}</p> :
+      {groups.length === 0 ? <p>{scopedEvents.length ? 'No history notices match these filters.' : 'No recent activity for this Host.'}</p> :
         groups.map(group => <article className={`notification-item ${group.latest.severity === 'Warning' ? 'bad' : ''}`} key={group.latest.id}><span aria-hidden="true"><Icon name={group.latest.severity === 'Warning' ? 'warning' : 'bell'} /></span><div>
           <strong>{group.latest.category} · {group.latest.severity}</strong>
           {group.latest.profileId && <small>{servers.find(server => server.id === group.latest.profileId)?.name ?? 'Former saved server'}</small>}

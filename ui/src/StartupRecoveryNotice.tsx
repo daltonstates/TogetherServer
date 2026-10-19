@@ -33,8 +33,8 @@ export function StartupRecoveryNotice({ recovery, profiles, busy, pendingProfile
   }
   const content = <section className="panel startup-recovery" aria-labelledby={titleId}>
     <div className="section-heading">
-      <div className="startup-recovery-heading"><h2 id={titleId}>Recovered app session</h2><p>{recovery.message}</p></div>
-      {!review && <Button className="secondary startup-recovery-dismiss" aria-label="Dismiss recovered app session" onClick={dismiss}>
+      <div className="startup-recovery-heading"><h2 id={titleId}>App reopened after an interruption</h2><p>{recovery.message}</p></div>
+      {!review && <Button className="secondary startup-recovery-dismiss" aria-label="Dismiss app recovery notice" onClick={dismiss}>
         <Icon name="close" />Dismiss</Button>}
     </div>
     {recovery.items.length > 0 && <div className="choices">{recovery.items.map(item => <div className="choice" key={item.profileId}>
@@ -43,7 +43,7 @@ export function StartupRecoveryNotice({ recovery, profiles, busy, pendingProfile
         {pendingProfileId === item.profileId ? 'Resuming…' : 'Resume hosting'}</Button>}
     </div>)}</div>}
     <details className="startup-recovery-details"><summary>About app recovery</summary>
-      <p>{recovery.windowsRestartRegistered ? 'Windows can reopen this app after an application failure.' : 'Windows application-restart registration is unavailable in this build.'} Reopening the app never starts a game automatically.</p>
+      <p>{recovery.windowsRestartRegistered ? 'Windows can reopen this app after it crashes.' : 'This build cannot ask Windows to reopen the app after a crash.'} Reopening the app never starts a game server automatically.</p>
       {!review && <p>Review this notice again in Attention under Session recovery.</p>}
     </details>
   </section>

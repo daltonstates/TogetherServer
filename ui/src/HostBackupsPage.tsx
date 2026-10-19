@@ -42,7 +42,7 @@ function ProtectionEditor({ profile, disabled, onClose, onSave }: {
     setSaving(true); setError('')
     try {
       if (await onSave(original, value)) onClose()
-      else setError('Settings were not saved. Check the server status or any other settings changes, then try again. Your edits are kept here.')
+      else setError('Settings were not saved. Check the server status and refresh any other changed settings, then try again. Your edits are kept here.')
     } catch { setError('Settings could not be saved. Your edits are kept here; try again.') }
     finally { setSaving(false) }
   }
@@ -55,7 +55,7 @@ function ProtectionEditor({ profile, disabled, onClose, onSave }: {
     <div className="protection-editor">
       <section className="protection-setting-card">
         <header><span className="protection-card-icon"><Icon name="archive" size={22} /></span><div><h3>Automatic backups</h3><p>Keep a copy each time this server stops gracefully.</p></div></header>
-        <label className="protection-toggle"><span><strong>Back up after each confirmed graceful Stop</strong><small>Creates a completed copy before applying retention.</small></span>
+        <label className="protection-toggle"><span><strong>Back up after each graceful Stop</strong><small>Waits for the server to exit, then backs up before deleting older copies.</small></span>
           <Input type="checkbox" checked={value.backups.enabled} disabled={saving || disabled}
             onChange={event => setValue(current => ({ ...current, backups: { ...current.backups, enabled: event.target.checked } }))} /></label>
         <div className="protection-number-fields">
@@ -69,8 +69,8 @@ function ProtectionEditor({ profile, disabled, onClose, onSave }: {
         </div>
       </section>
       <section className="protection-setting-card">
-        <header><span className="protection-card-icon"><Icon name="refresh" size={22} /></span><div><h3>Crash recovery</h3><p>Try restarting after an unexpected exit of the exact managed server.</p></div></header>
-        {canRecover ? <label className="protection-toggle"><span><strong>Restart after an unexpected server exit</strong><small>Uses the existing checks and limited retry schedule.</small></span>
+        <header><span className="protection-card-icon"><Icon name="refresh" size={22} /></span><div><h3>Crash recovery</h3><p>Try restarting if this server closes unexpectedly.</p></div></header>
+        {canRecover ? <label className="protection-toggle"><span><strong>Restart after an unexpected server exit</strong><small>Only after a previously Ready server has definitely exited. Retries after 1, 5 and 15 minutes.</small></span>
           <Input type="checkbox" checked={value.crashRecovery.enabled} disabled={saving || disabled}
             onChange={event => setValue(current => ({ ...current, crashRecovery: { enabled: event.target.checked } }))} /></label> :
           <p className="helper-text">{profile.separateCopySourceProfileId ? 'Start a recovered world manually. Automatic crash recovery is unavailable for this hosting copy.' : 'Automatic crash recovery is unavailable for this game preview.'}</p>}
@@ -122,15 +122,15 @@ export function HostBackupsPage({ profile, status, state, busy, editDisabled, ba
         disabled={busy} onClick={() => setSection(item.id)}><Icon name={item.icon} />{item.label}</Button>)}</nav>
     <div className="protection-content">{children(section)}</div>
     <div id={`${id}-settings`} hidden={section !== 'settings'} className="protection-settings-panel">
-      <div className="protection-section-heading"><div><h3>Protect this world automatically</h3><p>Backup retention, drive space and crash recovery for this server.</p></div>
+      <div className="protection-section-heading"><div><h3>Protect this world automatically</h3><p>Choose how many backups to keep, reserve free space and set crash recovery.</p></div>
         <Button className="secondary" disabled={editDisabled || busy || state !== 'Offline' || !supported} onClick={() => setEditing(true)}><Icon name="settings" />Change protection settings</Button></div>
       {profile.worldLoadRehearsalId && <p className="protection-status-note">This is a disposable test world. Change protection settings on the original world.</p>}
       {profile.kind === 'Custom' && <p className="protection-status-note">Automatic backups and recovery are unavailable for Custom servers.</p>}
       <div className="protection-setting-grid">
         <article className="protection-setting-card"><header><span className="protection-card-icon"><Icon name="archive" size={22} /></span><div><h3>Automatic backups</h3><p>{policy.backups.enabled ? 'On · after every confirmed graceful Stop' : 'Off · enable to keep copies after Stop'}</p></div></header><dl><div><dt>Unpinned copies</dt><dd>{policy.backups.retentionCount}</dd></div><div><dt>Drive reserve</dt><dd>{backupBytes(policy.backups.minimumFreeSpaceMb * 1024 * 1024)}</dd></div></dl><p className="helper-text">Pinned backups are kept separately. Sharing completed saves requires automatic backups.</p></article>
-        <article className="protection-setting-card"><header><span className="protection-card-icon"><Icon name="refresh" size={22} /></span><div><h3>Crash recovery</h3><p>{!recoverySupported ? profile.separateCopySourceProfileId ? 'Manual Start for this recovered world' : 'Unavailable for this preview' : policy.crashRecovery.enabled ? 'On · limited restart attempts' : 'Off · manual Start remains available'}</p></div></header><p className="helper-text">An uncertain process state never authorizes a restart. Recovery uses the exact recorded game process.</p>{onSafeRestart && <Button className="secondary" disabled={busy || editDisabled} onClick={onSafeRestart}><Icon name="refresh" />Safe restart</Button>}</article>
+        <article className="protection-setting-card"><header><span className="protection-card-icon"><Icon name="refresh" size={22} /></span><div><h3>Crash recovery</h3><p>{!recoverySupported ? profile.separateCopySourceProfileId ? 'Manual Start for this recovered world' : 'Unavailable for this preview' : policy.crashRecovery.enabled ? 'On · limited restart attempts' : 'Off · manual Start remains available'}</p></div></header><p className="helper-text">The app checks the recorded server process. If it cannot confirm the server has exited, it will not restart it.</p>{onSafeRestart && <Button className="secondary" disabled={busy || editDisabled} onClick={onSafeRestart}><Icon name="refresh" />Safe restart</Button>}</article>
       </div>
-      <details className="protection-help"><summary>How backups and checks work</summary><p>Safe restart confirms a graceful Stop and a completed checkpoint before starting again. A hash check verifies copied bytes; checking the world in the game and after restart is separate.</p><p>Copy to vault keeps a verified local copy and copies it to a folder you choose. A location on another drive or PC provides separate storage.</p></details>
+      <details className="protection-help"><summary>How backups and checks work</summary><p>Safe restart waits for a graceful Stop, completes a backup, then starts the server again. If the backup fails, the server stays stopped. File checks confirm the copied files match; you still need to load the world in the game and check it after restart.</p><p>Copy to vault copies a verified backup to a folder you choose and keeps the local backup. Choose another drive or PC for separate storage.</p></details>
     </div>
     {editing && <ProtectionEditor key={profile.id} profile={profile} disabled={editDisabled || busy || state !== 'Offline'} onClose={() => setEditing(false)} onSave={onSaveProtection} />}
   </section>

@@ -30,7 +30,7 @@ describe('First Host task', () => {
     const recovery = within(entry).getByRole('region', { name: 'Recovered server setup' })
     expect(within(recovery).getByText(/Enter the game password again/)).toBeInTheDocument()
     expect(within(recovery).getByText('Draft could not be saved. Retry before leaving.')).toBeInTheDocument()
-    expect(screen.queryByText(/Your saved file is unchanged/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/The server file has not changed/)).not.toBeInTheDocument()
     expect(recover).not.toHaveBeenCalled()
     fireEvent.click(within(recovery).getByRole('button', { name: 'Review saved setup' }))
     expect(recover).toHaveBeenCalledOnce()
@@ -56,7 +56,7 @@ describe('First Host task', () => {
   it('retains the existing file-draft language for file editors', () => {
     render(<EditorDraftRecovery recovered="file edit" message="" onRecover={vi.fn()} onDiscard={vi.fn()} />)
     expect(screen.getByRole('region', { name: 'Recovered editor draft' })).toBeInTheDocument()
-    expect(screen.getByText(/Your saved file is unchanged/)).toBeInTheDocument()
+    expect(screen.getByText(/The server file has not changed/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Review recovered draft' })).toBeInTheDocument()
   })
 })

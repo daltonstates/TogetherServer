@@ -70,7 +70,7 @@ export function currentOutsideResult(control: ControlCheck | undefined, result: 
 function friendGuidance(control: ControlCheck | undefined, result: InternetRouteCheck | null,
   hadPreviousResult: boolean) {
   if (!control) return {
-    summary: 'TogetherServer is still reading the Friend connection checks.',
+    summary: 'Checking Friend connections…',
     next: 'Refresh the checks if this does not finish soon.'
   }
   if (control.state === 'Off') return {
@@ -78,8 +78,8 @@ function friendGuidance(control: ControlCheck | undefined, result: InternetRoute
     next: 'Choose Invite friends to get the server code, or turn on Friend access in Settings.'
   }
   if (control.state === 'Idle') return {
-    summary: 'Friend access is waiting because this server does not have an active code or connected PC yet.',
-    next: 'Choose Invite friends to get the server code. Nothing needs fixing right now.'
+    summary: 'No server code or connected PC yet.',
+    next: 'Choose Invite friends when you are ready to share.'
   }
   if (control.state !== 'Open on PC') return {
     summary: 'The secure Friend connection is not running on this PC.',
@@ -87,59 +87,59 @@ function friendGuidance(control: ControlCheck | undefined, result: InternetRoute
   }
   if (control.bindScope === 'Loopback only') return {
     summary: 'Friend connections are limited to this PC.',
-    next: 'Open Network and choose a LAN bind address before inviting a Friend.'
+    next: 'Open Network and choose this PC’s local network address.'
   }
   if (!['Address hint', 'Address stale'].includes(control.endpointState ?? '')) return {
     summary: 'The address in the server code needs review.',
     next: 'Open Network and refresh the public address before sharing the code.'
   }
   if (result?.state === 'Reachable') return {
-    summary: `An outside checker reached HTTPS TCP ${result.port} at ${new Date(result.checkedUtc).toLocaleTimeString()}. A Friend still needs to connect with the server code.`,
+    summary: `The internet test reached app port ${result.port} at ${new Date(result.checkedUtc).toLocaleTimeString()}. Ask a Friend to connect with the server code.`,
     next: 'Ask a Friend on another network to connect, then test the game join separately.'
   }
   if (result?.state === 'Not reachable') {
     const target = control.lanAddresses?.length === 1
       ? control.lanAddresses[0].address : 'the Host LAN address shown below'
     return {
-      summary: `An outside checker could not reach HTTPS TCP ${result.port}. The router, Windows Firewall, ISP filtering, or shared-address NAT may be involved.`,
-      next: `Compare the router WAN IP with the address in the server code. If they match, review TCP ${result.port} forwarding to ${target} and Windows Firewall. If they differ, check upstream NAT or ask the ISP.`
+      summary: `The internet test could not reach app port ${result.port}. Check the router and Windows Firewall. Your internet provider may also block connections.`,
+      next: `Compare the router’s internet (WAN) address with the server code. If they match, check TCP port ${result.port} forwarding to ${target} and Windows Firewall. If they differ, ask your internet provider about shared addresses.`
     }
   }
   if (result?.state === 'Inconclusive' || result?.state === 'Unavailable') return {
-    summary: `The optional outside TCP check did not give a usable result. ${result.detail}`,
+    summary: `The internet test could not finish. ${result.detail}`,
     next: 'Ask a Friend on another network to connect. Review the address in the server code if that fails.'
   }
   if (control.endpointState === 'Address stale') return {
-    summary: 'The last public IP lookup is old, so the address in the server code needs a fresh check.',
+    summary: 'The public address may be out of date.',
     next: 'Refresh the public address, then ask a Friend on another network to connect.'
   }
   return {
     summary: hadPreviousResult
-      ? 'The earlier outside TCP result expired or no longer matches this connection and server code address.'
+      ? 'The earlier internet test no longer applies. Run it again.'
       : control.remoteState === 'Friend connected'
-        ? 'A Friend PC recently contacted this Host. Its network location is unknown, so this does not prove an outside connection.'
-        : 'Outside access has not been verified by a Friend on another network.',
+        ? 'A Friend connected recently. We cannot tell whether they used another network.'
+        : 'A Friend on another network still needs to test the connection.',
     next: 'Ask a Friend on another network to connect. The optional outside TCP check can help if that fails.'
   }
 }
 
 function gameGuidance(game: GamePortCheck | undefined, controlPort: number | undefined) {
-  if (!game) return 'Waiting for game port details. The Friend app uses its own HTTPS TCP port.'
+  if (!game) return 'Waiting for game ports. Friend app connections use a separate port.'
   if (game.routeKind === 'Relay')
-    return `Valheim Crossplay uses a game relay, so game port forwarding is not required. The Friend app still uses separate HTTPS TCP ${controlPort ?? 'port'}.`
-  if (game.routeKind === 'Not applicable') return 'This fixture has no real game network route.'
-  if (game.routeKind === 'Unknown') return 'The saved game driver is unavailable, so its game route is unknown.'
+    return `Valheim Crossplay needs no game port forwarding. Friend app connections still use TCP port ${controlPort ?? 'port'}.`
+  if (game.routeKind === 'Not applicable') return 'This test server has no real game connection.'
+  if (game.routeKind === 'Unknown') return 'TogetherServer cannot check connections for this game.'
   const gameName = game.kind === 'Valheim' ? 'Valheim Steam' :
     game.kind === 'MinecraftJava' ? 'Minecraft Java' :
       game.kind === 'MinecraftBedrock' ? 'Minecraft Bedrock' :
         game.kind === 'Factorio' ? 'Factorio' : game.kind === 'Terraria' ? 'Terraria' : 'This game'
-  return `${gameName} uses direct ${game.protocol} ${game.ports.join(', ')}. These game ports are separate from Friend app HTTPS TCP ${controlPort ?? 'port'}. Local sockets do not prove outside access.`
+  return `${gameName} uses ${game.protocol} ${game.ports.join(', ')}. Friend app connections use a separate TCP port: ${controlPort ?? 'port'}. Test joining from another network.`
 }
 
 function friendSummary(control: ControlCheck | undefined, result: InternetRouteCheck | null): ReadinessSummary {
   if (!control) return {
     label: 'Friend access', state: 'Checking', tone: 'neutral',
-    detail: 'Reading the secure Friend connection and server code address.'
+    detail: 'Checking the Friend connection and server code address.'
   }
   if (control.state === 'Off') return {
     label: 'Friend access', state: 'Off', tone: 'neutral',
@@ -147,7 +147,7 @@ function friendSummary(control: ControlCheck | undefined, result: InternetRouteC
   }
   if (control.state === 'Idle') return {
     label: 'Friend access', state: 'Idle', tone: 'neutral',
-    detail: 'Nothing needs fixing. Choose Invite friends when another PC needs the server code.'
+    detail: 'Ready to invite friends when you need a server code.'
   }
   if (control.state !== 'Open on PC') return {
     label: 'Friend access', state: 'Needs attention', tone: 'bad',
@@ -167,15 +167,15 @@ function friendSummary(control: ControlCheck | undefined, result: InternetRouteC
   }
   if (result?.state === 'Reachable') return {
     label: 'Friend access', state: 'Reachable outside network', tone: 'good',
-    detail: 'An independent TCP check reached this PC; a real Friend connection is still untested.'
+    detail: 'The internet test reached this PC. A Friend still needs to connect.'
   }
   if (result?.state === 'Not reachable') return {
-    label: 'Friend access', state: 'Outside route blocked', tone: 'bad',
-    detail: 'The latest matching outside TCP check could not reach this PC.'
+    label: 'Friend access', state: 'Internet test failed', tone: 'bad',
+    detail: 'The internet test could not reach this PC.'
   }
   if (result?.state === 'Inconclusive' || result?.state === 'Unavailable') return {
     label: 'Friend access', state: 'Not confirmed', tone: 'warning',
-    detail: 'The outside TCP check could not confirm whether a Friend can connect.'
+    detail: 'The internet test could not confirm access.'
   }
   if (control.endpointState === 'Address stale') return {
     label: 'Friend access', state: 'Address check due', tone: 'warning',
@@ -183,7 +183,7 @@ function friendSummary(control: ControlCheck | undefined, result: InternetRouteC
   }
   return {
     label: 'Friend access', state: 'Needs a Friend test', tone: 'neutral',
-    detail: 'Friend connections work on this PC, but an outside connection is not verified.'
+    detail: 'Friend connections are open on this PC. Internet access still needs testing.'
   }
 }
 
@@ -206,7 +206,7 @@ function gameSummary(status: string, game: GamePortCheck | undefined): Readiness
   }
   if (game?.routeKind === 'Not applicable') return {
     label: 'Game access', state: 'Fixture only', tone: 'warning',
-    detail: 'This test fixture has no real game route.'
+    detail: 'This test server has no real game connection.'
   }
   if (game?.routeKind === 'Unknown' || game?.state === 'Unknown') return {
     label: 'Game access', state: 'Route unknown', tone: 'warning',
@@ -256,7 +256,7 @@ function connectionIssue(control: ControlCheck | undefined, result: InternetRout
     connection: true, tone: 'bad'
   }
   if (result?.state === 'Inconclusive' || result?.state === 'Unavailable') return {
-    title: 'The outside connection check was inconclusive.', detail: result.detail,
+    title: 'The internet test could not confirm access.', detail: result.detail,
     connection: true, tone: 'warning'
   }
   if (control.endpointState === 'Address stale') return {
@@ -267,7 +267,7 @@ function connectionIssue(control: ControlCheck | undefined, result: InternetRout
   }
   if (hadPreviousResult && !result) return {
     title: 'The previous outside check is no longer current.',
-    detail: 'The check expired or no longer matches this connection and server code address.',
+    detail: 'The address changed or the result is too old. Run the test again.',
     connection: true,
     tone: 'warning'
   }
@@ -278,7 +278,7 @@ function gameIssue(status: string, game: GamePortCheck | undefined, countUnavail
   if (status === 'Offline' || status === 'Starting' || status === 'Process running') return null
   if (status === 'Unknown' && !countUnavailable) return {
     title: 'The server state is unknown.',
-    detail: 'TogetherServer blocks unsafe start and remote Stop actions until the managed process can be verified.',
+    detail: 'TogetherServer must identify the running server before Start or Friend Stop is available.',
     connection: false,
     tone: 'warning'
   }
@@ -359,7 +359,7 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
     : checkedRoute
     ? <>{checkedRoute.detail}<small>Checked at {new Date(checkedRoute.checkedUtc).toLocaleTimeString()}.</small></>
     : routeCheck
-      ? 'The earlier result expired or no longer matches the current connection and server code address.'
+      ? 'The address changed or the result is too old. Run the test again.'
       : guidance.summary
 
   return <div className="server-readiness" aria-label="Server connection status" aria-busy={refreshing}>
@@ -414,13 +414,13 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
                   : control?.lanAddresses?.length ? `${control.lanAddresses.length} local addresses found` : 'Checking'}
                   detail={<>{control?.lanForwardDetail ?? 'Waiting for this PC\'s LAN address.'}
                     {!!control?.lanAddresses?.length && <span className="technical-addresses">{control.lanAddresses.map(item => <span key={`${item.interfaceName}-${item.address}`}><code>{item.address}</code><small>{item.interfaceName} · gateway {item.gateway}</small></span>)}</span>}</>} loading={refreshing} />
-                <TechnicalDetail label="Outside TCP check" value={outsideValue} detail={outsideDetail} tone={outsideTone} loading={refreshing} />
+                <TechnicalDetail label="Internet port test" value={outsideValue} detail={outsideDetail} tone={outsideTone} loading={refreshing} />
                 <TechnicalDetail label="Outside access" value={friend.state} detail={guidance.summary} tone={friend.tone} loading={refreshing} />
               </dl>
             </section>
           </div>
           <div className="technical-next-step"><span><Icon name="refresh" /></span><div><strong>Recommended next step</strong><p>{guidance.next}</p></div></div>
-          <p className="technical-note">Only the Host forwards a port when needed. Friend PCs connect outbound.</p>
+          <p className="technical-note">Only the Host may need to set up port forwarding.</p>
         </div>
       </details>
       <Button className="readiness-refresh" type="button" disabled={busy} onClick={onRefresh}>

@@ -214,7 +214,7 @@ function AccessDeadlineEditor({
     <div className="access-deadline-current">
       <div>
         <span id={`${id}-title`}>Access for this PC</span>
-        {!device.accessExpiresUtc && <><strong>No end date</strong><small>This does not change approvals, server access, or permissions.</small></>}
+        {!device.accessExpiresUtc && <><strong>No end date</strong><small>Approvals, servers, and permissions stay the same.</small></>}
         {device.accessExpiresUtc && !expired && deadlineMs !== null && <>
           <strong>Access ends {formatLocal(new Date(deadlineMs))}</strong>
           <small>{accessDeadlineRelativeText(deadlineMs, nowMs)} · This PC's saved access and servers stay unchanged.</small>
@@ -264,7 +264,7 @@ function AccessDeadlineEditor({
       {choice === 'Custom' && !customValidation.ok && customLocal && <DismissibleNotice as="p" scope={device.id} noticeKey={JSON.stringify([customLocal, customValidation.message])} className="access-deadline-validation" role="alert">{customValidation.message}</DismissibleNotice>}
 
       <div className="access-deadline-save">
-        <small>{choice === 'Clear' ? 'Clearing only removes the owner deadline.' : choice && choice !== 'Custom' ? 'The duration starts when the Host saves it.' : 'Assignments and permissions will not change.'}</small>
+        <small>{choice === 'Clear' ? 'Access will have no end date. Other permissions stay the same.' : choice && choice !== 'Custom' ? 'Starts when you save.' : 'Servers and permissions stay the same.'}</small>
         <Button disabled={disabled || saving || device.revoked || !choice || (choice === 'Custom' && !customValidation.ok)} onClick={() => void save()}>
           {saving ? 'Saving deadline…' : 'Save deadline'}
         </Button>
@@ -278,7 +278,7 @@ export function FriendAccessExpiredNotice({ connectionCode, connectionId }: { co
   if (connectionCode !== 'AccessExpired') return null
   return <DismissibleNotice scope={connectionId} className="friend-access-expired" role="status">
     <strong>Access expired</strong>
-    <p>The Host ended access for this PC at the saved time.</p>
+    <p>The Host set an end date for this PC’s access. That date has passed.</p>
     <small>Ask the Host to extend or clear the end date. This saved connection remains here, so you do not need a new server code.</small>
   </DismissibleNotice>
 }

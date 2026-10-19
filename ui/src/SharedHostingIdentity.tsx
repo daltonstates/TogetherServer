@@ -34,36 +34,36 @@ export function parseSharedHostingIdentity(value: unknown, host: boolean): Hosti
     if (source.enabled === false && source.latest === null &&
       (authority === null || authority.state === 'NoTakeover')) return {
       label: 'Sharing is off', address: null, local: false, warning: null, hidden: true }
-    if (!authority) return { label: 'Signed Host not checked', address: null, local: false, warning: null }
+    if (!authority) return { label: 'Host decision not checked', address: null, local: false, warning: null }
     if (authority.state === 'NoTakeover') return {
-      label: 'Original Host PC · no signed transfer recorded', address: null, local: true, warning: null }
+      label: 'Original Host PC · hosting has not moved', address: null, local: true, warning: null }
     if (authority.state === 'CompetingHistories' || authority.state === 'ReviewRequired') return {
-      label: 'Signed Host needs review', address: null, local: false,
-      warning: 'Keep this world offline until the signed hosting history is resolved.' }
+      label: 'Host decision needs review', address: null, local: false,
+      warning: 'Keep this world stopped until the hosting decisions are resolved.' }
     if (authority.state !== 'ThisPcHost' && authority.state !== 'OldHostFenced') throw new Error('Hosting identity is invalid.')
     const head = record(authority.head)
     if (!validDevice(head.hostDeviceId) || !validHash(head.recordHash) ||
       typeof head.hostAddress !== 'string') throw new Error('Signed hosting identity is invalid.')
     const address = normalizedDirectIpHttpsEndpoint(head.hostAddress)
     if (!address) throw new Error('Signed hosting address is invalid.')
-    return { label: authority.state === 'ThisPcHost' ? 'This PC · signed Host' :
-      `Signed Host · PC ending ${head.hostDeviceId.slice(-6).toUpperCase()}`,
+    return { label: authority.state === 'ThisPcHost' ? 'This PC · approved Host' :
+      `Approved Host · PC ending ${head.hostDeviceId.slice(-6).toUpperCase()}`,
       address, local: authority.state === 'ThisPcHost', warning: authority.state === 'OldHostFenced' ?
-        'This PC is fenced from hosting this shared world.' : null, recordHash: head.recordHash }
+        'Hosting this shared world is blocked on this PC.' : null, recordHash: head.recordHash }
   }
   // The local recovery projection names the current verified quorum head only
   // in these two states. Armed candidates and historical offers are not Hosts.
-  if (source.state === 'HistoryReviewRequired') return { label: 'Signed Host needs review',
-    address: null, local: false, warning: 'Competing hosting histories need a group decision.' }
+  if (source.state === 'HistoryReviewRequired') return { label: 'Host decision needs review',
+    address: null, local: false, warning: 'The group needs to review conflicting hosting decisions.' }
   if (source.state !== 'MajorityRecorded' && source.state !== 'ObservedMajority') return {
-    label: 'Signed Host not checked', address: null, local: false, warning: null,
+    label: 'Host decision not checked', address: null, local: false, warning: null,
     recordHash: validHash(source.authorityHeadHash) ? source.authorityHeadHash : undefined }
   if (source.majorityReached !== true || !validHash(source.authorityHeadHash) ||
     !validDevice(source.candidateDeviceId) || typeof source.candidateAddress !== 'string')
     throw new Error('Signed hosting identity is invalid.')
   const address = normalizedDirectIpHttpsEndpoint(source.candidateAddress)
   if (!address) throw new Error('Signed hosting address is invalid.')
-  return { label: `Signed Host · PC ending ${source.candidateDeviceId.slice(-6).toUpperCase()}`,
+  return { label: `Approved Host · PC ending ${source.candidateDeviceId.slice(-6).toUpperCase()}`,
     address, local: source.state === 'MajorityRecorded', warning: null }
 }
 
@@ -76,7 +76,7 @@ export function parseSharedSuccessorIdentity(value: unknown): HostingIdentity | 
   // This projection comes from the backend's verified unique authority and
   // exact staged copy. Its route fields exist only for this PC's configured
   // route matching that signed candidate. It is preparation, never run Ready.
-  return { label: 'This PC · signed successor preparing hosting', address, local: false, warning: null, recordHash: source.recordHash }
+  return { label: 'This PC · next Host finishing setup', address, local: false, warning: null, recordHash: source.recordHash }
 }
 
 export function SharedHostingIdentity({ profileId, host, available = true, worldName,
@@ -97,12 +97,12 @@ export function SharedHostingIdentity({ profileId, host, available = true, world
       try {
         let next = await getLocalJson(host ? `/api/local/profiles/${profileId}/shared-world` :
           `/api/local/friend/${profileId}/shared-world/recovery`, value => parseSharedHostingIdentity(value, host), controller.signal)
-        if (!host && next.label === 'Signed Host not checked' && next.recordHash) {
+        if (!host && next.label === 'Host decision not checked' && next.recordHash) {
           const successor = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
             parseSharedSuccessorIdentity, controller.signal).catch(() => null)
           if (successor && successor.recordHash === next.recordHash) next = successor
         }
-        if (!host && next.label === 'Signed Host not checked' && !next.recordHash) {
+        if (!host && next.label === 'Host decision not checked' && !next.recordHash) {
           const relevant = await getLocalJson(`/api/local/friend/${profileId}/shared-world`,
             hasSharedSaveEvidence, controller.signal)
           next = { ...next, hidden: !relevant }
@@ -129,12 +129,12 @@ export function SharedHostingIdentityView({ identity, failed = false, host, scop
   // this signed authority record. Only local Host authority can bind its run.
   const matches = !failed && identity != null && host && identity.local
   const observed = serverStatusFresh && matches && serverState != null ?
-    serverState === 'Ready' ? 'Ready observed · game join unverified' : serverState : 'Unknown'
-  return <section className="shared-hosting-identity" aria-label="Shared world hosting identity">
-    <p className="shared-hosting-identity-row"><span>{failed && identity ? `Last known: ${identity.label}` : identity?.label ?? 'Signed Host not checked'}</span>
-      <small>Current Host server: {observed}{failed ? ' · latest identity check failed' : ''}</small>
-      {!host && serverState && identity?.label === 'Signed Host not checked' && <small>Connected server: {serverStatusFresh ?
-        serverState === 'Ready' ? 'Ready observed · game join unverified' : serverState : 'Unknown'}</small>}
+    serverState === 'Ready' ? 'Ready · game join not tested' : serverState : 'Unknown'
+  return <section className="shared-hosting-identity" aria-label="Shared world Host">
+    <p className="shared-hosting-identity-row"><span>{failed && identity ? `Last known: ${identity.label}` : identity?.label ?? 'Host decision not checked'}</span>
+      <small>Current Host status: {observed}{failed ? ' · latest Host check failed' : ''}</small>
+      {!host && serverState && identity?.label === 'Host decision not checked' && <small>Connected server: {serverStatusFresh ?
+        serverState === 'Ready' ? 'Ready · game join not tested' : serverState : 'Unknown'}</small>}
     </p>
     {identity?.warning && <DismissibleNotice as="p" scope={scope} noticeKey={identity.recordHash ?? identity.label} role="alert">{identity.warning}</DismissibleNotice>}
   </section>

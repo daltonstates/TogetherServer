@@ -47,17 +47,17 @@ describe('ServerFilesPanel', () => {
     const comparison = screen.getByRole('region', { name: 'File change comparison' })
     expect(comparison).toHaveAttribute('tabindex', '0')
     expect(within(comparison).getByRole('columnheader', { name: 'Exact text' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeDisabled()
-    const warning = screen.getByText('Preparing changes needs a fresh zero-player count. Positive or Unknown counts block a graceful Stop.')
+    expect(screen.getByRole('button', { name: 'Back up and save' })).toBeDisabled()
+    const warning = screen.getByText('The server must report 0 players before Prepare changes can stop it. Players online or an unknown count block Stop.')
     fireEvent.click(within(warning).getByRole('button', { name: 'Dismiss notification' }))
     expect(screen.queryByText(warning.textContent!)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back up and save' })).toBeDisabled()
     expect(editor).toHaveValue('Steam_222\n')
     expect(fetcher).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: 'PUT' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open maintenance guide' }))
     expect(prepare).toHaveBeenCalledOnce()
     view.rerender(<ServerFilesPanel {...props} state="Offline" maintenance />)
-    fireEvent.click(screen.getByRole('button', { name: 'Save with checkpoint' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back up and save' }))
     await waitFor(() => expect(screen.getByText('Saved')).toBeInTheDocument())
     expect(fetcher).toHaveBeenCalledWith(`/api/local/profiles/${profileId}/files/admin-list`,
       expect.objectContaining({ method: 'PUT' }))
@@ -78,15 +78,15 @@ describe('ServerFilesPanel', () => {
       onPrepareMaintenance={vi.fn()} onStart={vi.fn()} onOpenDoctor={vi.fn()} onDraftStateChange={drafts} />)
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
     fireEvent.change(await screen.findByLabelText('File contents'), { target: { value: 'Steam_222\n' } })
-    expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back up and save' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Review file changes' }))
-    expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Back up and save' })).toBeEnabled()
     fireEvent.change(screen.getByLabelText('File contents'), { target: { value: 'Steam_333\n' } })
-    expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Back up and save' })).toBeDisabled()
     const reads = fetcher.mock.calls.filter(([input]) => String(input).endsWith('/files/admin-list')).length
     fireEvent.click(screen.getByRole('button', { name: 'Reload file' }))
     const dialog = await screen.findByRole('dialog', { name: 'Reload server file?' })
-    expect(dialog).toHaveTextContent('Reloading replaces the editor contents. Keep your protected draft and reload this file?')
+    expect(dialog).toHaveTextContent('Save a draft of your edits, then reload this file?')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getByLabelText('File contents')).toHaveValue('Steam_333\n')
@@ -120,7 +120,7 @@ describe('ServerFilesPanel', () => {
     expect(screen.getByLabelText('File contents')).toHaveValue('Steam_333\n')
     expect(screen.getByText(/file changed since this draft/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Review file changes' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Save with checkpoint' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back up and save' }))
     await waitFor(() => expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/files/admin-list'), expect.objectContaining({
       method: 'PUT', body: JSON.stringify({ expectedSha256: 'current-file-hash', content: 'Steam_333\n' }) })))
     await waitFor(() => expect(clearProtectedDraft).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'file', profileId, key: 'file:admin-list' }), 9))
@@ -146,13 +146,13 @@ function confirmationFetcher() {
 }
 const guardedActions = [
   { action: 'Undo last change', title: 'Restore previous file version?', accept: 'Restore previous version', route: '/files/admin-list/undo',
-    description: 'Restore the previous file version? TogetherServer will make another offline world checkpoint first.', body: { expectedSha256: 'current-file-hash' }, state: 'Offline' },
+    description: 'Restore the previous file version? The stopped world will be backed up first.', body: { expectedSha256: 'current-file-hash' }, state: 'Offline' },
   { action: 'Create config', title: 'Create game configuration?', accept: 'Create configuration', route: '/files/factorio-settings/create',
-    description: 'Create this game configuration? TogetherServer will make an offline world checkpoint first.', body: undefined, state: 'Offline' },
+    description: 'Create this game configuration? The stopped world will be backed up first.', body: undefined, state: 'Offline' },
   { action: 'Restore setup', title: 'Restore complete setup?', accept: 'Restore setup', route: '/backups/checkpoint/restore-setup',
-    description: 'Restore this complete setup checkpoint? The world, reviewed configuration, and managed add-on state will change while the server stays offline. A pre-restore checkpoint will be kept.', body: undefined, state: 'Offline' },
+    description: 'Restore this backup? It replaces the world, supported settings, and add-ons while the server is stopped. A backup of the current setup will be kept first.', body: undefined, state: 'Offline' },
   { action: 'Prepare changes', title: 'Prepare server changes?', accept: 'Prepare changes', route: '/prepare-change',
-    description: 'Prepare to change this server? TogetherServer will pause Friend controls, require a fresh zero-player count before any automatic Stop, and make a complete offline setup checkpoint.', body: undefined, state: 'Offline' },
+    description: 'Prepare to edit this server? Friend controls will pause. TogetherServer will check for 0 players before stopping, then back up the world and supported setup.', body: undefined, state: 'Offline' },
   { action: 'Finish maintenance', title: 'Finish maintenance?', accept: 'Confirm game join and finish', route: '/finish-change',
     description: 'Have you joined this server from a real game client and checked the changed setup? Confirm to end maintenance and allow Friend controls again.', body: { confirmedGameJoin: true }, state: 'Ready' },
 ]
@@ -163,7 +163,7 @@ it.each(guardedActions)('requires a dialog decision for $action and preserves th
   render(<ServerFilesPanel {...confirmationProps} state={item.state} />)
   fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
   await screen.findByLabelText('File contents')
-  if (item.action === 'Restore setup') fireEvent.click(screen.getByRole('button', { name: 'Checkpoints' }))
+  if (item.action === 'Restore setup') fireEvent.click(screen.getByRole('button', { name: 'Setup backups' }))
   fireEvent.click(screen.getByRole('button', { name: item.action }))
   let dialog = await screen.findByRole('dialog', { name: item.title })
   expect(dialog).toHaveTextContent(item.description)
@@ -185,7 +185,7 @@ it.each(guardedActions)('refuses $action when the current lifecycle guard change
   const rendered = render(<ServerFilesPanel {...confirmationProps} state={item.state} />)
   fireEvent.click((await screen.findAllByRole('button', { name: 'Edit file' }))[0])
   await screen.findByLabelText('File contents')
-  if (item.action === 'Restore setup') fireEvent.click(screen.getByRole('button', { name: 'Checkpoints' }))
+  if (item.action === 'Restore setup') fireEvent.click(screen.getByRole('button', { name: 'Setup backups' }))
   fireEvent.click(screen.getByRole('button', { name: item.action }))
   const dialog = await screen.findByRole('dialog', { name: item.title })
   rendered.rerender(<ServerFilesPanel {...confirmationProps} state="Unknown" />)
@@ -200,7 +200,7 @@ it('cancels the previous profile decision when the selected server changes', asy
   const fetcher = confirmationFetcher()
   vi.stubGlobal('fetch', fetcher)
   const rendered = render(<ServerFilesPanel {...confirmationProps} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Checkpoints' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Setup backups' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Restore setup' }))
   await screen.findByRole('dialog', { name: 'Restore complete setup?' })
   rendered.rerender(<ServerFilesPanel {...confirmationProps} profileId="22222222-2222-4222-8222-222222222222" />)
@@ -284,7 +284,7 @@ it('preserves a reviewed dirty file across supporting sections and blocks confli
   const editor = await screen.findByLabelText('File contents')
   fireEvent.change(editor, { target: { value: 'Steam_333\n' } })
   fireEvent.click(screen.getByRole('button', { name: 'Review file changes' }))
-  expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Back up and save' })).toBeEnabled()
   const fileReads = fetcher.mock.calls.filter(([input]) => String(input).endsWith('/files/admin-list')).length
   const navigation = within(screen.getByRole('navigation', { name: 'Server file sections' }))
 
@@ -292,7 +292,7 @@ it('preserves a reviewed dirty file across supporting sections and blocks confli
   expect(editor).not.toBeVisible()
   expect(await screen.findByRole('button', { name: 'Import mod ZIP' })).toBeDisabled()
   expect(screen.getByText('Save or discard your file edits before changing add-ons.')).toBeVisible()
-  fireEvent.click(navigation.getByRole('button', { name: 'Checkpoints' }))
+  fireEvent.click(navigation.getByRole('button', { name: 'Setup backups' }))
   expect(screen.getByRole('button', { name: 'Restore setup' })).toBeDisabled()
   expect(editor).toHaveValue('Steam_333\n')
   fireEvent.click(navigation.getByRole('button', { name: /^Files/ }))
@@ -300,7 +300,7 @@ it('preserves a reviewed dirty file across supporting sections and blocks confli
   expect(screen.getByLabelText('File contents')).toBe(editor)
   expect(editor).toBeVisible()
   expect(editor).toHaveValue('Steam_333\n')
-  expect(screen.getByRole('button', { name: 'Save with checkpoint' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Back up and save' })).toBeEnabled()
   expect(screen.getByRole('region', { name: 'Review raw file changes' })).toHaveTextContent('Steam_333')
   expect(fetcher.mock.calls.filter(([input]) => String(input).endsWith('/files/admin-list'))).toHaveLength(fileReads)
   expect(clearProtectedDraft).not.toHaveBeenCalled()
@@ -320,7 +320,7 @@ it('reveals a hidden file editor when its protected draft cannot be kept before 
   const editor = await screen.findByLabelText('File contents')
   fireEvent.change(editor, { target: { value: 'Steam_333\n' } })
   await waitFor(() => expect(guard?.dirty).toBe(true))
-  fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Checkpoints' }))
+  fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Setup backups' }))
   expect(editor).not.toBeVisible()
   vi.mocked(saveProtectedDraft).mockRejectedValue(new Error('Protected draft unavailable'))
   await act(async () => { expect(await guard!.flush()).toBe(false) })
@@ -337,7 +337,7 @@ it('keeps unopened file tools from blocking server actions without any draft to 
   render(<ServerFilesPanel {...confirmationProps} onDraftGuardChange={(_source, next) => { guard = next }} />)
   await screen.findAllByRole('button', { name: 'Edit file' })
   expect(guard).toMatchObject({ dirty: false, saving: false })
-  fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Checkpoints' }))
+  fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Setup backups' }))
   expect(guard).toMatchObject({ dirty: false, saving: false })
   expect(readProtectedDraft).not.toHaveBeenCalled()
 })

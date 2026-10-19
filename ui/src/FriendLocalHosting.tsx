@@ -48,8 +48,8 @@ export function parseLocalHostingStatus(value: unknown): LocalHostingStatus {
 }
 
 const checkLabels: Record<CheckKey, string> = {
-  permission: 'Permission to host', server: 'Server app and tools', save: 'Save files and hashes',
-  ports: 'Local game ports', connection: 'Incoming connection'
+  permission: 'Permission to host', server: 'Server app and tools', save: 'Save file checks',
+  ports: 'Local game ports', connection: 'Connections from other PCs'
 }
 
 export type FriendLocalHostingProps = {
@@ -128,7 +128,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setBusy(true); setError('')
     const timeout = window.setTimeout(() => {
       abort.abort()
-      if (sequence === request.current) { setStatus(null); setError('Hosting checks timed out. Retry when the local service responds.'); setBusy(false); mutation.current = false; ++request.current }
+      if (sequence === request.current) { setStatus(null); setError('Hosting checks timed out. Retry the checks.'); setBusy(false); mutation.current = false; ++request.current }
     }, 15000)
     try {
       const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
@@ -207,7 +207,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   return <>
     {presentation === 'card' ? <section className="local-hosting-card" aria-label="Host on this PC">
       <Icon name="server" size={24} /><div><h3>Host on this PC</h3>
-        <p>{allowed ? 'Use this save here. TogetherServer checks the server app, verified files and ports for you.'
+        <p>{allowed ? 'Host your own copy of this save. TogetherServer checks the server app, files and ports.'
           : status ? 'Ask the owner to turn on Can host this save for this PC.' : 'Checking this PC’s hosting permission…'}</p></div>
       <Button className="secondary" disabled={disabled || !allowed} onClick={() => { setOpen(true); setError(''); setActionMessage('') }}>
         <Icon name="monitor" />Host on this PC</Button>
@@ -223,7 +223,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       <div className="local-hosting-flow" aria-busy={busy}>
         <p className="local-hosting-intro">{status?.running ? 'This save is already hosted on this PC.'
           : status?.readyForManualStart ? 'Your local save is prepared. Start when you’re ready.'
-            : 'We’ll find the installed server, get or reuse the save, verify its files and check this PC’s ports.'}</p>
+            : 'We’ll find the server app, get the save if needed, check its files and test this PC’s ports.'}</p>
         {status ? <ol className="local-hosting-checks" aria-label="Local hosting checks">
           {status.steps.map(step => <li key={step.key} data-state={step.state}>
             <Icon name={busy && step.key !== 'permission' ? 'loader' : step.state === 'Ready' ? 'check'
@@ -242,7 +242,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           {status.game === 'Valheim' && <a href="steam://install/896660">Install Valheim Dedicated Server in Steam</a>}
           <p className="helper-text">Install missing software and accept its terms on this PC, then retry. Existing installations are reused.</p>
         </div>}
-        {status?.needsPassword && !status.readyForManualStart && <label>New local game password<Input type="password"
+        {status?.needsPassword && !status.readyForManualStart && <label>New game password<Input type="password"
           autoComplete="new-password" disabled={busy} value={password} onChange={event => setPassword(event.target.value)} /></label>}
         {manualSetup && status?.branchHash && <SharedWorldSeparateRoutePanel
           key={status.branchHash} profileId={profileId} separateCopies={1} game={status.game ?? undefined}
@@ -260,7 +260,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           onClick={() => onOpenHost(status.localProfileId!)}>Local server &amp; connection details</Button>}
         {status?.localProfileId && onOpenConnectionHelp && status.steps[4].state !== 'Ready' && <Button className="text-button"
           disabled={busy || manualBusy || disabled} onClick={() => { setOpen(false); onOpenConnectionHelp(status.localProfileId!) }}>
-          <Icon name="plug" />Network for this PC</Button>}
+          <Icon name="plug" />Connection help</Button>}
         {busy && <p role="status">{status?.readyForManualStart ? 'Starting the local server…' : 'Preparing and verifying your local copy. Keep TogetherServer open.'}</p>}
         {actionMessage && !busy && <p role="status">{actionMessage}</p>}
         {error && <p role="alert">{error}</p>}

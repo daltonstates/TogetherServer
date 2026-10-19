@@ -65,7 +65,7 @@ describe('setup improvements', () => {
     expect(issues).toHaveLength(6)
     expect(issues.map(message => setupIssueTarget(message, broken).field)).toEqual(['game-port', 'world-id', 'world-id', 'world-directory', 'server-selection', 'game-password'])
     expect(setupIssueTarget('Enter the world name from server.properties.', { ...source, kind: 'MinecraftJava' }).step).toBe('world')
-    expect(setupSupport('Terraria').limits).toContain('Unknown')
+    expect(setupSupport('Terraria').limits).toContain('unknown')
     expect(setupSupport('MinecraftJava').limits).toContain('Paper')
   })
   it('summarizes setup changes without putting passwords or scripts into the review', () => {

@@ -11,7 +11,7 @@ it('uses Browse only after a click and keeps the chosen local path available for
   await waitFor(() => expect(change).toHaveBeenCalledWith('C:\\Synthetic\\valheim_server.exe'))
   expect(chosen).toHaveBeenCalledTimes(1)
   expect(chosen).toHaveBeenCalledWith('Valheim')
-  expect(screen.getByText(/Review this local path/)).toBeInTheDocument()
+  expect(screen.getByText(/Check the selected file/)).toBeInTheDocument()
 })
 
 it('ignores a late native-picker adapter result after changing the selected world', async () => {

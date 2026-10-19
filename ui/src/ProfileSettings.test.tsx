@@ -28,7 +28,7 @@ describe('shared profile editor', () => {
     fireEvent.click(screen.getByText('Set your name'))
     expect(screen.getByLabelText('Your name')).toHaveValue('  Alex  ')
     fireEvent.click(screen.getByText('Save name'))
-    await screen.findByText('Profile saved. Your name is shared with connected PCs.')
+    await screen.findByText('Name saved and shared with connected PCs.')
     expect(fetch.mock.calls[1][1]).toMatchObject({ method: 'PUT', body: '{"displayName":"Alex"}', headers: { 'X-TogetherServer-Local': '1' } })
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: '' } })
     expect(screen.getByText('Save name')).toBeDisabled()
@@ -44,7 +44,7 @@ describe('shared profile editor', () => {
       .mockImplementationOnce(() => new Promise<Response>(resolve => { complete = resolve }))
     vi.stubGlobal('fetch', fetch)
     render(<Harness />)
-    fireEvent.click(await screen.findByText('Retry profile'))
+    fireEvent.click(await screen.findByText('Try again'))
     await waitFor(() => expect(screen.getByLabelText('Your name')).toHaveValue('Old name'))
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'New name' } })
     fireEvent.click(screen.getByText('Save name'))
@@ -54,7 +54,7 @@ describe('shared profile editor', () => {
     expect(screen.getByText('Saving…')).toBeDisabled()
     expect(screen.getByLabelText('Your name')).toBeDisabled()
     complete(response({ ok: true, code: 'Saved', message: 'Saved', displayName: 'New name' }))
-    await screen.findByText('Profile saved. Your name is shared with connected PCs.')
+    await screen.findByText('Name saved and shared with connected PCs.')
   })
 
   it('bounds UTF-16 length and rejects formatting, controls and line separators', () => {

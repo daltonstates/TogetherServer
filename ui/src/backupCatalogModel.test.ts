@@ -34,7 +34,7 @@ describe('backup catalog projections', () => {
     const preview = retentionPreview({ ...catalog, backups: [row, second, third] })
     expect(preview.known).toBe(true)
     expect(preview.candidates).toEqual([third])
-    expect(preview.message).toContain('Restore also protects its selected source')
+    expect(preview.message).toContain('Restore also keeps the backup you selected')
     expect(retentionPreview({ ...catalog, backups: [row, second, third] }, 1).candidates).toEqual([second, third])
     expect(retentionPreview(catalog, 50).candidates).toEqual([])
   })
@@ -84,7 +84,7 @@ describe('backup catalog projections', () => {
       restoreReview(row, 'AnotherWorld', 'Valheim', true), restoreReview(row, 'SyntheticWorld', 'Terraria', true),
       restoreReview(row, null, 'Valheim', true), restoreReview({ ...row, metadataAvailable: false }, 'SyntheticWorld', 'Valheim', true)]) {
       expect(review.canRestore).toBe(false)
-      expect(review.checkpoint).toContain('If it fails, Restore does not begin')
+      expect(review.checkpoint).toContain('If that backup fails, Restore does not begin')
     }
   })
 

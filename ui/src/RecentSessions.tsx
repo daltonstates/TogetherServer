@@ -84,10 +84,10 @@ export function filterSessionHistory(entries: readonly SessionHistoryEntry[], fi
 }
 
 const metricLabels: Record<SessionMetric, string> = {
-  all: 'All retained sessions', runtime: 'Recorded runtime', completed: 'Completed sessions',
-  failedStarts: 'Failed before Ready', unexpectedExits: 'Unexpected exits', peak: 'Trusted player peak',
+  all: 'All saved sessions', runtime: 'Recorded runtime', completed: 'Ended sessions',
+  failedStarts: 'Failed before Ready', unexpectedExits: 'Unexpected exits', peak: 'Highest reported player count',
   backups: 'Completed or failed backups', backupCompleted: 'Completed backups', backupFailed: 'Failed backups',
-  unavailable: 'Unavailable evidence'
+  unavailable: 'Missing details'
 }
 
 function dateTime(value: string | null, unavailable: string) {
@@ -113,7 +113,7 @@ function outcomeLabel(outcome: ServerSessionOutcome | null) {
     case 'UnexpectedExit': return { label: 'Unexpected exit', tone: 'error' }
     case 'FailedBeforeReady': return { label: 'Failed before Ready', tone: 'error' }
     case 'RecoveryFailedBeforeReady': return { label: 'Recovery failed before Ready', tone: 'error' }
-    case 'OwnerArchivedExited': return { label: 'Exited record archived', tone: 'attention' }
+    case 'OwnerArchivedExited': return { label: 'Exited server record archived', tone: 'attention' }
     case 'ExitedBeforeRestore': return { label: 'Exit confirmed before restore', tone: 'attention' }
     case 'StopUnconfirmed': return { label: 'Stop outcome unconfirmed', tone: 'attention' }
     default: return { label: 'Outcome unavailable', tone: 'muted' }
@@ -134,7 +134,7 @@ function backupLabel(result: ServerSessionBackupResult | null) {
 function playerEvidence(session: RecentServerSession) {
   if (session.outcome === null) return 'Unavailable'
   if (session.lastTrustedOnlinePlayers === null || session.maximumTrustedOnlinePlayers === null)
-    return 'No trusted count observed'
+    return 'No reliable count recorded'
   return `Last ${session.lastTrustedOnlinePlayers} · peak ${session.maximumTrustedOnlinePlayers}`
 }
 
@@ -145,7 +145,7 @@ function gameLabel(kind: RecentServerSession['gameKind']) {
     case 'Factorio': return 'Factorio preview'
     case 'Terraria': return 'Terraria preview'
     case 'Custom': return 'Custom game'
-    case 'Fixture': return 'Test fixture'
+    case 'Fixture': return 'Test server'
     default: return kind
   }
 }
@@ -162,12 +162,12 @@ function SessionCard({ session, archivedUtc }: SessionHistoryEntry) {
       <div><dt>Start</dt><dd>{dateTime(session.startedUtc, unavailable)}</dd></div>
       <div><dt>End</dt><dd>{dateTime(session.endedUtc, unavailable)}</dd></div>
       <div><dt>Duration</dt><dd>{duration(session.durationSeconds, unavailable)}</dd></div>
-      <div><dt>Ready observed</dt><dd>{session.readyEverObserved === null ? 'Unavailable' : session.readyEverObserved ? 'Yes' : 'No'}</dd></div>
-      <div><dt>Player observations</dt><dd>{playerEvidence(session)}</dd></div>
-      <div><dt>Rolling backup</dt><dd>{backupLabel(session.backupResult)}</dd></div>
+      <div><dt>Reached Ready</dt><dd>{session.readyEverObserved === null ? 'Unavailable' : session.readyEverObserved ? 'Yes' : 'No'}</dd></div>
+      <div><dt>Reported player counts</dt><dd>{playerEvidence(session)}</dd></div>
+      <div><dt>Backup after Stop</dt><dd>{backupLabel(session.backupResult)}</dd></div>
       <div><dt>Crash recovery</dt><dd>{session.crashRecoveryScheduled === null ? 'Unavailable' : session.crashRecoveryScheduled ? 'Scheduled' : 'Not scheduled'}</dd></div>
     </dl>
-    {session.outcome === null && archivedUtc && <small>Archive recorded {dateTime(archivedUtc, 'Unavailable')}. Session timing was not recorded.</small>}
+    {session.outcome === null && archivedUtc && <small>Record saved {dateTime(archivedUtc, 'Unavailable')}. Session start and end times were not recorded.</small>}
   </article>
 }
 
@@ -184,7 +184,7 @@ export function SessionHistory({ entries, filters, onFiltersChange, window = {},
   useEffect(() => setShownCount(10), [filters.metric, filters.outcome, filters.fromDate, filters.throughDate])
   return <div className="session-history">
     <div className="server-log-filters">
-      {showMetrics && <label>Evidence<Select aria-label="Session evidence" value={filters.metric}
+      {showMetrics && <label>Show<Select aria-label="Session details" value={filters.metric}
         onChange={event => onFiltersChange({ ...filters, metric: event.target.value as SessionMetric })}>
         {Object.entries(metricLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
       </Select></label>}
@@ -192,7 +192,7 @@ export function SessionHistory({ entries, filters, onFiltersChange, window = {},
         onChange={event => onFiltersChange({ ...filters, outcome: event.target.value as SessionOutcomeFilter })}>
         <option value="all">All outcomes</option><option value="GracefulStop">Stopped gracefully</option>
         <option value="failedStarts">Failed before Ready</option><option value="UnexpectedExit">Unexpected exit</option>
-        <option value="StopUnconfirmed">Stop unconfirmed</option><option value="OwnerArchivedExited">Exited record archived</option>
+        <option value="StopUnconfirmed">Stop unconfirmed</option><option value="OwnerArchivedExited">Exited server record archived</option>
         <option value="ExitedBeforeRestore">Exit before restore</option><option value="unavailable">Outcome unavailable</option>
       </Select></label>
       <label>From date (UTC)<Input type="date" aria-label="Sessions from date (UTC)" value={filters.fromDate}
@@ -203,13 +203,13 @@ export function SessionHistory({ entries, filters, onFiltersChange, window = {},
         onClick={() => onFiltersChange({ ...emptySessionFilters })}>Clear session filters</Button>
     </div>
     {dateError && <DismissibleNotice as="p" noticeKey={`${filters.fromDate}:${filters.throughDate}`} className="warning-text" role="alert">{dateError}</DismissibleNotice>}
-    <p role="status">{filtered.length} of {entries.length} retained sessions match{showMetrics ? ` · ${metricLabels[filters.metric]}` : ''}.</p>
-    {!dateError && filtered.length === 0 && <p>No retained sessions match these filters.</p>}
+    <p role="status">{filtered.length} of {entries.length} saved sessions match{showMetrics ? ` · ${metricLabels[filters.metric]}` : ''}.</p>
+    {!dateError && filtered.length === 0 && <p>No saved sessions match these filters.</p>}
     <div className="recent-session-list" aria-label="Filtered sessions">
       {filtered.slice(0, shownCount).map(entry => <SessionCard key={entry.session.operationId} {...entry} />)}
     </div>
     {filtered.length > shownCount && <Button className="secondary" onClick={() => setShownCount(count => Math.min(filtered.length, count + 10))}>Show more sessions</Button>}
-    <small>Dates match known recorded intervals in UTC, including sessions crossing midnight. An archive date places an unavailable record only; it never supplies runtime. Undated sessions cannot match a date filter.</small>
+    <small>Date filters use recorded start and end times in UTC, including sessions crossing midnight. Records without those times use their archive date for filtering only; it does not count as runtime. Undated records are hidden when a date filter is set.</small>
   </div>
 }
 
@@ -255,14 +255,14 @@ export function RecentSessions({ profileId, visible, loader = defaultLoader }: {
   const currentResult = result?.profileId.toLowerCase() === profileId.toLowerCase() ? result : null
   return <section hidden={!visible} className="recent-sessions" aria-labelledby={titleId} aria-busy={loading}>
     <div className="recent-sessions-toolbar"><div><h4 id={titleId}>Recent sessions</h4>
-      <p>Summaries saved after server sessions end on this Host. Filters cover the newest 20 retained sessions.</p></div>
+      <p>Summaries saved after this server stops. Filters cover the newest 20 saved sessions on this Host PC.</p></div>
       <Button className="secondary" disabled={loading || !visible} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh'}</Button>
     </div>
     {loading && !currentResult && <div className="recent-sessions-state" role="status">Loading recent sessions…</div>}
     {loadError && <DismissibleNotice scope={profileId} className="recent-sessions-state error" role="alert"><strong>Recent sessions unavailable</strong>
       <p>TogetherServer could not read the saved session history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}
-    {!loadError && currentResult?.sessions.length === 0 && <div className="recent-sessions-state"><strong>No archived sessions yet</strong>
-      <p>A summary appears after TogetherServer saves a completed server session.</p></div>}
+    {!loadError && currentResult?.sessions.length === 0 && <div className="recent-sessions-state"><strong>No saved sessions yet</strong>
+      <p>A summary appears after a server session ends and the app saves its record.</p></div>}
     {!loadError && currentResult && currentResult.sessions.length > 0 && <SessionHistory key={profileId} entries={currentResult.sessions.map(session => ({ session }))}
       filters={filters} onFiltersChange={setFilters} />}
     <p className="recent-sessions-boundary">Player numbers came from the game server during that session. They do not show who joined or prove that a join or world save succeeded.</p>

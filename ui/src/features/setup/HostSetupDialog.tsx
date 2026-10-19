@@ -30,11 +30,11 @@ function ConfiguredPortWarning({ profile, profiles, onApply, busy }: {
   const warning = setupPortSuggestion(profile, profiles)
   if (!warning.conflicts.length) return null
   const ports = plannedPorts(profile).map(port => `${port.protocol} ${port.port}`).join(', ')
-  return <DismissibleNotice scope={profile.id} className="configured-port-warning" role="status"><strong>Duplicate saved game port</strong>
-    <p>{ports} overlaps {warning.conflicts.map(conflict => conflict.name).join(', ')}. TogetherServer will not run both configurations at once.</p>
-    {warning.patch ? <><small>Suggested: {plannedPorts({ ...profile, ...warning.patch }).map(port => `${port.protocol} ${port.port}`).join(', ')}. Windows and game-file port availability is checked again at Start.</small>
+  return <DismissibleNotice scope={profile.id} className="configured-port-warning" role="status"><strong>Game port overlaps another saved server</strong>
+    <p>{ports} overlaps {warning.conflicts.map(conflict => conflict.name).join(', ')}. These servers cannot run at the same time.</p>
+    {warning.patch ? <><small>Suggested: {plannedPorts({ ...profile, ...warning.patch }).map(port => `${port.protocol} ${port.port}`).join(', ')}. Ports are checked again when you start.</small>
       <Button className="secondary" disabled={busy} onClick={() => onApply(warning.patch!)}>Apply suggested ports</Button></> :
-      <small>No primary-port suggestion can resolve these saved overlaps. Review the declared ports below.</small>}
+      <small>Choose different ports in the advanced settings below.</small>}
   </DismissibleNotice>
 }
 
@@ -87,7 +87,7 @@ export function getSetupIssues(profile: Profile, hasPassword: boolean, enteredPa
     if ((profile.custom?.additionalPorts ?? []).some(port => !Number.isInteger(port.port) || port.port < 1024 || port.port > 65535))
       issues.push('Use whole additional ports from 1024 to 65535.')
   } else {
-    if (!profile.name.trim()) issues.push('Enter a test profile name in step 1.')
+    if (!profile.name.trim()) issues.push('Enter a test server name in step 1.')
     if (!profile.worldId.trim()) issues.push('Enter a world ID in step 1.')
     if (!profile.worldDirectory.trim()) issues.push('Choose a separate development directory in step 1.')
     if (!profile.executablePath.trim()) issues.push('Select the fixture executable in step 2.')
@@ -252,7 +252,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
   return <dialog ref={dialogRef} className="panel settings-panel modal-dialog task-first-setup" aria-labelledby="setup-title"
     onCancel={event => { event.preventDefault(); onCancel() }}>
     <div className="section-heading"><span className="section-icon"><Icon name="server" /></span><div><h2 id="setup-title">{savedProfiles.some(profile => profile.id === editedProfile?.id) ? 'Server settings' : 'Add new server'}</h2><p className="setup-current-step">Step {setupStepIndex + 1} of {setupSteps.length} · {stepTitle}</p></div></div>
-    {freshWorldsOnly && <DismissibleNotice scope={editedProfile?.id} className="staging-setup-notice"><strong>Development worlds persist in separate storage.</strong><span>Create and reuse them here. Existing production worlds cannot be selected, scanned, or copied, and every development save stays in the development data folder.</span></DismissibleNotice>}
+    {freshWorldsOnly && <DismissibleNotice scope={editedProfile?.id} className="staging-setup-notice"><strong>Development worlds are saved separately.</strong><span>Use test worlds here. Your normal worlds cannot be selected or copied into development storage.</span></DismissibleNotice>}
     {notice && <DismissibleNotice scope={editedProfile?.id} className={`notice ${notice.good ? 'good' : 'bad'}`} role="status">{notice.text}</DismissibleNotice>}
     {setupDraftRecovery && onRecoverSetupDraft && onDiscardSetupDraft && <EditorDraftRecovery {...setupDraftRecovery} purpose="setup" scope={editedProfile?.id}
       disabled={!!pending} onRecover={onRecoverSetupDraft} onDiscard={onDiscardSetupDraft} />}
@@ -262,8 +262,8 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
       {profile.kind !== 'Valheim' && <DismissibleNotice as="p" scope={profile.id} className="warning-text" role="status">{setupSupport(profile.kind).label}. {setupSupport(profile.kind).actions}</DismissibleNotice>}
-      {setupStep === 'game' && onReuseProfile && savedProfiles.length > 0 && <details className="advanced-block"><summary>Reuse a saved server's nonsecret setup</summary>
-        <p>Creates a new server with separate world selection and ports. Worlds, passwords, Friend access, and custom scripts are never copied.</p>
+      {setupStep === 'game' && onReuseProfile && savedProfiles.length > 0 && <details className="advanced-block"><summary>Use settings from another server</summary>
+        <p>Reuse settings, then choose a world and ports. Worlds, passwords, Friend access, and custom scripts are not copied.</p>
         <div className="choices">{savedProfiles.filter(saved => !freshWorldsOnly || !['Custom', 'Factorio', 'Terraria'].includes(saved.kind)).map(saved =>
           <div className="choice" key={saved.id}><span><strong>{saved.name || profileGameLabel(saved)}</strong><small>{profileGameLabel(saved)}</small></span>
             <Button className="secondary" disabled={!!pending} onClick={() => onReuseProfile(saved.id)}>Use setup from {saved.name || profileGameLabel(saved)}</Button></div>)}</div>
@@ -272,7 +272,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         <Button disabled={!!pending} aria-pressed={profile.kind === 'Valheim'} className={profile.kind === 'Valheim' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Valheim')}><strong>Valheim</strong><small>Established local Host flow</small></Button>
         <Button disabled={!!pending} aria-pressed={profile.kind === 'MinecraftJava'} className={profile.kind === 'MinecraftJava' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftJava')}><strong>Minecraft Java</strong><small>Preview · real-server acceptance pending</small></Button>
         <Button disabled={!!pending} aria-pressed={profile.kind === 'MinecraftBedrock'} className={profile.kind === 'MinecraftBedrock' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'MinecraftBedrock')}><strong>Minecraft Bedrock</strong><small>Preview · real-server acceptance pending</small></Button>
-        {!freshWorldsOnly && <Button disabled={!!pending} aria-pressed={profile.kind === 'Factorio'} className={profile.kind === 'Factorio' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Factorio')}><strong>Factorio</strong><small>Preview · fixture-tested lifecycle</small></Button>}
+        {!freshWorldsOnly && <Button disabled={!!pending} aria-pressed={profile.kind === 'Factorio'} className={profile.kind === 'Factorio' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Factorio')}><strong>Factorio</strong><small>Preview · Tested in simulations</small></Button>}
         {!freshWorldsOnly && <Button disabled={!!pending} aria-pressed={profile.kind === 'Terraria'} className={profile.kind === 'Terraria' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Terraria')}><strong>Terraria</strong><small>Preview · owner-installed server</small></Button>}
         {!freshWorldsOnly && <Button disabled={!!pending} aria-pressed={profile.kind === 'Custom'} className={profile.kind === 'Custom' ? 'game-choice selected' : 'game-choice'} onClick={() => onChangeGameKind(profile, 'Custom')}><strong>Custom game</strong><small>Advanced · local PowerShell actions</small></Button>}
         {profile.kind === 'Fixture' && <Button disabled={!!pending} aria-pressed="true" className="game-choice selected"><strong>Synthetic fixture</strong><small>Development checks only</small></Button>}
@@ -291,26 +291,26 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
           <p className="helper-text">Close Valheim and let Steam finish syncing before copying a cloud world.</p>
           <details className="advanced-block"><summary>Older saves and custom paths</summary>
             <Button className="secondary" disabled={!!pending} onClick={() => onBrowseWorld(profile)}>Choose an older .db or .fwl file</Button>
-            <div className="settings-grid"><label>Local save root<Input disabled={!!pending} value={sourceRoots[profile.id] ?? ''} onChange={event => onSourceRootChange(profile.id, event.target.value)} placeholder="C:\\...\\IronGate\\Valheim" /></label><label>World ID<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value })} placeholder="World folder name" /></label></div>
+            <div className="settings-grid"><label>Save folder<Input disabled={!!pending} value={sourceRoots[profile.id] ?? ''} onChange={event => onSourceRootChange(profile.id, event.target.value)} placeholder="C:\\...\\IronGate\\Valheim" /></label><label>World ID<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value })} placeholder="World folder name" /></label></div>
             <Button className="secondary" disabled={!!pending || !sourceRoots[profile.id] || !profile.worldId} onClick={() => onImportWorld(profile, sourceRoots[profile.id], profile.worldId)}>Copy named world</Button>
           </details>
         </>}
         {profile.kind === 'Valheim' && profile.worldSource === 'New' && <div className="quick-setup-fields"><label className="invite-input">World name<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value, name: event.target.value, serverName: event.target.value })} placeholder="My Valheim world" /><small>Stored in TogetherServer's private data.</small></label>
           <label className="invite-input">Game password<Input disabled={!!pending} id={`setup-${profile.id}-game-password`} type={showPasswords[profile.id] ? 'text' : 'password'} autoComplete="new-password" value={passwords[profile.id] ?? ''} onChange={event => onPasswordChange(profile.id, event.target.value)} placeholder={snapshot.passwordConfigured[profile.id] ? 'Saved already; leave blank to keep it' : '5 or more characters'} /><small>Friends use this inside Valheim.</small><span className="show-password"><Input disabled={!!pending} type="checkbox" checked={!!showPasswords[profile.id]} onChange={event => onShowPasswordChange(profile.id, event.target.checked)} /> Show password</span></label></div>}
-        {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test profile name<Input disabled={!!pending} id={`setup-${profile.id}-server-name`} value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<Input disabled={!!pending} id={`setup-${profile.id}-world-directory`} value={profile.worldDirectory} onChange={event => onUpdateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
+        {profile.kind === 'Fixture' && <div className="settings-grid"><label>Test server name<Input disabled={!!pending} id={`setup-${profile.id}-server-name`} value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value })} /></label><label>World ID<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value })} /></label><label className="wide">Disposable directory<Input disabled={!!pending} id={`setup-${profile.id}-world-directory`} value={profile.worldDirectory} onChange={event => onUpdateProfile(profile.id, { worldDirectory: event.target.value })} /></label></div>}
         {profile.kind === 'Custom' && <div className="settings-grid custom-game-basics">
           <label>Game name<Input disabled={!!pending} id={`setup-${profile.id}-game-name`} value={profile.custom?.gameName ?? ''} onChange={event => onUpdateProfile(profile.id, { custom: { gameName: event.target.value, primaryProtocol: profile.custom?.primaryProtocol ?? 'UDP', shareJoinAddress: profile.custom?.shareJoinAddress ?? true, additionalPorts: profile.custom?.additionalPorts ?? [] } })} placeholder="Palworld, Factorio, Terraria…" /></label>
           <label>Server name<Input disabled={!!pending} id={`setup-${profile.id}-server-name`} value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Friends server" /></label>
-          <label>Save / world key<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value })} placeholder="main-world" /><small>Used to prevent two managed profiles from writing the same save.</small></label>
+          <label>Save / world key<Input disabled={!!pending} id={`setup-${profile.id}-world-id`} value={profile.worldId} onChange={event => onUpdateProfile(profile.id, { worldId: event.target.value })} placeholder="main-world" /><small>Prevents two servers from using the same save.</small></label>
           <label className="wide">Working and save directory<div className="field-with-button"><Input disabled={!!pending} id={`setup-${profile.id}-world-directory`} value={profile.worldDirectory} onChange={event => onUpdateProfile(profile.id, { worldDirectory: event.target.value })} placeholder="C:\\GameServers\\MyServer" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseCustomDirectory(profile)}>Browse</Button></div><small>TogetherServer never deletes this folder.</small></label>
         </div>}
         {profile.kind === 'Factorio' && <div className="settings-grid factorio-basics">
           <label>Server name<Input disabled={!!pending} id={`setup-${profile.id}-server-name`} value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Factory night" /></label>
-          <div className="wide"><strong>{profile.worldId ? `Copied save: ${profile.worldId}.zip` : 'Choose an existing Factorio save ZIP'}</strong><div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseFactorio(profile, 'save')}>{pending === profile.id ? 'Copying…' : 'Browse save to review'}</Button></div><small>TogetherServer copies the selected ZIP once into this server's managed folder. The original is never moved, overwritten, or used for hosting.</small></div>
+          <div className="wide"><strong>{profile.worldId ? `Copied save: ${profile.worldId}.zip` : 'Choose an existing Factorio save ZIP'}</strong><div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseFactorio(profile, 'save')}>{pending === profile.id ? 'Copying…' : 'Choose save ZIP'}</Button></div><small>TogetherServer hosts a separate copy of this ZIP. The original stays untouched.</small></div>
         </div>}
         {profile.kind === 'Terraria' && <div className="settings-grid">
           <label>Server name<Input disabled={!!pending} id={`setup-${profile.id}-server-name`} value={profile.name} onChange={event => onUpdateProfile(profile.id, { name: event.target.value, serverName: event.target.value })} placeholder="Terraria night" /></label>
-          <div className="wide"><strong>{profile.worldId ? `Copied world: ${profile.worldId}.wld` : 'Choose an existing Terraria world'}</strong><div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseTerraria(profile, 'world')}>{pending === profile.id ? 'Copying…' : 'Browse world to review'}</Button></div><small>The original world stays untouched. TogetherServer hosts the verified managed copy.</small></div>
+          <div className="wide"><strong>{profile.worldId ? `Copied world: ${profile.worldId}.wld` : 'Choose an existing Terraria world'}</strong><div className="setup-tools"><Button className="secondary" disabled={!!pending} onClick={() => onBrowseTerraria(profile, 'world')}>{pending === profile.id ? 'Copying…' : 'Choose world'}</Button></div><small>TogetherServer hosts a checked copy. The original world stays untouched.</small></div>
         </div>}
         {(profile.kind === 'MinecraftJava' || profile.kind === 'MinecraftBedrock') && <><div className="choice-pills">
           {!freshWorldsOnly && <Button disabled={!!pending} aria-pressed={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing'} className={(minecraftSetupMode[profile.id] ?? 'existing') === 'existing' ? 'selected' : 'secondary'} onClick={() => onMinecraftSetupModeChange(profile.id, 'existing')}>Use an existing server</Button>}
@@ -336,15 +336,15 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
             onTermsChange={accepted => onMinecraftTermsChange(profile.id, accepted)}
             installBusy={pending === 'install-minecraft'} />
         : profile.kind === 'Factorio' ? <div className="factorio-server-setup">
-          <DismissibleNotice scope={profile.id} className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Factorio, accept terms, or expose RCON to Friends. The built-in driver has fixture-tested Start, authenticated local player count, /quit, and backup behavior; real-game join/save acceptance is still required.</p></DismissibleNotice>
+          <DismissibleNotice scope={profile.id} className="script-warning"><strong>Owner-installed preview</strong><p>Install Factorio and accept its terms yourself. Server controls and backups have passed simulated tests; real joining and saving still need testing. RCON is not shared with Friends.</p></DismissibleNotice>
           <label>Factorio server executable<div className="field-with-button"><Input disabled={!!pending} value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\Factorio\\bin\\x64\\factorio.exe" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseFactorio(profile, 'executable')}>Browse</Button></div></label>
         </div>
         : profile.kind === 'Terraria' ? <div className="factorio-server-setup">
-          <DismissibleNotice scope={profile.id} className="script-warning"><strong>Owner-installed preview</strong><p>TogetherServer does not download Terraria. The built-in driver can launch the copied world and request a graceful exit; a TCP listener cannot establish player count, join, or save integrity. Remote and automatic Stop stay blocked.</p></DismissibleNotice>
+          <DismissibleNotice scope={profile.id} className="script-warning"><strong>Owner-installed preview</strong><p>Install Terraria yourself. TogetherServer can start the copied world and ask the server to save and exit. Player count is unknown, so Friend and automatic Stop are blocked. Real joining and saving still need testing.</p></DismissibleNotice>
           <label>Terraria server executable<div className="field-with-button"><Input disabled={!!pending} value={profile.executablePath} onChange={event => onUpdateProfile(profile.id, { executablePath: event.target.value })} placeholder="C:\\Terraria\\TerrariaServer.exe" /><Button className="secondary" disabled={!!pending} onClick={() => onBrowseTerraria(profile, 'executable')}>Browse</Button></div></label>
         </div>
         : profile.kind === 'Custom' ? <div className="custom-script-manager" id={`setup-${profile.id}-scripts`} tabIndex={-1}>
-          <DismissibleNotice scope={profile.id} className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. They stay on the Host in Windows protected storage; Friends can request only the saved profile’s fixed Start action and never receive or edit script text.</p></DismissibleNotice>
+          <DismissibleNotice scope={profile.id} className="script-warning"><strong>These scripts can do anything your Windows account can do.</strong><p>Use only scripts you wrote or reviewed. Windows protects them on this PC. Friends can request the saved Start action but cannot read or edit the scripts.</p></DismissibleNotice>
           {customScriptsLoading[profile.id] && <p className="helper-text script-loading" role="status"><Icon name="loader" />Loading protected scripts…</p>}
           <label>Start script<TextArea rows={8} spellCheck={false} disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.start ?? ''} onChange={event => onEditCustomScripts(profile.id, { start: event.target.value })} placeholder={'# Start the server, then keep this script running until that server exits.\n$server = Start-Process .\\Server.exe -PassThru\nWait-Process -Id $server.Id\nexit $server.ExitCode'} /><small>The PowerShell process must stay alive for the whole server run. Use $env:TOGETHERSERVER_WORKING_DIRECTORY and $env:TOGETHERSERVER_GAME_PORT as needed.</small></label>
           <label>Status and players script<TextArea rows={8} spellCheck={false} disabled={!!pending || customScriptsLoading[profile.id]} value={customScripts[profile.id]?.status ?? ''} onChange={event => onEditCustomScripts(profile.id, { status: event.target.value })} placeholder={'# Finish within 4 seconds and echo every contract value.\n@{ contractVersion = [int]$env:TOGETHERSERVER_CONTRACT_VERSION; probeId = $env:TOGETHERSERVER_PROBE_ID; operationId = $env:TOGETHERSERVER_OPERATION_ID; state = "Ready"; detail = "Server answered"; onlinePlayers = 0; maxPlayers = 8; players = @() } | ConvertTo-Json -Compress'} /><small>Allowed states: Ready, Starting, or Failed. Existing scripts still show status, but contract v2 checks and the guided live test are required before player counts can allow remote Stop, Restart, replacement, or automatic shutdown.</small></label>
@@ -371,15 +371,15 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
         {['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Factorio', 'Terraria'].includes(profile.kind) && <div className="device-options world-protection-options">
           {profile.kind !== 'Factorio' && profile.kind !== 'Terraria' ? <>
             <label className="check-row"><Input disabled={!!pending} type="checkbox" checked={profile.crashRecovery?.enabled ?? false} onChange={event => onUpdateProfile(profile.id, { crashRecovery: { enabled: event.target.checked } })} /> Restart after an unexpected server exit</label>
-            <small>Off by default. Only a previously Ready server with a definitively exited exact process is eligible. Retries wait 1, 5, and 15 minutes, then suspend.</small>
-          </> : <p className="helper-text">Automatic crash recovery stays unavailable for this preview until real save/restart acceptance is recorded.</p>}
+            <small>Off by default. Restarts only a previously ready server that has definitely exited. Tries after 1, 5, and 15 minutes, then pauses.</small>
+          </> : <p className="helper-text">Automatic crash restart is unavailable in this preview until real saving and restarting are tested.</p>}
           <label className="check-row"><Input disabled={!!pending} type="checkbox" checked={profile.backups?.enabled ?? false} onChange={event => onUpdateProfile(profile.id, { backups: { enabled: event.target.checked, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /> Back up after each confirmed graceful Stop</label>
           {(profile.backups?.enabled ?? false) && <div className="settings-grid"><label>Completed backups to keep<Input disabled={!!pending} type="number" min="1" max="50" value={profile.backups?.retentionCount ?? 5} onChange={event => onUpdateProfile(profile.id, { backups: { enabled: true, retentionCount: Number(event.target.value), minimumFreeSpaceMb: profile.backups?.minimumFreeSpaceMb ?? 1024 } })} /></label><label>Free-space reserve (MB)<Input disabled={!!pending} type="number" min="0" max="1048576" value={profile.backups?.minimumFreeSpaceMb ?? 1024} onChange={event => onUpdateProfile(profile.id, { backups: { enabled: true, retentionCount: profile.backups?.retentionCount ?? 5, minimumFreeSpaceMb: Number(event.target.value) } })} /></label></div>}
-          <p className="helper-text">Backups use staged, verified copies. Restore stays on this Host, requires Offline, and takes a pre-restore snapshot. Complete real-game save/restart acceptance before relying on automation for a valued world.</p>
+          <p className="helper-text">Backup copies are checked before completion. Restore requires a stopped server and makes a backup first. Test saving and restarting in the game before relying on automation for a world you value.</p>
         </div>}
         {profile.worldDirectory && <p className="helper-text">Server save location: <code>{profile.worldDirectory}</code></p>}
       </details></div>}
-      <details className="advanced-block" aria-label="Game support and limits"><summary>{setupSupport(profile.kind).label} · support and action limits</summary>
+      <details className="advanced-block" aria-label="Game support and limits"><summary>{setupSupport(profile.kind).label} · supported features and limits</summary>
         <p>{setupSupport(profile.kind).actions}</p><p>{setupSupport(profile.kind).limits}</p></details>
     </div>)}
     {editedProfile && <>{setupStep === 'review' && savedProfiles.some(saved => saved.id === editedProfile.id) && <details className="advanced-block danger-zone"><summary>Danger zone</summary><p className="helper-text">Removing this server forgets its setup and Friend access. TogetherServer leaves its world files in place.</p><Button className="text-button danger" disabled={!!pending} onClick={() => onRemoveProfile(editedProfile)}>Remove from TogetherServer</Button></details>}
@@ -403,12 +403,12 @@ function SetupWorldLocations({ profile, sourceRoot, minecraftMode }: {
   const usesExisting = minecraft && minecraftMode !== 'install'
   const newInstall = minecraft && minecraftMode === 'install'
   return <section aria-label="World locations" className="setup-world-locations"><dl className="review-summary">
-    {(profile.worldSource === 'Existing' && !minecraft && profile.kind !== 'Custom') && <div><dt>Original on this PC</dt><dd>{sourceRoot ? <code>{sourceRoot}</code> : 'Chosen using discovery or Browse.'}<small>The original is retained.</small></dd></div>}
-    <div><dt>{usesExisting ? 'World hosted in the selected server folder' : profile.kind === 'Custom' ? 'Owner-selected working and save folder' : 'World TogetherServer hosts'}</dt>
-      <dd>{profile.worldDirectory ? <code>{profile.worldDirectory}</code> : 'A fresh managed destination is allocated when setup copies or installs the server.'}</dd></div>
+    {(profile.worldSource === 'Existing' && !minecraft && profile.kind !== 'Custom') && <div><dt>Original on this PC</dt><dd>{sourceRoot ? <code>{sourceRoot}</code> : 'The folder you selected.'}<small>The original stays untouched.</small></dd></div>}
+    <div><dt>{usesExisting ? 'World hosted in the selected server folder' : profile.kind === 'Custom' ? 'Working and save folder' : 'World TogetherServer hosts'}</dt>
+      <dd>{profile.worldDirectory ? <code>{profile.worldDirectory}</code> : 'A new folder is created when you copy or install the server.'}</dd></div>
   </dl><p className="helper-text">{usesExisting ? 'Existing Minecraft setup uses this folder directly. Discovery only reads its setup; it does not copy the world.' :
     profile.kind === 'Custom' ? 'Custom scripts use the reviewed folder you choose. No world is copied by this setup form.' :
-      profile.worldSource === 'New' || newInstall ? 'A new world is created here. Other worlds on this PC stay separate.' : 'Original source → verified managed copy → hosted world. Copying never moves or replaces the original.'}</p></section>
+      profile.worldSource === 'New' || newInstall ? 'A new world is created here. Other worlds on this PC stay separate.' : 'TogetherServer hosts a checked copy. Your original world stays untouched.'}</p></section>
 }
 
 function SetupEditReview({ before, after, passwordChanged, scriptsChanged }: {
@@ -416,11 +416,11 @@ function SetupEditReview({ before, after, passwordChanged, scriptsChanged }: {
 }) {
   const changes = setupProfileChanges(before, after)
   return <section aria-label="Review server setup changes"><h4>Changes to the saved setup</h4>
-    {changes.length === 0 ? <p>No nonsecret setup fields changed.</p> : <dl>{changes.map(change => <div key={change.label}><dt>{change.label}</dt>
+    {changes.length === 0 ? <p>No other settings changed.</p> : <dl>{changes.map(change => <div key={change.label}><dt>{change.label}</dt>
       <dd><span>Before: </span><code>{change.before}</code><br /><span>After: </span><code>{change.after}</code></dd></div>)}</dl>}
     {passwordChanged && <p>The entered game password will replace the saved password. Its value is hidden from this review.</p>}
-    {scriptsChanged && <p>Custom scripts changed. Review them on the Server app step; script text stays out of this summary and recoverable setup draft.</p>}
-    <p>Changes to game, world, application, ports or route can make earlier game acceptance confirmations stale.</p>
+    {scriptsChanged && <p>Custom scripts changed. Review them in Server app. Scripts are not included in this summary or saved draft.</p>}
+    <p>If you change the game, world, server app, ports, or network, test joining and saving again.</p>
   </section>
 }
 
@@ -433,15 +433,15 @@ function SetupImportReviewPanel({ review, busy, onConfirm, onCancel }: {
   return <section className="notice" aria-label="Review world import"><h3>Review the copy</h3>
     <dl><div><dt>World / save</dt><dd>{review.worldId}</dd></div>
       <div><dt>Source</dt><dd>{review.sourceSaveRoot ? <code>{review.sourceSaveRoot}\{review.sourceFolder}\{review.worldId}</code> : 'The file you selected in Windows'}</dd></div>
-      <div><dt>Destination</dt><dd>A fresh app-managed copy belonging to this server. An existing destination is never replaced.</dd></div>
+      <div><dt>Destination</dt><dd>A new folder for this server. Existing files are not replaced.</dd></div>
       <div><dt>Total source size</dt><dd>{bytes(review.totalBytes)}</dd></div>
       <div><dt>Source last changed</dt><dd>{modified(review.modifiedUtc)}</dd></div>
     </dl>
     {review.sourceFiles?.length ? <ul>{review.sourceFiles.map(file => <li key={file.name}><strong>{file.name}</strong> · {bytes(file.bytes)} · {modified(file.modifiedUtc)}</li>)}</ul> :
-      <p>Detailed source-file facts are unavailable for this selection. The importer still checks a complete source and refuses an existing destination.</p>}
+      <p>File details are unavailable. TogetherServer still checks that all files are present and refuses to replace an existing folder.</p>}
     {review.format && <p>Source format: {review.format}.</p>}
     {review.sourceFolder === 'worlds' && <p>Close Valheim and wait for Steam Cloud syncing to finish before confirming this cached-world copy.</p>}
-    <p>Your original stays untouched. Size and dates describe the source; they do not prove a world loads or saves correctly in the game.</p>
+    <p>Your original stays untouched. You still need to check that the copied world loads and saves in the game.</p>
     {review.expiresUtc && <p>{expired ? 'This source selection expired. Cancel and browse again.' : `This source selection expires at ${new Date(review.expiresUtc).toLocaleTimeString()}. Copy checks the selected files again.`}</p>}
     <div className="actions"><Button disabled={busy || expired} onClick={onConfirm}>Confirm copy</Button>
       <Button className="secondary" disabled={busy} onClick={onCancel}>Cancel copy</Button></div>

@@ -110,7 +110,7 @@ object SuccessorRosterReadOnly() => new
 {
     ok = false,
     code = "SuccessorRosterReadOnly",
-    message = "Sharing permissions stay with the original owner. This successor PC may host and share hash-verified post-Stop file copies after local setup and route checks pass. It cannot change the signed member list. Game load has not been checked."
+    message = "The original owner manages sharing. This PC can host and share checked saves after setup and connection checks pass. It cannot change group members. Loading the save in the game still needs testing."
 };
 try { if (!friendMode) await RepairDirtyRostersAsync(); }
 catch (Exception ex) when (ex is IOException or InvalidDataException or System.Security.Cryptography.CryptographicException)
@@ -131,7 +131,7 @@ using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 var appVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0);
 var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "", appVersion,
     enabled: instance.UpdatesAvailable,
-    disabledMessage: "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.",
+    disabledMessage: "Replace or rebuild this development app to update it.",
     uiPreferences: updateUi);
 using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 var publicIpLookup = new PublicIpLookup(publicIpClient);
@@ -421,7 +421,7 @@ app.MapPost("/api/local/update/install", (Func<HttpContext, Task<IResult>>)(asyn
         return Results.BadRequest(new UpdateResult(false, "InvalidUpdateRequest", "Update accepts no caller-selected fields."));
     if (!instance.UpdatesAvailable)
         return UpdatePreparationBlocked("UpdatesDisabled",
-            "Automatic updates are disabled in staging. Rebuild or replace the staging package explicitly.");
+            "Replace or rebuild this development app to update it.");
     if (desktop is null) return UpdatePreparationBlocked("WindowUnavailable", "Open the published app window to update.");
     await modeGate.WaitAsync();
     try

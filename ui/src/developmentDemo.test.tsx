@@ -233,7 +233,7 @@ it('lets the actual missing-install flow select only a fake server file and prep
   expect(within(dialog).getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Browse' }))
   await waitFor(() => expect(within(dialog).getByRole('textbox', { name: 'Installed server file' })).toHaveValue('C:\\TogetherServer-DEMO-FAKE-DATA\\Valheim\\valheim_server.exe'))
-  fireEvent.change(within(dialog).getByLabelText('New local game password'), { target: { value: 'demo-only' } })
+  fireEvent.change(within(dialog).getByLabelText('New game password'), { target: { value: 'demo-only' } })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare this PC' }))
   expect(await within(dialog).findByRole('button', { name: 'Start server on this PC' })).toBeEnabled()
   expect((await hosting()).running).toBe(false)

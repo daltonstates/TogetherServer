@@ -43,22 +43,22 @@ export const loadBackupCatalog: BackupCatalogLoader = (profileId, signal) =>
   getLocalJson(`/api/local/profiles/${encodeURIComponent(profileId)}/backup-catalog`, parseBackupCatalog, signal)
 
 const evidenceNames: Record<BackupEvidenceKind, string> = {
-  Integrity: 'Local integrity', Vault: 'Vault copy', HashRehearsal: 'Hash restore test', OwnerGameRehearsal: 'Game load, change and restart'
+  Integrity: 'Backup file check', Vault: 'Vault copy', HashRehearsal: 'Restore file test', OwnerGameRehearsal: 'Game load, change and restart'
 }
 function BackupEvidenceDetails({ backup, evidenceAvailable }: { backup: BackupSummary; evidenceAvailable: boolean }) {
   return <>
-    <h4>Protection results</h4>
+    <h4>Backup checks</h4>
     <div className="backup-library-evidence-grid" aria-label="Recorded protection results">{(Object.keys(evidenceNames) as BackupEvidenceKind[]).map(kind => {
       const fact = latestBackupEvidence(backup, kind)
       return <div className={`backup-library-evidence-result${fact?.outcome === 'Failed' ? ' has-issue' : ''}`} key={kind}>
         <Icon name={kind === 'OwnerGameRehearsal' ? 'game' : kind === 'Vault' ? 'archive' : 'shield'} size={18} />
         <small><strong>{evidenceNames[kind]}: </strong><span>{fact ?
         `${kind === 'OwnerGameRehearsal' ? 'Owner reported: ' : ''}${fact.outcome === 'Passed' ? 'Passed' : fact.outcome === 'Failed' ? 'Failed' : 'Incomplete'} · ${new Date(fact.checkedUtc).toLocaleString()}` :
-        evidenceAvailable ? 'Unknown — no retained result for this backup' : 'Unknown — saved evidence unavailable'}</span></small>
+        evidenceAvailable ? 'Unknown — no saved result for this backup' : 'Unknown — saved results unavailable'}</span></small>
       </div>
     })}</div>
-    <p>Each dated result applies to this exact backup. A vault copy confirms transferred hashes at that time; its location and continued availability are unknown here.</p>
-    <p>A hash restore test checks bytes in a disposable copy. Game load, a saved change and restart require separate owner confirmations. A passed hash check does not establish game save health.</p>
+    <p>Each result applies to this backup at the shown time. A vault copy confirms that the copied files matched then. This view cannot check where that copy is or whether it is still available.</p>
+    <p>The restore file test uses a temporary copy. To check the world itself, load it in the game, make a recognizable change and check that change after restart. Those results must be confirmed by you.</p>
   </>
 }
 
@@ -80,17 +80,17 @@ function BackupEvidenceCue({ backup, evidenceAvailable }: { backup: BackupSummar
   const failed = (Object.keys(evidenceNames) as BackupEvidenceKind[]).filter(kind => latestBackupEvidence(backup, kind)?.outcome === 'Failed')
   const incomplete = (Object.keys(evidenceNames) as BackupEvidenceKind[]).filter(kind => kind !== 'Integrity' && latestBackupEvidence(backup, kind)?.outcome === 'Incomplete')
   const integrity = latestBackupEvidence(backup, 'Integrity')
-  const unknown = !evidenceAvailable ? 'Saved evidence unavailable' : !integrity ? 'Integrity not checked' :
-    integrity.outcome === 'Incomplete' ? 'Integrity check incomplete' : null
+  const unknown = !evidenceAvailable ? 'Saved results unavailable' : !integrity ? 'Files not checked' :
+    integrity.outcome === 'Incomplete' ? 'File check incomplete' : null
   return <div className="backup-library-evidence-cue">
     <div className="backup-library-badges">
-      {integrity?.outcome === 'Passed' && evidenceAvailable && <span className="backup-library-badge is-measured"><Icon name="shield" size={14} />Integrity passed</span>}
+      {integrity?.outcome === 'Passed' && evidenceAvailable && <span className="backup-library-badge is-measured"><Icon name="shield" size={14} />File check passed</span>}
       {failed.length > 0 && <span className="backup-library-badge has-issue"><Icon name="warning" size={14} />Recorded check failed: {failed.map(kind => evidenceNames[kind]).join(', ')}.</span>}
       {unknown && <span className="backup-library-badge"><Icon name="shield" size={14} />{unknown}.</span>}
       {incomplete.length > 0 && <span className="backup-library-badge has-issue"><Icon name="warning" size={14} />Incomplete: {incomplete.map(kind => evidenceNames[kind]).join(', ')}.</span>}
       {!backup.metadataAvailable && <span className="backup-library-badge">Completion details unavailable</span>}
     </div>
-    <small>{integrity?.outcome === 'Passed' && evidenceAvailable ? 'Recorded integrity passed; game save health unverified.' : 'Game save health unverified.'}</small>
+    <small>{integrity?.outcome === 'Passed' && evidenceAvailable ? 'Files matched when checked. The world still needs testing in the game.' : 'The world still needs testing in the game.'}</small>
   </div>
 }
 
@@ -98,23 +98,23 @@ function BackupComparison({ left, right }: { left: BackupSummary; right: BackupS
   const comparison = compareBackups(left, right)
   return <section aria-label="Backup comparison" className="recent-session-card backup-library-comparison">
     <h4><Icon name="copy" size={19} />Compare backup summaries</h4>
-    <p>Recorded manifest and setup fingerprints only. This is not a file-content diff or a fresh integrity check.</p>
-    <p>Protected setup hashes compare stored checkpoint bytes. Different hashes can reflect protection encoding and do not by themselves prove different settings.</p>
+    <p>Compares saved file and setup checksums. It does not compare file contents or check the files again.</p>
+    <p>Setup checksums include Windows protection data. Different checksums do not always mean the settings changed.</p>
     <table><caption>{left.label || 'Unnamed backup'} → {right.label || 'Unnamed backup'}</caption>
       <thead><tr><th scope="col">Summary</th><th scope="col">First backup</th><th scope="col">Second backup</th></tr></thead>
       <tbody>
-        <tr><th scope="row">Backup identity</th><td>{left.backupId}</td><td>{right.backupId}</td></tr>
+        <tr><th scope="row">Backup ID</th><td>{left.backupId}</td><td>{right.backupId}</td></tr>
         <tr><th scope="row">Created</th><td>{new Date(left.createdUtc).toLocaleString()}</td><td>{new Date(right.createdUtc).toLocaleString()}</td></tr>
-        <tr><th scope="row">Kind</th><td>{backupKindName(left.backupKind)}</td><td>{backupKindName(right.backupKind)}</td></tr>
+        <tr><th scope="row">Type</th><td>{backupKindName(left.backupKind)}</td><td>{backupKindName(right.backupKind)}</td></tr>
         <tr><th scope="row">World</th><td>{left.worldId ?? 'Unknown'}</td><td>{right.worldId ?? 'Unknown'}</td></tr>
         <tr><th scope="row">Game</th><td>{left.gameKind ?? 'Unknown'}</td><td>{right.gameKind ?? 'Unknown'}</td></tr>
         <tr><th scope="row">Size</th><td>{backupBytes(left.sizeBytes)}</td><td>{backupBytes(right.sizeBytes)}</td></tr>
         <tr><th scope="row">Files</th><td>{left.fileCount ?? 'Unknown'}</td><td>{right.fileCount ?? 'Unknown'}</td></tr>
-        <tr><th scope="row">Recorded payload fingerprint</th><td>{left.payloadSha256 ?? 'Unknown'}</td><td>{right.payloadSha256 ?? 'Unknown'}</td></tr>
-        <tr><th scope="row">Recorded setup fingerprint</th><td>{left.setupSha256 ?? (left.setupIncluded === false ? 'World only' : 'Unknown')}</td><td>{right.setupSha256 ?? (right.setupIncluded === false ? 'World only' : 'Unknown')}</td></tr>
+        <tr><th scope="row">Saved world checksum</th><td>{left.payloadSha256 ?? 'Unknown'}</td><td>{right.payloadSha256 ?? 'Unknown'}</td></tr>
+        <tr><th scope="row">Saved setup checksum</th><td>{left.setupSha256 ?? (left.setupIncluded === false ? 'World only' : 'Unknown')}</td><td>{right.setupSha256 ?? (right.setupIncluded === false ? 'World only' : 'Unknown')}</td></tr>
       </tbody>
     </table>
-    <p>World: {comparison.world}. Game: {comparison.game}. Payload: {comparison.payload}. Setup: {comparison.setup}.</p>
+    <p>World: {comparison.world}. Game: {comparison.game}. World files: {comparison.payload}. Setup: {comparison.setup}.</p>
     <p>Size change: {comparison.sizeChange < 0 ? '−' : '+'}{backupBytes(Math.abs(comparison.sizeChange))}. File count change: {comparison.filesChange ?? 'Unknown'}.</p>
   </section>
 }
@@ -134,17 +134,17 @@ function RestoreBackupReview({ review, unavailableReason, working, onConfirm, on
     <h4><Icon name="warning" size={19} />Review Restore</h4>
     <dl>
       <dt>Name</dt><dd>{backup.label || 'Unnamed backup'}</dd>
-      <dt>Backup identity</dt><dd>{backup.backupId}</dd>
+      <dt>Backup ID</dt><dd>{backup.backupId}</dd>
       <dt>Created</dt><dd>{new Date(backup.createdUtc).toLocaleString()}</dd>
-      <dt>Kind</dt><dd>{backupKindName(backup.backupKind)}</dd>
+      <dt>Type</dt><dd>{backupKindName(backup.backupKind)}</dd>
       <dt>Size</dt><dd>{backupBytes(backup.sizeBytes)} · {backup.fileCount ?? 'Unknown'} files</dd>
       <dt>Backup world</dt><dd>{backup.worldId ?? 'Unknown'}</dd>
       <dt>Current world</dt><dd>{review.currentWorld ?? 'Unknown'}</dd>
-      <dt>Restore scope</dt><dd>World only. This action does not restore protected setup or game binaries.</dd>
+      <dt>What will be restored</dt><dd>World files only. Server settings and the installed game server app stay as they are.</dd>
     </dl>
     <p>{review.checkpoint}</p><p>{unavailableReason || review.reason}</p>
     <label className="check"><Input type="checkbox" checked={accepted} disabled={working}
-      onChange={event => setAccepted(event.target.checked)} />I reviewed this backup and the current world replacement.</label>
+      onChange={event => setAccepted(event.target.checked)} />I understand this replaces the current world with the selected backup.</label>
     <div className="actions"><Button className="secondary" disabled={working || !accepted || !review.canRestore || !!unavailableReason}
       onClick={onConfirm}>{working ? 'Restoring…' : 'Restore reviewed backup'}</Button>
       <Button className="text-button" disabled={working} onClick={onCancel}>Cancel Restore</Button></div>
@@ -202,7 +202,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
   }, [load, refreshKey, visible])
 
   function saved(backup: BackupBookmark) {
-    setNotice(backup.pinned ? 'Saved. This backup is protected from automatic retention.' : 'Saved. This backup follows automatic retention.')
+    setNotice(backup.pinned ? 'Saved. The app will keep this backup when deleting older copies.' : 'Saved. The app may delete this backup under your backup settings.')
     setResult(current => {
       if (!current || current.profileId.toLowerCase() !== backup.profileId.toLowerCase()) return current
       const old = current.backups.find(item => item.backupId.toLowerCase() === backup.backupId.toLowerCase())
@@ -242,7 +242,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
   const review = restoreBackup ? restoreReview(restoreBackup, currentWorld, currentGame, offline) : null
   const actions = (backup: BackupSummary) => {
     const callbacks: [string, keyof NonNullable<BackupCatalogProps['unavailableReasons']>, BackupCatalogAction | undefined][] = [
-      ['Verify', 'verify', onVerify], ['Copy to vault', 'vault', onVault], ['Test restore hashes', 'hashRehearsal', onHashRehearsal],
+      ['Verify', 'verify', onVerify], ['Copy to vault', 'vault', onVault], ['Test restore files', 'hashRehearsal', onHashRehearsal],
       ['Test a copy in the game', 'ownerGameRehearsal', onOwnerGameRehearsal]
     ]
     return <>{callbacks.map(([label, key, callback]) => callback && <span key={key}><Button className="secondary"
@@ -252,10 +252,10 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
       {onRestore && <Button className="secondary" disabled={!!working} onClick={() => setRestoreId(backup.backupId)}>Review Restore</Button>}
       {renderActions?.(backup)}</>
   }
-  return <section hidden={!visible} className="backup-bookmarks backup-catalog backup-library" aria-label={legacyLabels ? 'Named and pinned backups' : 'Backup catalog'} aria-busy={loading}>
+  return <section hidden={!visible} className="backup-bookmarks backup-catalog backup-library" aria-label={legacyLabels ? 'Named and pinned backups' : 'Backup library'} aria-busy={loading}>
     <header className="backup-library-header">
       <SettingsSectionHeading icon="archive" title={legacyLabels ? 'Named and pinned backups' : 'Backup library'}
-        description="Completed copies on this Host. Find a backup, keep the ones you need, and review its protection." />
+        description="Find, pin and check backups saved on this Host PC." />
       <Button className="secondary" disabled={loading || !!working} onClick={() => { setNotice(''); void load() }}>
         <Icon name={loading ? 'loader' : 'refresh'} />{loading ? 'Loading…' : legacyLabels ? 'Refresh names and pins' : 'Refresh backups'}
       </Button>
@@ -290,7 +290,7 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
             <dd className="backup-library-summary-detail">{backupBytes(catalog.pinnedSizeBytes)} of {backupBytes(catalog.maximumPinnedSizeBytes)} pinned</dd>
           </div>
         </dl>
-        {summary.incomplete && <p className="backup-library-coverage"><Icon name="shield" size={16} />Evidence coverage is incomplete. Missing results remain unknown.</p>}
+        {summary.incomplete && <p className="backup-library-coverage"><Icon name="shield" size={16} />Some backup checks have no saved result. Open Review backup for details.</p>}
       </div>}
       {notice && <DismissibleNotice as="p" scope={profileId} role="status">{notice}</DismissibleNotice>}
       {working && <p className="backup-library-progress" role="status"><Icon name="loader" />{working.action} is in progress for the selected backup.</p>}
@@ -299,12 +299,12 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
           if (!review.canRestore || unavailableReasons.restore) return
           void run(review.backup, 'Restore', (_backup, signal) => onRestore(review, signal))
         }} />}
-      {restoreId && !review && <DismissibleNotice as="p" scope={profileId} noticeKey={restoreId}>The reviewed backup is no longer in this catalog. Choose a completed copy again.</DismissibleNotice>}
+      {restoreId && !review && <DismissibleNotice as="p" scope={profileId} noticeKey={restoreId}>This backup is no longer in the list. Choose a completed backup again.</DismissibleNotice>}
       <div className="backup-library-toolbar" role="search" aria-label="Find backups">
         <label className="backup-library-search" htmlFor={`${titleId}-query`}>
           <span>Search backups</span>
           <span className="backup-library-search-field"><Icon name="search" size={18} />
-            <Input id={`${titleId}-query`} value={filters.query} maxLength={128} placeholder="Name, pin, kind or date"
+            <Input id={`${titleId}-query`} value={filters.query} maxLength={128} placeholder="Name, pin, type or date"
               onChange={event => { setFilters({ ...filters, query: event.target.value }); setExpanded(true) }} />
           </span>
         </label>
@@ -318,9 +318,9 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
           <label htmlFor={`${titleId}-pin`}>Pins<Select id={`${titleId}-pin`} value={filters.pin}
             onChange={event => { setFilters({ ...filters, pin: event.target.value as typeof filters.pin }); setExpanded(true) }}>
             <option value="all">All backups</option><option value="pinned">Pinned only</option><option value="unpinned">Unpinned only</option></Select></label>
-          <label htmlFor={`${titleId}-kind`}>Backup kind<Select id={`${titleId}-kind`} value={filters.kind}
+          <label htmlFor={`${titleId}-kind`}>Backup type<Select id={`${titleId}-kind`} value={filters.kind}
             onChange={event => { setFilters({ ...filters, kind: event.target.value }); setExpanded(true) }}>
-            <option value="all">All kinds</option><option value="Rolling">After Stop</option><option value="Manual">Manual</option><option value="PreRestore">Before restore</option><option value="Unavailable">Unknown</option></Select></label>
+            <option value="all">All types</option><option value="Rolling">After Stop</option><option value="Manual">Manual</option><option value="PreRestore">Before restore</option><option value="Unavailable">Unknown</option></Select></label>
           <label htmlFor={`${titleId}-after`}>From date (local)<Input id={`${titleId}-after`} type="date" value={filters.after}
             onChange={event => { setFilters({ ...filters, after: event.target.value }); setExpanded(true) }} /></label>
           <label htmlFor={`${titleId}-before`}>Through date (local)<Input id={`${titleId}-before`} type="date" value={filters.before}
@@ -347,33 +347,33 @@ export function BackupCatalog({ profileId, visible, refreshKey = 0, loader = loa
         </div>}>
         <span className="backup-library-copy-icon"><Icon name="archive" size={21} /></span>
         <div className="backup-library-copy-context"><span>World: {backup.worldId ?? 'Unknown'}</span>
-          <span>{backup.setupIncluded === true ? 'Includes protected setup' : backup.setupIncluded === false ? 'World only' : 'Setup coverage unknown'} · {backup.fileCount === null ? 'File count unknown' : `${backup.fileCount} ${backup.fileCount === 1 ? 'file' : 'files'}`}</span></div>
+          <span>{backup.setupIncluded === true ? 'Includes saved server setup' : backup.setupIncluded === false ? 'World only' : 'Included setup unknown'} · {backup.fileCount === null ? 'File count unknown' : `${backup.fileCount} ${backup.fileCount === 1 ? 'file' : 'files'}`}</span></div>
         <BackupEvidenceCue backup={backup} evidenceAvailable={catalog.evidenceAvailable} />
       </BackupBookmarkEditor>)}</div>
       {!expanded && filtered.length > shown.length && <Button className="secondary backup-library-show-more" onClick={() => setExpanded(true)}><Icon name="chevronDown" />Show {filtered.length - shown.length} more backups</Button>}
       {compare.length === 2 && <BackupComparison left={compare[0]} right={compare[1]} />}
-      {catalog.moreBackupsAvailable && <p className="backup-library-coverage"><Icon name="warning" size={17} />Only 100 retained backups are loaded, with pins first. Filters and comparisons cover these rows; exact retention candidates require the complete catalog.</p>}
+      {catalog.moreBackupsAvailable && <p className="backup-library-coverage"><Icon name="warning" size={17} />Showing 100 saved backups, with pinned copies first. Search, filters and comparisons cover only these backups. The full list is needed to preview which backups may be deleted.</p>}
       <div className="backup-library-secondary">
-        <details className="backup-library-policy"><summary><Icon name="shield" size={17} />Protection and retention details</summary>
+        <details className="backup-library-policy"><summary><Icon name="shield" size={17} />Backup checks and pin limits</summary>
           <div className="backup-library-policy-body">
-            {summary && <p>Latest recorded passes across {catalog.backups.length} shown copies: {summary.integrity} local integrity, {summary.vault} vault transfers, {summary.hashRehearsal} hash restore tests, {summary.ownerGame} owner-reported game rehearsals.</p>}
-            <p>A pin protects local retention. Each check measures a separate part of protection; no overall healthy-world claim is inferred.</p>
+            {summary && <p>Passed checks across {catalog.backups.length} shown backups: {summary.integrity} file checks, {summary.vault} vault copies, {summary.hashRehearsal} restore file tests, {summary.ownerGame} game tests confirmed by the owner.</p>}
+            <p>Pinned backups are kept when the app deletes older copies. File checks and game tests are separate; a pin does not confirm that a world works.</p>
             <p>{catalog.pinnedCount} of {catalog.maximumPinnedCount} pins · {backupBytes(catalog.pinnedSizeBytes)} of {backupBytes(catalog.maximumPinnedSizeBytes)} pinned. {Math.max(0, catalog.maximumPinnedCount - catalog.pinnedCount)} pins and {backupBytes(Math.max(0, catalog.maximumPinnedSizeBytes - catalog.pinnedSizeBytes))} remain.</p>
             <small>Pins have separate count and byte limits. Available drive space is a separate measurement.</small>
           </div>
         </details>
-        <details className="backup-library-policy"><summary><Icon name="clock" size={17} />Retention preview</summary>
+        <details className="backup-library-policy"><summary><Icon name="clock" size={17} />Preview which backups are kept</summary>
           <div className="backup-library-policy-body">
-            {catalog.retention && <><p>Saved policy: {catalog.retention.retentionCount} unpinned copies. Rolling backup is {catalog.retention.rollingEnabled ? 'on' : 'off'}. Free-space reserve: {backupBytes(catalog.retention.minimumFreeSpaceBytes)}.</p>
-              <label htmlFor={`${titleId}-retention`}>Preview unpinned retention count<Input id={`${titleId}-retention`} type="number" min={1} max={50}
+            {catalog.retention && <><p>Saved settings: keep {catalog.retention.retentionCount} unpinned copies. Backup after Stop is {catalog.retention.rollingEnabled ? 'on' : 'off'}. Free-space reserve: {backupBytes(catalog.retention.minimumFreeSpaceBytes)}.</p>
+              <label htmlFor={`${titleId}-retention`}>Preview unpinned copies to keep<Input id={`${titleId}-retention`} type="number" min={1} max={50}
                 value={previewCount ?? catalog.retention.retentionCount} onChange={event => setPreviewCount(Number(event.target.value))} /></label>
-              <small>This previews a count; change the saved policy in protection settings.</small></>}
+              <small>This is a preview. Save changes under Protection settings.</small></>}
             <p>{retention?.message}</p>
-            {retention?.known && <p>{retention.candidates.length} current copies could become eligible after the next ordinary backup: {retention.candidates.map(item => item.label || `${backupKindName(item.backupKind)} ${new Date(item.createdUtc).toLocaleString()}`).join('; ') || 'None'}.</p>}
+            {retention?.known && <p>{retention.candidates.length} current copies may be deleted after the next backup: {retention.candidates.map(item => item.label || `${backupKindName(item.backupKind)} ${new Date(item.createdUtc).toLocaleString()}`).join('; ') || 'None'}.</p>}
           </div>
         </details>
       </div>
     </>}
-    <p className="backup-library-boundary"><Icon name="shield" size={17} />Pins protect from automatic retention on this PC. Use Copy to vault for another location, and Verify for a separate integrity check.</p>
+    <p className="backup-library-boundary"><Icon name="shield" size={17} />Pins keep backups on this PC. Use Copy to vault for another location, or Verify to check the backup files.</p>
   </section>
 }

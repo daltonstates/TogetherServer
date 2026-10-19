@@ -120,7 +120,7 @@ internal static class PlayerCountPresentationChecks
         foreach (var reason in new[]
         {
             "The current player count became unknown.",
-            "The authoritative player count became unavailable.",
+            "The player count became unavailable.",
             "A player joined the server."
         })
         {

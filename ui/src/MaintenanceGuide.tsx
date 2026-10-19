@@ -28,15 +28,15 @@ export function MaintenanceGuide({ enabled, message, state, onlinePlayers, count
         <small>{state === 'Offline' ? 'Server is offline.' : empty ? 'The server reports 0 players.' : countTrusted ? `${onlinePlayers} player${onlinePlayers === 1 ? '' : 's'} online.` : 'Player count unavailable. Check it again before stopping for maintenance.'}</small>
         {state === 'Ready' && <Button className="secondary" disabled={busy || !enabled || !empty} onClick={onStop}>Stop empty server</Button>}
       </li>
-      <li><strong>Make an offline checkpoint.</strong>
+      <li><strong>Back up while the server is stopped.</strong>
         {lastBackupUtc && <small>Last completed backup: {new Date(lastBackupUtc).toLocaleString()}.</small>}
         <Button className="secondary" disabled={busy || !enabled || state !== 'Offline'} onClick={onBackup}>Back up now</Button>
-        <small>Verify the new backup in World Safety Center before changing the game server files.</small>
+        <small>Open Backup library and Verify the new backup before changing the game server files.</small>
       </li>
       <li><strong>Apply the change, then check the game.</strong>
         <small>Use the game provider's installer yourself. Start the server and test a real Friend join and saved change.</small>
         {state === 'Offline' && <Button className="secondary" disabled={busy || !enabled} onClick={onStart}>Start server</Button>}
-        {state === 'Ready' && <Button className="secondary" disabled={busy || !enabled} onClick={onOpenDoctor}>Open Connection Doctor</Button>}
+        {state === 'Ready' && <Button className="secondary" disabled={busy || !enabled} onClick={onOpenDoctor}>Open Connection help</Button>}
       </li>
     </ol>
     {enabled && <Button className="text-button" disabled={busy} onClick={() => onToggle(false)}>End maintenance</Button>}

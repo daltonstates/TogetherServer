@@ -14,19 +14,19 @@ export function playerCountAvailability(run: Run, nowMs: number): {
 } {
   const observed = run.playerCountObservedUtc ? Date.parse(run.playerCountObservedUtc) : NaN
   if (run.playerObservationSource === 'CustomScriptReady') return {
-    count: null, state: 'DisplayOnly', reason: 'The Custom script count is display only until this setup is owner-certified.'
+    count: null, state: 'DisplayOnly', reason: 'This Custom count cannot allow Friend Stop or automatic shutdown until the owner tests the setup.'
   }
   if (run.playerObservationSource === 'ObservationStale' ||
       (Number.isFinite(observed) && Number.isFinite(nowMs) && nowMs - observed > 10_000)) return {
-    count: null, state: 'Stale', reason: 'The player observation is stale. Refresh for a current game-server count.'
+    count: null, state: 'Stale', reason: 'This count is out of date. Refresh to check again.'
   }
   if (run.state !== 'Ready' || !run.playerCountTrusted || run.onlinePlayers === null ||
       !Number.isSafeInteger(run.onlinePlayers) || run.onlinePlayers < 0 ||
       !Number.isFinite(observed) || !Number.isFinite(nowMs) || observed > nowMs ||
       run.playerObservationSource === 'ObservationPending') return {
-    count: null, state: 'Unavailable', reason: 'A fresh trusted game-server count is not available.'
+    count: null, state: 'Unavailable', reason: 'The game has not supplied a current player count.'
   }
-  return { count: run.onlinePlayers, state: 'Fresh', reason: 'Fresh game-server observation.' }
+  return { count: run.onlinePlayers, state: 'Fresh', reason: 'Current count from the game.' }
 }
 
 export function playerCountPresentation(run: Run, nowMs = Date.now(), refreshing = false) {

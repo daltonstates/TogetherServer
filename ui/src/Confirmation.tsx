@@ -57,7 +57,7 @@ export function useConfirmation(): {
       </Button>
     </>}><div className={`confirmation-summary${options.destructive ? ' confirmation-destructive' : ''}`}>
       <Icon name={options.destructive ? 'warning' : 'check'} size={22} />
-      <p>{options.destructive ? 'Review the consequences above before continuing.' : 'Continue when you are ready.'}</p>
+      <p>{options.destructive ? 'Review this before continuing.' : 'Continue when you are ready.'}</p>
     </div></SettingsDialog> : null
 
   return { confirm, confirmationDialog }

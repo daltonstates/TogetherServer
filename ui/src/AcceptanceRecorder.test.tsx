@@ -16,9 +16,9 @@ afterEach(() => vi.restoreAllMocks())
 describe('AcceptanceRecorder stale evidence', () => {
   it('names the changed identity and admits that the exact configuration/version cause was not recorded', async () => {
     render(<AcceptanceRecorder profileId={profileId} loader={async () => view} />)
-    expect(await screen.findByText(/current server and Friend-route configuration identity differs/)).toBeInTheDocument()
-    expect(screen.getByText(/exact changed setting is not available/)).toBeInTheDocument()
-    expect(screen.getByText(/a version change cannot be named/)).toBeInTheDocument()
+    expect(await screen.findByText(/server or Friend connection settings differ/)).toBeInTheDocument()
+    expect(screen.getByText(/does not show which setting changed/)).toBeInTheDocument()
+    expect(screen.getByText(/a version change cannot be confirmed/)).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).not.toBeChecked()
   })
 
@@ -26,36 +26,36 @@ describe('AcceptanceRecorder stale evidence', () => {
     const loader: AcceptanceLoader = async id => ({ ...view, profileId: id })
     const saver = vi.fn<AcceptanceSaver>()
     const display = render(<AcceptanceRecorder profileId={profileId} loader={loader} saver={saver} />)
-    await screen.findByText('Configuration changed')
+    await screen.findByText('Server setup changed')
     fireEvent.click(within(screen.getByRole('status')).getByRole('button', { name: 'Dismiss notification' }))
-    expect(screen.queryByText('Configuration changed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Server setup changed')).not.toBeInTheDocument()
     expect(screen.getByRole('checkbox')).not.toBeChecked()
     expect(saver).not.toHaveBeenCalled()
     display.rerender(<AcceptanceRecorder profileId={profileId} loader={loader} saver={saver} />)
-    expect(screen.queryByText('Configuration changed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Server setup changed')).not.toBeInTheDocument()
     display.rerender(<AcceptanceRecorder profileId={otherId} loader={loader} saver={saver} />)
-    expect(await screen.findByText('Configuration changed')).toBeInTheDocument()
+    expect(await screen.findByText('Server setup changed')).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).not.toBeChecked()
     expect(saver).not.toHaveBeenCalled()
   })
 
   it('distinguishes readable changed files from unavailable files without inventing a game update', () => {
     const changed = staleAcceptanceExplanation({ ...view, gameFilesChanged: true })
-    expect(changed.join(' ')).toContain('selected game server file identity differs')
+    expect(changed.join(' ')).toContain('game server app no longer matches')
     const missing = staleAcceptanceExplanation({ ...view, gameFilesAvailable: false, gameFilesChanged: true })
-    expect(missing.join(' ')).toContain('A game update has not been established')
-    expect(missing.join(' ')).not.toContain('selected game server file identity differs')
+    expect(missing.join(' ')).toContain('This does not confirm a game update')
+    expect(missing.join(' ')).not.toContain('game server app no longer matches')
   })
 
   it('uses supplied compared fields and labeled version evidence only for the current profile', () => {
     const evidence = { profileId, changedFields: ['ports', 'route'] as const,
       recordedGameVersion: '0.220.4', currentGameVersion: '0.220.5', versionSource: 'observed' as const }
     const current = staleAcceptanceExplanation(view, evidence).join(' ')
-    expect(current).toContain('Compared configuration changed: configured ports, Friend route')
+    expect(current).toContain('Changed settings: ports, Friend connection')
     expect(current).toContain('Observed game versions: recorded 0.220.4; current 0.220.5')
     const wrongScope = staleAcceptanceExplanation(view, { ...evidence, profileId: otherId }).join(' ')
     expect(wrongScope).not.toContain('0.220.4')
-    expect(wrongScope).not.toContain('Compared configuration changed')
+    expect(wrongScope).not.toContain('Changed settings')
   })
 
   it('copies only fixed facts and excludes labels, names, IDs, fingerprints, endpoint/path strings and secret versions', async () => {
@@ -68,16 +68,16 @@ describe('AcceptanceRecorder stale evidence', () => {
       recordedGameVersion: 'PRIVATE_PASSWORD', currentGameVersion: 'a'.repeat(64), versionSource: 'ownerReported' as const }
     render(<AcceptanceRecorder profileId={profileId} loader={async () => tainted} configurationEvidence={evidence} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Copy explanation' }))
-    await screen.findByText('Redacted owner-check explanation copied.')
+    await screen.findByText('Explanation copied. Private details omitted.')
     const copied = writeText.mock.calls[0][0] as string
     expect(copied).toBe(acceptanceExplanationReport(tainted, evidence))
-    expect(copied).toContain('earlier confirmations are stale')
+    expect(copied).toContain('repeat the earlier tests')
     expect(copied).not.toMatch(/PRIVATE_|192\.0\.2|C:\\|11111111|a{64}/u)
     expect(new TextEncoder().encode(copied).length).toBeLessThan(2048)
-    fireEvent.click(within(screen.getByText('Redacted owner-check explanation copied.')).getByRole('button', { name: 'Dismiss notification' }))
-    expect(screen.queryByText('Redacted owner-check explanation copied.')).not.toBeInTheDocument()
+    fireEvent.click(within(screen.getByText('Explanation copied. Private details omitted.')).getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Explanation copied. Private details omitted.')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Copy explanation' }))
-    expect(await screen.findByText('Redacted owner-check explanation copied.')).toBeInTheDocument()
+    expect(await screen.findByText('Explanation copied. Private details omitted.')).toBeInTheDocument()
     expect(writeText).toHaveBeenCalledTimes(2)
   })
 

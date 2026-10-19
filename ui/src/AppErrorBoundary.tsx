@@ -19,10 +19,10 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, State> 
     if (!this.state.failed) return this.props.children
     return <div className="shell"><main><section className="panel fatal-error">
       <DismissibleNotice role="alert" dismissLabel="Dismiss interface error">
-      <h1>The interface needs to reload</h1>
-      <p>Your local service and any managed game process continue separately. Reload this window to reconnect to them.</p>
+      <h1>Reload TogetherServer</h1>
+      <p>Hosting continues in the background. Reload this window to reconnect.</p>
       </DismissibleNotice>
-      <Button onClick={() => window.location.reload()}>Reload interface</Button>
+      <Button onClick={() => window.location.reload()}>Reload window</Button>
     </section></main></div>
   }
 }

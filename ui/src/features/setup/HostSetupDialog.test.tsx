@@ -33,7 +33,7 @@ describe('Host setup review', () => {
     expect(screen.getByRole('textbox', { name: /^World name/ })).toBeVisible()
     expect(screen.getByLabelText(/^Game password/, { selector: 'input[type="password"]' })).toBeVisible()
     expect(screen.getByText('World locations and copy rules').closest('details')).not.toHaveAttribute('open')
-    expect(screen.getByText('Valheim · support and action limits').closest('details')).not.toHaveAttribute('open')
+    expect(screen.getByText('Valheim · supported features and limits').closest('details')).not.toHaveAttribute('open')
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Finish later' })).toHaveClass('text-button')
     expect(input.onSave).not.toHaveBeenCalled()

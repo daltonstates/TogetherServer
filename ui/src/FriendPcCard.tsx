@@ -19,7 +19,7 @@ export type FriendPcCardProps = {
 
 const grants: { label: string; icon: IconName; allowed: (permissions: PermissionValues) => boolean }[] = [
   { label: 'Start', icon: 'play', allowed: permissions => permissions.canStart },
-  { label: 'Guarded Stop', icon: 'stop', allowed: permissions => permissions.canStop },
+  { label: 'Stop when empty', icon: 'stop', allowed: permissions => permissions.canStop },
   { label: 'Restart', icon: 'refresh', allowed: permissions => permissions.canStart && permissions.canStop },
   { label: 'Add time', icon: 'clock', allowed: permissions => permissions.canExtendTimer },
   { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs }
@@ -31,14 +31,14 @@ function localTime(value: string | null | undefined) {
 }
 
 function heartbeatAge(value: string | null, nowMs: number) {
-  if (!value) return 'No heartbeat recorded'
+  if (!value) return 'Not connected yet'
   const heartbeat = Date.parse(value)
-  if (!Number.isFinite(heartbeat) || !Number.isFinite(nowMs) || heartbeat > nowMs) return 'Heartbeat time unavailable'
+  if (!Number.isFinite(heartbeat) || !Number.isFinite(nowMs) || heartbeat > nowMs) return 'Last connection time unavailable'
   const seconds = Math.floor((nowMs - heartbeat) / 1000)
-  if (seconds < 60) return `Last heartbeat ${seconds}s ago`
-  if (seconds < 3600) return `Last heartbeat ${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86_400) return `Last heartbeat ${Math.floor(seconds / 3600)}h ago`
-  return `Last heartbeat ${Math.floor(seconds / 86_400)}d ago`
+  if (seconds < 60) return `Last connected ${seconds}s ago`
+  if (seconds < 3600) return `Last connected ${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86_400) return `Last connected ${Math.floor(seconds / 3600)}h ago`
+  return `Last connected ${Math.floor(seconds / 86_400)}d ago`
 }
 
 export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove, onDelete, feedback }: FriendPcCardProps) {
@@ -77,7 +77,7 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
     </header>
 
     <div className="friend-pc-heartbeat"><span><Icon name={view.connected ? 'plug' : 'warning'} size={15} />
-      {view.connected ? 'Recent authenticated heartbeat' : 'Connection Unknown'}</span>
+      {view.connected ? 'Recently connected' : 'Connection unavailable'}</span>
       <small title={device.lastHeartbeatUtc ? localTime(device.lastHeartbeatUtc) : undefined}>{heartbeatAge(device.lastHeartbeatUtc, nowMs)}</small></div>
 
     <div className="friend-pc-servers" role="group" aria-label="Assigned servers">
@@ -93,15 +93,15 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
       <div className="friend-pc-permission-heading"><span className="friend-pc-field-label">{configured ? 'Configured access' : 'Permissions'}</span>
         {permissionsKnown && <strong>{permissionLabel}</strong>}</div>
       {permissionsKnown ? <>
-        {allowed.length > 0 ? <ul className="friend-grant-chips" aria-label={configured ? 'Configured grants by assigned server' : 'Grants by assigned server'}>
+        {allowed.length > 0 ? <ul className="friend-grant-chips" aria-label={configured ? 'Saved permissions by server' : 'Permissions by server'}>
           {allowed.map(grant => <li key={grant.label} aria-label={`${grant.label}: ${grant.count} of ${view.rows.length} assigned servers${configured ? ', configured' : ''}`}>
             <Icon name={grant.icon} size={14} />{grant.label}{grant.count < view.rows.length && <span className="friend-grant-count">{grant.count}/{view.rows.length}</span>}
           </li>)}
         </ul> : preset !== 'status' && <p className="friend-pc-quiet">Status and connection details only.</p>}
         {exceptions > 0 && <small className="friend-pc-quiet">{exceptions} {exceptions === 1 ? 'server has' : 'servers have'} custom permissions.</small>}
       </> : <p className="friend-pc-refresh-note"><Icon name="refresh" size={15} />
-        <span>{view.helper === 'RefreshNeeded' ? 'Refresh from the Host to see saved permissions. Expired helper grants cannot reveal them.' :
-          view.helper === 'Active' ? 'Helper grants are blocked for this PC. Saved permissions are unavailable during the overlay.' : 'Refresh from the Host to verify current access.'}</span></p>}
+        <span>{view.helper === 'RefreshNeeded' ? 'Refresh to see saved permissions after temporary access ends.' :
+          view.helper === 'Active' ? 'Temporary access is blocked. Saved permissions are hidden until it ends.' : 'Refresh to check current access.'}</span></p>}
       {configured && <p className="friend-pc-quiet">Actions and logs are currently blocked.</p>}
     </div>}
 
@@ -109,7 +109,7 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
       <span>Temporary helper {view.state === 'Available' ? 'ends' : 'recorded until'} {localTime(device.temporaryHelperUntilUtc)}.
         {view.state === 'Available' && ' Saved permissions are hidden while it is active.'}</span></p>}
     {view.helper === 'RefreshNeeded' && view.rows.length === 0 && <p className="friend-pc-refresh-note"><Icon name="refresh" size={15} />
-      <span>Refresh from the Host after temporary helper access. Saved permissions cannot be inferred.</span></p>}
+      <span>Refresh to see saved permissions after temporary access ends.</span></p>}
     {hasOwnerDeadline && <p className="friend-pc-deadline"><Icon name="clock" size={15} /><span>{view.accessDeadline}</span></p>}
 
     <footer className="friend-pc-card-actions">
@@ -118,9 +118,9 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
     </footer>
     {feedback && <div className="friend-pc-feedback">{feedback}</div>}
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-      {view.label}. Connection {view.connected ? 'has a recent authenticated heartbeat' : 'Unknown'}. {view.rows.length} servers assigned.
+      {view.label}. Connection {view.connected ? 'recently active' : 'unavailable'}. {view.rows.length} servers assigned.
       {view.rows.length > 0 && permissionsKnown ? ` ${configured ? 'Configured' : 'Granted'} permissions. ${counts.map(grant => `${grant.label}: ${grant.count}/${view.rows.length}`).join('. ')}.` : ''}
-      {view.helper === 'RefreshNeeded' ? ' Refresh needed; saved permissions cannot be inferred.' : ''}
+      {view.helper === 'RefreshNeeded' ? ' Refresh to see saved permissions.' : ''}
       {hasOwnerDeadline ? ` ${view.accessDeadline}.` : ''}
     </span>
   </article>

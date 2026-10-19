@@ -81,7 +81,7 @@ export function WorkspaceNavigation({ page, activeRuns, unread, onNavigate }: {
   onNavigate: (page: WorkspacePage) => void
 }) {
   const statusId = useId()
-  return <nav className="workspace-nav" aria-label="TogetherServer workspaces">
+  return <nav className="workspace-nav" aria-label="TogetherServer navigation">
     {navigation.map(item => <Button key={item.id} className={page === item.id || item.id === 'host' && page === 'join' ? 'workspace-nav-item selected' : 'workspace-nav-item'}
       aria-label={item.label} aria-current={page === item.id || item.id === 'host' && page === 'join' ? 'page' : undefined}
       aria-describedby={item.id === 'host' && activeRuns > 0 ? `${statusId}-running` : item.id === 'attention' && unread ? `${statusId}-unread` : undefined}
@@ -144,7 +144,7 @@ export function CommandPalette({ open, commands, onClose }: {
     <div className="command-palette-search">
       <Icon name="search" size={18} />
       <Input ref={inputRef} value={query} onChange={event => { setQuery(event.target.value); setActiveIndex(0) }}
-        aria-label="Search commands" placeholder="Type a server, command, or workspace"
+        aria-label="Search commands" placeholder="Find a server or action"
         role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls="workspace-command-options"
         aria-activedescendant={visible[activeIndex] ? `workspace-command-${visible[activeIndex].id}` : undefined}
         onKeyDown={event => {

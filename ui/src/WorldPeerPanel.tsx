@@ -248,12 +248,12 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
   const shown = groups.filter(group => !profileId || group.profileId === profileId)
   const pcName = (deviceId: string, selfDeviceId: string) => deviceId === selfDeviceId ? 'This PC' : `PC ending ${deviceId.slice(-6).toUpperCase()}`
   return <section className="world-peer-panel" aria-label="World groups">
-    <header><div><h3>World groups</h3><p>Follow the world across its approved PCs and sessions.</p></div>
+    <header><div><h3>World groups</h3><p>See approved PCs, running servers and save histories for each world.</p></div>
       <Button className="secondary" disabled={busy !== null} onClick={() => void refresh()}><Icon name="refresh" />Refresh groups</Button></header>
     {!loaded && !error && <p role="status">Checking this PC's saved world groups…</p>}
     {error && <DismissibleNotice scope="world-peers" noticeKey={error} role="alert"><p>{error}</p>
-      <p>{loaded ? `Showing cached information checked ${sharedSaveAge(checkedUtc)}. Sessions and routes may have changed.` : 'World groups are unavailable. Retry when the local app responds.'}</p></DismissibleNotice>}
-    {loaded && shown.length === 0 && <p>No saved world groups here yet. Connect to an approved Host and verify this PC's world membership first.</p>}
+      <p>{loaded ? `Showing saved information checked ${sharedSaveAge(checkedUtc)}. Servers and addresses may have changed.` : 'Could not load world groups. Refresh to try again.'}</p></DismissibleNotice>}
+    {loaded && shown.length === 0 && <p>No world groups saved here yet. Connect to an approved Host to join its group.</p>}
     {shown.map(group => {
       const activeSessions = group.state.sessions.filter(item => item.session.state === 'Hosting' || item.session.state === 'Preparing')
       const histories = [...new Set(group.state.branches.map(item => item.branch.branchHash))]
@@ -265,15 +265,15 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
         item.deviceId === reviewing.deviceId && item.publicKey === reviewing.publicKey &&
         item.session.sessionId === reviewing.sessionId && item.session.branchHash === reviewing.branchHash) : undefined
       return <article className="world-peer-group" key={group.groupKey} aria-label={group.name}>
-        <header><div><h4>{group.name}</h4><p>{group.state.needsChoice ? 'Multiple histories: choose explicitly' : 'Saved world membership'}</p></div>
+        <header><div><h4>{group.name}</h4><p>{group.state.needsChoice ? 'Multiple save histories to review' : 'Saved group membership'}</p></div>
           <span className="world-peer-badge">{activeSessions.length} reported {activeSessions.length === 1 ? 'session' : 'sessions'}</span></header>
         {group.warning && <DismissibleNotice scope={group.groupKey} noticeKey={group.warning} role="alert">{group.warning}</DismissibleNotice>}
-        {group.state.needsChoice && <p role="note">Competing histories are preserved. A newer save number does not choose a winner or move your connection.</p>}
-        {selection && (selection.needsChoice || selection.heads.length > 1) && <p role="note"><strong>Conflicting group default choices.</strong> All choices stay visible until an authorized member explicitly chooses a default. Running sessions and your game connection continue.</p>}
-        {selection?.heads.some(head => !head.authorized || !head.targetKnown) && <p role="note"><strong>Default choice awaiting review or session details.</strong> The chosen session is not confirmed in this PC's current signed information.</p>}
+        {group.state.needsChoice && <p role="note">All save histories are kept. A higher save number does not choose one for you or change your connection.</p>}
+        {selection && (selection.needsChoice || selection.heads.length > 1) && <p role="note"><strong>The group has different default choices.</strong> An owner or sharing manager must choose a default. All choices stay visible until then. Running servers and your game connection continue.</p>}
+        {selection?.heads.some(head => !head.authorized || !head.targetKnown) && <p role="note"><strong>Default choice needs review or more server details.</strong> This PC cannot yet confirm the selected server.</p>}
         <section className="world-peer-sessions" aria-label={`Sessions for ${group.name}`}>
-          <h5>Hosts and sessions</h5>
-          {activeSessions.length === 0 && <p>No active session is reported in this cached information. The game connection is unverified.</p>}
+          <h5>Hosts and servers</h5>
+          {activeSessions.length === 0 && <p>No running server is listed in this saved information. The game connection has not been tested.</p>}
           {group.state.sessions.map(item => {
             const peer = group.state.peers.find(peer => peer.deviceId === item.deviceId)
             const historyNumber = histories.indexOf(item.session.branchHash) + 1
@@ -287,59 +287,59 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
               <div><strong>{pcName(item.deviceId, group.selfDeviceId)}</strong><p>{item.session.state === 'Hosting' ? 'Hosting reported' :
                 item.session.state === 'Preparing' ? 'Preparing to host' : item.session.state === 'Stopped' ? 'Stopped session' : 'Interrupted session'}
                 {historyNumber > 0 ? ` · History ${historyNumber}` : ''}</p>
-                <p className="helper-text">{peer ? `Signed update ${sharedSaveAge(peer.announcedUtc)}. ` : ''}Game connection and real join unverified.</p></div>
+                <p className="helper-text">{peer ? `Verified update ${sharedSaveAge(peer.announcedUtc)}. ` : ''}Game connection and joining still need testing.</p></div>
               {isDefault && <span className="world-peer-badge">Group default</span>}
               {canConnect && <Button className="secondary" disabled={busy !== null}
                 onClick={() => void perform(group, 'connect', { deviceId: item.deviceId, sessionId: item.session.sessionId })}>
-                <Icon name="link" />Connect to this session</Button>}
+                <Icon name="link" />Connect to this Host</Button>}
               {canChoose && !isDefault && <Button className="secondary" disabled={busy !== null}
                 onClick={() => setDefaultReview({ groupKey: group.groupKey, deviceId: item.deviceId,
                   publicKey: item.publicKey, sessionId: item.session.sessionId, branchHash: item.session.branchHash })}>
                 Use as group default</Button>}
-              {item.hasConflict && <p role="note">This PC reported conflicting session information. Review before connecting.</p>}
+              {item.hasConflict && <p role="note">This PC reported different server details. Review them before connecting.</p>}
               {!item.authorized && <p>Current world membership needs review.</p>}
             </div>
           })}
           {reviewing && <section className="world-peer-default-review" aria-label="Review group default">
-            <h5>Use {pcName(reviewing.deviceId, group.selfDeviceId)} as the group default?</h5>
-            <p>This publishes a signed choice for the group. All histories and running sessions stay preserved. Your current game connection stays selected; this action does not start, stop, or merge a server.</p>
-            {!reviewTarget && <p role="alert">This session or your permission changed. Choose a current session again.</p>}
+            <h5>Make {pcName(reviewing.deviceId, group.selfDeviceId)} the group's default Host?</h5>
+            <p>This shares your default choice with the group. All save histories and running servers are kept. It does not change your game connection, start or stop a server, or merge saves.</p>
+            {!reviewTarget && <p role="alert">This server or your permission changed. Choose an available server again.</p>}
             <div><Button className="secondary" disabled={busy !== null} onClick={() => setDefaultReview(null)}>Cancel default choice</Button>
               <Button disabled={busy !== null || !reviewTarget} onClick={() => {
                 if (reviewTarget) void perform(group, 'default', { deviceId: reviewTarget.deviceId, sessionId: reviewTarget.session.sessionId })
               }}>Confirm group default</Button></div>
           </section>}
         </section>
-        <details className="world-peer-permissions"><summary><Icon name="settings" />Save sync &amp; permissions<Icon name="chevronDown" /></summary>
+        <details className="world-peer-permissions"><summary><Icon name="settings" />Save sharing &amp; permissions<Icon name="chevronDown" /></summary>
           <div className="world-peer-permissions-body">
             <div className="world-peer-summary">
-              <p><strong>Information sync</strong><span>{group.state.replication.lastSuccessfulSyncUtc ?
-                `Last completed ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}` : 'No completed peer sync recorded'}</span></p>
-              <p><strong>Save receiving</strong><span>{!group.canReceive ? 'Owner permission required' :
-                !group.receiveConsented ? 'Off on this PC — local consent required' : 'Allowed on this PC'}</span></p>
+              <p><strong>World updates</strong><span>{group.state.replication.lastSuccessfulSyncUtc ?
+                `Last completed ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}` : 'No completed update from another PC'}</span></p>
+              <p><strong>Receive saves</strong><span>{!group.canReceive ? 'Owner permission required' :
+                !group.receiveConsented ? 'Off — allow saves on this PC first' : 'Allowed on this PC'}</span></p>
               <p><strong>Save forwarding</strong><span>{group.canReshare ? 'Owner permission granted' : 'Owner permission required'}</span></p>
             </div>
-            <p className="helper-text">Following world information does not enable save receiving. Sync keeps your current connection and never starts or stops a server.</p>
+            <p className="helper-text">World updates do not download saves, change your game connection, or start or stop a server.</p>
             <label><Input type="checkbox" checked={group.receiveConsented}
               disabled={busy !== null || (!group.receiveConsented && !group.canReceive)}
               onChange={event => void perform(group, 'receiving', { enabled: event.target.checked })} />Allow saves on this PC</label>
-            <p className="helper-text">This consent stays with the world when its Host changes. Incoming peer contact is a separate choice.</p>
+            <p className="helper-text">This choice stays with the world when its Host changes. Letting other PCs contact this PC is a separate choice.</p>
             <label><Input type="checkbox" checked={group.sharingEnabled} disabled={busy !== null}
-              onChange={event => void perform(group, 'sharing', { enabled: event.target.checked })} />Allow world peers to contact this PC</label>
+              onChange={event => void perform(group, 'sharing', { enabled: event.target.checked })} />Allow approved world PCs to contact this PC</label>
             <Button className="secondary" disabled={busy !== null} onClick={() => void perform(group, 'sync', {})}>
-              <Icon name="refresh" />Sync world information</Button>
-            <p className="helper-text">Offline PCs catch up through permitted contacts. Old signed information stays visible; its age does not erase a history.</p>
+              <Icon name="refresh" />Get world updates</Button>
+            <p className="helper-text">PCs get missed updates from approved contacts when they reconnect. Older updates and save histories stay available.</p>
           </div>
         </details>
-        <details><summary>Save histories and copy claims</summary>
-          <p>{group.state.replication.claimedCopyPeers} PCs report having save copies. Signed claims are not completed transfers or confirmed receipts.</p>
-          <p>Confirmed transfer receipts are shown with the received save after its bytes and signature are verified.</p>
+        <details><summary>Save histories and reported copies</summary>
+          <p>{group.state.replication.claimedCopyPeers} PCs report having save copies. These reports do not confirm that a transfer finished.</p>
+          <p>A received save shows confirmation after its files and source have been verified.</p>
           {histories.map((branchHash, index) => <section key={branchHash} aria-label={`History ${index + 1}`}>
             <h5>History {index + 1}</h5>
             {group.state.branches.filter(item => item.branch.branchHash === branchHash).map(item =>
               <p key={`${item.deviceId}/${item.branch.headVersionHash}`}>
                 {pcName(item.deviceId, group.selfDeviceId)} reports saved version {item.branch.versionNumber}
-                {item.hasConflict ? ' · conflicting signed claims' : ' · availability claimed'}</p>)}
+                {item.hasConflict ? ' · conflicting reports' : ' · copy reported'}</p>)}
             {onRecoverBranch && group.canHost && group.receiveConsented && <Button className="secondary" disabled={busy !== null}
               onClick={() => void recoverBranch(group, branchHash)}>Recover this history on this PC</Button>}
             {onRecoverOwnerBranch && group.selfDeviceId === '00000000-0000-0000-0000-000000000000' &&
@@ -347,11 +347,11 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
                 onClick={() => onRecoverOwnerBranch(group.groupKey, group.profileId, branchHash)}>Recover this history on the owner PC</Button>}
           </section>)}
           {!histories.length && <p>No save history has been announced yet.</p>}
-          {group.canHost && <p>Manual recovery rechecks the newest complete verified copy on this PC. Other sessions may continue; no vote or waiting period is required for a separate recovery branch.</p>}
+          {group.canHost && <p>Recovery checks the newest complete verified copy on this PC. Other servers may keep running. Recovering a separate copy needs no vote or waiting period.</p>}
         </details>
         <PeerLiveTestCopies groupKey={group.groupKey} />
         <details><summary>Contact another group PC</summary>
-          <p>Exchange a signed contact code with an already approved world member. It contains contact and identity information, with no device credential or game password.</p>
+          <p>Exchange contact codes with an approved world member. A code contains connection and identity details, without app access keys or a game password.</p>
           <Button className="secondary" disabled={busy !== null} onClick={() => void contactCode(group)}>Show this PC's contact code</Button>
           {contactCodes[group.groupKey] && <><TextArea aria-label={`Contact code for ${group.name}`} readOnly rows={3} value={contactCodes[group.groupKey]} />
             <Button className="secondary" onClick={() => void navigator.clipboard.writeText(contactCodes[group.groupKey])
@@ -365,9 +365,9 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
         </details>
         <details><summary>Technical details</summary>
           <p>{group.state.replication.state}. {group.state.announcementCount} signed updates; {group.state.knownSessions} known sessions.</p>
-          {group.state.replication.capacityReached && <p role="alert">Metadata capacity needs review. Existing histories are retained.</p>}
+          {group.state.replication.capacityReached && <p role="alert">World update storage needs review. Existing histories are kept.</p>}
           <p>Group: <code>{group.groupKey}</code></p>
-          {group.state.peers.map(peer => <div key={peer.deviceId}><p>{pcName(peer.deviceId, group.selfDeviceId)} · announcement revision {peer.revision}</p>
+          {group.state.peers.map(peer => <div key={peer.deviceId}><p>{pcName(peer.deviceId, group.selfDeviceId)} · update number {peer.revision}</p>
             <p>Signing identity: <code>{peer.publicKey}</code></p>
             {peer.routes.map(route => <p key={route.address}>{route.address}<br /><code>{route.certificateSha256}</code></p>)}</div>)}
         </details>

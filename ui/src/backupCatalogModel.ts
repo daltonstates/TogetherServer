@@ -36,7 +36,7 @@ export function bookmarksAsCatalog(result: BackupBookmarksResult): BackupCatalog
 }
 
 export function backupKindName(kind: string) {
-  return ({ Rolling: 'After Stop', Manual: 'Manual', PreRestore: 'Before restore' } as Record<string, string>)[kind] ?? 'Kind unknown'
+  return ({ Rolling: 'After Stop', Manual: 'Manual', PreRestore: 'Before restore' } as Record<string, string>)[kind] ?? 'Type unknown'
 }
 export function backupBytes(value: number | null) {
   if (value === null || !Number.isSafeInteger(value) || value < 0) return 'Unknown'
@@ -65,7 +65,7 @@ export function filterBackups(backups: BackupSummary[], filters: BackupFilters) 
 export function suggestedBackupNames(backup: BackupBookmark) {
   const date = new Date(backup.createdUtc)
   const day = Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : 'Saved copy'
-  const purpose = backup.backupKind === 'PreRestore' ? 'Before restore' : backup.backupKind === 'Rolling' ? 'After Stop' : 'Manual checkpoint'
+  const purpose = backup.backupKind === 'PreRestore' ? 'Before restore' : backup.backupKind === 'Rolling' ? 'After Stop' : 'Manual backup'
   return [`${purpose} ${day}`, `Before game update ${day}`, `Before setup changes ${day}`]
 }
 
@@ -73,7 +73,7 @@ export function pinPreview(backup: BackupBookmark, result: Pick<BackupBookmarksR
   const count = result.pinnedCount + Number(pinned) - Number(backup.pinned)
   const bytes = result.pinnedSizeBytes + (Number(pinned) - Number(backup.pinned)) * backup.sizeBytes
   const blocked = pinned && !backup.pinned && (count > result.maximumPinnedCount || bytes > result.maximumPinnedSizeBytes || !Number.isSafeInteger(bytes))
-  return { count, bytes, blocked, message: blocked ? 'Unpin another backup before adding this pin. The Host checks capacity again when saving.' :
+  return { count, bytes, blocked, message: blocked ? 'Unpin another backup first. The app checks the pin limits again when you save.' :
     `After Save: ${count} of ${result.maximumPinnedCount} pins, ${backupBytes(bytes)} of ${backupBytes(result.maximumPinnedSizeBytes)}.` }
 }
 
@@ -81,14 +81,14 @@ export function retentionPreview(result: BackupCatalogResult, count = result.ret
   if (!result.retention || count === undefined || !Number.isInteger(count) || count < 1 || count > 50 || result.moreBackupsAvailable ||
       result.backups.some(backup => !backup.metadataAvailable) ||
       new Set(result.backups.filter(backup => !backup.pinned).map(backup => Date.parse(backup.createdUtc))).size !== result.backups.filter(backup => !backup.pinned).length) {
-    return { known: false, candidates: [] as BackupSummary[], message: 'Exact retention candidates are unknown until the complete catalog and saved policy are available.' }
+    return { known: false, candidates: [] as BackupSummary[], message: 'Load the full backup list and saved settings to see which backups may be removed.' }
   }
   // Create always protects its new copy, so it consumes one of the unpinned slots.
   // Pre-restore also protects the selected source. No row is promised to be deleted.
   const unpinned = result.backups.filter(backup => !backup.pinned).sort((a, b) => Date.parse(b.createdUtc) - Date.parse(a.createdUtc))
   const candidates = unpinned.slice(Math.max(0, count - 1))
-  return { known: true, candidates, message: `The next ordinary completed backup keeps its new copy and ${Math.max(0, count - 1)} newest unpinned copies, plus every pin. ` +
-    'Older unpinned copies may be removed then. Restore also protects its selected source; space or copy failures can prevent a new backup. Changing this preview removes nothing.' }
+  return { known: true, candidates, message: `After the next backup, the app keeps the new copy, the ${Math.max(0, count - 1)} newest unpinned copies and all pinned copies. ` +
+    'Older unpinned copies may be deleted then. Restore also keeps the backup you selected. A backup may fail if space runs out or files cannot be copied. This preview does not delete anything.' }
 }
 
 export function latestBackupEvidence(backup: BackupSummary, kind: BackupEvidenceKind) {
@@ -111,9 +111,9 @@ export function restoreReview(backup: BackupSummary, currentWorld: string | null
   const canRestore = offline && backup.metadataAvailable && sameWorld && sameGame
   return { backup, currentWorld, canRestore, reason: !offline ? 'Stop or resolve the server before Restore.' :
     !backup.metadataAvailable || backup.worldId === null || currentWorld === null || backup.gameKind === null || currentGame === null ?
-      'World and game identity must be available before Restore.' : !sameWorld || !sameGame ? 'This backup belongs to another game or world.' :
-        'The Host rechecks Offline state, exact process identity and the selected backup before changing the world.',
-    checkpoint: 'A new pre-restore checkpoint of the current world must succeed before replacement. If it fails, Restore does not begin.' }
+      'The app must be able to identify the game and world before Restore.' : !sameWorld || !sameGame ? 'This backup belongs to another game or world.' :
+        'The app checks that this server has stopped and verifies the selected backup before replacing the world.',
+    checkpoint: 'The app must back up the current world before replacing it. If that backup fails, Restore does not begin.' }
 }
 
 export function protectionSummary(result: BackupCatalogResult) {

@@ -43,13 +43,13 @@ describe('desktop notification preferences', () => {
     await act(async () => finish?.({ ...preferences, servers: [{ profileId, connectionId, allowedEvents: [] }] }))
     expect(await screen.findByRole('combobox', { name: 'Server alerts' })).toHaveValue('default')
     expect(screen.getByRole('heading', { name: 'Notifications for Second' })).toBeInTheDocument()
-    expect(screen.queryByText('Notification preferences saved on this PC.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Notification settings saved on this PC.')).not.toBeInTheDocument()
   })
   it('excludes app-update defaults when the first server override is created from inherited events', async () => {
     const saver = vi.fn(async () => preferences)
     render(<ServerNotificationPreferences server={{ id: profileId, name: 'Inherited', connectionId }} loader={async () => preferences} saver={saver} />)
     await screen.findByRole('combobox', { name: 'Server alerts' })
-    fireEvent.click(screen.getByText('Choose notification events'))
+    fireEvent.click(screen.getByText('Choose alert types'))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Server starts and stops' }))
     await waitFor(() => expect(saver).toHaveBeenCalledWith({ profileId, connectionId,
       allowedEvents: notificationEventKinds.filter(kind => kind !== 'Lifecycle' && kind !== 'Update') }, expect.any(AbortSignal)))
@@ -60,7 +60,7 @@ describe('desktop notification preferences', () => {
     render(<DesktopPreferencesPanel loader={async () => preferences} saver={saver} onQuietModeChange={onQuietModeChange} />)
     fireEvent.click(await screen.findByRole('checkbox', { name: /Quiet mode/ }))
     await waitFor(() => expect(saver).toHaveBeenCalledWith({ quietMode: true }, expect.any(AbortSignal)))
-    expect(await screen.findByText('Notification preferences saved on this PC.')).toHaveAttribute('aria-live', 'polite')
+    expect(await screen.findByText('Notification settings saved on this PC.')).toHaveAttribute('aria-live', 'polite')
     expect(onQuietModeChange).toHaveBeenCalledWith(true)
   })
 
@@ -70,7 +70,7 @@ describe('desktop notification preferences', () => {
     render(<ServerNotificationPreferences server={{ id: profileId, name: 'Saved server', connectionId }}
       loader={async () => scoped} saver={saver} />)
     await screen.findByText('These choices apply only to this server.')
-    fireEvent.click(screen.getByText('Choose notification events'))
+    fireEvent.click(screen.getByText('Choose alert types'))
     expect(screen.queryByRole('checkbox', { name: /Quiet mode/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: 'App updates' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Apply to')).not.toBeInTheDocument()
@@ -88,7 +88,7 @@ describe('desktop notification preferences', () => {
     render(<DesktopPreferencesPanel servers={[{ id: profileId, name: 'Saved server', connectionId }]}
       loader={async () => preferences} saver={saver} />)
     await screen.findByRole('checkbox', { name: /Quiet mode/ })
-    fireEvent.click(screen.getByText('Choose notification events'))
+    fireEvent.click(screen.getByText('Choose alert types'))
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'App updates' }))
     await waitFor(() => expect(saver).toHaveBeenCalledWith({ allowedEvents: notificationEventKinds.filter(kind => kind !== 'Update') }, expect.any(AbortSignal)))
@@ -139,7 +139,7 @@ describe('update details', () => {
     } }} />)
     expect(screen.getByRole('region', { name: 'Update details' })).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('Resolve the hosted server before updating.')
-    expect(screen.getByRole('button', { name: 'Download preparation report' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download update report' })).toBeInTheDocument()
 
     rerender(<UpdateDetailsPanel update={current} />)
     expect(screen.queryByRole('region', { name: 'Update details' })).not.toBeInTheDocument()
@@ -175,7 +175,7 @@ describe('update details', () => {
   it('describes a skipped version without displaying the storage sentinel as a calendar reminder', () => {
     render(<UpdateDetailsPanel update={{ ...update, promptSnoozed: true, versionSkipped: true,
       snoozedUntilUtc: '9999-12-31T23:59:59.9999999+00:00' }} />)
-    expect(screen.getByText(/This version's reminder is skipped/)).toBeInTheDocument()
+    expect(screen.getByText(/Reminders are off for this version/)).toBeInTheDocument()
     expect(screen.queryByText(/9999/)).not.toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Resume reminders' })).toBeInTheDocument()
   })

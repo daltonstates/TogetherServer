@@ -9,10 +9,10 @@ export type SharedSignedHost = {
 }
 
 export function sharedHostObservation(host?: SharedSignedHost, now = Date.now()): string {
-  if (!host) return 'Unknown · signed Host not checked'
+  if (!host) return 'Unknown · Host not checked'
   const checked = host.checkedUtc === null ? NaN : Date.parse(host.checkedUtc)
-  if (!Number.isFinite(checked) || checked > now || now - checked > 45000) return 'Unknown · observation stale or unavailable'
-  return host.state === 'ObservedReady' ? 'Ready observed · game join unverified' : host.state
+  if (!Number.isFinite(checked) || checked > now || now - checked > 45000) return 'Unknown · no recent check'
+  return host.state === 'ObservedReady' ? 'Ready · game join not tested' : host.state
 }
 
 export type FutureHostFields = {
@@ -28,17 +28,17 @@ export type FutureHostFields = {
 export function futureHostFields(game?: SharedGame | null): FutureHostFields {
   switch (game) {
     case 'Valheim': return { gameName: 'Valheim', serverFileLabel: 'Valheim dedicated server',
-      serverFileHint: 'Choose the owner-installed valheim_server.exe.', gamePort: '2456', password: true, minecraft: false, factorio: false }
-    case 'MinecraftJava': return { gameName: 'Minecraft Java', serverFileLabel: 'Managed Minecraft Java server.jar',
-      serverFileHint: 'Use an official server installed by TogetherServer on this PC. Match the signed game version.', gamePort: '25565', password: false, minecraft: true, factorio: false }
+      serverFileHint: 'Choose valheim_server.exe installed on this PC.', gamePort: '2456', password: true, minecraft: false, factorio: false }
+    case 'MinecraftJava': return { gameName: 'Minecraft Java', serverFileLabel: 'Minecraft Java server.jar',
+      serverFileHint: 'Use an official server installed by TogetherServer on this PC. Use the same game version as the shared save.', gamePort: '25565', password: false, minecraft: true, factorio: false }
     case 'MinecraftBedrock': return { gameName: 'Minecraft Bedrock', serverFileLabel: 'Minecraft Bedrock server',
-      serverFileHint: 'Choose bedrock_server.exe in the fresh managed server folder.', gamePort: '19132', password: false, minecraft: true, factorio: false }
+      serverFileHint: 'Choose bedrock_server.exe in the new server folder.', gamePort: '19132', password: false, minecraft: true, factorio: false }
     case 'Factorio': return { gameName: 'Factorio preview', serverFileLabel: 'Factorio dedicated server',
-      serverFileHint: 'Choose the owner-installed factorio.exe. Keep local RCON separate and never forward it.', gamePort: '34197', password: false, minecraft: false, factorio: true }
+      serverFileHint: 'Choose factorio.exe installed on this PC. Never forward the RCON control port.', gamePort: '34197', password: false, minecraft: false, factorio: true }
     case 'Terraria': return { gameName: 'Terraria preview', serverFileLabel: 'Terraria dedicated server',
-      serverFileHint: 'Choose the owner-installed TerrariaServer.exe. Player count remains Unknown.', gamePort: '7777', password: false, minecraft: false, factorio: false }
-    default: return { gameName: game === 'Fixture' ? 'Synthetic fixture' : 'Game server', serverFileLabel: 'Installed game server file',
-      serverFileHint: 'Choose the matching server already installed on this PC. Review its path before checking.', gamePort: '', password: true, minecraft: false, factorio: false }
+      serverFileHint: 'Choose TerrariaServer.exe installed on this PC. Player count is unavailable.', gamePort: '7777', password: false, minecraft: false, factorio: false }
+    default: return { gameName: game === 'Fixture' ? 'Test server' : 'Game server', serverFileLabel: 'Installed game server file',
+      serverFileHint: 'Choose the matching server installed on this PC. Check the file location.', gamePort: '', password: true, minecraft: false, factorio: false }
   }
 }
 
@@ -93,30 +93,30 @@ export function createSharedRouteDetails(profileId: string, details: SharedRoute
 }
 
 export function parseSharedRouteDetails(text: string, profileId: string): SharedRouteDetails {
-  if (!text.trim() || text.length > 4096) throw new Error('Paste the complete route details, up to 4 KiB.')
+  if (!text.trim() || text.length > 4096) throw new Error('Paste the complete connection details, up to 4 KiB.')
   let recordHash: unknown, tlsFingerprint: unknown, endpoint: unknown
   if (text.trim().startsWith('{')) {
     let value: unknown
-    try { value = JSON.parse(text) as unknown } catch { throw new Error('Route details are not valid JSON.') }
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Route details are invalid.')
+    try { value = JSON.parse(text) as unknown } catch { throw new Error('Could not read these connection details. Copy them from the new Host again.') }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('These connection details are invalid. Copy them from the new Host again.')
     const source = value as Record<string, unknown>
     if (Object.keys(source).sort().join(',') !== 'endpoint,kind,profileId,recordHash,schema,tlsFingerprint' ||
       source.kind !== 'TogetherServerRoute' || source.schema !== 1 ||
       typeof source.profileId !== 'string' || !guidPattern.test(source.profileId) ||
       source.profileId.toLowerCase() !== profileId.toLowerCase())
-      throw new Error('These route details do not name this shared world.')
+      throw new Error('These connection details are for a different shared world.')
     recordHash = source.recordHash; tlsFingerprint = source.tlsFingerprint; endpoint = source.endpoint
   } else {
     const lines = text.trim().split(/\r?\n/).map(line => line.trim())
-    if (lines.length < 2 || lines.length > 3) throw new Error('Paste the signed hash and fingerprint together, one per line.')
+    if (lines.length < 2 || lines.length > 3) throw new Error('Paste the decision ID and certificate fingerprint together, one per line.')
     recordHash = lines[0]; tlsFingerprint = lines[1]
     endpoint = lines[2] ?? null
   }
   if (typeof recordHash !== 'string' || !hashPattern.test(recordHash) ||
     typeof tlsFingerprint !== 'string' || !hashPattern.test(tlsFingerprint))
-    throw new Error('The signed hash and certificate fingerprint must each contain 64 hexadecimal characters.')
+    throw new Error('The decision ID and certificate fingerprint must each contain 64 letters and numbers from 0–9 and A–F.')
   const normalized = endpoint === null ? null : typeof endpoint === 'string' ? normalizedDirectIpHttpsEndpoint(endpoint) : null
-  if (endpoint !== null && normalized === null) throw new Error('The route must be an HTTPS IP address and port without a path or sign-in details.')
+  if (endpoint !== null && normalized === null) throw new Error('Use an HTTPS IP address and port without a page path or sign-in details.')
   return { recordHash: recordHash.toUpperCase(), tlsFingerprint: tlsFingerprint.toUpperCase(), endpoint: normalized }
 }
 
@@ -126,13 +126,13 @@ export function plannedHandoffChecklist(status: { pending: boolean; code: string
   const prepared = status.pending && status.finalVersion !== null
   const receipt = prepared && status.receiptConfirmed
   const steps = [
-    { id: 'prepare', pc: 'Current Host PC', text: 'Stop gracefully and publish the final verified copy.', done: prepared, current: false },
-    { id: 'receive', pc: successorName, text: 'Receive the exact final copy and send its signed receipt.', done: receipt, current: false },
-    { id: 'complete', pc: 'Current Host PC', text: 'Review the signed receipt and complete the handoff.', done: false, current: false },
-    { id: 'setup', pc: successorName, text: 'Restore into a fresh managed world, finish setup and route checks, then choose Start in Host.', done: false, current: false }
+    { id: 'prepare', pc: 'Current Host PC', text: 'Stop the server safely and share the final verified save.', done: prepared, current: false },
+    { id: 'receive', pc: successorName, text: 'Receive and verify the final save, then confirm receipt.', done: receipt, current: false },
+    { id: 'complete', pc: 'Current Host PC', text: 'Check that the other PC received the save, then finish the handoff.', done: false, current: false },
+    { id: 'setup', pc: successorName, text: 'Restore into a new world folder, finish setup and connection checks, then choose Start in Host.', done: false, current: false }
   ]
   if (status.pending && (status.code === 'HandoffReviewRequired' || status.code === 'SuccessorAccessChanged')) {
-    return [{ id: 'review', pc: 'Current Host PC', text: 'Review the copy, signing grants and managed process before continuing.', done: false, current: true }, ...steps]
+    return [{ id: 'review', pc: 'Current Host PC', text: 'Check the save, sharing permissions and running server before continuing.', done: false, current: true }, ...steps]
   }
   const next = steps.find(step => !step.done)
   if (next) next.current = true
@@ -141,13 +141,13 @@ export function plannedHandoffChecklist(status: { pending: boolean; code: string
 
 export function liveSaveDisabledReason(game: string | null): string {
   switch (game) {
-    case 'Valheim': return 'Valheim live saving still needs accepted save-completion and copy checks for the exact managed run.'
-    case 'MinecraftJava': return 'Minecraft Java live saving still needs accepted save-all completion and immutable-copy checks.'
-    case 'MinecraftBedrock': return 'Minecraft Bedrock live saving still needs accepted hold, query, copy and resume checks.'
-    case 'Factorio': return 'Factorio live saving still needs accepted fixed save completion and immutable-copy checks.'
-    case 'Terraria': return 'Terraria live saving still needs accepted fixed save completion and immutable-copy checks.'
-    case 'Fixture': return 'The synthetic save action is available only in the marked development app.'
-    default: return 'This game has no accepted live-save capture. Use a completed copy after graceful Stop.'
+    case 'Valheim': return 'Test saving and copying with this Valheim installation before sharing while it runs.'
+    case 'MinecraftJava': return 'Test saving and copying with this Minecraft Java installation before sharing while it runs.'
+    case 'MinecraftBedrock': return 'Test pausing saves, copying and resuming with this Minecraft Bedrock installation before sharing while it runs.'
+    case 'Factorio': return 'Test saving and copying with this Factorio installation before sharing while it runs.'
+    case 'Terraria': return 'Test saving and copying with this Terraria installation before sharing while it runs.'
+    case 'Fixture': return 'This test save action is available only in the development app.'
+    default: return 'Sharing while this game runs has not been tested. Stop the server safely to share a completed save.'
   }
 }
 
@@ -166,7 +166,7 @@ export function nextHostingStep(reasons: string[]): { reason: string; destinatio
     text.includes('game route') || text.includes('real game') || text.includes('restart') ? 'game' : 'review'
   const actions: Record<HostingStepDestination, string> = { receive: 'Review receiving', server: 'Choose the server file',
     version: 'Review the game version', access: 'Review local game access', ports: 'Review ports',
-    folder: 'Review the fresh managed folder', route: 'Review the control route', game: 'Review game acceptance steps',
+    folder: 'Review the new world folder', route: 'Review the app connection', game: 'Review the game test steps',
     permissions: 'Review hosting permission help', review: 'Review local setup' }
   return { reason, destination, action: actions[destination] }
 }

@@ -13,9 +13,14 @@ type Test = { testId: string; state: string; reviewed: boolean;
   artifact: { testId: string; version: { versionHash: string }; payloadSha256: string } | null; stages: Stage[] }
 type Acceptance = { accepted: boolean; code: string; message: string; stages: Stage[]; tests: Test[] }
 const stageLabels: Record<string, string> = { completion: 'Save completion', snapshot: 'Protected copy',
-  transfer: 'Transfer to another PC', load: 'Load in the game', change: 'Recognizable change', restart: 'Saved restart' }
+  transfer: 'Transfer to another PC', load: 'Load in the game', change: 'Visible saved change', restart: 'Change survived restart' }
+const observationLabels: Record<string, string> = { load: 'I loaded this copy', change: 'I saved a visible change', restart: 'The change survived restart' }
+const evidenceLabels: Record<string, string> = { ObservedExactRun: 'App observed saving', VerifiedImmutableSnapshot: 'App verified the copy',
+  SignedSeparateDeviceReceipt: 'Another PC confirmed receipt', OwnerReported: 'Reported by you' }
+const testStateLabels: Record<string, string> = { Requested: 'Waiting', Capturing: 'Copying', ArtifactReady: 'Copy ready',
+  Accepted: 'Test passed', Failed: 'Failed', Interrupted: 'Interrupted', Stale: 'Setup changed' }
 const testSteps: { label: string; icon: IconName; ids: string[]; evidence: string }[] = [
-  { label: 'Capture a save', icon: 'archive', ids: ['completion', 'snapshot'], evidence: 'App checks' },
+  { label: 'Make a save copy', icon: 'archive', ids: ['completion', 'snapshot'], evidence: 'App checks' },
   { label: 'Transfer the copy', icon: 'users', ids: ['transfer'], evidence: 'App check' },
   { label: 'Check in the game', icon: 'game', ids: ['load', 'change', 'restart'], evidence: 'Your observations' }
 ]
@@ -97,16 +102,16 @@ export function LiveSaveAcceptancePanel({ profileId, visible = true }: { profile
   const currentStep = testSteps.findIndex(step => !complete(step.ids))
   const label = saving ? 'Saving' : !view ? 'Checking' : accepted ? 'Ready' : reviews.length ? 'Review needed' : 'Needs setup'
   const reason = saving ? 'Waiting for a fresh game save and a protected private copy.' :
-    !view ? 'Checking save support for this installation.' : synthetic ? 'Development evidence cannot accept a real game installation.' :
-    reviews.length ? 'Review the interrupted test before capturing another copy.' :
+    !view ? 'Checking save support for this installation.' : synthetic ? 'Development tests do not approve a real game installation.' :
+    reviews.length ? 'Review the interrupted test before making another copy.' :
     nextStage ? `Use this transferred test copy to verify ${nextStage === 'load' ? 'a game load' : nextStage === 'change' ? 'a recognizable saved change' : 'a saved restart'}.` :
     test && !complete(['transfer']) ? 'Transfer this private copy to a different approved PC.' :
     accepted ? 'This installation passed all six checks; setup changes require review.' :
-    'Capture a private test copy to check this exact installation.'
+    'Make a private test copy to check this server installation.'
   const captureTest = async () => {
     if (busy || !view || synthetic || pending || reviews.length) return
-    if (await confirm({ title: 'Capture a private test save?', confirmLabel: 'Capture test save',
-      description: 'This asks the running game to save and makes a sealed test copy using its reviewed driver. A distinct approved receiving PC must verify the transfer before game checks can be confirmed. No world is replaced.' }))
+    if (await confirm({ title: 'Make a private test save?', confirmLabel: 'Make test save',
+      description: 'This asks the running game to save and makes a protected test copy. Transfer it to another approved PC before confirming the game tests. No world is replaced.' }))
       await change('/tests', { requestId: crypto.randomUUID() })
   }
   return <section className="live-save-presentation live-save-acceptance-card" aria-label="Live-save installation test" hidden={!visible}>
@@ -115,7 +120,7 @@ export function LiveSaveAcceptancePanel({ profileId, visible = true }: { profile
       <summary className="live-save-installation-summary">
         <span className="live-save-card-icon"><Icon name={saving ? 'loader' : 'shield'} size={21} /></span>
         <span className="live-save-installation-title"><strong>Automatic recovery copies</strong>
-          <span>{accepted ? 'accepted for this installation' : 'installation test required'}</span></span>
+          <span>{accepted ? 'tested for this installation' : 'test this installation first'}</span></span>
         <span className="live-save-state" data-tone={accepted ? 'ready' : reviews.length ? 'warning' : 'neutral'}>{label}</span>
         <Icon name="chevronDown" />
       </summary>
@@ -138,40 +143,40 @@ export function LiveSaveAcceptancePanel({ profileId, visible = true }: { profile
         </div>}
         <div className="live-save-card-actions">
           {nextStage && test?.artifact && <Button className="primary" disabled={busy} onClick={async () => {
-            if (await confirm({ title: `Confirm actual game ${nextStage}?`, confirmLabel: 'Record my observation',
-              description: `Confirm only after you observed ${nextStage} using this exact transferred test copy in a disposable world. This is saved as an owner report, not an automatic game check.` }))
+            if (await confirm({ title: `Confirm: ${stageLabels[nextStage]}?`, confirmLabel: 'Record my result',
+              description: 'Confirm only after testing this exact transferred copy in a separate world. Your result is recorded as an owner report; the app cannot check it for you.' }))
               await change(`/tests/${test.testId}/confirm`, { versionHash: test.artifact!.version.versionHash,
                 payloadSha256: test.artifact!.payloadSha256, stage: nextStage, confirmed: true })
-          }}><Icon name="game" />I verified {nextStage} in the game</Button>}
+          }}><Icon name="game" />{observationLabels[nextStage]}</Button>}
           {test && !complete(['transfer']) && !synthetic && <Button className="secondary" disabled={busy}
             onClick={() => void refresh().catch(cause => setMessage(errorMessage(cause)))}><Icon name="refresh" />Check transfer</Button>}
           <Button className={test || accepted ? 'text-button' : 'primary'} disabled={busy || !view || synthetic || pending || reviews.length > 0}
             onClick={() => void captureTest()}><Icon name={capturing ? 'loader' : 'archive'} />
-            {capturing ? 'Saving…' : 'Capture private test save'}</Button>
+            {capturing ? 'Saving…' : 'Make private test save'}</Button>
         </div>
         {reviews.map(item => <div className="live-save-review" key={item.testId}>
           <Icon name="warning" /><Button className="text-button" disabled={busy}
             onClick={() => void change(`/tests/${item.testId}/review`, { acknowledge: true })}>
-            Acknowledge {item.state.toLowerCase()} test {item.testId.slice(0, 8)}; keep its files</Button>
+            Reviewed {item.state.toLowerCase()} test {item.testId.slice(0, 8)}; keep its files</Button>
         </div>)}
         {message && <DismissibleNotice scope={profileId} className="notice" role="status">{message}</DismissibleNotice>}
         <details className="live-save-disclosure">
-          <summary><Icon name="logs" />Evidence and installation details<Icon name="chevronDown" /></summary>
+          <summary><Icon name="logs" />Test results and installation details<Icon name="chevronDown" /></summary>
           <div className="live-save-disclosure-body">
-            <p>{view?.message ?? 'Checking installed live-save acceptance…'}</p>
-            <p>Test copies stay private and separate from playable recovery saves. App evidence covers save, copy and transfer; game checks are your own reports.</p>
+            <p>{view?.message ?? 'Checking save tests for this installation…'}</p>
+            <p>Test copies stay private and cannot be used for recovery. The app checks saving, copying and transfer. You confirm loading, a saved change and restart in the game.</p>
             <ol className="live-save-evidence-list">{currentStages.map(stage => <li key={stage.id}>
-              <div><strong>{stageLabels[stage.id]}</strong><span>{stage.state}</span></div>
-              <p>{stage.detail}</p><small>{stage.source}</small>
+              <div><strong>{stageLabels[stage.id]}</strong><span>{stage.state === 'Passed' ? 'Passed' : 'Not checked'}</span></div>
+              <p>{stage.detail}</p><small>{stage.source ? evidenceLabels[stage.source] ?? 'Unknown source' : 'Unknown source'}</small>
             </li>)}</ol>
           </div>
         </details>
         {!!view?.tests.length && <details className="live-save-disclosure"><summary>
           <Icon name="clock" />Private test history<Icon name="chevronDown" /></summary>
           <div className="live-save-disclosure-body">
-            <p>Retained tests do not establish acceptance for the current installation. Only a current ready test can record new game observations.</p>
+            <p>Older tests do not approve this installation. Record new game results only with the current ready test.</p>
             <ul className="live-save-test-history">{[...view.tests].reverse().map(item => <li key={item.testId}>
-              <span>Test {item.testId.slice(0, 8)} · {item.state}</span>
+              <span>Test {item.testId.slice(0, 8)} · {testStateLabels[item.state] ?? 'Needs review'}</span>
               {item.artifact && <code>Save {item.artifact.version.versionHash.slice(0, 12)}</code>}
             </li>)}</ul>
           </div>

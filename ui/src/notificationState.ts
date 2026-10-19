@@ -76,8 +76,8 @@ export function activityDestination(item: RoutedActivity): ActivityDestination |
     case 'Maintenance': return { workspace: 'host', section: 'setup', profileId: item.profileId, label: 'Continue maintenance' }
     case 'Remote': return { workspace: 'host', section: 'sessions', profileId: item.profileId, label: 'Review server activity' }
     case 'Connections': case 'Access': return { workspace: 'settings', section: 'access', profileId: item.profileId, label: 'Review Friend access' }
-    case 'Network': return { workspace: 'settings', section: 'network', profileId: item.profileId, label: 'Open Connection Doctor' }
-    case 'Recovery': return { workspace: 'settings', section: 'diagnostics', profileId: item.profileId, label: 'Review diagnostics' }
+    case 'Network': return { workspace: 'settings', section: 'network', profileId: item.profileId, label: 'Open Connection help' }
+    case 'Recovery': return { workspace: 'settings', section: 'diagnostics', profileId: item.profileId, label: 'Review app checks' }
     default: return null
   }
 }

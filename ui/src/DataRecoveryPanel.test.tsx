@@ -46,8 +46,8 @@ describe('DataRecoveryPanel', () => {
     renderPanel({ runs: [run('live-id', 'Process running'), run('exited-id', 'Failed'), run('unknown-id', 'Unknown')] })
 
     expect(screen.getAllByRole('button', { name: 'Stop recorded server' })).toHaveLength(1)
-    expect(screen.getAllByRole('button', { name: 'Forget exited record' })).toHaveLength(1)
-    expect(screen.getByText(/Process identity is uncertain/)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Forget stopped session' })).toHaveLength(1)
+    expect(screen.getByText(/TogetherServer cannot identify this server process/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Confirm and re-enable/ })).toBeDisabled()
     expect(screen.queryByText(/C:\\private/)).not.toBeInTheDocument()
     expect(screen.getByText('runs.json')).toBeInTheDocument()
@@ -76,11 +76,11 @@ describe('DataRecoveryPanel', () => {
 
   it('asks before forgetting an exited record and preserves the process-check warning', async () => {
     const { props } = renderPanel({ runs: [run('exited-id', 'Failed')] })
-    fireEvent.click(screen.getByRole('button', { name: 'Forget exited record' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Forget exited record' })
+    fireEvent.click(screen.getByRole('button', { name: 'Forget stopped session' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Forget stopped session' })
     expect(within(dialog).getByText('Forget this saved session only if TogetherServer confirms that its server process is no longer running?')).toBeInTheDocument()
     expect(props.onForgetRecordedRun).not.toHaveBeenCalled()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Forget exited record' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Forget stopped session' }))
     await waitFor(() => expect(props.onForgetRecordedRun).toHaveBeenCalledWith('exited-id'))
     expect(props.onAcknowledge).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: /Confirm and re-enable/ })).toBeDisabled()
@@ -88,7 +88,7 @@ describe('DataRecoveryPanel', () => {
 
   it('cancels forgetting without invoking the owner callback', async () => {
     const { props } = renderPanel({ runs: [run('exited-id', 'Failed')] })
-    fireEvent.click(screen.getByRole('button', { name: 'Forget exited record' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Forget stopped session' }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -106,11 +106,11 @@ describe('DataRecoveryPanel', () => {
     { recovery: { lifecycleBlocked: false, notices: [] } }
   ])('does not forget when the current record or guards change during confirmation: %j', async changed => {
     const { props, rerender } = renderPanel({ runs: [run('exited-id', 'Failed')] })
-    fireEvent.click(screen.getByRole('button', { name: 'Forget exited record' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Forget stopped session' }))
     const dialog = await screen.findByRole('dialog')
     rerender(<DataRecoveryPanel {...props} {...changed} />)
     expect(screen.getByRole('dialog')).toBe(dialog)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Forget exited record' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Forget stopped session' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(props.onForgetRecordedRun).not.toHaveBeenCalled()
     expect(props.onAcknowledge).not.toHaveBeenCalled()

@@ -113,12 +113,12 @@ export function serverLogProblem(record: ServerLogRecord): string | null {
 function stateLabel(state: ServerLogSourceState | 'Loading' | 'Error', paused: boolean) {
   if (paused && state === 'Active') return 'Paused'
   switch (state) {
-    case 'Active': return 'Active run'
-    case 'Ended': return 'Ended run'
-    case 'Missing': return 'No run log'
+    case 'Active': return 'Current session'
+    case 'Ended': return 'Past session'
+    case 'Missing': return 'No session log'
     case 'Unsupported': return 'Unsupported'
     case 'Unavailable': case 'Error': return 'Log unavailable'
-    default: return 'Loading recent records'
+    default: return 'Loading recent lines'
   }
 }
 
@@ -410,8 +410,8 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
           onClick={() => onNavigateIssue(serverLogIssueDestination(record)!)}>{serverLogProblem(record)} · {issueActions[serverLogIssueDestination(record)!]}</Button> :
           <small className="server-log-problem-label">{serverLogProblem(record)} · {issueActions[serverLogIssueDestination(record)!]}</small>)}
       </div>)}
-      {visibleRecords.length === 0 && <div className="server-log-empty">{onlyProblems && records.length > 0 ? 'No likely startup, settings, or add-on problems in the loaded lines.' : sourceState === 'Active' ? 'No matching complete lines yet.' : sourceState === 'Loading' ? 'Loading recent records…' : 'No log records are available for this state.'}</div>}
+      {visibleRecords.length === 0 && <div className="server-log-empty">{onlyProblems && records.length > 0 ? 'No likely startup, settings, or add-on problems in the loaded lines.' : sourceState === 'Active' ? 'No matching complete lines yet.' : sourceState === 'Loading' ? 'Loading recent lines…' : 'No logs are available right now.'}</div>}
     </div>
-    <p className="server-log-disclaimer">Diagnostic display only. These records never determine readiness, player count, timers, Start, Stop, or recovery.</p>
+    <p className="server-log-disclaimer">This log view helps explain problems. It does not control server status, player counts, or shutdown.</p>
   </section>
 }

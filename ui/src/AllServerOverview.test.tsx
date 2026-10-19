@@ -28,14 +28,14 @@ describe('all-server overview', () => {
     expect(screen.getByText(/No saved servers yet/)).toBeInTheDocument()
     data.settings.profiles = snapshot().settings.profiles; data.backups = undefined
     rerender(<AllServerOverview snapshot={data} selectedProfileId="" nowMs={now} error="private error detail" onOpen={open} />)
-    expect(screen.getByRole('alert')).toHaveTextContent('last available snapshot')
+    expect(screen.getByRole('alert')).toHaveTextContent('last update')
     expect(screen.getByText('Unknown', { selector: 'strong' })).toBeInTheDocument()
     expect(screen.getByText('Status unavailable')).toBeInTheDocument()
     expect(screen.queryByText('private error detail')).not.toBeInTheDocument()
   })
   it('displays zero as a fresh reported count and its canonical deadline', () => {
     const rows = allServerRows(snapshot(), now)
-    expect(rows[0]).toMatchObject({ players: '0 online', freshness: 'Observed just now',
+    expect(rows[0]).toMatchObject({ players: '0 online', freshness: 'Checked just now',
       deadline: '2026-09-29T12:15:00Z', backup: 'Completed 1 hr ago' })
     const stale = allServerRows(snapshot(), now + 11_000)[0]
     expect(stale.players).toBe('Unknown')

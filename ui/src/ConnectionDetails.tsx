@@ -134,7 +134,7 @@ export function ConnectionDetails({ fields, refreshing = false, note, kind, endp
   return <section className="connection-details-card task-first-connection" aria-label="Connection details" aria-busy={busy || refreshing}>
     <div className="connection-details-heading">
       <strong><Icon name="link" />Connection details</strong>
-      <small>Hidden for stream safety · each value has its own controls</small>
+      <small>Hidden until you choose to show it</small>
     </div>
     {refreshing && <div className="connection-refreshing" role="status"><Icon name="loader" />Refreshing connection details…</div>}
     <div className={refreshing ? 'connection-fields refreshing' : 'connection-fields'}>
@@ -144,6 +144,6 @@ export function ConnectionDetails({ fields, refreshing = false, note, kind, endp
         : <PrivateConnectionField field={{ ...field, disabled: field.disabled || refreshing }} key={field.id} />)}
     </div>
     {splitField && !parts && <p className="helper-text">Separate address and port are unavailable. Ask the Host to check the game address.</p>}
-    <p className="connection-privacy-note">Use an eye to show only that value. Shown values hide after 30 seconds or when the app loses focus. Copy keeps it hidden.{note && <> {note}</>}</p>
+    <p className="connection-privacy-note">Show reveals a value for 30 seconds or until you leave the app. Copy keeps it hidden.{note && <> {note}</>}</p>
   </section>
 }

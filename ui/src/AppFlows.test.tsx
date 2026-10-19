@@ -237,7 +237,7 @@ describe('required app setup shell gate', () => {
     render(<App />)
     await screen.findByRole('heading', { name: 'Your name' })
     await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'App settings' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Commands' })).not.toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
@@ -265,7 +265,7 @@ describe('required app setup shell gate', () => {
     expect(screen.getByLabelText('Your name')).toHaveValue('Alex')
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Sam' } })
     fireEvent.click(screen.getByText('Save name'))
-    await screen.findByText('Profile saved. Your name is shared with connected PCs.')
+    await screen.findByText('Name saved and shared with connected PCs.')
     expectNoServerAction()
   })
 
@@ -274,7 +274,7 @@ describe('required app setup shell gate', () => {
     setup.failLoad('Setup unavailable')
     render(<App />)
     await screen.findByText('Setup unavailable')
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     setup.failLoad('')
     fireEvent.click(screen.getByText('Retry setup'))
     await waitFor(() => expect(screen.getByLabelText('Your name')).toBeEnabled())
@@ -283,7 +283,7 @@ describe('required app setup shell gate', () => {
     fireEvent.click(screen.getByText('Save and continue'))
     await screen.findByText('Setup check unavailable')
     expect(screen.getByLabelText('Your name')).toHaveValue('Sam')
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     setup.failCheckAfterSave(false)
     fireEvent.click(screen.getByText('Retry setup'))
     await screen.findByRole('region', { name: 'Contract fixture workspace' })
@@ -298,13 +298,13 @@ describe('required app setup shell gate', () => {
     fireEvent.click(screen.getByText('Save and continue'))
     await screen.findByText('Completion unavailable')
     expect(screen.getByLabelText('Your name')).toHaveValue('Sam')
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     view.unmount()
     setup.addLaterFeature()
     render(<App />)
     await screen.findByRole('alert')
     expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     expectNoServerAction()
   })
 
@@ -317,13 +317,13 @@ describe('required app setup shell gate', () => {
     fireEvent.click(screen.getByText('Existing hosting and recovery'))
     fireEvent.click(await screen.findByRole('button', { name: 'Stop server' }))
     const confirmation = await screen.findByRole('dialog', { name: 'Stop Contract fixture?' })
-    expect(confirmation).toHaveTextContent('2 reported players')
+    expect(confirmation).toHaveTextContent('2 players')
     expectNoServerAction()
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop server' }))
     await waitFor(() => expect(transport.change.mock.calls.filter(([path]) => path.endsWith('/stop'))).toHaveLength(1))
     expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
   })
 
   it('can review this PC hosting from a saved Join page while required setup stays gated', async () => {
@@ -349,7 +349,7 @@ describe('required app setup shell gate', () => {
     expect(screen.getByLabelText('Your name')).toHaveValue('Unfinished name')
     expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     expectNoServerAction()
   })
 
@@ -368,7 +368,7 @@ describe('required app setup shell gate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and re-enable server controls' }))
     await waitFor(() => expect(transport.change.mock.calls.some(([path]) => path === '/api/local/data-recovery/acknowledge')).toBe(true))
     expect(screen.getByRole('region', { name: 'Required app setup' })).toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'TogetherServer workspaces' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'TogetherServer navigation' })).not.toBeInTheDocument()
     expectNoServerAction()
   })
 })
@@ -390,7 +390,7 @@ function pcSections() {
 }
 
 function workspaces() {
-  return within(screen.getByRole('navigation', { name: 'TogetherServer workspaces' }))
+  return within(screen.getByRole('navigation', { name: 'TogetherServer navigation' }))
 }
 
 async function openServerTools(workspace: HTMLElement) {
@@ -447,12 +447,12 @@ describe('Task-first app and Host PC navigation', () => {
   it('allows a lifecycle warning to close while keeping Start blocked by canonical recovery', async () => {
     recoveryBlocked = true
     const workspace = await openHost()
-    const message = await within(workspace).findByText('Start and Restart need local data recovery.')
+    const message = await within(workspace).findByText('Review data recovery before starting or restarting.')
     const warning = message.closest('.dismissible-notice') as HTMLElement
     expect(warning).not.toBeNull()
     expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeDisabled()
     fireEvent.click(within(warning).getByRole('button', { name: 'Dismiss notification' }))
-    expect(within(workspace).queryByText('Start and Restart need local data recovery.')).not.toBeInTheDocument()
+    expect(within(workspace).queryByText('Review data recovery before starting or restarting.')).not.toBeInTheDocument()
     expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeDisabled()
     expectNoMutation()
   })
@@ -461,17 +461,17 @@ describe('Task-first app and Host PC navigation', () => {
     host().startupRecovery = { previousSessionInterrupted: true, previousStartedUtc: '2026-10-10T12:00:00Z',
       items: [], message: 'No previously active saved server needs action.', windowsRestartRegistered: true }
     await openHost()
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss recovered app session' }))
-    expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss app recovery notice' }))
+    expect(screen.queryByRole('region', { name: 'App reopened after an interruption' })).not.toBeInTheDocument()
     fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
     await screen.findByRole('region', { name: 'App Settings' })
-    expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'App reopened after an interruption' })).not.toBeInTheDocument()
     fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
     await screen.findByRole('region', { name: 'Contract fixture workspace' })
-    expect(screen.queryByRole('region', { name: 'Recovered app session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'App reopened after an interruption' })).not.toBeInTheDocument()
     fireEvent.click(workspaces().getByRole('button', { name: 'Attention' }))
     fireEvent.click(await screen.findByText('Session recovery'))
-    expect(screen.getByRole('region', { name: 'Recovered app session' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'App reopened after an interruption' })).toBeVisible()
     expectNoMutation()
   })
 
@@ -588,7 +588,7 @@ describe('Task-first app and Host PC navigation', () => {
     fireEvent.click(navigation.getByRole('button', { name: 'Profile' }))
     expect(screen.getByRole('textbox', { name: 'Your name' })).toHaveValue('Sam')
     fireEvent.click(screen.getByRole('button', { name: 'Save name' }))
-    await screen.findByText('Profile saved. Your name is shared with connected PCs.')
+    await screen.findByText('Name saved and shared with connected PCs.')
     fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
     expect(screen.getByText('Sharing as', { exact: false })).toHaveTextContent('Sharing as Sam')
@@ -634,7 +634,7 @@ describe('Task-first app and Host PC navigation', () => {
     const notify = nativeNotifications()
     await openHost()
     await notify({ workspace: 'settings', section: 'diagnostics', profileId: id, connectionId: null })
-    await screen.findByRole('heading', { name: 'Preflight & diagnostics' })
+    await screen.findByRole('heading', { name: 'Server diagnostics' })
     expect(pcSections().queryByRole('button', { name: 'Diagnostics' })).not.toBeInTheDocument()
     expectNoMutation()
   })
@@ -730,7 +730,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(workspaces().getByRole('button', { name: 'App Settings' })).toHaveAttribute('aria-current', 'page')
     expect(within(sections).getByRole('button', { name: 'Notifications' })).toHaveAttribute('aria-current', 'page')
     expect(await within(screen.getByRole('region', { name: 'App Settings' }))
-      .findByText('Wait for the preference change to finish before leaving this page.')).toBeVisible()
+      .findByText('Wait for the change to save before leaving.')).toBeVisible()
     expect(mutationCalls()).toHaveLength(1)
     preferences = { ...preferences, quietMode: true }
     await act(async () => { finish(preferences) })
@@ -898,8 +898,8 @@ describe('Host task structure', () => {
     const workspace = await openHost()
     fireEvent.click(within(workspace).getByRole('button', { name: 'Stop server' }))
     const confirmation = await screen.findByRole('dialog', { name: 'Stop Contract fixture?' })
-    expect(confirmation).toHaveTextContent('0 reported players')
-    expect(confirmation).toHaveTextContent(/graceful stop.*game-save integrity/i)
+    expect(confirmation).toHaveTextContent('0 players')
+    expect(confirmation).toHaveTextContent(/asks the game to save and stop.*cannot confirm every save/i)
     expectNoServerAction()
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop server' }))
     await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/profiles/${id}/stop`, 'POST',
@@ -916,11 +916,11 @@ describe('Host task structure', () => {
     await within(workspace).findByRole('region', { name: 'Server logs' })
     const tools = await openServerTools(workspace)
     expect(tools).toHaveTextContent('Actions for Contract fixture.')
-    expect(within(tools).getByRole('button', { name: 'Safe restart with checkpoint' })).toBeEnabled()
+    expect(within(tools).getByRole('button', { name: 'Back up and restart' })).toBeEnabled()
     expect(serverSections().getByRole('button', { name: 'Logs' })).toHaveAttribute('aria-current', 'page')
     fireEvent.click(within(tools).getByRole('button', { name: 'Restart server' }))
     const confirmation = await screen.findByRole('dialog', { name: 'Restart Contract fixture?' })
-    expect(confirmation).toHaveTextContent('2 reported players')
+    expect(confirmation).toHaveTextContent('2 players')
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(confirmation).not.toBeInTheDocument())
     expectNoMutation()
@@ -1005,7 +1005,7 @@ describe('Host task structure', () => {
     expect(await within(workspace).findByRole('region', { name: 'Server logs' })).toBeInTheDocument()
     fireEvent.click(serverSections().getByRole('button', { name: 'Sessions' }))
     expect(await within(workspace).findByRole('region', { name: 'Seven-day summary' })).toBeInTheDocument()
-    fireEvent.click(serverSections().getByRole('button', { name: 'Maintenance & setup' }))
+    fireEvent.click(serverSections().getByRole('button', { name: 'Setup & maintenance' }))
     expect(await within(workspace).findByText('Update the game server safely')).toBeInTheDocument()
     expect(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' })).toBeEnabled()
     expect(within(workspace).getByRole('button', { name: 'Begin maintenance' })).toBeEnabled()
@@ -1045,7 +1045,7 @@ describe('Host task structure', () => {
     host().settings.profiles[0].maintenance = { enabled: true, message: 'Updating synthetic settings.' }
     const workspace = await openHost()
     fireEvent.click(within(workspace).getByRole('button', { name: 'Review recovery' }))
-    expect(await screen.findByRole('heading', { name: 'Preflight & diagnostics' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Server diagnostics' })).toBeInTheDocument()
     expectNoServerAction()
   })
 
@@ -1058,7 +1058,7 @@ describe('Host task structure', () => {
     await waitFor(() => expect(workspace).toHaveAttribute('data-server-tab', failure), { timeout: 3000 })
     const error = await within(workspace).findByRole('alert')
     expect(error).toBeVisible()
-    const retry = within(error.closest('.pane-error') as HTMLElement).getByRole('button', { name: 'Try section again' })
+    const retry = within(error.closest('.pane-error') as HTMLElement).getByRole('button', { name: 'Try again' })
     expect(retry).toBeVisible()
     fireEvent.click(within(error).getByRole('button', { name: 'Dismiss section error' }))
     expect(error).not.toBeInTheDocument()
@@ -1099,14 +1099,14 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
-  it('opens the Custom certification from Maintenance & setup while chat stays focused on conversation', async () => {
+  it('opens the Custom certification from Setup & maintenance while chat stays focused on conversation', async () => {
     host().settings.profiles[0].kind = 'Custom'
     const workspace = await openHost()
-    fireEvent.click(serverSections().getByRole('button', { name: 'Maintenance & setup' }))
-    expect(await within(workspace).findByRole('button', { name: 'Begin live certification' })).toBeInTheDocument()
+    fireEvent.click(serverSections().getByRole('button', { name: 'Setup & maintenance' }))
+    expect(await within(workspace).findByRole('button', { name: 'Start control test' })).toBeInTheDocument()
     fireEvent.click(serverSections().getByRole('button', { name: 'Chat' }))
     expect(await within(workspace).findByRole('region', { name: 'Server chat' })).toBeInTheDocument()
-    expect(within(workspace).queryByRole('button', { name: 'Begin live certification' })).not.toBeInTheDocument()
+    expect(within(workspace).queryByRole('button', { name: 'Start control test' })).not.toBeInTheDocument()
     expectNoServerAction()
   })
 
@@ -1147,9 +1147,9 @@ describe('Host task structure', () => {
     expect(screen.queryByText('Test with another owned PC')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByText('Troubleshooting'))
     expect(await screen.findByText('Test with another owned PC')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Prepare rehearsal' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Prepare connection test' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Test with another owned PC Open rehearsal' }))
-    expect(screen.getByRole('button', { name: 'Prepare rehearsal' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Prepare connection test' })).toBeInTheDocument()
     expectNoMutation()
   })
 
@@ -1179,7 +1179,7 @@ describe('Host task structure', () => {
       return read(path, ...args)
     })
     render(<App />)
-    expect(await screen.findByText('Loading local state…')).toBeVisible()
+    expect(await screen.findByText('Loading TogetherServer…')).toBeVisible()
     finish(state)
     expect(await screen.findByRole('alert')).toHaveTextContent('Synthetic local service unavailable')
     expect(await screen.findByRole('region', { name: 'Contract fixture workspace' }, { timeout: 4500 })).toBeInTheDocument()
@@ -1203,7 +1203,7 @@ function friend(): FriendSnapshot {
 }
 
 async function openAdvancedSharedSaves() {
-  const disclosure = (await screen.findByText('Save copies, people & advanced sharing')).closest('details')!
+  const disclosure = (await screen.findByText('Shared saves & people')).closest('details')!
   disclosure.open = true
   fireEvent(disclosure, new Event('toggle'))
   return screen.findByRole('region', { name: 'Shared worlds' })
@@ -1585,7 +1585,7 @@ describe('Friend task structure', () => {
     fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Forget this Host' }))
     const confirmation = await screen.findByRole('dialog', { name: 'Forget this saved Host?' })
-    expect(confirmation).toHaveTextContent('TogetherServer will first try to revoke this PC on the Host.')
+    expect(confirmation).toHaveTextContent('TogetherServer will first ask the Host to remove this PC’s access.')
     expectNoMutation()
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(confirmation).not.toBeInTheDocument())
@@ -1665,8 +1665,8 @@ describe('Friend task structure', () => {
     fireEvent.click(support.querySelector('summary')!)
     expect(screen.getAllByText(/^Your access:/)).toHaveLength(1)
     expect(screen.queryByText(/^Host permissions:/)).not.toBeInTheDocument()
-    fireEvent.click(within(play).getByRole('button', { name: 'Open Connection Doctor' }))
-    const summary = await screen.findByText(/^Connection Doctor ·/)
+    fireEvent.click(within(play).getByRole('button', { name: 'Open Connection help' }))
+    const summary = await screen.findByText(/^Connection help ·/)
     await waitFor(() => {
       expect(summary.closest('details')).toHaveAttribute('open')
       expect(summary).toHaveFocus()
@@ -1704,7 +1704,7 @@ describe('Friend task structure', () => {
     state = { ...friend(), state: 'Access expired', connectionCode: 'AccessExpired' }
     render(<App />)
     const play = await screen.findByRole('region', { name: 'Play' })
-    expect(screen.getByText('The Host ended access for this PC at the saved time.')).toBeVisible()
+    expect(screen.getByText('The Host set an end date for this PC’s access. That date has passed.')).toBeVisible()
     expect(within(play).queryByText(/Open Minecraft from Windows Start/)).not.toBeInTheDocument()
     expect(within(play).queryByRole('button', { name: 'Copy Server IP' })).not.toBeInTheDocument()
     fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))

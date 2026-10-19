@@ -115,7 +115,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
   const [gamePassword, setGamePassword] = useState('')
   const [handoff, setHandoff] = useState<RestoreStatus | null>(null)
   const [verifiedScope, setVerifiedScope] = useState<{ key: string } | null>(null)
-  const [observationReason, setObservationReason] = useState('Rechecking signed hosting readiness. Start readiness is Unknown.')
+  const [observationReason, setObservationReason] = useState('Checking the hosting decision again. Start is not ready yet.')
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
   const [result, setResult] = useState<Readiness | null>(null)
   const [routeRecordHash, setRouteRecordHash] = useState('')
@@ -169,7 +169,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     const controller = new AbortController()
     metadataController.current = controller
     setVerifiedScope(null)
-    setObservationReason('Rechecking signed hosting readiness. Start readiness is Unknown.')
+    setObservationReason('Checking the hosting decision again. Start is not ready yet.')
     try {
       const status = await getLocalJson(`/api/local/friend/${profileId}/shared-world/handoff/restore`,
         parseRestoreStatus, controller.signal)
@@ -182,7 +182,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
         setRouteFingerprint(current => current || status.controlRouteFingerprint || '')
       }
       if (authorityHeadHash !== null && status.recordHash !== authorityHeadHash) {
-        setObservationReason('Hosting blocked: the verified staged copy does not match the current signed hosting decision.')
+        setObservationReason('Hosting blocked: this prepared save does not match the current hosting decision.')
         return
       }
       setVerifiedScope(scopeToken)
@@ -262,18 +262,18 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     } catch (cause) { if (mounted.current && scope.current === scopeToken) setError(errorMessage(cause)) }
     finally { if (mounted.current && scope.current === scopeToken) setBusy(false) }
   }
-  return <details ref={panel} open={expanded || undefined}><summary>Check this PC for future hosting</summary>
-    <p className="helper-text">These are the checks for transferring the group's default Host. Manual solo recovery uses its separate recovery-copy controls and does not require a majority or a second-PC route check.</p>
-    <p>Restore the exact signed planned handoff or recovery majority into a fresh managed world. Finish local and control route checks, then switch to Host for manual Start.</p>
+  return <details ref={panel} open={expanded || undefined}><summary>Check this PC for hosting</summary>
+    <p className="helper-text">These checks are for a planned handoff or the older voting flow. To recover your own separate copy, use Play a recovery copy on this PC. No vote or second PC is needed there.</p>
+    <p>Restore the agreed save into a new world folder. Finish setup and app connection checks, then choose Start in Host.</p>
     {(!currentHandoff || observationReason) && <p role="status">{verifiedScope !== scopeToken && !observationReason ?
-      'Rechecking signed hosting readiness. Start readiness is Unknown.' : observationReason}</p>}
-    <p className="helper-text" data-hosting-step="game-acceptance" tabIndex={-1}>After manual Start on this PC, test a real game load, a Friend join, a recognizable saved change and a saved restart. Local preparation and file checks do not prove these results.</p>
-    <p className="helper-text" data-hosting-step="permission-help" tabIndex={-1}>Eligible host is a separate grant from Receive and Start. Ask the original owner to review this PC's grant; a verified copy alone does not allow hosting.</p>
+      'Checking the hosting decision again. Start is not ready yet.' : observationReason}</p>}
+    <p className="helper-text" data-hosting-step="game-acceptance" tabIndex={-1}>After Start, test loading the world, a friend joining, saving a visible change and restarting. Setup and file checks do not test these.</p>
+    <p className="helper-text" data-hosting-step="permission-help" tabIndex={-1}>Permission to host is separate from receiving saves or starting another PC's server. Ask the original owner to allow hosting on this PC. Having a save copy is not enough.</p>
     <ol aria-label="This PC handoff checklist">
-      <li aria-current={!currentHandoff ? 'step' : undefined}>{currentHandoff ? 'Checked' : 'Next'} · This PC: check the signed decision and exact received copy.</li>
-      <li aria-current={currentHandoff && !handoff.restored ? 'step' : undefined}>{currentHandoff && handoff.restored ? 'Done' : 'Later'} · This PC: restore into a fresh managed world.</li>
-      <li aria-current={currentHandoff && handoff.restored && !readyForManualStart ? 'step' : undefined}>{readyForManualStart ? 'Done' : 'Later'} · This PC and another approved Friend PC: finish local setup and check the pinned control route.</li>
-      <li aria-current={readyForManualStart ? 'step' : undefined}>Manual choice · This PC: open Host, review Start, then test a real game join and saved restart.</li>
+      <li aria-current={!currentHandoff ? 'step' : undefined}>{currentHandoff ? 'Checked' : 'Next'} · This PC: check the hosting decision and received save.</li>
+      <li aria-current={currentHandoff && !handoff.restored ? 'step' : undefined}>{currentHandoff && handoff.restored ? 'Done' : 'Later'} · This PC: restore into a new world folder.</li>
+      <li aria-current={currentHandoff && handoff.restored && !readyForManualStart ? 'step' : undefined}>{readyForManualStart ? 'Done' : 'Later'} · This PC and another approved Friend PC: finish setup and test the app connection.</li>
+      <li aria-current={readyForManualStart ? 'step' : undefined}>Manual choice · This PC: open Host, choose Start, then test a friend joining and a saved change after restart.</li>
     </ol>
     {firstMissing && <section aria-label="Next hosting step"><strong>Next: {firstMissing.reason}</strong>
       <div className="actions"><Button className="text-button" onClick={() => goToStep(firstMissing.destination)}>{firstMissing.action}</Button></div>
@@ -282,65 +282,65 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
     <div data-hosting-step="server" tabIndex={-1}><SharedWorldServerFile profileId={profileId} game={game} value={serverFile} disabled={busy}
       onChange={path => { setServerFile(path); setResult(null) }} onBrowseServerFile={onBrowseServerFile} /></div>
     <label>Installed game version<Input data-hosting-step="version" value={gameVersion} onChange={event => setGameVersion(event.target.value)} /></label>
-    <label>Future Friend control port<Input data-hosting-step="control-port" inputMode="numeric" value={controlPort}
+    <label>TogetherServer connection port<Input data-hosting-step="control-port" inputMode="numeric" value={controlPort}
       onChange={event => setControlPort(event.target.value)} /></label>
-    <label>Future game port<Input inputMode="numeric" value={gamePort}
+    <label>Game port<Input inputMode="numeric" value={gamePort}
       onChange={event => setGamePort(event.target.value)} /></label>
     <label><Input data-hosting-step="access" type="checkbox" checked={passwordSet} onChange={event => setPasswordSet(event.target.checked)} />
-      {fields.password ? 'I have set a new game password locally' : 'I reviewed local game access and set a new password where this game supports one'}</label>
+      {fields.password ? 'I set a new game password on this PC' : 'I checked who can join and set a new password if this game supports one'}</label>
     {handoff?.requiredAddOns.length ? <details><summary>Required add-ons</summary>
       <ul>{handoff.requiredAddOns.map(addOn => <li key={`${addOn.type}:${addOn.id ?? addOn.name}`}>
         {addOn.name} {addOn.version} ({addOn.type})</li>)}</ul>
-      <p className="helper-text">Install these reviewed packages in this managed server folder before restoring. The app checks the installed set.</p>
+      <p className="helper-text">Install these add-ons in this server folder before restoring. The app checks they match.</p>
     </details> : null}
-    <p className="helper-text">Check matching add-ons, a fresh managed location, and the direct-IP Friend control route before hosting. Test the real game load and join after Start.</p>
+    <p className="helper-text">Check the add-ons, new world folder and TogetherServer connection before hosting. After Start, test loading the world and joining the game.</p>
     <div className="actions"><Button className="secondary" disabled={busy} onClick={() => void run('readiness')}>
       Check this PC</Button>{includeRehearsal && <Button className="secondary" disabled={busy} onClick={() => void run('rehearse')}>
-      Rehearse file restore</Button>}</div>
+      Test restoring files</Button>}</div>
     </div>
     {onOpenHostSetup && <Button className="text-button" onClick={onOpenHostSetup}>Open this PC's Host setup</Button>}
-    <details ref={routePanel}><summary>Test successor's control route from another Friend PC</summary>
-      <p>On another Friend PC, use the signed authority hash and successor certificate fingerprint. This checks pinned HTTPS. Test the game route after Start.</p>
-      {currentHandoff && <p className="helper-text">Current signed authority: <code style={{ overflowWrap: 'anywhere' }}>{handoff.recordHash}</code></p>}
-      {handoff?.controlRouteFingerprint && <p className="helper-text">This PC's TLS fingerprint: <code style={{ overflowWrap: 'anywhere' }}>{handoff.controlRouteFingerprint}</code></p>}
-      {handoff?.controlRouteAddress && <p className="helper-text">Signed successor route: {handoff.controlRouteAddress}</p>}
+    <details ref={routePanel}><summary>Test the new Host's app connection from another PC</summary>
+      <p>Copy the connection details to another approved Friend PC and test them there. The app checks the new Host's identity. Test the game connection after Start.</p>
+      {currentHandoff && <p className="helper-text">Hosting decision ID: <code style={{ overflowWrap: 'anywhere' }}>{handoff.recordHash}</code></p>}
+      {handoff?.controlRouteFingerprint && <p className="helper-text">This PC's certificate fingerprint: <code style={{ overflowWrap: 'anywhere' }}>{handoff.controlRouteFingerprint}</code></p>}
+      {handoff?.controlRouteAddress && <p className="helper-text">New Host address: {handoff.controlRouteAddress}</p>}
       {currentHandoff && handoff.controlRouteFingerprint && <Button className="text-button"
         onClick={() => void navigator.clipboard.writeText(
           createSharedRouteDetails(profileId, { recordHash: handoff.recordHash!, tlsFingerprint: handoff.controlRouteFingerprint!, endpoint: handoff.controlRouteAddress }))
-          .then(() => setError('')).catch(() => setError('Could not copy route details. Select the signed hash and fingerprint above to copy them manually.'))}>
-        Copy route details</Button>}
+          .then(() => setError('')).catch(() => setError('Could not copy connection details. Select the decision ID and certificate fingerprint above to copy them.'))}>
+        Copy connection details</Button>}
       <SharedWorldRouteDetails key={profileId} profileId={profileId} onReviewed={details => {
         setRouteRecordHash(details?.recordHash ?? ''); setRouteFingerprint(details?.tlsFingerprint ?? ''); setRouteResult(null)
       }} />
-      <label>Signed handoff hash<Input value={routeRecordHash}
+      <label>Handoff decision ID<Input value={routeRecordHash}
         onChange={event => setRouteRecordHash(event.target.value)} /></label>
-      <label>Successor certificate fingerprint<Input value={routeFingerprint}
+      <label>Certificate fingerprint for connection test<Input value={routeFingerprint}
         onChange={event => setRouteFingerprint(event.target.value)} /></label>
       <Button className="secondary" disabled={busy || !/^[0-9A-Fa-f]{64}$/.test(routeRecordHash.trim()) ||
         !/^[0-9A-Fa-f]{64}$/.test(routeFingerprint.trim())} onClick={() => void probeRoute()}>
-        Check direct-IP control route</Button>
+        Test app connection</Button>
       {routeResult && <DismissibleNotice as="p" scope={scopeKey} role="status">{routeResult.message}</DismissibleNotice>}
     </details>
     {handoff?.staged && <div data-hosting-step="folder" tabIndex={-1}>{currentHandoff && <p role="status">{handoff.message}</p>}
       {!handoff.restored && <><label>New server name<Input value={serverName}
         onChange={event => setServerName(event.target.value)} /></label>
-        {(game === 'MinecraftJava' || !knownGame) && <label>{game === 'MinecraftJava' ? 'Java runtime executable (java.exe)' : 'Installed game executable, if different from the server file'}<Input value={executable}
+        {(game === 'MinecraftJava' || !knownGame) && <label>{game === 'MinecraftJava' ? 'Java program (java.exe)' : 'Game program, if different from the server file'}<Input value={executable}
           onChange={event => setExecutable(event.target.value)} /></label>}
-        {(fields.minecraft || !knownGame) && <label>Prepared Minecraft server folder, if using Minecraft<Input data-hosting-step="folder" value={preparedServerRoot}
+        {(fields.minecraft || !knownGame) && <label>New Minecraft server folder, if used<Input data-hosting-step="folder" value={preparedServerRoot}
           onChange={event => setPreparedServerRoot(event.target.value)} /></label>
         }
-        {handoff.preparedServerRoot && <small>Install the matching Minecraft server in this separate folder. Review its terms, server.properties settings, and player allowlist against the signed source. A mismatch blocks restore and Start. The world folder must be empty.</small>}
-        {(fields.factorio || !knownGame) && <label>Factorio local RCON port, if using Factorio<Input inputMode="numeric" value={factorioRconPort}
+        {handoff.preparedServerRoot && <small>Install the same Minecraft version in this separate folder. Accept its terms and match the shared server settings and player allowlist. Differences block restore and Start. The world folder must be empty.</small>}
+        {(fields.factorio || !knownGame) && <label>Factorio RCON control port, if used<Input inputMode="numeric" value={factorioRconPort}
           onChange={event => setFactorioRconPort(event.target.value)} /></label>}
-        {fields.password && <label>New game password, if this game uses one<Input type="password" value={gamePassword}
+        {fields.password && <label>New game password, if used<Input type="password" value={gamePassword}
           onChange={event => setGamePassword(event.target.value)} /></label>}
-        {fields.factorio && <p className="helper-text">RCON is local administration only. Never forward its port.</p>}
+        {fields.factorio && <p className="helper-text">Keep the RCON control port private. Never forward it.</p>}
         <Button disabled={busy || !currentHandoff} onClick={() => void restore()}>Restore verified copy</Button></>}
       {handoff.restored && !readyForManualStart && <Button disabled={busy || !currentHandoff}
         onClick={() => void finish()}>Finish setup and checks</Button>}
       {readyForManualStart && <DismissibleNotice scope={scopeKey} noticeKey={handoff.recordHash ?? undefined} className="start-connection-notice" role="note">
         <strong>Before the first Start on this PC</strong>
-        <p>The signed Friend control route was checked from another PC and the local game ports were available. Incoming game traffic is still unverified while the server is stopped. Switch to Host and start, then test the game connection and a real join from another network before relying on this Host.</p>
+        <p>Another PC reached TogetherServer here, and the local game ports were available. The game connection still needs testing. Choose Start in Host, then have a friend on another network join before relying on this PC.</p>
         {onOpenHostControls && <Button onClick={onOpenHostControls}><Icon name="play" />Review Start in Host</Button>}
       </DismissibleNotice>}
       {currentHandoff && <ul>{handoff.pendingChecks.map(check => <li key={check}>{check}</li>)}</ul>}</div>}
@@ -351,7 +351,7 @@ export function SharedWorldReadinessPanel({ profileId, onHostingSetupChange, gam
         <li key={check}>{check}</li>)}</ul>}</DismissibleNotice>}
     {error && <DismissibleNotice as="p" scope={scopeKey} role="alert">{error}</DismissibleNotice>}
     {result && <DismissibleNotice scope={scopeKey} role="status"><p>{result.managedProcessRehearsalPassed ?
-      'Disposable fixture process checked and removed.' : result.rehearsalPassed ? 'Disposable file restore checked and removed.' :
+      'Test server checked and removed. No real game was tested.' : result.rehearsalPassed ? 'Test files restored, checked and removed. No real game was tested.' :
       result.ready ? 'Local checks passed.' : 'Hosting still needs setup.'}</p>
       {result.reasons.length > 0 && <ul>{result.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
       {result.rehearsalPassed && <details><summary>Technical details</summary>

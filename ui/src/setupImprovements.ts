@@ -61,7 +61,7 @@ export function setupProfileChanges(before: Profile, after: Profile): SetupChang
   const fields: [string, (profile: Profile) => string][] = [
     ['Game', profile => profile.kind], ['Server name', profile => profile.name], ['Listing name', profile => profile.serverName],
     ['World', profile => profile.worldId], ['World source', profile => profile.worldSource], ['Save location', profile => profile.worldDirectory],
-    ['Server application', profile => profile.executablePath], ['Game ports', profile => setupPlannedPorts(profile).map(port => `${port.protocol} ${port.port} ${port.family}`).join(', ')],
+    ['Server app', profile => profile.executablePath], ['Game ports', profile => setupPlannedPorts(profile).map(port => `${port.protocol} ${port.port} ${port.family}`).join(', ')],
     ['Java server JAR', profile => profile.minecraft?.serverJarPath ?? ''], ['Crossplay', profile => profile.crossplay ? 'On' : 'Off'],
     ['Public listing', profile => profile.publicListing ? 'On' : 'Off'], ['Automatic crash restart', profile => profile.crashRecovery?.enabled ? 'On' : 'Off'],
     ['Backups', profile => profile.backups?.enabled ? `On · keep ${profile.backups.retentionCount} · reserve ${profile.backups.minimumFreeSpaceMb} MB` : 'Off'],
@@ -71,16 +71,16 @@ export function setupProfileChanges(before: Profile, after: Profile): SetupChang
 }
 
 export function setupSupport(kind: Profile['kind']): { label: string; actions: string; limits: string } {
-  if (kind === 'Valheim') return { label: 'Valheim', actions: 'Built-in Start, server-reported players, graceful Stop, backups, and direct Friend controls.',
-    limits: 'Use your Steam-installed dedicated server. Check a real Friend join and recognizable saved change after Stop and restart before relying on automatic Stop for a valued world.' }
-  if (kind === 'MinecraftJava' || kind === 'MinecraftBedrock') return { label: 'Minecraft · fixture-tested support',
-    actions: 'Official server setup, built-in Start, player queries, graceful Stop, reviewed settings and player lists.',
-    limits: `${kind === 'MinecraftJava' ? 'Official vanilla Java only; Paper and modded JARs are unsupported.' : 'Bedrock packs must use the reviewed managed-world flow.'} Real owner-installed join, player transitions, save, and restart acceptance remains required.` }
-  if (kind === 'Factorio') return { label: 'Factorio preview', actions: 'Owner-installed server, verified copied save, local authenticated player query, graceful /quit and backups.',
-    limits: 'No automatic crash restart. Never forward the RCON port. Real join and save/restart acceptance is pending.' }
-  if (kind === 'Terraria') return { label: 'Terraria preview', actions: 'Owner-installed server, verified copied world, fixed Start, graceful exit, and backups.',
-    limits: 'A TCP listener leaves players Unknown. Friend Stop and automatic Stop remain blocked; real join/save/restart acceptance is pending.' }
-  if (kind === 'Custom') return { label: 'Custom game · advanced', actions: 'Owner-reviewed local Start, Status/players and Stop scripts. Friends request fixed saved actions only.',
-    limits: 'Scripts can act with your Windows account. Trusted occupancy needs the reviewed contract and live test; missing or invalid player counts are Unknown and block Friend or automatic Stop.' }
-  return { label: 'Synthetic fixture', actions: 'Disposable development checks only.', limits: 'A fixture cannot prove a real game join, world save, or network route.' }
+  if (kind === 'Valheim') return { label: 'Valheim', actions: 'Start, player counts, save and Stop, backups, and Friend controls.',
+    limits: 'Use your Steam-installed dedicated server. Test a Friend joining and a saved change surviving Stop and restart before using automatic Stop for a world you value.' }
+  if (kind === 'MinecraftJava' || kind === 'MinecraftBedrock') return { label: 'Minecraft · tested in simulations',
+    actions: 'Official server setup, Start, player counts, save and Stop, settings, and player lists.',
+    limits: `${kind === 'MinecraftJava' ? 'Official vanilla Java only. Paper and modded JARs are unsupported.' : 'Import Bedrock packs through the server’s Add-ons page.'} Real joining, player counts, saving, and restarting still need testing.` }
+  if (kind === 'Factorio') return { label: 'Factorio preview', actions: 'Use your installed server with a checked save copy, player counts, save and Stop, and backups.',
+    limits: 'No automatic crash restart. Never forward the RCON port. Real joining, saving, and restarting still need testing.' }
+  if (kind === 'Terraria') return { label: 'Terraria preview', actions: 'Use your installed server with a checked world copy, Start, save and Stop, and backups.',
+    limits: 'Player count is unknown, so Friend and automatic Stop are blocked. Real joining, saving, and restarting still need testing.' }
+  if (kind === 'Custom') return { label: 'Custom game · advanced', actions: 'Use your own Start, Status/players, and Stop scripts. Friends can request only saved actions.',
+    limits: 'Scripts have your Windows account’s access. Complete the script checks and live test before counts can allow Friend or automatic Stop. Missing or invalid counts block Friend and automatic Stop.' }
+  return { label: 'Test server', actions: 'For disposable development tests only.', limits: 'Simulated checks do not prove real joining, saving, or network access.' }
 }

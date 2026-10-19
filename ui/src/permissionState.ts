@@ -9,15 +9,15 @@ export type PermissionPreset = 'status' | 'start' | 'helper' | 'custom'
 export const permissionPresets: Record<Exclude<PermissionPreset, 'custom'>,
   PermissionValues & { label: string; detail: string }> = {
   status: {
-    label: 'Status only', detail: 'Can see assigned servers and connection details, with no actions or logs.',
+    label: 'Status only', detail: 'View shared servers and connection details.',
     canStart: false, canStop: false, canExtendTimer: false, canViewLogs: false
   },
   start: {
-    label: 'Can start', detail: 'Can start assigned servers. Stop, added time, and logs stay off.',
+    label: 'Can start', detail: 'Start shared servers. No Stop, extra time, or logs.',
     canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false
   },
   helper: {
-    label: 'Trusted helper', detail: 'Can start, request safe Stop, add shutdown time, and view sanitized logs.',
+    label: 'Trusted helper', detail: 'Start servers, request Stop when empty, add time, and view logs with private details removed.',
     canStart: true, canStop: true, canExtendTimer: true, canViewLogs: true
   }
 }

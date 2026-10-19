@@ -232,19 +232,19 @@ internal sealed class AcceptanceRecorder(LocalData data, TimeProvider clock)
     {
         var labels = new Dictionary<string, (string Label, string Evidence)>(StringComparer.Ordinal)
         {
-            [AcceptanceCheckIds.FriendRoute] = ("Friend route", "A separate Friend PC authenticated through the intended route."),
-            [AcceptanceCheckIds.RealJoin] = ("Real game join", "The intended Friend reached the game world, not only the app."),
-            [AcceptanceCheckIds.PlayerTransition] = ("Player count 0 to 1 to 0", "Fresh trusted server observations followed the intended join and leave."),
-            [AcceptanceCheckIds.GracefulStop] = ("Graceful stop", "The real server saved and exited through its reviewed stop path."),
+            [AcceptanceCheckIds.FriendRoute] = ("Friend app connection", "A Friend connected securely from another PC using the intended network."),
+            [AcceptanceCheckIds.RealJoin] = ("Real game join", "Your Friend joined the game world."),
+            [AcceptanceCheckIds.PlayerTransition] = ("Player count 0 to 1 to 0", "The game reported zero, one, then zero players as your Friend joined and left."),
+            [AcceptanceCheckIds.GracefulStop] = ("Graceful stop", "You checked that the game saved and stopped normally."),
             [AcceptanceCheckIds.SavedRestart] = ("Saved restart", "A recognizable in-game change remained after restart."),
-            [AcceptanceCheckIds.RestoreDrill] = ("Restore drill", "A chosen backup was restored and checked in disposable or owner-approved test storage."),
-            [AcceptanceCheckIds.SleepResume] = ("Sleep and resume", "The Host recovered honestly after a deliberate Windows sleep/resume test.")
+            [AcceptanceCheckIds.RestoreDrill] = ("Restore test", "You restored and checked a backup in a separate test folder."),
+            [AcceptanceCheckIds.SleepResume] = ("Sleep and resume", "You checked the Host after putting Windows to sleep and waking it again.")
         };
         var checks = AcceptanceCheckIds.All.Select(id => new AcceptanceCheckView(id, labels[id].Label,
             labels[id].Evidence, !stale && record?.Confirmed.TryGetValue(id, out _) == true,
             !stale && record?.Confirmed.TryGetValue(id, out var recorded) == true ? recorded : null)).ToList();
         return new(profileId, stale, record?.UpdatedUtc, checks,
-            "These are owner confirmations, not authentication, player identity, occupancy authority, or automatic proof.",
+            "These results are reported by you. They do not grant access, confirm who is playing, or allow automatic actions.",
             binary.Available,
             record?.GameBinaryFingerprint is { Length: 64 } previous &&
                 !string.Equals(previous, binary.Fingerprint, StringComparison.Ordinal));

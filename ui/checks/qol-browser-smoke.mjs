@@ -516,7 +516,7 @@ async function selectHostServer(page, name) {
 }
 async function selectServer(page, name, tab = 'Overview') {
   await selectHostServer(page, name)
-  const label = ({ Files: 'Settings & files', Setup: 'Maintenance & setup' })[tab] ?? tab
+  const label = ({ Files: 'Settings & files', Setup: 'Setup & maintenance' })[tab] ?? tab
   const value = ({ Files: 'files', Setup: 'setup' })[tab] ?? tab.toLowerCase()
   await selectWorkspaceSection(page, 'Selected server sections', label, value)
   return page.getByRole('region', { name: `${name} workspace`, exact: true })
@@ -785,7 +785,7 @@ async function firstUseAndSetupRecovery(page, host) {
   const recovery = firstHost.getByRole('region', { name: 'Recovered server setup', exact: true })
   await recovery.waitFor({ state: 'visible' })
   assert.equal(await recovery.getByText('Saved server setup', { exact: true }).isVisible(), true)
-  assert.equal(await recovery.getByText('Your saved file is unchanged.', { exact: false }).count(), 0,
+  assert.equal(await recovery.getByText('The server file has not changed.', { exact: false }).count(), 0,
     'Server setup recovery uses setup wording, rather than suggesting a saved file edit.')
   await capture('first-host-protected-setup', recovery)
   await recovery.getByRole('button', { name: 'Review saved setup', exact: true }).click()
@@ -848,7 +848,7 @@ async function routingAndAppearance(page) {
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await page.keyboard.press('Control+k')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
-  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Attention Center')
+  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Attention')
   await page.keyboard.press('Enter')
   await palette.waitFor({ state: 'hidden' })
   assert.equal(await navigation.getByRole('button', { name: 'Attention', exact: true }).getAttribute('aria-current'), 'page')
@@ -1115,7 +1115,7 @@ async function setupReview(page, host, profiles) {
   await addServer.click()
   const dialog = page.getByRole('dialog', { name: 'Add new server' })
   await dialog.getByRole('heading', { name: 'Choose a game', exact: true }).waitFor()
-  await dialog.getByText("Reuse a saved server's nonsecret setup", { exact: true }).click()
+  await dialog.getByText("Use settings from another server", { exact: true }).click()
   await dialog.getByRole('button', { name: `Use setup from ${profiles.valheim.name}`, exact: true }).click()
   await dialog.getByRole('heading', { name: 'Choose a world', exact: true }).waitFor()
   // The Game step has no current blockers. Reuse opens World, where the
@@ -1322,7 +1322,7 @@ async function backupCatalog(page, host, profiles) {
   await catalog.getByLabel('Search backups', { exact: true }).waitFor()
   await eventually(() => catalog.locator('.backup-bookmark').count(), value => value >= 2, 'completed unified backup catalog')
   let first = catalog.locator('.backup-bookmark').first()
-  await first.getByText('Name and retention', { exact: true }).click()
+  await first.getByText('Name and pin backup', { exact: true }).click()
   await first.getByLabel('Backup name', { exact: true }).fill('Browser checkpoint')
   await first.getByRole('checkbox', { name: 'Pin this backup', exact: true }).check()
   const pinnedCatalog = page.waitForResponse(response => response.request().method() === 'GET' &&
@@ -1336,8 +1336,8 @@ async function backupCatalog(page, host, profiles) {
   await catalog.getByRole('combobox', { name: /^Pins$/u }).selectOption('pinned')
   assert.equal(await catalog.locator('.backup-bookmark').count(), 1)
   await catalog.getByRole('button', { name: 'Clear filters', exact: true }).click()
-  await catalog.getByText('Retention preview', { exact: true }).click()
-  await catalog.getByLabel('Preview unpinned retention count', { exact: true }).fill('1')
+  await catalog.getByText('Preview which backups are kept', { exact: true }).click()
+  await catalog.getByLabel('Preview unpinned copies to keep', { exact: true }).fill('1')
   await catalog.getByText(/Changing this preview removes nothing/u).waitFor()
   assert((await api(host, '/api/local/snapshot')).runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Offline'),
     'Restore-cancellation sentinels are written only while the disposable fixture is Offline.')
@@ -1370,9 +1370,9 @@ async function backupCatalog(page, host, profiles) {
     ++verificationCatalogReads === 2)
   await Promise.all([refreshedEvidence, catalog.getByRole('button', { name: 'Verify', exact: true }).first().click()])
   const verified = catalog.locator('.backup-bookmark').filter({ hasText: 'Browser checkpoint' })
-  await verified.getByText('Recorded integrity passed; game save health unverified.', { exact: true }).waitFor()
+  await verified.getByText('Files matched when checked. The world still needs testing in the game.', { exact: true }).waitFor()
   await verified.getByRole('button', { name: 'Review backup', exact: true }).click()
-  await catalog.getByLabel('Recorded protection results').locator('small').filter({ hasText: /Local integrity: Passed/u }).first().waitFor()
+  await catalog.getByLabel('Recorded protection results').locator('small').filter({ hasText: /Backup file check: Passed/u }).first().waitFor()
 }
 
 async function friendPlayAndChat(host, friend, context, profiles) {
@@ -1422,12 +1422,12 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   assert.equal(await page.getByRole('combobox', { name: 'Join sections', exact: true, includeHidden: true }).locator('option[value="logs"]').count(), 0,
     'Mobile section navigation must enforce the same View logs presentation.')
   await play.locator('summary[aria-label="Server tools and connection help"]').click()
-  await play.getByRole('button', { name: 'Open Connection Doctor', exact: true }).click()
+  await play.getByRole('button', { name: 'Open Connection help', exact: true }).click()
   const doctor = page.locator('.friend-connection-tools .friend-connection-doctor')
   await doctor.waitFor({ state: 'visible' })
   assert.equal(await doctor.evaluate(element => element.open), true, 'Play must open the Doctor in the Connection help section.')
   assert.equal(await doctor.locator(':scope > summary').evaluate(element => element === document.activeElement), true,
-    'The Connection Doctor summary receives keyboard focus.')
+    'The Connection help summary receives keyboard focus.')
   // The OS/Open game control is only observed; this harness never invokes a native client.
   await selectWorkspaceSection(page, 'Join sections', 'Chat', 'chat')
   const chat = first.locator('.server-chat')

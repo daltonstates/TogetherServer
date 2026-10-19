@@ -40,7 +40,7 @@ export function useLocalProfile() {
       const result = await changeJson('/api/local/profile', 'PUT', parseLocalProfileResult, { displayName: draft.trim() })
       if (!result.ok) { setError(result.message); return false }
       setDisplayName(result.displayName); setDraft(result.displayName)
-      setMessage('Profile saved. Your name is shared with connected PCs.')
+      setMessage('Name saved and shared with connected PCs.')
       return true
     } catch (failure) { setError(errorMessage(failure)); return false }
     finally { setSaving(false) }
@@ -63,18 +63,18 @@ export function ProfileSettings({ profile, required = false, busy = false, onSav
       if (busy) return
       void (async () => { if (await profile.save()) await onSaved?.() })()
     }}>
-    <p>Your name is automatically shared with Hosts you join and Friends who connect to you. Choose a name they recognize.</p>
+    <p>Choose a name your friends recognize. Hosts and friends you connect with can see it.</p>
     <label>Your name<Input value={profile.draft} disabled={busy || profile.loading || profile.saving || profile.displayName === null}
       autoComplete="off" aria-describedby="profile-name-help" aria-invalid={!!validation}
       onChange={event => profile.edit(event.target.value)} /></label>
-    <p id="profile-name-help" className="helper-text">Use 1–80 characters. This is a self-reported name, not verified identity. PC labels and saved Host names stay separate.</p>
-    {profile.loading && <p role="status">Loading profile…</p>}
+    <p id="profile-name-help" className="helper-text">Use 1–80 characters. Names don’t verify who someone is. This won’t rename your PC or saved Hosts.</p>
+    {profile.loading && <p role="status">Loading your name…</p>}
     {(validation || profile.error) && <p role="alert" className="warning-text">{validation || profile.error}</p>}
     {profile.message && <p role="status">{profile.message}</p>}
-    {profile.displayName === null && !profile.loading ? <Button className="secondary" onClick={() => void profile.reload()}>Retry profile</Button> :
+    {profile.displayName === null && !profile.loading ? <Button className="secondary" onClick={() => void profile.reload()}>Try again</Button> :
       <div className="actions"><Button type="submit" disabled={(!dirty && !required) || !!validation || busy || profile.loading || profile.saving}>{profile.saving || busy ? 'Saving…' : required ? 'Save and continue' : 'Save name'}</Button>
         {!required && <Button className="secondary" disabled={!dirty || profile.saving} onClick={profile.reset}>Discard changes</Button>}</div>}
-    {dirty && !required && <p className="helper-text">Unsaved name. Your draft stays here while you move between pages.</p>}
+    {dirty && !required && <p className="helper-text">Your name has unsaved changes.</p>}
   </form>
 }
 

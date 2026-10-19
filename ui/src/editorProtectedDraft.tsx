@@ -30,7 +30,7 @@ export function useEditorProtectedDraft(identity: DraftIdentity | null, value: s
       await scope.reading
       if (!scope.loaded || scope.blocked) return false
       if (scope.lastSaved === text || scope.clearedValue === text) return true
-      if (!scope.disposed) setState(current => ({ ...current, status: 'saving', message: 'Keeping a protected draft on this PC…' }))
+      if (!scope.disposed) setState(current => ({ ...current, status: 'saving', message: 'Saving a draft on this PC…' }))
       try {
         const result = await saveProtectedDraft(scope.identity, text, scope.revision)
         scope.revision = result.revision
@@ -40,7 +40,7 @@ export function useEditorProtectedDraft(identity: DraftIdentity | null, value: s
           return false
         }
         scope.lastSaved = text
-        if (!scope.disposed) setState({ recovered: null, status: 'saved', message: 'Protected draft kept on this PC. Changes are not applied to the server.' })
+        if (!scope.disposed) setState({ recovered: null, status: 'saved', message: 'Draft saved on this PC. Server settings have not changed.' })
         return true
       } catch (error) {
         if (!scope.disposed) setState(current => ({ ...current, status: 'error', message: errorMessage(error) }))
@@ -102,7 +102,7 @@ export function useEditorProtectedDraft(identity: DraftIdentity | null, value: s
     scope.blocked = true
     scope.latest = null
     const operation = scope.chain.then(async () => {
-      if (!scope.disposed) setState(current => ({ ...current, status: 'saving', message: 'Clearing this protected draft…' }))
+      if (!scope.disposed) setState(current => ({ ...current, status: 'saving', message: 'Removing the saved draft…' }))
       try {
         const result = await clearProtectedDraft(scope.identity, scope.revision)
         scope.revision = result.revision
@@ -176,14 +176,14 @@ export function EditorDraftRecovery({ recovered, message, onRecover, onDiscard, 
   recovered: string | null; message: string; onRecover: () => void; onDiscard: () => void; disabled?: boolean; purpose?: 'file' | 'setup'; scope?: string; status?: DraftState['status']
 }) {
   const progress = status === 'loading' || status === 'saving' ||
-    !status && ['Keeping a protected draft on this PC…', 'Clearing this protected draft…'].includes(message)
+    !status && ['Saving a draft on this PC…', 'Removing the saved draft…'].includes(message)
   if (recovered === null) return !message ? null : progress ? <p className="helper-text" role="status">{message}</p> :
     <DismissibleNotice as="p" scope={scope} className="helper-text" role="status">{message}</DismissibleNotice>
   const setup = purpose === 'setup'
   return <DismissibleNotice as="section" scope={scope} noticeKey={JSON.stringify([recovered, message])} className={setup ? 'notice setup-draft-recovery' : 'notice'} aria-label={setup ? 'Recovered server setup' : 'Recovered editor draft'}>
-    <strong>{setup ? 'Saved server setup' : 'A protected draft is available on this PC.'}</strong>
+    <strong>{setup ? 'Saved server setup' : 'A draft is saved on this PC.'}</strong>
     <p>{setup ? 'Review your saved game, world and server app to continue. Enter the game password again before saving.'
-      : 'Your saved file is unchanged. Put the draft into the editor to review it against the current file, or discard the draft.'}</p>
+      : 'Open the draft to review it, or discard it. The server file has not changed.'}</p>
     {message && <p>{message}</p>}
     <div className="actions"><Button className={setup ? undefined : 'secondary'} disabled={disabled} onClick={onRecover}>{setup ? 'Review saved setup' : 'Review recovered draft'}</Button>
       <Button className="text-button" disabled={disabled} onClick={onDiscard}>{setup ? 'Discard saved setup' : 'Discard recovered draft'}</Button></div>

@@ -9,13 +9,13 @@ type Member = { deviceId: string; grants: Grants; revoked: boolean; accessExpire
 const noGrants: Grants = { receive: false, eligibleHost: false, recoveryVoter: false, manageSharing: false, reshare: false }
 const permissions: { key: keyof Grants; label: string; title: string; description: string }[] = [
   { key: 'receive', label: 'Receive', title: 'Receive saves',
-    description: 'Keep verified copies of this world. This PC must also choose to receive them locally.' },
+    description: 'Keep verified copies of this world. Your friend must also allow saves on their PC.' },
   { key: 'reshare', label: 'Forward verified saves', title: 'Forward verified saves',
-    description: 'Send verified copies to approved world members who have Receive permission and local consent.' },
-  { key: 'recoveryVoter', label: 'Recovery voter', title: 'Vote on legacy recovery',
-    description: 'Vote in the guarded hosting-decision flow. This does not choose the group default or start a server.' },
+    description: 'Send verified copies to approved members who have permission and have allowed saves on their PC.' },
+  { key: 'recoveryVoter', label: 'Recovery voter', title: 'Vote in the older recovery flow',
+    description: "Vote in the older recovery flow. This does not choose the group's default or start a server." },
   { key: 'manageSharing', label: 'Manage sharing', title: 'Manage sharing',
-    description: 'Edit permitted member grants. Only the owner can grant forwarding or sharing management.' },
+    description: 'Change sharing permissions for other members. Only the owner can allow forwarding or sharing management.' },
 ]
 
 export function HostSharingPermissions({ profileId, devices, members, busy, enabled, canManage, blocked, onChange, onResetKey }:
@@ -31,7 +31,7 @@ export function HostSharingPermissions({ profileId, devices, members, busy, enab
     Number(!first.sharedWorldKeyEnrolled) - Number(!second.sharedWorldKeyEnrolled))
   return <div className="host-sharing-people">
     {devices.length === 0 && <div className="host-sharing-empty"><Icon name="users" size={28} />
-      <h4>No approved PCs for this world yet</h4><p>Approve and assign a Friend PC first. New permissions start off.</p>
+      <h4>No approved PCs for this world yet</h4><p>Approve a Friend PC and give it access to this server first. Sharing permissions start off.</p>
     </div>}
     {orderedDevices.map(device => {
       const member = members.find(item => item.deviceId === device.id)
@@ -56,20 +56,20 @@ export function HostSharingPermissions({ profileId, devices, members, busy, enab
             canHost ? 'Hosting allowed' : grants.receive ? 'Copies only' : 'Not shared'}</span>
         </header>
         <label className="host-sharing-permission host-sharing-host-permission">
-          <span><strong>Can host this save</strong><small>Receive verified saves and prepare a server on this PC. Your friend approves storage and finishes setup before Start.</small></span>
+          <span><strong>Can host this save</strong><small>Let your friend receive saves and host their own copy. They must allow saves on their PC, finish setup and choose Start.</small></span>
           <Input type="checkbox" aria-label={`Can host this save for ${device.name}`} checked={canHost}
             disabled={disabled} onChange={event => void onChange(device.id, event.target.checked ?
               { receive: true, eligibleHost: true } : { eligibleHost: false })} />
         </label>
-        {expired && <p className="host-sharing-hint">Access ended for this PC. Restore access before changing its grants.</p>}
-        {!device.sharedWorldKeyEnrolled && <p className="host-sharing-hint">Ask your friend to open TogetherServer and connect to this Host with their approved PC to finish enrollment. Receiving also needs their local consent before saves can arrive.</p>}
+        {expired && <p className="host-sharing-hint">Access ended for this PC. Restore access before changing its permissions.</p>}
+        {!device.sharedWorldKeyEnrolled && <p className="host-sharing-hint">Ask your friend to connect to this Host in TogetherServer to finish setup. They must also turn on Allow saves on this PC before receiving any.</p>}
         <details className="host-sharing-details"><summary>Advanced permissions for {device.name}</summary>
           <div className="host-sharing-advanced-permissions">{permissions.map(permission)}</div>
           <p className="host-sharing-hint">Turn off Can host this save to keep receiving copies without hosting. Turning off Receive saves also removes hosting permission. Copies already received stay on that PC.</p>
-          <details className="host-sharing-details"><summary>Signing identity for {device.name}</summary>
-            <p>PC code {device.id.slice(-6).toUpperCase()}. Device identity: <code>{device.id}</code>. Signing identity {device.sharedWorldKeyEnrolled ? 'enrolled' : 'pending'}.</p>
+          <details className="host-sharing-details"><summary>PC identity for {device.name}</summary>
+            <p>PC code {device.id.slice(-6).toUpperCase()}. Device identity: <code>{device.id}</code>. Sharing identity {device.sharedWorldKeyEnrolled ? 'ready' : 'waiting for setup'}.</p>
             {device.sharedWorldKeyEnrolled && <Button className="text-button" disabled={busy || !canManage || blocked}
-              onClick={() => void onResetKey(device.id)}>Reset {device.name}'s signing identity and grants</Button>}
+              onClick={() => void onResetKey(device.id)}>Reset {device.name}'s sharing identity and permissions</Button>}
           </details>
         </details>
       </article>

@@ -49,7 +49,7 @@ describe('ServerReadiness Friend connection wording', () => {
       routeCheck={null} onRefresh={vi.fn()} onOpenConnection={vi.fn()} busy={false} />)
 
     expect(screen.getAllByText('Idle')).not.toHaveLength(0)
-    expect(screen.getByText('Nothing needs fixing. Choose Invite friends when another PC needs the server code.')).toBeInTheDocument()
+    expect(screen.getByText('Ready to invite friends when you need a server code.')).toBeInTheDocument()
     expect(screen.getByText('Not needed while idle')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Fix connection' })).not.toBeInTheDocument()
     expect(screen.queryByText('Friend connections need attention.')).not.toBeInTheDocument()

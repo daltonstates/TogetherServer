@@ -37,7 +37,7 @@ it('requires offline maintenance and the current token before changing a mod', a
   rendered.rerender(<ServerAddOnsPanel {...props} state="Offline" maintenance />)
   fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
   const dialog = await screen.findByRole('dialog', { name: 'Confirm add-on change' })
-  expect(within(dialog).getByText('Disable fixture? An offline complete setup checkpoint will be made first.')).toBeInTheDocument()
+  expect(within(dialog).getByText('Disable fixture? A backup of the stopped world and setup will be made first.')).toBeInTheDocument()
   expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
   fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
   await waitFor(() => expect(screen.getByText('State saved')).toBeInTheDocument())
@@ -118,8 +118,8 @@ it('does not submit a token after an earlier refresh completes during confirmati
 })
 
 it.each([
-  ['Import mod ZIP', 'import', 'Choose a local Factorio mod ZIP? TogetherServer will checkpoint the offline setup before copying it.'],
-  ['Undo last add-on change', 'undo', 'Undo the last mod change? TogetherServer will checkpoint the offline world first.'],
+  ['Import mod ZIP', 'import', 'Choose a local Factorio mod ZIP? The stopped world and setup will be backed up before copying.'],
+  ['Undo last add-on change', 'undo', 'Undo the last mod change? The stopped world will be backed up first.'],
   ['Mark version reviewed', 'review-version', 'Confirm you reviewed this game version and each installed add-on? This does not prove a real game join.']
 ])('confirms %s with its original warning and state token', async (label, route, description) => {
   const view = { ...base, canUndo: true, warning: 'Version needs review' }

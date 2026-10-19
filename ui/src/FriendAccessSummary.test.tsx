@@ -28,8 +28,8 @@ describe('Friend access summary and review', () => {
     expect(view.rows[0]).toMatchObject({ exception: false, effectivePermissions: { canStart: true, canStop: false, canViewLogs: false, canExtendTimer: false } })
     expect(view.rows[1]).toMatchObject({ exception: true, effectivePermissions: { canStart: false, canStop: true, canViewLogs: true, canExtendTimer: true } })
     render(<FriendAccessSummary device={device} servers={servers} nowMs={nowMs} />)
-    expect(screen.getByRole('status')).toHaveTextContent(/Start: 1\/2.*Guarded Stop: 1\/2.*Restart: 0\/2.*Add time: 1\/2.*Logs: 1\/2/)
-    expect(screen.getByText(/No owner access deadline/)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/Start: 1\/2.*Stop when empty: 1\/2.*Restart: 0\/2.*Add time: 1\/2.*Logs: 1\/2/)
+    expect(screen.getByText(/No access time limit/)).toBeInTheDocument()
   })
 
   it('keeps an active helper overlay scoped to actual assignments and actual returned grants', () => {
@@ -47,7 +47,7 @@ describe('Friend access summary and review', () => {
     expect(view.state).toBe('RefreshNeeded')
     expect(view.rows.every(row => row.effectivePermissions === null)).toBe(true)
     render(<FriendAccessSummary device={helperDevice} servers={servers} nowMs={nowMs} />)
-    expect(screen.getByText(/cannot infer them/)).toBeInTheDocument()
+    expect(screen.getByText(/Refresh to see saved permissions after temporary helper access ends/)).toBeInTheDocument()
     expect(screen.queryByText(/Start: 2\/2/)).not.toBeInTheDocument()
   })
 
@@ -58,7 +58,7 @@ describe('Friend access summary and review', () => {
     expect(view.rows[0].effectivePermissions?.canStart).toBe(false)
     expect(filterFriendPcs([expired], servers, { ...defaultFriendPcFilters, status: 'helper' }, nowMs)).toEqual([])
     render(<FriendAccessSummary device={expired} servers={servers} nowMs={nowMs} />)
-    expect(screen.getByText(/device access currently blocks its use/)).toBeInTheDocument()
+    expect(screen.getByText(/this PC is currently blocked/)).toBeInTheDocument()
   })
 
   it.each([
@@ -104,14 +104,14 @@ describe('Friend access summary and review', () => {
     expect(within(added).getByText('Added')).toBeInTheDocument()
     expect(within(added).getByRole('group', { name: 'Before permissions' })).toHaveTextContent('Not assigned')
     expect(within(added).getByRole('group', { name: 'After permissions' })).toHaveTextContent('Start')
-    expect(screen.getByText(/clears per-server exceptions/)).toBeInTheDocument()
+    expect(screen.getByText(/including any server-specific choices/)).toBeInTheDocument()
   })
 
   it('shows identical defaults once and groups unchanged servers away from the changes', () => {
     const before = { ...device, serverPermissions: [] }
     const after = { ...before, assignedProfileIds: ['one', 'two', 'three'] }
     render(<FriendAccessReview before={before} after={after} servers={servers} />)
-    const defaults = screen.getByRole('group', { name: 'Device defaults' })
+    const defaults = screen.getByRole('group', { name: 'PC permissions' })
     expect(within(defaults).getByText('Unchanged')).toBeInTheDocument()
     expect(within(defaults).getAllByText('Start')).toHaveLength(1)
     expect(within(defaults).queryByText('Before')).not.toBeInTheDocument()
@@ -125,15 +125,15 @@ describe('Friend access summary and review', () => {
     const before = { ...device, serverPermissions: [] }
     const after = { ...before, canStop: true, canViewLogs: true }
     render(<FriendAccessReview before={before} after={after} servers={servers} />)
-    const changes = within(screen.getByRole('group', { name: 'Device defaults' })).getByRole('list', { name: 'Device default permission changes' })
+    const changes = within(screen.getByRole('group', { name: 'PC permissions' })).getByRole('list', { name: 'PC permission changes' })
     expect(within(changes).getAllByRole('listitem').map(row => row.getAttribute('aria-label'))).toEqual([
-      'Guarded Stop permission change', 'Restart permission change', 'View logs permission change'
+      'Stop when empty permission change', 'Restart permission change', 'View logs permission change'
     ])
     const restart = within(changes).getByRole('listitem', { name: 'Restart permission change' })
     expect(within(restart).getByLabelText('Before: Off')).toBeInTheDocument()
     expect(within(restart).getByLabelText('After: Allowed')).toBeInTheDocument()
     expect(within(changes).queryByText('Add time')).not.toBeInTheDocument()
-    expect(screen.getByText(/owner access deadlines stay unchanged/)).toBeInTheDocument()
+    expect(screen.getByText(/Access time limits stay the same/)).toBeInTheDocument()
   })
 
   it('refuses to call projected helper permissions saved defaults in a change review', () => {
@@ -142,11 +142,11 @@ describe('Friend access summary and review', () => {
     expect(review.beforeDefaults).toBeNull()
     expect(review.rows.every(row => row.beforePermissions === null && row.change === 'ReviewNeeded')).toBe(true)
     render(<FriendAccessReview before={{ ...device, temporaryHelperActive: true }} after={device} servers={servers} />)
-    const defaults = screen.getByRole('group', { name: 'Device defaults' })
+    const defaults = screen.getByRole('group', { name: 'PC permissions' })
     const before = within(defaults).getByRole('group', { name: 'Before permissions' })
     expect(before).toHaveTextContent('Saved defaults unavailable')
     expect(within(before).queryByRole('list', { name: 'Allowed permissions' })).not.toBeInTheDocument()
-    expect(screen.getByText(/End temporary helper access and refresh/)).toBeInTheDocument()
+    expect(screen.getByText(/End temporary helper access, then refresh/)).toBeInTheDocument()
     expect(screen.getAllByText('Refresh needed')).toHaveLength(2)
   })
 
@@ -154,7 +154,7 @@ describe('Friend access summary and review', () => {
     expect(effectiveDeviceAccess({ ...device, assignedProfileIds: [] }, servers, nowMs).rows).toEqual([])
     expect(reviewFriendAccess({ ...device, assignedProfileIds: [] }, { ...device, assignedProfileIds: [] }, servers).rows).toEqual([])
     render(<FriendAccessReview before={{ ...device, assignedProfileIds: [] }} after={{ ...device, assignedProfileIds: [] }} servers={servers} />)
-    expect(screen.getByText(/Defaults alone give no server access/)).toBeInTheDocument()
+    expect(screen.getByText(/Permissions alone do not give server access/)).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Server access before and after' })).not.toBeInTheDocument()
   })
 

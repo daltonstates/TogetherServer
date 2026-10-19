@@ -15,9 +15,9 @@ export function OwnerPeerRecoveryPanel({ groupKey, profileId, sourceBranchHash, 
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const base = `/api/local/world-peers/${groupKey}/owner-recovery`
-  return <section aria-label="Owner recovery from peer history">
-    <h4>Recover a peer's history on the owner PC</h4>
-    <p>This uses the latest complete verified copy of the selected history already stored here. The original world and other running Hosts keep their histories. This does not choose the group default.</p>
+  return <section aria-label="Recover another PC's save history">
+    <h4>Recover another PC's save history here</h4>
+    <p>Use the newest complete verified copy of this history stored here. The original world and other Hosts keep their own progress. This does not change the group's default.</p>
     {!recorded && <><label><Input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)} />
       I understand another server may still be running and the saves will remain separate.</label>
       <Button disabled={!accepted || busy} onClick={async () => {
@@ -26,7 +26,7 @@ export function OwnerPeerRecoveryPanel({ groupKey, profileId, sourceBranchHash, 
           setMessage(result.message); if (result.ok) setRecorded(true) }
         catch (cause) { setMessage(errorMessage(cause)) }
         finally { setBusy(false) }
-      }}>Prepare owner recovery copy</Button></>}
+      }}>Prepare recovery copy</Button></>}
     {message && <DismissibleNotice scope={groupKey} role="status">{message}</DismissibleNotice>}
     {recorded && <SharedWorldSeparateRoutePanel profileId={profileId} separateCopies={1} expanded apiBase={base}
       onBrowseServerFile={onBrowseServerFile} onOpenSeparateHostControls={onOpenHost} />}

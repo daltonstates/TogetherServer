@@ -39,13 +39,14 @@ describe('requestJson', () => {
     })
   })
 
-  it('keeps the structured error code visible to the user', async () => {
+  it('shows the error message while preserving its code for the app', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(409,
       { code: 'FriendMode', message: 'Switch to My server first.' })))
 
     const error = await requestJson('/api/test', parseBasicResult).catch(reason => reason as unknown)
 
-    expect(errorMessage(error)).toBe('FriendMode: Switch to My server first.')
+    expect(errorMessage(error)).toBe('Switch to My server first.')
+    expect(error).toMatchObject({ status: 409, code: 'FriendMode' })
   })
 
   it('sends the local-only header from the sensitive GET helper', async () => {

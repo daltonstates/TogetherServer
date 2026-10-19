@@ -20,17 +20,17 @@ export function PeerLiveTestCopies({ groupKey }: { groupKey: string }) {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   return <details><summary>Private live-save test copies</summary>
-    <p>These copies are separate from playable recovery history. Test them with a disposable game setup, then give the exact test ID and observations to the Host.</p>
+    <p>These private copies cannot be used for recovery. Test them in a separate game setup, then give the Host the test ID and your results.</p>
     <Button className="secondary" disabled={busy} onClick={async () => {
       setBusy(true)
       try { setSaved(await getLocalJson(`/api/local/world-peers/${groupKey}/live-tests`, copies)); setMessage('') }
       catch (cause) { setMessage(errorMessage(cause)) }
       finally { setBusy(false) }
     }}>Show private test copies on this PC</Button>
-    {saved?.length === 0 && <p>No completed private test is stored here yet. Receive permission and local save consent are required.</p>}
+    {saved?.length === 0 && <p>No completed private test is stored here yet. You need Receive permission and must allow saves on this PC.</p>}
     {saved?.map(copy => <section key={copy.testId}>
       <p>Test {copy.testId} · save {copy.versionHash.slice(0, 12)}</p>
-      <p>{copy.message}</p><p>Private payload folder: <code>{copy.payloadDirectory}</code></p>
+      <p>{copy.message}</p><p>Private test folder: <code>{copy.payloadDirectory}</code></p>
       <Button className="text-button" onClick={() => void navigator.clipboard.writeText(copy.payloadDirectory)
         .then(() => setMessage('Private test folder copied.')).catch(() => setMessage('Select the folder text to copy it manually.'))}>Copy test folder</Button>
     </section>)}

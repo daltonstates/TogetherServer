@@ -117,7 +117,7 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
         throw new Error('This settings draft has an unsupported format.')
       const saved = value as Record<string, unknown>
       if (saved.version !== 1 || saved.kind !== view.kind || typeof saved.maximumPlayers !== 'string' || saved.maximumPlayers.length > 12)
-        throw new Error('This draft does not match this game settings editor.')
+        throw new Error('This draft belongs to different game settings.')
       const parsed = parseGameSettings({ ...view, settings: saved.settings })
       setDraft(parsed.settings)
       setMaximumPlayers(saved.maximumPlayers)
@@ -148,12 +148,12 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
     if (pending || busy) return
     const dirtyLists = [...listGuards.current.values()].filter(guard => guard.dirty)
     if ((changed || dirtyLists.length > 0) && !(await confirmCurrent({ title: 'Reload game settings?',
-      description: 'Reloading replaces unsaved settings and player lists. Keep their protected drafts and reload?', confirmLabel: 'Keep drafts and reload' }))) return
+      description: 'Save drafts of your unsaved settings and player lists, then reload?', confirmLabel: 'Keep drafts and reload' }))) return
     setPending('reload')
     setNotice(null)
     try {
       if ((changed && !(await protectedDraft.persistNow())) || (await Promise.all(dirtyLists.map(guard => guard.flush()))).some(saved => !saved)) {
-        setNotice({ bad: true, text: 'The drafts could not all be kept. Your editors remain unchanged; review the draft message or discard edits deliberately.' }); return
+        setNotice({ bad: true, text: 'Could not save all drafts. Your edits are still here. Review the draft warning or discard the edits.' }); return
       }
       accept(await getLocalJson(base, parseGameSettings))
       if (changed) await protectedDraft.reloadRecovery()
@@ -278,7 +278,7 @@ function GameSettingsContent({ profileId, state, maintenance, busy, recoveryBloc
         onConfirmationTargetChange={updateListConfirmationTarget} summary={list} kind={view.kind} editAllowed={allowed} blocked={busy || !!pending || recoveryBlocked} />)}
     </div>}
     {view && (view.settings !== null || view.lists.length > 0) && <>
-      <p className="helper-text">Each save and Undo makes an offline setup checkpoint first. Undo restores the previous version of that file.</p>
+      <p className="helper-text">Save and Undo back up the stopped world and setup first. Undo restores the previous file.</p>
       {recoveryBlocked ? <DismissibleNotice as="p" scope={profileId} className="helper-text">Resolve local recovery before changing game settings.</DismissibleNotice> :
         (!maintenance || state !== 'Offline') && <div className="next-action"><span>{!maintenance ?
           'Prepare maintenance before editing settings or access lists.' : 'Stop or resolve this server before editing settings or access lists.'}</span>
@@ -381,7 +381,7 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
   const reload = async () => {
     if (pending || blocked) return
     if (dirty && !(await confirmCurrent({ title: 'Reload player list?',
-      description: 'Reloading replaces this unsaved player list. Keep the protected draft and reload?', confirmLabel: 'Keep draft and reload' }))) return
+      description: 'Save a draft of this player list, then reload?', confirmLabel: 'Keep draft and reload' }))) return
     setPending('reload')
     setNotice(null)
     try {
@@ -495,7 +495,7 @@ function GameAccessListEditor({ base, summary, kind, editAllowed, blocked, profi
           }}>Review pasted players</Button>
           {bulkReview && <section aria-label="Review pasted players"><h5>{bulkReview.length} players to add</h5>
             <ul>{bulkReview.map((entry, index) => <li key={index}>{entry.name ?? entry.identity}{entry.name && entry.identity ? ` · ${entry.identity}` : ''}</li>)}</ul>
-            <p>These entries join the unsaved list. Review the exact list changes before saving to the game.</p>
+            <p>These players will be added to your draft. Review the changes before saving.</p>
             <Button className="secondary" disabled={!allowed || protectedDraft.recovered !== null} onClick={() => { if (!accessListIssue(kind, [...entries, ...bulkReview])) { update([...entries, ...bulkReview]); setBulkText('') } }}>Add reviewed players to draft</Button>
           </section>}
         </details>
@@ -523,8 +523,8 @@ function PreviewChanges({ review, disabled, pending, onSave }: {
       <div key={`${change.key}-${index}`}><dt>{change.label}</dt><dd>
         <span>Before: </span><code>{change.before ?? '(absent)'}</code><br />
         <span>After: </span><code>{change.after ?? '(removed)'}</code></dd></div>)}</dl>}
-    <p className="helper-text">Saving first checkpoints the offline world and reviewed setup. Start afterward and check the changed behavior in the game.</p>
-    <Button disabled={disabled} onClick={onSave}>{pending ? 'Saving…' : 'Save with checkpoint'}</Button>
+    <p className="helper-text">Saving backs up the stopped world and supported settings first. Then start the server and check your changes in the game.</p>
+    <Button disabled={disabled} onClick={onSave}>{pending ? 'Saving…' : 'Back up and save'}</Button>
   </section>
 }
 

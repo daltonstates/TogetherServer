@@ -5,7 +5,7 @@ import { currentOutsideResult, type InternetRouteCheck, type PortDiagnostics } f
 
 function gamePorts(profile: Profile, observed: PortDiagnostics['games'][number] | undefined) {
   if (profile.kind === 'Valheim' && profile.crossplay) return 'Valheim Crossplay uses a relay; game port forwarding is not required.'
-  if (profile.kind === 'Fixture') return 'The fixture has no outside game route.'
+  if (profile.kind === 'Fixture') return 'This test server has no real game connection.'
   if (profile.kind === 'Custom') return [
     `${profile.custom?.primaryProtocol ?? 'UDP'} ${profile.gamePort}`,
     ...(profile.custom?.additionalPorts ?? []).map(port => `${port.protocol} ${port.port}${port.label ? ` (${port.label})` : ''}`)
@@ -31,38 +31,38 @@ export function HostStartConnectionNotice({ profile, ports, routeCheck, onOpenCo
     control.bindScope !== 'Loopback only'
   const outside = currentOutsideResult(control, routeCheck)
   const controlText = !control
-    ? 'The Friend app control route has not been checked in this setup review.'
+    ? 'The Friend app connection has not been checked yet.'
     : control.state === 'Idle' || control.state === 'Off'
       ? 'Friend app access has not been opened for this server.'
     : control.state !== 'Open on PC'
-      ? `Friend app TCP ${control.port} is not listening on this PC.`
+      ? `Friend app port ${control.port} is not open on this PC.`
       : outside?.state === 'Reachable'
-        ? `An outside TCP check reached Friend app port ${control.port}. Pairing and the game route still need separate checks.`
+        ? `The internet test reached Friend app port ${control.port}. A Friend still needs to connect and join the game.`
         : outside?.state === 'Not reachable'
-          ? `An outside TCP check could not reach Friend app port ${control.port}. Review the route before inviting anyone.`
-          : `Friend app TCP ${control.port} is listening locally. No current outside TCP checker result is shown here; a signed successor route check is evaluated separately.`
+          ? `The internet test could not reach Friend app port ${control.port}. Check the connection before inviting friends.`
+          : `Friend app port ${control.port} is open on this PC. Internet access is untested here; shared hosting has a separate connection check.`
   const needsAttention = (control && !['Idle', 'Off', 'Open on PC'].includes(control.state)) ||
     outside?.state === 'Not reachable'
   return <DismissibleNotice className={`start-connection-notice${needsAttention ? ' attention' : ''}`} scope={profile.id}
     role="note" aria-label="Connection check before Start">
     <strong>Before starting</strong>
-    <p><b>Game:</b> {gamePorts(profile, game)} Local port availability is checked again at Start.
-      {profile.kind !== 'Fixture' && ' Incoming game access can only be tested after the server is listening; then check from another network and make a real join.'}</p>
+    <p><b>Game:</b> {gamePorts(profile, game)} Ports are checked again before starting.
+      {profile.kind !== 'Fixture' && ' After starting, test joining from another network.'}</p>
     <p><b>Friend app:</b> {controlText}</p>
     {profile.kind === 'Factorio' && <small>Keep the separate RCON port private; never forward it.</small>}
     {profile.kind === 'Custom' && <small>Only expose ports required for players to join; keep admin ports private.</small>}
     {(onOpenConnection || canTestControl) && <div className="start-connection-actions">
       {canTestControl && <Button className="secondary" disabled={testingControl}
-        onClick={onTestControl}>{testingControl ? 'Testing outside TCP…' : 'Test Friend app TCP from internet'}</Button>}
+        onClick={onTestControl}>{testingControl ? 'Testing internet access…' : 'Test Friend app port from internet'}</Button>}
       {onOpenConnection && <Button className="text-button" onClick={onOpenConnection}>Review connection</Button>}
     </div>}
-    {canTestControl && <small>The TCP check uses portchecker.io and does not test game ports or pairing.</small>}
+    {canTestControl && <small>Uses portchecker.io to test the app port. It does not test pairing or game access.</small>}
   </DismissibleNotice>
 }
 
 export function FriendStartConnectionNotice() {
   return <DismissibleNotice className="start-connection-notice" role="note" aria-label="Connection check before Start">
     <strong>Before starting</strong>
-    <p>Your Friend app has reached the Host control connection. The Host checks local game ports at Start. This does not confirm the game route; after Start, check the game connection from this PC and make a real join.</p>
+    <p>Your app can reach the Host. After the server starts, test joining the game from this PC.</p>
   </DismissibleNotice>
 }

@@ -115,17 +115,17 @@ export function ServerAddOnsPanel({ profileId, state, maintenance, busy, recover
           {(item.type === 'Factorio mod' || item.type === 'behavior pack' || item.type === 'resource pack') &&
             <Button className="secondary" disabled={!allowed}
             onClick={() => void change('state', { expectedStateToken: view.stateToken, key: item.key,
-              enabled: !item.enabled }, `${item.enabled ? 'Disable' : 'Enable'} ${item.name}? An offline complete setup checkpoint will be made first.`)}>
+              enabled: !item.enabled }, `${item.enabled ? 'Disable' : 'Enable'} ${item.name}? A backup of the stopped world and setup will be made first.`)}>
             <Icon name={item.enabled ? 'close' : 'check'} />{item.enabled ? 'Disable' : 'Enable'}</Button>}</div>)}</div></> :
-        <p className="server-files-empty"><Icon name="game" />No managed add-ons found for this server.</p>}
+        <p className="server-files-empty"><Icon name="game" />No add-ons found for this server.</p>}
       <div className="actions server-addons-actions">
         {view.canImport && <Button disabled={!allowed}
           onClick={() => void change('import', { expectedStateToken: view.stateToken },
-            `Choose a local ${view.importType === 'BedrockPack' ? 'Bedrock .mcpack' : 'Factorio mod ZIP'}? TogetherServer will checkpoint the offline setup before copying it.`)}>
+            `Choose a local ${view.importType === 'BedrockPack' ? 'Bedrock .mcpack' : 'Factorio mod ZIP'}? The stopped world and setup will be backed up before copying.`)}>
             <Icon name="upload" />{view.importType === 'BedrockPack' ? 'Import world pack' : 'Import mod ZIP'}</Button>}
         {view.canUndo && <Button className="secondary" disabled={!allowed}
           onClick={() => void change('undo', { expectedStateToken: view.stateToken },
-            'Undo the last mod change? TogetherServer will checkpoint the offline world first.')}><Icon name="undo" />Undo last add-on change</Button>}
+            'Undo the last mod change? The stopped world will be backed up first.')}><Icon name="undo" />Undo last add-on change</Button>}
         {view.warning && <Button className="secondary" disabled={!allowed}
           onClick={() => void change('review-version', { expectedStateToken: view.stateToken },
             'Confirm you reviewed this game version and each installed add-on? This does not prove a real game join.')}><Icon name="eye" />Mark version reviewed</Button>}

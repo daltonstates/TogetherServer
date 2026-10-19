@@ -1,13 +1,13 @@
 /** Additional world-tool review states. Pure synthetic responses; no IO or game actions. */
 const backupsSection = ['Selected server sections', 'backups', 'Backups'];
 const sharingSteps = [{ nav: 'World protection sections', button: 'Sharing & hosting' }];
-const liveSteps = [...sharingSteps, { summary: 'Live-save setup & acceptance' }, { summary: /Automatic recovery copies/ }];
+const liveSteps = [...sharingSteps, { summary: 'Test sharing while playing' }, { summary: /Automatic recovery copies/ }];
 const rehearsalSteps = [
   { summary: 'Test a copy in the game', within: '.protection-backup-library .connection-doctor' },
 ];
 const ownerSteps = [
-  ...sharingSteps, { summary: 'Peer sessions & connections' },
-  { summary: 'Save histories and copy claims', within: '.world-peer-panel' },
+  ...sharingSteps, { summary: 'Other Hosts & connections' },
+  { summary: 'Save histories and reported copies', within: '.world-peer-panel' },
   { button: 'Recover this history on the owner PC', first: true },
   { check: 'I understand another server may still be running and the saves will remain separate.' },
   { button: 'Prepare owner recovery copy' }, { button: 'Show recovery copies on this PC' },
@@ -18,7 +18,7 @@ const region = name => ({ role: 'region', name });
 
 export const extraCases = [
   hostCase('world-backup-review-tools', 'host-world-review-offline', [{ button: 'Review backup', first: true }],
-    { css: '.backup-library-review-tools.is-open', text: 'Protection results' }),
+    { css: '.backup-library-review-tools.is-open', text: 'Backup checks' }),
   hostCase('world-backup-compare-two', 'host-world-review-offline', [
     { check: 'Compare Before the weekend' }, { check: 'Compare Earlier checkpoint' },
   ], region('Backup comparison')),
@@ -28,40 +28,40 @@ export const extraCases = [
   ], region('Review Restore')),
   hostCase('world-rehearsal-results', 'host-world-rehearsal-offline', rehearsalSteps, region('World load steps')),
   hostCase('world-rehearsal-exact-copy', 'host-world-rehearsal-offline', [
-    ...rehearsalSteps, { summary: 'Exact copy and setup', within: '.protection-backup-library .connection-doctor' },
+    ...rehearsalSteps, { summary: 'Copy and setup details', within: '.protection-backup-library .connection-doctor' },
   ], { css: '[aria-label="World load steps"] details[open]' }),
   hostCase('world-rehearsal-cleanup-confirmation', 'host-world-rehearsal-offline', [
-    ...rehearsalSteps, { button: 'Clean up this disposable copy' },
-  ], { role: 'dialog', name: 'Clean up disposable copy?' }),
+    ...rehearsalSteps, { button: 'Delete this test copy' },
+  ], { role: 'dialog', name: 'Delete test copy?' }),
   hostCase('world-rehearsal-reported-results', 'host-world-rehearsal-confirmed-offline', rehearsalSteps, region('World load steps')),
   hostCase('world-rehearsal-isolated-controls', 'host-world-rehearsal-isolated-offline', rehearsalSteps,
-    { css: '[aria-label="World load steps"]', text: 'Start this isolated copy.' }),
+    { css: '[aria-label="World load steps"]', text: 'Start this test copy.' }),
   hostCase('world-owner-recovery-local-fields', 'host-peers-world-owner-prepared', [
-    ...ownerSteps, { summary: 'Recovery steps and route checks', within: '.shared-separate-copy' },
-    { summary: 'Managed server folder and source settings', within: '.shared-separate-copy' },
+    ...ownerSteps, { summary: 'Recovery steps and connection checks', within: '.shared-separate-copy' },
+    { summary: 'Server folder and shared settings', within: '.shared-separate-copy' },
   ], region('Host this separate copy')),
   hostCase('world-owner-recovery-restored-checks', 'host-peers-world-owner-restored', ownerSteps, region('Host this separate copy')),
   hostCase('world-owner-recovery-route-evidence', 'host-peers-world-owner-route', [
-    ...ownerSteps, { summary: 'Signed recovery proof' },
-  ], { css: '[aria-label="Owner recovery from peer history"]', text: 'Another approved PC observed the pinned control route.' }),
+    ...ownerSteps, { summary: 'Recovery connection details' },
+  ], { css: '[aria-label="Owner recovery from peer history"]', text: 'Another approved PC reached TogetherServer here and checked its identity.' }),
   hostCase('world-owner-recovery-manual-start', 'host-peers-world-owner-ready', ownerSteps,
     { css: '[aria-label="Host this separate copy"]', text: 'Before starting this recovery copy' }),
   hostCase('world-live-capture-confirmation', 'host-world-live-empty', [
-    ...liveSteps, { button: 'Capture private test save' },
-  ], { role: 'dialog', name: 'Capture a private test save?' }),
+    ...liveSteps, { button: 'Make private test save' },
+  ], { role: 'dialog', name: 'Make a private test save?' }),
   hostCase('world-live-capture-progress', 'host-world-live-capturing', liveSteps,
     { css: '.live-save-installation-body', text: 'Waiting for a fresh game save' }),
   hostCase('world-live-artifact-transfer', 'host-world-live-artifact', liveSteps,
     { css: '.live-save-installation-body', text: 'Transfer this private copy to a different approved PC.' }),
   ...['load', 'change', 'restart'].map(stage => hostCase(`world-live-${stage}-confirmation`, `host-world-live-${stage}`, [
-    ...liveSteps, { button: `I verified ${stage} in the game` },
-  ], { role: 'dialog', name: `Confirm actual game ${stage}?` })),
+    ...liveSteps, { button: ({ load: 'I loaded this copy', change: 'I saved a visible change', restart: 'The change survived restart' })[stage] },
+  ], { role: 'dialog', name: ({ load: 'Confirm: Load in the game?', change: 'Confirm: Visible saved change?', restart: 'Confirm: Change survived restart?' })[stage] })),
   hostCase('world-live-six-stage-evidence', 'host-world-live-accepted', [
-    ...liveSteps, { summary: 'Evidence and installation details' },
-  ], { css: '.live-save-disclosure[open]', text: 'App evidence covers save, copy and transfer' }),
+    ...liveSteps, { summary: 'Test results and installation details' },
+  ], { css: '.live-save-disclosure[open]', text: 'The app checks saving, copying and transfer.' }),
   hostCase('world-live-private-history', 'host-world-live-artifact', [
     ...liveSteps, { summary: 'Private test history' },
-  ], { css: '.live-save-test-history', text: 'ArtifactReady' }),
+  ], { css: '.live-save-test-history', text: 'Copy ready' }),
   { id: 'world-private-test-received-copy', scenario: 'friend-peers-world-test-copies', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], steps: [
       { summary: 'Private live-save test copies', within: '.world-peer-panel' },

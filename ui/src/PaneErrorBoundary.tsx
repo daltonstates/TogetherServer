@@ -31,9 +31,9 @@ export class PaneErrorBoundary extends Component<Props, State> {
     return <section className="pane-error">
       <DismissibleNotice role="alert" scope={String(this.props.resetKey ?? this.props.title)} noticeKey={this.state.attempt} dismissLabel="Dismiss section error">
       <strong>{this.props.title} could not be shown</strong>
-      <p>The rest of TogetherServer is still available. Try this section again; no server action was taken.</p>
+      <p>This section could not load. Try again. Your server has not changed.</p>
       </DismissibleNotice>
-      <Button className="secondary" onClick={() => this.setState(current => ({ failed: false, attempt: current.attempt + 1 }))}>Try section again</Button>
+      <Button className="secondary" onClick={() => this.setState(current => ({ failed: false, attempt: current.attempt + 1 }))}>Try again</Button>
     </section>
   }
 }

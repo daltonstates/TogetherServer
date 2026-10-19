@@ -92,21 +92,21 @@ describe('PlayersPanel', () => {
       expect(summary).toBeVisible()
       expect(summary.closest('details')).not.toHaveAttribute('open')
     }
-    expect(screen.getByText('Valheim query or verified server-log count')).not.toBeVisible()
-    expect(screen.getByText('Observed just now.')).not.toBeVisible()
+    expect(screen.getByText('Valheim status or checked server log')).not.toBeVisible()
+    expect(screen.getByText('Checked just now.')).not.toBeVisible()
     expect(screen.getByText('10 from the Host · 15 from Friends.')).not.toBeVisible()
-    expect(screen.getByText(/partial or contradictory log stays Unknown/)).not.toBeVisible()
+    expect(screen.getByText(/Missing information leaves the count unavailable/)).not.toBeVisible()
     expect(screen.getByText(/increased from 1 to 2/i)).not.toBeVisible()
     expect(screen.queryByText('Private player name')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Count source & timer details', { selector: 'summary' }))
-    expect(screen.getByText('Valheim query or verified server-log count')).toBeVisible()
-    expect(screen.getByText('Observed just now.')).toBeVisible()
+    expect(screen.getByText('Valheim status or checked server log')).toBeVisible()
+    expect(screen.getByText('Checked just now.')).toBeVisible()
     expect(screen.getByText('10 from the Host · 15 from Friends.')).toBeVisible()
     fireEvent.click(screen.getByText('Recent count changes', { selector: 'summary' }))
-    expect(screen.getByText(/does not store player identities/i)).toBeVisible()
+    expect(screen.getByText(/Only player counts are recorded here, without names/i)).toBeVisible()
     expect(screen.getByText(/increased from 1 to 2/i)).toBeVisible()
-    expect(screen.getByText(/partial or contradictory log stays Unknown/)).not.toBeVisible()
+    expect(screen.getByText(/Missing information leaves the count unavailable/)).not.toBeVisible()
   })
 
   it('warns after repeated completed failures while keeping Unknown fail-closed and refreshable', () => {
@@ -137,7 +137,7 @@ describe('PlayersPanel', () => {
     expect(health).not.toHaveBeenCalled()
     expect(help).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('Player-count help', { selector: 'summary' }))
-    expect(screen.getByText(/partial or contradictory log stays Unknown/)).toBeVisible()
+    expect(screen.getByText(/Missing information leaves the count unavailable/)).toBeVisible()
     expect(logs).not.toHaveBeenCalled()
     expect(health).not.toHaveBeenCalled()
     expect(help).not.toHaveBeenCalled()
@@ -156,10 +156,10 @@ describe('PlayersPanel', () => {
     expect(screen.getByLabelText('Player count unavailable')).toBeVisible()
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
-    expect(screen.getByText(/cannot verify readiness or report a trusted player count/)).not.toBeVisible()
+    expect(screen.getByText(/cannot confirm readiness or count players/)).not.toBeVisible()
     fireEvent.click(screen.getByText('Player-count help', { selector: 'summary' }))
-    expect(screen.getByText(/cannot verify readiness or report a trusted player count/)).toBeVisible()
-    expect(screen.getByText(/Refresh cannot remove this driver limitation/)).toBeVisible()
+    expect(screen.getByText(/cannot confirm readiness or count players/)).toBeVisible()
+    expect(screen.getByText(/Friend Stop and automatic shutdown stay off/)).toBeVisible()
   })
 
   it('rejects missing/future observation times and display-only Custom counts even when the old count is zero', () => {
@@ -188,7 +188,7 @@ describe('PlayersPanel', () => {
     expect(within(screen.getByRole('group', { name: 'Players online' })).getByText('0 online')).toBeVisible()
     expect(within(screen.getByRole('group', { name: 'Empty-server timer' })).getByText('About 5 min')).toBeVisible()
     expect(screen.getByText('Empty-server countdown running.')).toBeVisible()
-    expect(screen.getByText('The empty-server deadline is in about 5 minutes.')).not.toBeVisible()
+    expect(screen.getByText('Shutdown is due in about 5 minutes.')).not.toBeVisible()
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
   })
 
@@ -196,14 +196,14 @@ describe('PlayersPanel', () => {
     render(<PlayersPanel run={{ ...run, onlinePlayers: 0, autoShutdownAtUtc: '2026-09-29T12:00:03Z' }}
       nowMs={Date.parse('2026-09-29T12:00:04Z')} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
     expect(screen.getByText('Deadline reached')).toBeVisible()
-    expect(screen.getByText('The Host must recheck players before Stop.')).toBeVisible()
+    expect(screen.getByText('The Host checks for players before stopping.')).toBeVisible()
   })
 
   it('shows an invalid deadline as unavailable without a numeric countdown', () => {
     render(<PlayersPanel run={{ ...run, onlinePlayers: 0, autoShutdownAtUtc: 'invalid-deadline' }}
       nowMs={Date.parse('2026-09-29T12:00:04Z')} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
     expect(within(screen.getByRole('group', { name: 'Empty-server timer' })).getByText('Unavailable')).toBeVisible()
-    expect(screen.getByText('A valid countdown deadline is not available.')).toBeVisible()
+    expect(screen.getByText('Shutdown time unavailable.')).toBeVisible()
     expect(screen.queryByText(/About \d+ min/)).not.toBeInTheDocument()
     expect(screen.queryByText('Deadline reached')).not.toBeInTheDocument()
   })
@@ -238,7 +238,7 @@ describe('PlayersPanel', () => {
     rerender(<PlayersPanel run={initial} nowMs={now + 1000} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(sourceSummary.closest('details')).toHaveAttribute('open')
-    expect(screen.getByText('Observed 5 seconds ago.')).toBeVisible()
+    expect(screen.getByText('Checked 5 seconds ago.')).toBeVisible()
     expect(refresh).toHaveFocus()
     rerender(<PlayersPanel run={initial} nowMs={now + 7000} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()

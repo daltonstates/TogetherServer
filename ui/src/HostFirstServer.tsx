@@ -18,7 +18,7 @@ export function HostFirstServer({ busy, resume, recovered, recovery, onCreate, o
       <p>Create a server on this PC, or connect with a code from a friend.</p></div></div>
     {recovery}
     {resume && <div className="host-setup-continuation"><strong>Setup in progress</strong>
-      <p>Your unfinished setup is still here. Enter the game password again before saving.</p>
+      <p>Continue where you left off. You’ll need to enter the game password again.</p>
       <Button disabled={busy} onClick={onResume}>Continue setup</Button></div>}
     <div className="actions host-first-server-actions">
       {!resume && <Button className={recovered ? 'secondary' : undefined} disabled={busy} onClick={onCreate}>

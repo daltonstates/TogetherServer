@@ -10,10 +10,10 @@ type OverviewRow = {
   deadline: string | null; backup: string; warning: string; priority: number; destination: ActivityDestination
 }
 const sourceLabels: Record<string, string> = {
-  FixtureReady: 'Fixture count', ValheimLogReady: 'Valheim query or owned log', ValheimReady: 'Valheim query',
-  MinecraftLocalStatus: 'Minecraft status query', FactorioReady: 'Factorio RCON count',
-  CustomCertifiedReady: 'Owner-certified Custom count', CustomScriptReady: 'Custom display only',
-  ObservationStale: 'Stale observation', ObservationPending: 'Observation pending'
+  FixtureReady: 'Test count', ValheimLogReady: 'Valheim status or server log', ValheimReady: 'Valheim query',
+  MinecraftLocalStatus: 'Minecraft status', FactorioReady: 'Factorio admin connection',
+  CustomCertifiedReady: 'Custom count · Owner tested', CustomScriptReady: 'Custom display only',
+  ObservationStale: 'Count out of date', ObservationPending: 'Waiting for a count'
 }
 function age(value: string | null | undefined, nowMs: number) {
   const timestamp = value ? Date.parse(value) : NaN
@@ -74,8 +74,8 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
     return {
       id: profile.id, name: profile.name, state, index, priority, destination, warning, active: isActiveProfile(run?.state),
       players: trusted ? `${run!.onlinePlayers} online` : 'Unknown',
-      source: sourceLabels[run?.playerObservationSource ?? ''] ?? (trusted ? 'Game server report' : 'No trusted source'),
-      freshness: observedAge === null ? 'Observation unavailable' : stale ? `Stale · ${elapsed(observedAge)}` : `Observed ${elapsed(observedAge)}`,
+      source: sourceLabels[run?.playerObservationSource ?? ''] ?? (trusted ? 'Game server report' : 'Count source unavailable'),
+      freshness: observedAge === null ? 'Last checked time unavailable' : stale ? `Out of date · ${elapsed(observedAge)}` : `Checked ${elapsed(observedAge)}`,
       deadline: trusted && run!.onlinePlayers === 0 && run!.autoShutdownAtUtc ? run!.autoShutdownAtUtc : null,
       backup: profile.kind === 'Custom' ? 'Backup unsupported' : !backup ? 'Status unavailable' :
         backup.completedCount === 0 ? 'No completed backup' : backupAge === null ? 'Completed · age unavailable' : `Completed ${elapsed(backupAge)}`
@@ -90,15 +90,15 @@ export function AllServerOverview({ snapshot, selectedProfileId, nowMs, error = 
   const rows = snapshot ? allServerRows(snapshot, nowMs) : []
   return <section className="all-server-overview" aria-label="All servers">
     <div className="all-server-heading"><h2>All servers</h2><span>{rows.filter(row => row.priority > 0).length} need attention</span></div>
-    {error && <DismissibleNotice as="p" role="alert" noticeKey={error}>Overview could not refresh. Showing the last available snapshot; stale counts are Unknown.</DismissibleNotice>}
+    {error && <DismissibleNotice as="p" role="alert" noticeKey={error}>Could not refresh. Showing the last update; older player counts are unavailable.</DismissibleNotice>}
     {!snapshot ? <p role="status">Loading saved servers…</p> : rows.length === 0 ? <p>No saved servers yet. Add a server to begin.</p> :
       <div className="all-server-rows">{rows.map(row => <article key={row.id} className={row.id === selectedProfileId ? 'all-server-row selected' : 'all-server-row'}>
         <div className="all-server-identity"><strong>{row.name}</strong><span>{row.state}</span>{row.warning && <small>{row.warning}</small>}</div>
         <div><small>Players</small><strong>{row.players}</strong><span>{row.source}</span><small>{row.freshness}</small></div>
-        <div><small>Shutdown deadline</small>{row.deadline ? <time dateTime={row.deadline}>{new Date(row.deadline).toLocaleString()}</time> : <span>No current deadline</span>}</div>
+        <div><small>Shutdown time</small>{row.deadline ? <time dateTime={row.deadline}>{new Date(row.deadline).toLocaleString()}</time> : <span>No countdown</span>}</div>
         <div><small>Latest completed backup</small><span>{row.backup}</span></div>
         <Button className="secondary" onClick={() => onOpen(row.destination)} aria-label={`${row.destination.label}: ${row.name}`}>{row.destination.label}</Button>
       </article>)}</div>}
-    <small className="evidence-boundary">Counts and backup history are observations. Server actions use their existing Host safety checks.</small>
+    <small className="evidence-boundary">TogetherServer checks the current server state before acting.</small>
   </section>
 }

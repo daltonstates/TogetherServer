@@ -33,7 +33,7 @@ export function friendConnectionExplanation(snapshot: FriendSnapshot, nowMs = Da
   }
   if (code === 'HostIdentityMismatch') return {
     state: 'identity', title: 'Host identity needs review', currentAccess: false,
-    detail: 'Ask the Host to review its secure identity. Keep the saved pin check enabled.'
+    detail: 'Ask the Host to review its secure identity. Keep the saved certificate check enabled.'
   }
   if (['CredentialExpired', 'CredentialRejected', 'HostAccessDenied'].includes(code ?? '')) return {
     state: 'credential', title: 'Saved access needs review', currentAccess: false,
@@ -42,34 +42,34 @@ export function friendConnectionExplanation(snapshot: FriendSnapshot, nowMs = Da
   if (!['Connected', 'Disabled', 'Update required'].includes(snapshot.state)
     || ['HostPortClosed', 'HostPortTimedOut', 'HostTimedOut', 'FriendNetworkUnavailable', 'HostUnreachable', 'InviteAddressInvalid', 'Disconnected'].includes(code ?? '')) return {
     state: 'disconnected', title: 'Host connection unavailable', currentAccess: false,
-    detail: 'Host status and controls are Unknown. Retry the saved connection; ask the Host to check its listener and network route.'
+    detail: 'Host status and controls are Unknown. Retry the saved connection. Ask the Host to check that Friend connections are on and the network settings are correct.'
   }
   const freshness = friendCheckFreshness(snapshot.lastConnectedUtc, nowMs)
   if (freshness !== 'current') return {
-    state: freshness === 'stale' ? 'stale' : 'unknown', title: freshness === 'stale' ? 'Host check is stale' : 'Host check time is unknown', currentAccess: false,
-    detail: 'Retry the saved connection for fresh authenticated status. Old server cards cannot confirm current permissions or readiness.'
+    state: freshness === 'stale' ? 'stale' : 'unknown', title: freshness === 'stale' ? 'Host status is out of date' : 'Host check time is unknown', currentAccess: false,
+    detail: 'Retry the saved connection for current status. Old server cards cannot confirm your current permissions or whether the server is ready.'
   }
   if (snapshot.state === 'Update required' || snapshot.protocolCompatible !== true) return {
     state: 'update', title: snapshot.protocolCompatible === false || snapshot.state === 'Update required' ? 'App update required' : 'App compatibility unknown', currentAccess: false,
-    detail: 'Check both app versions before requesting controls. A game version match does not verify the app protocol.'
+    detail: 'Check that both TogetherServer apps are up to date. Matching game versions do not mean the apps can communicate.'
   }
   if (snapshot.state === 'Disabled' || !snapshot.remoteControlsEnabled) return {
     state: 'paused', title: 'Controls paused by the Host', currentAccess: true,
-    detail: 'The Host must turn remote controls back on. Authenticated status and separately granted chat/log access may continue; you can join a running game.'
+    detail: 'The Host must turn remote controls back on. Status and separately granted chat and log access may continue. You can still join a running game.'
   }
   return { state: 'connected', title: 'Host connection current', currentAccess: true,
-    detail: 'This saved connection is authenticated. Server readiness, game reachability and each permission are checked separately.' }
+    detail: 'Your saved connection was accepted. Server readiness, game connection and each permission are checked separately.' }
 }
 
 export function friendServerStateExplanation(state: string): string {
   switch (state) {
     case 'Offline': return 'The game server is stopped. Start it if permitted, or ask the Host.'
-    case 'Starting': return 'The Host is starting the server. Wait for its readiness observation before joining.'
+    case 'Starting': return 'The Host is starting the server. Wait until it reports Ready before joining.'
     case 'Ready': return 'The Host reports readiness. Open the game and join; this is not proof that a player joined.'
-    case 'Listening': return 'A listener is detected. Game readiness, player count and a real join remain unverified.'
+    case 'Listening': return 'The game port is open. Game readiness, player count and a real join have not been verified.'
     case 'Stopping': return 'The Host is stopping the server. Wait for the confirmed exit before another Start.'
-    case 'Failed': return 'The Host reported a problem. Open Connection Doctor or ask the Host to review startup.'
-    default: return 'Server state is Unknown. Refresh status or ask the Host; Unknown cannot authorize Stop.'
+    case 'Failed': return 'The Host reported a problem. Open Connection help or ask the Host to review startup.'
+    default: return 'Server state is Unknown. Refresh status or ask the Host. Stop is blocked while the state is unknown.'
   }
 }
 
@@ -89,11 +89,11 @@ export function effectiveFriendPermissions(snapshot: FriendSnapshot, profile: Pu
   const labels = [grants.start && 'Start', grants.stop && 'Stop', grants.extend && 'Add time', grants.logs && 'View logs'].filter(Boolean)
   const blocked = !assigned ? 'The Host no longer assigns this server to this PC.' : !connection.currentAccess ? connection.detail
     : connection.state === 'paused' ? 'The Host must resume remote controls.' : assigned.maintenanceEnabled
-      ? 'The Host paused lifecycle controls for maintenance.' : assigned.operation?.state === 'Pending' || assigned.operation?.state === 'Running'
+      ? 'The Host paused remote server controls for maintenance.' : assigned.operation?.state === 'Pending' || assigned.operation?.state === 'Running'
         ? 'Wait for the current server operation to finish.' : null
   const action = (reason: string | null): FriendActionAvailability => ({ available: reason === null, reason: reason ?? 'Available; the Host checks this request again.' })
   const players = assigned ? publicPlayerCount(assigned, nowMs) : null
-  const stopBlocker = !assigned || assigned.state !== 'Ready' ? 'Stop needs a fresh Ready server.'
+  const stopBlocker = !assigned || assigned.state !== 'Ready' ? 'Stop requires the server to report Ready.'
     : players === null ? 'Player count is Unknown. Refresh players or ask the Host; Stop needs a fresh count of zero.'
       : players > 0 ? 'Players are online. Wait until the server reports zero players.'
         : !assigned.canStopNow ? 'The Host has not confirmed a safe Stop. Refresh player status.' : null
@@ -138,7 +138,7 @@ export function FriendPermissionExplanation({ snapshot, profile, nowMs }: {
       <dt>{({ start: 'Start', stop: 'Stop', restart: 'Restart', extend: 'Add time', logs: 'View logs' })[action]}</dt>
       <dd>{permissions.actions[action].reason}</dd>
     </div>)}</dl>
-    <small>Grants apply only to this server. Readiness and a fresh zero-player check are still required for Stop and Restart.</small>
+    <small>Permissions apply only to this server. Stop and Restart also require a Ready server and a current player count of zero, checked again before stopping.</small>
   </details>
 }
 
@@ -199,7 +199,7 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
     {requirements}
     {currentProfile?.state === 'Offline' && permissions.currentAccess && permissions.actions.start.available && startNotice && <details className="server-support-disclosure"><summary><Icon name="plug" />Connection checks before Start</summary>{startNotice}</details>}
     <details className="server-support-disclosure"><summary aria-label="Server tools and connection help"><Icon name="plug" />Tools &amp; help</summary>
-      {onOpenConnectionDoctor && <Button className="text-button" onClick={onOpenConnectionDoctor}>Open Connection Doctor</Button>}
+      {onOpenConnectionDoctor && <Button className="text-button" onClick={onOpenConnectionDoctor}>Open Connection help</Button>}
       <FriendPermissionExplanation snapshot={snapshot} profile={profile} nowMs={nowMs} />
     </details>
     {showServerNotifications && snapshot.connectionId && <details className="server-support-disclosure"

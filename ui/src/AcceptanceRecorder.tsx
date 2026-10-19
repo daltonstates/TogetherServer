@@ -21,8 +21,8 @@ const defaultSaver: AcceptanceSaver = (profileId, checkId, confirmed, signal) =>
     { checkId, confirmed }, signal)
 
 const identityLabels: Record<AcceptanceIdentityField, string> = {
-  game: 'game choice', world: 'world identity', serverApp: 'selected server app', ports: 'configured ports',
-  route: 'Friend route', listing: 'network/listing mode', serverName: 'server-name setting'
+  game: 'game', world: 'world', serverApp: 'server app', ports: 'ports',
+  route: 'Friend connection', listing: 'network or public listing', serverName: 'server name'
 }
 const reviewedCheckIds = ['FriendRoute', 'RealJoin', 'PlayerTransition', 'GracefulStop', 'SavedRestart', 'RestoreDrill', 'SleepResume']
 function version(value: string | null | undefined) {
@@ -34,19 +34,19 @@ export function staleAcceptanceExplanation(view: AcceptanceView, evidence?: Acce
   const scoped = evidence?.profileId.toLowerCase() === view.profileId.toLowerCase() ? evidence : undefined
   const explanations: string[] = []
   if (view.gameFilesChanged) explanations.push(view.gameFilesAvailable
-    ? 'The selected game server file identity differs from the identity saved with the earlier confirmations.'
-    : 'The selected game server files are unavailable, so their current identity cannot match the saved confirmations. A game update has not been established.')
+    ? 'The selected game server app no longer matches the one used for the earlier tests.'
+    : 'The game server files cannot be read, so the app cannot compare them with the earlier tests. This does not confirm a game update.')
   const fields = [...new Set(scoped?.changedFields ?? [])].filter(field => Object.hasOwn(identityLabels, field))
-  if (view.stale && fields.length > 0) explanations.push('Compared configuration changed: ' + fields.map(field => identityLabels[field]).join(', ') + '.')
-  else if (view.stale && !view.gameFilesChanged) explanations.push('The current server and Friend-route configuration identity differs from the identity saved with these confirmations. The exact changed setting is not available in this record.')
-  else if (view.stale) explanations.push('The combined server and route identity also differs. This record does not identify any other changed setting.')
+  if (view.stale && fields.length > 0) explanations.push('Changed settings: ' + fields.map(field => identityLabels[field]).join(', ') + '.')
+  else if (view.stale && !view.gameFilesChanged) explanations.push('The server or Friend connection settings differ from the earlier tests. This record does not show which setting changed.')
+  else if (view.stale) explanations.push('The saved server and connection settings also differ. This record does not show which other setting changed.')
   const recorded = version(scoped?.recordedGameVersion)
   const current = version(scoped?.currentGameVersion)
   if (recorded && current && (scoped?.versionSource === 'observed' || scoped?.versionSource === 'ownerReported')) {
     explanations.push((scoped.versionSource === 'observed' ? 'Observed' : 'Owner-reported') +
       ' game versions: recorded ' + recorded + '; current ' + current +
-      (recorded === current ? '. Matching version labels do not establish matching files.' : '.'))
-  } else explanations.push('Recorded and current game versions are not both available here; a version change cannot be named.')
+      (recorded === current ? '. The same version number does not guarantee the same files.' : '.'))
+  } else explanations.push('The earlier and current game versions are not both available, so a version change cannot be confirmed.')
   return explanations
 }
 
@@ -55,12 +55,12 @@ export function staleAcceptanceExplanation(view: AcceptanceView, evidence?: Acce
 export function acceptanceExplanationReport(view: AcceptanceView, evidence?: AcceptanceIdentityEvidence) {
   const count = reviewedCheckIds.filter(id => view.checks.some(check => check.id === id && check.confirmed)).length
   return ['TogetherServer owner checks',
-    'Current configuration: ' + (view.stale ? 'earlier confirmations are stale' : 'no configuration mismatch reported') + '.',
-    'Selected game files: ' + (!view.gameFilesAvailable ? 'unavailable' : view.gameFilesChanged ? 'identity differs' : 'readable') + '.',
+    'Current setup: ' + (view.stale ? 'repeat the earlier tests' : 'no settings change reported') + '.',
+    'Selected game files: ' + (!view.gameFilesAvailable ? 'unavailable' : view.gameFilesChanged ? 'changed' : 'readable') + '.',
     'Current owner confirmations: ' + (view.stale ? 0 : count) + ' of ' + reviewedCheckIds.length + '.',
     ...staleAcceptanceExplanation(view, evidence),
-    'Next: review the saved setup, then repeat the affected real Friend/game/save checks and record them explicitly.',
-    'Owner confirmations do not authorize Stop or prove authentication, occupancy, a join or save integrity.'].join('\n')
+    'Next: review the setup, repeat the affected tests with a real Friend and game, then record the results.',
+    'These results record what the owner confirmed. They do not permit Stop or verify app access, player count, a game join or saved files.'].join('\n')
 }
 
 export function AcceptanceRecorder({ profileId, visible = true, configurationEvidence, loader = defaultLoader, saver = defaultSaver }: {
@@ -125,7 +125,7 @@ export function AcceptanceRecorder({ profileId, visible = true, configurationEvi
     try {
       await navigator.clipboard.writeText(acceptanceExplanationReport(view, configurationEvidence))
       if (scope.current === currentScope) {
-        setCopyStatus('Redacted owner-check explanation copied.')
+        setCopyStatus('Explanation copied. Private details omitted.')
         setCopyResult(result => result + 1)
       }
     } catch {
@@ -139,15 +139,15 @@ export function AcceptanceRecorder({ profileId, visible = true, configurationEvi
   const currentView = view?.profileId.toLowerCase() === profileId.toLowerCase() ? view : null
   const explanations = currentView ? staleAcceptanceExplanation(currentView, configurationEvidence) : []
   return <section hidden={!visible} className="acceptance-recorder" aria-labelledby={titleId} aria-busy={!!busy}>
-    <div className="section-heading"><div><h3 id={titleId}>Acceptance Recorder</h3>
-      <p>Keep owner-confirmed real-world checks tied to this exact server and route configuration.</p></div>
+    <div className="section-heading"><div><h3 id={titleId}>Record your test results</h3>
+      <p>Record tests you completed with a real Friend and game. Results apply only to this server and connection setup.</p></div>
       <Button className="text-button" disabled={!!busy || !visible} onClick={() => void load()}>Refresh</Button></div>
     {error && <DismissibleNotice as="p" scope={profileId} className="warning-text" role="alert">{error}</DismissibleNotice>}
     {!currentView && !error && <p className="helper-text" role="status">Loading recorded checks…</p>}
     {currentView && explanations.length > 0 && <DismissibleNotice scope={profileId} className="notice bad" role="status">
-      <strong>{currentView.gameFilesChanged ? 'Game server file identity changed' : 'Configuration changed'}</strong>
+      <strong>{currentView.gameFilesChanged ? 'Game server files changed or unavailable' : 'Server setup changed'}</strong>
       <ul>{explanations.map(explanation => <li key={explanation}>{explanation}</li>)}</ul>
-      <p>Earlier confirmations no longer count for this setup. Review the change, keep the server stopped for any file work, and repeat the affected real checks.</p>
+      <p>Earlier results no longer apply to this setup. Review the change and repeat the affected tests. Stop the server before changing files.</p>
       {currentView.updatedUtc && <small>Earlier checks last recorded {new Date(currentView.updatedUtc).toLocaleString()}.</small>}
     </DismissibleNotice>}
     {currentView && !currentView.gameFilesAvailable && <DismissibleNotice as="p" scope={profileId} className="warning-text" role="status">The selected game server files could not be read. Check the saved server app before relying on earlier tests.</DismissibleNotice>}

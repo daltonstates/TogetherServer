@@ -13,41 +13,41 @@ function countLabel(run: Run, count: number | null) {
 }
 
 function sourceLabel(source: string | null) {
-  if (!source) return 'Observation source unavailable'
+  if (!source) return 'Count source unavailable'
   const known: Record<string, string> = {
-    FixtureReady: 'Fixture readiness contract',
-    ValheimLogReady: 'Valheim query or verified server-log count',
-    ValheimReady: 'Valheim local query',
-    MinecraftLocalStatus: 'Minecraft local status query',
-    FactorioReady: 'Factorio local RCON count',
-    CustomCertifiedReady: 'Owner-certified Custom status contract',
+    FixtureReady: 'Test data',
+    ValheimLogReady: 'Valheim status or checked server log',
+    ValheimReady: 'Valheim status',
+    MinecraftLocalStatus: 'Minecraft status',
+    FactorioReady: 'Factorio admin connection',
+    CustomCertifiedReady: 'Custom script · Owner tested',
     CustomScriptReady: 'Custom status script (display only)',
-    ObservationStale: 'Stale observation',
-    ObservationPending: 'Observation pending'
+    ObservationStale: 'Count out of date',
+    ObservationPending: 'Waiting for a count'
   }
   return Object.hasOwn(known, source) ? known[source] : source.replace(/([a-z])([A-Z])/g, '$1 $2')
 }
 
 function freshness(observedUtc: string | null, nowMs: number) {
-  if (!observedUtc) return 'No observation time is available.'
+  if (!observedUtc) return 'Last checked time unavailable.'
   const observed = Date.parse(observedUtc)
-  if (!Number.isFinite(observed)) return 'The observation time is invalid.'
-  if (!Number.isFinite(nowMs)) return 'The observation age is unavailable.'
-  if (observed > nowMs) return 'The observation time is ahead of this PC; freshness is unavailable.'
+  if (!Number.isFinite(observed)) return 'Last checked time unavailable.'
+  if (!Number.isFinite(nowMs)) return 'Last checked time unavailable.'
+  if (observed > nowMs) return 'The count time is ahead of this PC’s clock. Refresh to check again.'
   const seconds = Math.max(0, Math.floor((nowMs - observed) / 1000))
-  if (seconds < 5) return 'Observed just now.'
-  if (seconds < 60) return `Observed ${seconds} seconds ago.`
+  if (seconds < 5) return 'Checked just now.'
+  if (seconds < 60) return `Checked ${seconds} seconds ago.`
   const minutes = Math.floor(seconds / 60)
-  return `Observed ${minutes} minute${minutes === 1 ? '' : 's'} ago.`
+  return `Checked ${minutes} minute${minutes === 1 ? '' : 's'} ago.`
 }
 
 function timerLabel(deadline: string | null, nowMs: number) {
-  if (!deadline) return 'No empty-server countdown is active.'
+  if (!deadline) return 'No shutdown countdown is running.'
   const target = Date.parse(deadline)
-  if (!Number.isFinite(target)) return 'The countdown deadline is unavailable.'
+  if (!Number.isFinite(target)) return 'No valid shutdown time is saved.'
   const minutes = Math.max(0, Math.ceil((target - nowMs) / 60000))
-  return minutes === 0 ? 'The deadline has arrived; the Host must recheck players before Stop.' :
-    `The empty-server deadline is in about ${minutes} minute${minutes === 1 ? '' : 's'}.`
+  return minutes === 0 ? 'Time is up. The Host must check that the server is still empty before stopping.' :
+    `Shutdown is due in about ${minutes} minute${minutes === 1 ? '' : 's'}.`
 }
 
 export type PlayersPanelProps = {
@@ -65,16 +65,16 @@ export type PlayersPanelProps = {
 
 export function playerCountDriverHelp(profile?: PlayersPanelProps['profile']): string {
   switch (profile?.kind) {
-    case 'Terraria': return 'The Terraria preview driver can observe a local TCP listener, but cannot verify readiness or report a trusted player count. Refresh cannot remove this driver limitation.'
-    case 'Custom': return 'Custom script counts are display only unless the exact setup has current owner certification. Check its status contract and certification in server health.'
+    case 'Terraria': return 'Terraria preview can check its port but cannot confirm readiness or count players. Friend Stop and automatic shutdown stay off.'
+    case 'Custom': return 'Custom counts need an owner control test before they can allow Friend Stop or automatic shutdown. Review the test in server health.'
     case 'Valheim': return profile.crossplay
-      ? 'Valheim Crossplay cannot use the owned-log player-count fallback. A silent or invalid local query remains Unknown.'
-      : 'Valheim needs a valid local query or a complete connection sequence from this managed run’s owned log. A partial or contradictory log stays Unknown.'
-    case 'MinecraftJava': return 'Minecraft Java needs a valid local server-status reply with a player count. A running process or log line cannot replace that reply.'
-    case 'MinecraftBedrock': return 'Minecraft Bedrock needs a valid local RakNet status reply with a player count. Query silence is Unknown.'
-    case 'Factorio': return 'The Factorio preview uses an authenticated local RCON player-count reply. Check the saved local RCON setup; never forward its RCON port.'
-    case 'Fixture': return 'Fixture counts are synthetic driver evidence and do not prove a real game join or saved-world integrity.'
-    default: return 'Check the game-server logs and health for the current observation. Query silence never means the server is empty.'
+      ? 'Valheim Crossplay needs a reply from the game to count players. Its server log cannot replace a missing reply.'
+      : 'Valheim uses its status reply or a complete, consistent server log to count players. Missing information leaves the count unavailable.'
+    case 'MinecraftJava': return 'Minecraft Java must reply with a player count. A running server or log message is not enough.'
+    case 'MinecraftBedrock': return 'Minecraft Bedrock must reply with a player count. No reply leaves the count unavailable.'
+    case 'Factorio': return 'Factorio uses its local admin connection (RCON) to count players. Check that setup. Never forward the RCON port.'
+    case 'Fixture': return 'These are test counts. No real game join or save was checked.'
+    default: return 'Check server health and logs. No reply does not mean the server is empty.'
   }
 }
 
@@ -109,8 +109,8 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
         <div className="players-stat-heading"><Icon name="clock" size={19} /><h4 id={`players-timer-${run.profileId}`}>Empty-server timer</h4></div>
         <strong className="players-timer-value">{timerValue}</strong>
         {deadline && <p className="players-timer-context">{remainingMinutes === 0
-          ? 'The Host must recheck players before Stop.'
-          : deadline && remainingMinutes === null ? 'A valid countdown deadline is not available.'
+          ? 'The Host checks for players before stopping.'
+          : deadline && remainingMinutes === null ? 'Shutdown time unavailable.'
           : run.autoShutdownReason}</p>}
       </div>
     </div>
@@ -126,20 +126,20 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
         <summary>Count source & timer details</summary>
         <div className="players-detail-content">
           <dl className="players-detail-list">
-            <dt>Observation source</dt><dd>{sourceLabel(run.playerObservationSource)}</dd>
-            <dt>Freshness</dt><dd>{freshness(run.playerCountObservedUtc, nowMs)}</dd>
+            <dt>Count source</dt><dd>{sourceLabel(run.playerObservationSource)}</dd>
+            <dt>Last checked</dt><dd>{freshness(run.playerCountObservedUtc, nowMs)}</dd>
             <dt>Count status</dt><dd>{evidence.reason}</dd>
             <dt>Countdown</dt><dd>{timerLabel(deadline, nowMs)}</dd>
-            <dt>Saved added time</dt><dd>{run.addedShutdownMinutes} minute{run.addedShutdownMinutes === 1 ? '' : 's'}<small>{hostMinutes} from the Host · {friendMinutes} from Friends.</small></dd>
+            <dt>Extra time</dt><dd>{run.addedShutdownMinutes} minute{run.addedShutdownMinutes === 1 ? '' : 's'}<small>{hostMinutes} from the Host · {friendMinutes} from Friends.</small></dd>
           </dl>
-          <p>Counts come from the game-server driver. Friend app presence never controls automatic shutdown.</p>
+          <p>Shutdown uses the game’s player count. Whether friends have TogetherServer open does not affect it.</p>
         </div>
       </details>
       <details className="players-disclosure">
         <summary>Player-count help</summary>
         <div className="players-detail-content">
           <p>{playerCountDriverHelp(profile)}</p>
-          <p>Friend Stop and automatic Stop stay blocked until a fresh trusted count is exactly zero. The local owner can review a Stop separately.</p>
+          <p>Friends and the idle timer can stop this server only after a fresh check shows no players. The Host can stop it manually.</p>
           {!trustedNow && <div className="players-help-actions">
             {onOpenLogs && <Button className="secondary" onClick={onOpenLogs}><Icon name="logs" />Open logs</Button>}
             {onCheckHealth && <Button className="secondary" disabled={disabled || refreshing} onClick={onCheckHealth}><Icon name="server" />Check server health</Button>}
@@ -150,8 +150,8 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
       <details className="players-disclosure">
         <summary>Recent count changes</summary>
         <div className="players-detail-content players-history">
-          <p>Count signals only; this history does not store player identities.</p>
-          {recent.length === 0 ? <p>No trusted count changes are recorded for this session yet.</p>
+          <p>Only player counts are recorded here, without names.</p>
+          {recent.length === 0 ? <p>No confirmed count changes yet.</p>
             : <ol>{recent.map(item => <li key={item.id}><span>{item.message}</span><time dateTime={item.occurredUtc}>{new Date(item.occurredUtc).toLocaleString()}</time></li>)}</ol>}
         </div>
       </details>

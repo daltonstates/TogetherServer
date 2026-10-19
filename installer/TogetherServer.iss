@@ -81,7 +81,7 @@ var
 begin
   RolePage := CreateInputOptionPage(wpSelectDir,
     'Optional app setup', 'Where should TogetherServer open?',
-    'Choose a starting page, or decide later in the app. When TogetherServer opens, it will guide you through any required setup, including your name. This does not configure, start, or expose a game server.',
+    'Choose where to start, or decide later. The app will guide you through setup. No game server starts or opens to other PCs yet.',
     True, False);
   RolePage.Add('Decide later in TogetherServer');
   RolePage.Add('Host game servers');
@@ -95,7 +95,7 @@ begin
     RolePage.SelectedValueIndex := 0;
 
   PreferencePage := CreateInputOptionPage(RolePage.ID,
-    'Optional Windows preferences', 'Choose any conveniences you want now',
+    'Windows settings', 'How should TogetherServer run?',
     'Both settings are off by default and can be changed later in TogetherServer.',
     False, False);
   PreferencePage.Add('Open TogetherServer at Windows sign-in');

@@ -26,9 +26,9 @@ it('keeps a passed outside control TCP check separate from the game route', () =
     routeCheck={{ state: 'Reachable', detail: 'TCP reached.', port: 5131,
       endpoint: 'https://1.2.3.4:5131', checkedUtc: '2026-10-04T11:59:00Z' }} />)
   expect(screen.getByText(/UDP 2456, 2457/)).toBeInTheDocument()
-  expect(screen.getByText(/Incoming game access can only be tested after the server is listening/)).toBeInTheDocument()
-  expect(screen.getByText(/An outside TCP check reached Friend app port 5131/)).toBeInTheDocument()
-  expect(screen.getByText(/Pairing and the game route still need separate checks/)).toBeInTheDocument()
+  expect(screen.getByText(/After starting, test joining from another network/)).toBeInTheDocument()
+  expect(screen.getByText(/The internet test reached Friend app port 5131/)).toBeInTheDocument()
+  expect(screen.getByText(/A Friend still needs to connect and join the game/)).toBeInTheDocument()
   vi.useRealTimers()
 })
 

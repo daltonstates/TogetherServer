@@ -12,7 +12,7 @@ describe('PaneErrorBoundary', () => {
     render(<PaneErrorBoundary title="Players"><BrokenView /></PaneErrorBoundary>)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss section error' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Try section again' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(screen.getByRole('alert')).toHaveTextContent('Players could not be shown')
   })
 
@@ -25,7 +25,7 @@ describe('PaneErrorBoundary', () => {
 
     expect(screen.getByText('Host remains available')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('World protection could not be shown')
-    expect(screen.getByRole('button', { name: 'Try section again' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
   it('recovers when the pane identity changes', () => {

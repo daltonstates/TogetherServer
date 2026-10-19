@@ -33,6 +33,6 @@ export function JoinGuide({ kind }: { kind: string }) {
   return <section className="join-guide" aria-label={`How to join in ${gameLabel(kind)}`}>
     <h5>How to join in {gameLabel(kind)}</h5>
     <ol>{gameSteps.map(step => <li key={step}>{step}</li>)}</ol>
-    <small>If the app connection works but the game cannot join, use Connection Doctor to check the game route from this PC.</small>
+    <small>If the app connects but the game cannot join, open Connection help to check the game connection from this PC.</small>
   </section>
 }

@@ -23,18 +23,18 @@ describe('BackupCatalog', () => {
       catalog.backups[1]
     ] })} />)
     const failed = within((await screen.findByText('Before update')).closest('article')!)
-    expect(failed.getByText('Recorded check failed: Local integrity.')).toBeVisible()
+    expect(failed.getByText('Recorded check failed: Backup file check.')).toBeVisible()
     expect(failed.getByRole('button', { name: 'Review backup' })).toHaveAttribute('aria-expanded', 'false')
     const unknown = within(screen.getByText('Weekly copy').closest('article')!)
-    expect(unknown.getByText('Integrity not checked.')).toBeVisible()
+    expect(unknown.getByText('Files not checked.')).toBeVisible()
     expect(unknown.getByRole('button', { name: 'Review backup' })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('keeps saved evidence unavailable honest without suggesting an unchecked backup is healthy', async () => {
     render(<BackupCatalog profileId={profileId} visible loader={async () => ({ ...catalog, evidenceAvailable: false })} />)
     const article = (await screen.findByText('Before update')).closest('article')!
-    expect(within(article).getByText('Saved evidence unavailable.')).toBeVisible()
-    expect(within(article).queryByText(/Recorded integrity passed/)).not.toBeInTheDocument()
+    expect(within(article).getByText('Saved results unavailable.')).toBeVisible()
+    expect(within(article).queryByText(/Files matched when checked/)).not.toBeInTheDocument()
   })
 
   it('keeps name drafts, pending tools and Restore review when a backup panel closes', async () => {
@@ -43,7 +43,7 @@ describe('BackupCatalog', () => {
     render(<BackupCatalog profileId={profileId} visible loader={loader} onVerify={verify} onRestore={vi.fn()} offline currentWorld="SyntheticWorld" currentGame="Valheim" />)
     const article = (await screen.findByText('Before update')).closest('article')!
     const view = within(article)
-    fireEvent.click(view.getByText('Name and retention'))
+    fireEvent.click(view.getByText('Name and pin backup'))
     fireEvent.change(view.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'Unsaved name' } })
     const toggle = view.getByRole('button', { name: 'Review backup' })
     fireEvent.click(toggle)
@@ -75,10 +75,10 @@ describe('BackupCatalog', () => {
     const article = (await screen.findByText('Before update')).closest('article')!
     expect(within(article).queryByRole('button', { name: 'Verify' })).not.toBeInTheDocument()
     fireEvent.click(within(article).getByRole('button', { name: 'Review backup' }))
-    expect(within(article).getByText('Name and retention')).toBeInTheDocument()
-    expect(within(article).getByText('Protection results')).toBeInTheDocument()
+    expect(within(article).getByText('Name and pin backup')).toBeInTheDocument()
+    expect(within(article).getByText('Backup checks')).toBeInTheDocument()
     expect(within(article).getByRole('button', { name: 'Copy to vault' })).toBeInTheDocument()
-    expect(within(article).getByRole('button', { name: 'Test restore hashes' })).toBeInTheDocument()
+    expect(within(article).getByRole('button', { name: 'Test restore files' })).toBeInTheDocument()
     expect(verify).not.toHaveBeenCalled()
     expect(vault).not.toHaveBeenCalled()
     expect(hash).not.toHaveBeenCalled()
@@ -119,13 +119,13 @@ describe('BackupCatalog', () => {
     expect(within(article).getByText(`Failed · ${new Date('2026-10-08T13:00:00Z').toLocaleString()}`)).toBeInTheDocument()
     expect(within(article).getByText(`Passed · ${new Date('2026-10-08T14:00:00Z').toLocaleString()}`)).toBeInTheDocument()
     expect(screen.getByLabelText('Protection summary')).toBeVisible()
-    const protection = screen.getByText('Protection and retention details').closest('details')!
+    const protection = screen.getByText('Backup checks and pin limits').closest('details')!
     expect(protection).not.toHaveAttribute('open')
-    fireEvent.click(within(protection).getByText('Protection and retention details'))
-    const recordedPasses = within(protection).getByText(/Latest recorded passes across 2 shown copies:/)
+    fireEvent.click(within(protection).getByText('Backup checks and pin limits'))
+    const recordedPasses = within(protection).getByText(/Passed checks across 2 shown backups:/)
     expect(recordedPasses).toBeVisible()
-    expect(recordedPasses).toHaveTextContent('0 local integrity, 0 vault transfers, 1 hash restore tests, 0 owner-reported game rehearsals')
-    expect(within(article).getByText(/does not establish game save health/)).toBeInTheDocument()
+    expect(recordedPasses).toHaveTextContent('0 file checks, 0 vault copies, 1 restore file tests, 0 game tests confirmed by the owner')
+    expect(within(article).getByText(/To check the world itself/)).toBeInTheDocument()
   })
 
   it('requires an explicit exact Restore review and acknowledgement before the callback', async () => {
@@ -136,8 +136,8 @@ describe('BackupCatalog', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Review Restore' })[0])
     const review = screen.getByRole('region', { name: 'Review Restore' })
     expect(review).toHaveTextContent(firstId)
-    expect(review).toHaveTextContent('World only')
-    expect(review).toHaveTextContent('A new pre-restore checkpoint')
+    expect(review).toHaveTextContent('World files only')
+    expect(review).toHaveTextContent('The app must back up the current world')
     expect(within(review).getByRole('button', { name: 'Restore reviewed backup' })).toBeDisabled()
     expect(restore).not.toHaveBeenCalled()
     fireEvent.click(within(review).getByRole('checkbox'))
@@ -178,7 +178,7 @@ describe('BackupCatalog', () => {
     render(<BackupCatalog profileId={profileId} visible loader={loader} updater={updater} />)
     const article = (await screen.findByText('Weekly copy')).closest('article')!
     const view = within(article)
-    fireEvent.click(view.getByText('Name and retention'))
+    fireEvent.click(view.getByText('Name and pin backup'))
     expect(view.getByRole('textbox', { name: 'Backup name' })).toHaveValue('Weekly copy')
     fireEvent.change(view.getByRole('combobox', { name: 'Suggested name' }), { target: { value: 'After Stop 2026-10-07' } })
     expect(view.getByRole('textbox', { name: 'Backup name' })).toHaveValue('After Stop 2026-10-07')
@@ -192,7 +192,7 @@ describe('BackupCatalog', () => {
     render(<BackupCatalog profileId={profileId} visible loader={async () => ({ ...catalog, pinnedCount: 20, moreBackupsAvailable: true })} updater={updater} />)
     await screen.findByText('Weekly copy')
     const unpinned = within(screen.getByText('Weekly copy').closest('article')!)
-    fireEvent.click(unpinned.getByText('Name and retention'))
+    fireEvent.click(unpinned.getByText('Name and pin backup'))
     fireEvent.click(unpinned.getByRole('checkbox', { name: 'Pin this backup' }))
     expect(unpinned.getByRole('button', { name: 'Save name and pin' })).toBeDisabled()
     expect(unpinned.getByText(/Unpin another backup/)).toBeInTheDocument()
@@ -200,7 +200,7 @@ describe('BackupCatalog', () => {
     expect(unpinned.queryByText(/Unpin another backup/)).not.toBeInTheDocument()
     expect(unpinned.getByRole('button', { name: 'Save name and pin' })).toBeDisabled()
     const pinned = within(screen.getByText('Before update').closest('article')!)
-    fireEvent.click(pinned.getByText('Name and retention'))
+    fireEvent.click(pinned.getByText('Name and pin backup'))
     fireEvent.change(pinned.getByRole('textbox', { name: 'Backup name' }), { target: { value: 'New name' } })
     expect(pinned.getByRole('button', { name: 'Save name and pin' })).toBeEnabled()
     expect(updater).not.toHaveBeenCalled()
@@ -209,12 +209,12 @@ describe('BackupCatalog', () => {
   it('shows retention preview as an estimate and withholds candidates for a partial catalog', async () => {
     render(<BackupCatalog profileId={profileId} visible loader={async () => ({ ...catalog, moreBackupsAvailable: true })} />)
     await screen.findByText('Before update')
-    const retention = screen.getByText('Retention preview').closest('details')!
+    const retention = screen.getByText('Preview which backups are kept').closest('details')!
     expect(retention).not.toHaveAttribute('open')
-    fireEvent.click(within(retention).getByText('Retention preview'))
-    expect(screen.getByText(/Exact retention candidates are unknown/)).toBeVisible()
-    expect(screen.getByText(/Filters and comparisons cover these rows/)).toBeInTheDocument()
-    expect(screen.queryByText(/current copies could become eligible/)).not.toBeInTheDocument()
+    fireEvent.click(within(retention).getByText('Preview which backups are kept'))
+    expect(screen.getByText(/Load the full backup list and saved settings/)).toBeVisible()
+    expect(screen.getByText(/Search, filters and comparisons cover only these backups/)).toBeInTheDocument()
+    expect(screen.queryByText(/current copies may be deleted/)).not.toBeInTheDocument()
   })
 
   it('aborts an obsolete action/load and ignores late completion when the profile changes', async () => {

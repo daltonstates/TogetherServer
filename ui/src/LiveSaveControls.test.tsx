@@ -72,20 +72,20 @@ describe('live capture gates', () => {
     expect(screen.queryByRole('button', { name: 'Save and share now' })).not.toBeInTheDocument()
     const requirements = screen.getByRole('button', { name: 'Review requirements' })
     expect(requirements).toBeEnabled()
-    const details = screen.getByText('Game acceptance checks and save details').closest('details')!
+    const details = screen.getByText('Game tests and save details').closest('details')!
     expect(details).not.toHaveAttribute('open')
     fireEvent.click(requirements)
     expect(details).toHaveAttribute('open')
     expect(within(details).getAllByRole('listitem')).toHaveLength(6)
-    const transfer = within(details).getByText('Other-PC transfer and receipt').closest('li')!
-    expect(within(transfer).getByText('Unverified')).toBeVisible()
+    const transfer = within(details).getByText('Copy received on another PC').closest('li')!
+    expect(within(transfer).getByText('Not checked')).toBeVisible()
     expect(within(transfer).getByText('Owner-controlled game check required.')).toBeVisible()
-    expect(within(details).getByText(/Owner reports require separate app evidence/)).toBeVisible()
+    expect(within(details).getByText(/you confirm results in the game/)).toBeVisible()
     fireEvent.click(within(within(details).getByText(status().message)).getByRole('button', { name: 'Dismiss notification' }))
     expect(screen.queryByText(status().message)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Save and share now' })).not.toBeInTheDocument()
     expect(requirements).toBeEnabled()
-    expect(within(transfer).getByText('Unverified')).toBeVisible()
+    expect(within(transfer).getByText('Not checked')).toBeVisible()
     expect(within(details).getAllByRole('listitem')).toHaveLength(6)
   })
   it('uses a fixed scoped request and retains its identity after a lost reply', async () => {
@@ -94,7 +94,7 @@ describe('live capture gates', () => {
     const updated = vi.fn().mockResolvedValue(undefined)
     render(<LiveSaveControls profileId="test" status={parseLiveSaveStatus(status(true))} onUpdated={updated} />)
     fireEvent.click(screen.getByRole('button', { name: 'Save and share now' }))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('LocalAppUnavailable'))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Could not connect to TogetherServer. Reopen the app and try again.'))
     fireEvent.click(screen.getByRole('button', { name: 'Save and share now' }))
     await waitFor(() => expect(updated).toHaveBeenCalledTimes(1))
     expect(fetch.mock.calls[0][0]).toBe('/api/local/profiles/test/shared-world/live/save')

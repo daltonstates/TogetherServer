@@ -25,7 +25,7 @@ describe('FriendConnectionDoctor', () => {
     const stages = friendConnectionDoctorStages(snapshot, {}, { nowMs })
     expect(stages.find(stage => stage.id === 'route')).toMatchObject({ state: 'Answered', complete: true })
     expect(stages.find(stage => stage.id === 'identity')).toMatchObject({ state: 'Matched', complete: true })
-    expect(stages.find(stage => stage.id === 'credential')).toMatchObject({ state: 'Authenticated', complete: true })
+    expect(stages.find(stage => stage.id === 'credential')).toMatchObject({ state: 'Accepted', complete: true })
     expect(stages.find(stage => stage.id === 'game')).toMatchObject({ state: 'Not tested', complete: false })
   })
 
@@ -37,10 +37,10 @@ describe('FriendConnectionDoctor', () => {
     render(<FriendConnectionDoctor snapshot={snapshot} gameResults={{}} busy={false} nowMs={nowMs}
       onRefresh={onRefresh} onProbe={onProbe} />)
 
-    fireEvent.click(screen.getByText(/^Connection Doctor/))
+    fireEvent.click(screen.getByText(/^Connection help/))
     fireEvent.click(screen.getByRole('button', { name: 'Run checks' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Check game endpoint' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Copy redacted report' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Check game connection' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy report' }))
     expect(onRefresh).toHaveBeenCalledOnce()
     expect(onProbe).toHaveBeenCalledWith('private-profile-id')
     await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
@@ -62,8 +62,8 @@ describe('FriendConnectionDoctor', () => {
       gameResults={{}} busy={false} nowMs={nowMs} onRefresh={vi.fn()} onProbe={vi.fn()} />)
     expect(view.container.querySelector('.friend-connection-doctor')).toHaveAttribute('open')
     expect(view.container.querySelector('.doctor-stage.error details')).toHaveAttribute('open')
-    expect(screen.getByText(/Next: Pinned Host identity/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Check game endpoint' })).toBeDisabled()
+    expect(screen.getByText(/Next: Host identity/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check game connection' })).toBeDisabled()
   })
 
   it('requires a server choice for several assignments and probes only that choice', () => {
@@ -71,10 +71,10 @@ describe('FriendConnectionDoctor', () => {
     const onProbe = vi.fn()
     render(<FriendConnectionDoctor snapshot={{ ...snapshot, profiles: [...snapshot.profiles, other] }}
       gameResults={{}} busy={false} nowMs={nowMs} onRefresh={vi.fn()} onProbe={onProbe} />)
-    fireEvent.click(screen.getByText(/^Connection Doctor/))
-    expect(screen.getByRole('button', { name: 'Check game endpoint' })).toBeDisabled()
+    fireEvent.click(screen.getByText(/^Connection help/))
+    expect(screen.getByRole('button', { name: 'Check game connection' })).toBeDisabled()
     fireEvent.change(screen.getByLabelText('Server to check'), { target: { value: 'second' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Check game endpoint' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Check game connection' }))
     expect(onProbe).toHaveBeenCalledExactlyOnceWith('second')
   })
 
@@ -91,14 +91,14 @@ describe('FriendConnectionDoctor', () => {
     const other = { ...snapshot.profiles[0], id: 'second', name: 'Second server' }
     const view = render(<FriendConnectionDoctor snapshot={{ ...snapshot, profiles: [...snapshot.profiles, other] }}
       gameResults={{}} busy={false} nowMs={nowMs} onRefresh={vi.fn()} onProbe={vi.fn()} />)
-    fireEvent.click(screen.getByText(/^Connection Doctor/))
+    fireEvent.click(screen.getByText(/^Connection help/))
     fireEvent.change(screen.getByLabelText('Server to check'), { target: { value: other.id } })
     view.rerender(<FriendConnectionDoctor snapshot={snapshot} gameResults={{ second: answered }} busy={false}
       nowMs={nowMs} onRefresh={vi.fn()} onProbe={vi.fn()} />)
-    expect(screen.getByRole('button', { name: 'Check game endpoint' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Check game connection' })).toBeDisabled()
     view.rerender(<FriendConnectionDoctor snapshot={{ ...snapshot, connectionId: 'another', profiles: [...snapshot.profiles, other] }}
       gameResults={{}} busy={false} nowMs={nowMs} onRefresh={vi.fn()} onProbe={vi.fn()} />)
-    fireEvent.click(screen.getByText(/^Connection Doctor/))
+    fireEvent.click(screen.getByText(/^Connection help/))
     expect(screen.getByLabelText('Server to check')).toHaveValue('')
   })
 
@@ -179,14 +179,14 @@ describe('FriendConnectionDoctor', () => {
     expect(friendConnectionDoctorStages({ ...snapshot, protocolCompatible: undefined }, {}, { nowMs })
       .find(stage => stage.id === 'protocol')?.complete).toBe(false)
     expect(friendConnectionDoctorStages({ ...snapshot, connectionCode: 'AccessExpired' }, { [snapshot.profiles[0].id]: answered }, { nowMs })
-      .find(stage => stage.id === 'credential')).toMatchObject({ state: 'Owner access ended', complete: false })
+      .find(stage => stage.id === 'credential')).toMatchObject({ state: 'Access deadline reached', complete: false })
   })
 
   it('copies only fixed concise explanations, never remote error or game message content', () => {
     const states = friendConnectionDoctorStages({ ...snapshot, state: 'Disconnected/Unknown', connectionCode: 'HostIdentityMismatch',
       detail: 'SecretPassword https://192.0.2.44:5131' }, { [snapshot.profiles[0].id]: { ...answered, message: 'Private Player TS3:secret' } }, { nowMs })
     const explanation = friendDoctorTroubleshooting(states)
-    expect(explanation).toContain('Pinned Host identity: Mismatch')
+    expect(explanation).toContain('Host identity: Mismatch')
     const report = friendDoctorReport(states, nowMs)
     for (const secret of ['SecretPassword', '192.0.2.44', 'Private Player', 'TS3:secret', snapshot.connectionId, snapshot.profiles[0].id])
       expect(report).not.toContain(secret)
@@ -197,7 +197,7 @@ describe('FriendConnectionDoctor', () => {
     const later = nowMs + 46_000
     const view = render(<FriendGameCheckResult snapshot={{ ...snapshot, lastConnectedUtc: new Date(later).toISOString() }}
       profile={profile} gameResults={{ [profile.id]: { ...answered, message: 'Private endpoint 192.0.2.44' } }} nowMs={later} />)
-    expect(screen.getByRole('status')).toHaveTextContent('Game endpoint: Stale')
+    expect(screen.getByRole('status')).toHaveTextContent('Game connection: Stale')
     expect(view.container.querySelector('time')).toHaveAttribute('dateTime', '2026-09-30T12:00:00.000Z')
     expect(view.container.textContent).not.toContain('192.0.2.44')
   })

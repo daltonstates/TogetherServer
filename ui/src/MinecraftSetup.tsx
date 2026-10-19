@@ -52,7 +52,7 @@ export function minecraftSetupIssues(profile: Profile): string[] {
 
 export function MinecraftWorldSetup({ profile, busy, onChange }: ProfileProps) {
   return <>
-    <p className="helper-text">Give this server a friendly name. A new install uses the world and port below; choosing an existing server fills them from server.properties.</p>
+    <p className="helper-text">Name your server. A new install uses these world and port settings. An existing server fills them in for you.</p>
     <div className="settings-grid">
       <label>Server name
         <Input id={`setup-${profile.id}-server-name`} disabled={busy} value={profile.name} onChange={event => onChange({ name: event.target.value })} placeholder="My Minecraft server" />
@@ -93,7 +93,7 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
     return <div className="settings-grid">
       <div className="wide minecraft-install">
         <strong>Install a new official {edition} server</strong>
-        <p className="helper-text">TogetherServer installs the latest official server in a new private folder. {profile.kind === 'MinecraftJava' ? 'It also installs the required Java runtime. ' : ''}This may take a few minutes. Existing folders and worlds are left alone.</p>
+        <p className="helper-text">Installs the latest official server in a new folder. {profile.kind === 'MinecraftJava' ? 'It also installs the required Java runtime. ' : ''}This may take a few minutes. Existing folders and worlds are left alone.</p>
         <div className="minecraft-terms">
           <Input id={termsId} type="checkbox" checked={acceptedTerms} disabled={busy || installBusy} onChange={event => onTermsChange(event.target.checked)} />
           <span><label htmlFor={termsId}>I have read and accept the terms for this download.</label>
@@ -113,7 +113,7 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
   const matches = found.filter(item => `${item.worldName} ${item.source} ${item.serverDirectory} ${item.artifactPath}`.toLowerCase().includes(search.trim().toLowerCase()))
 
   return <>
-    <p className="helper-text">Choose a server TogetherServer found, or browse to its folder. Setup reads its world name and port without changing the existing server or world.</p>
+    <p className="helper-text">Choose a server below or browse to its folder. This reads its settings without changing the server or world.</p>
     {profile.worldDirectory && profile.executablePath && <div className="selection-summary minecraft-selected-server">
       <span className="minecraft-selected-label">Selected:</span>
       <strong>{profile.worldId || `${edition} server`}</strong>
@@ -136,7 +136,7 @@ export function MinecraftServerSetup({ profile, busy, onChange, onBrowse, discov
     {profile.kind === 'MinecraftBedrock' && <p className="helper-text">TogetherServer also checks Bedrock's IPv6 and LAN-discovery ports for conflicts when those options are enabled.</p>}
     <details className="advanced-block">
       <summary>Manual setup</summary>
-      <p className="helper-text">Use these fields only when folder discovery cannot identify the server correctly.</p>
+      <p className="helper-text">Use these fields if the server search cannot find the right files.</p>
       <div className="settings-grid">
         <label className="wide">Server folder
           <Input disabled={busy} value={profile.worldDirectory} onChange={event => onChange({ worldDirectory: event.target.value })} placeholder="C:\\MinecraftServer" />

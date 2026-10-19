@@ -55,21 +55,21 @@ public static class PortDiagnostics
         {
             if (!games.TryGet(profile.Kind, out var driver))
                 return new GamePortCheck(profile.Id, profile.Name, [], "Unknown", "Unknown",
-                    "The saved game driver is unavailable.", "Unknown", profile.Kind);
+                    "TogetherServer cannot check this game.", "Unknown", profile.Kind);
             var run = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
             var definitions = run.DeclaredPorts is { Count: > 0 } ? run.DeclaredPorts : driver.Ports(profile);
             var ports = definitions.Select(port => port.Port).ToList();
             var protocol = string.Join(" + ", definitions.Select(port => port.Protocol).Distinct(StringComparer.OrdinalIgnoreCase));
             if (!driver.ShowPortDiagnostics)
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Not checked",
-                    "The synthetic fixture has no real game network listener.", "Not applicable", profile.Kind);
+                    "This test server has no real game connection.", "Not applicable", profile.Kind);
             if (profile.Kind == GameKinds.Valheim && profile.Crossplay)
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol,
                     run.State == "Ready" ? "Relay ready" : run.State == "Offline" ? "Waiting" : run.State,
                     "Valheim Crossplay uses its relay, so router game-port forwarding is not required.", "Relay", profile.Kind);
             if (run.State == "Offline")
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Waiting",
-                    "Start the server to check whether its game sockets open on this PC.", "Direct", profile.Kind);
+                    "Start the server to check its game ports.", "Direct", profile.Kind);
             if (inspectionError is not null || udp is null || tcp is null)
                 return new GamePortCheck(profile.Id, profile.Name, ports, protocol, "Unknown",
                     "Windows could not read its active port table" + (inspectionError is null ? "." : ": " + inspectionError),
@@ -117,7 +117,7 @@ public static class PortDiagnostics
         var remoteState = controlState == CompanionListenerStates.Idle ? "Not needed" :
             lastFriend == default ? "Not verified" : "Friend connected";
         var remoteDetail = controlState == CompanionListenerStates.Idle
-            ? "No active server code or connected PC needs the Friend connection yet. Choose Invite friends to get the server code."
+            ? "No server code or connected PC yet. Choose Invite friends when you are ready."
             : lastFriend == default
             ? "No connected Friend has contacted this Host recently. Test the server code from a PC outside this network."
             : $"A Friend PC last contacted this Host at {lastFriend.ToLocalTime():t}. Its network location is unknown, so an outside-network test is still needed.";
@@ -138,18 +138,18 @@ public static class PortDiagnostics
             return ("Off", "Friend connections are off. Choose Invite friends to get the server code and turn them on.");
         if (listenerState == CompanionListenerStates.Idle)
             return (CompanionListenerStates.Idle,
-                "Friend access is waiting. Nothing is wrong: choose Invite friends to get the server code when another PC needs it.");
+                "Choose Invite friends when you are ready to share.");
         if (!active)
             return ("Not listening", string.IsNullOrWhiteSpace(listenerWarning)
-                ? "Friend connections are enabled, but the HTTPS listener is not running. Check the Host connection warning."
+                ? "Friend connections are on but could not start. Review the connection warning."
                 : listenerWarning);
         if (inspectionError is not null)
             return ("Unknown", "Windows could not read its active TCP listeners: " + inspectionError);
         if (!open)
             return ("Closed on PC", $"TogetherServer expected HTTPS TCP {port} on {bindAddress}, but Windows does not report that listener.");
         if (bindScope == "Loopback only")
-            return ("Open on PC", $"HTTPS TCP {port} is listening only on this PC ({bindAddress}). A Friend outside this PC cannot reach this bind.");
-        return ("Open on PC", $"HTTPS TCP {port} is listening on {bindAddress}. This is a local check; Windows Firewall and router forwarding are not verified.");
+            return ("Open on PC", $"App port {port} is open only on this PC ({bindAddress}). Other PCs cannot connect yet.");
+        return ("Open on PC", $"App port {port} is open on {bindAddress}. Firewall and router access still need testing.");
     }
 
     private static (string State, string Detail) EndpointStatus(HostSettings settings, DateTimeOffset checkedUtc)
@@ -167,7 +167,7 @@ public static class PortDiagnostics
             return ("Address stale", "Check the public IP again. An old address may no longer lead to this Host.");
         if (!string.Equals(endpoint.Host, settings.PublicGameIp, StringComparison.OrdinalIgnoreCase))
             return ("Address differs", "The address in the server code differs from this PC's recent public IP. Check the router's WAN address and Network.");
-        return ("Address hint", "The server code matches a recent public IP lookup. This does not verify Windows Firewall, router forwarding, or a Friend connection. Compare the router's WAN address to check for shared-address NAT.");
+        return ("Address hint", "The server code matches your latest public address. Firewall and router access still need testing. Compare it with the router’s internet (WAN) address.");
     }
 
     private static (IReadOnlyList<LanAddressHint> Addresses, string Detail) ReadLanAddresses()
@@ -192,9 +192,9 @@ public static class PortDiagnostics
                 .ToList();
             var detail = candidates.Count switch
             {
-                0 => "No active private IPv4 address with an IPv4 gateway was found. Check this PC's network adapter and router LAN before forwarding.",
-                1 => "This PC's active private IPv4 address is a possible router forwarding target. Point only the approved HTTPS TCP port at it, then run an outside-network check.",
-                _ => "Several active private IPv4 addresses could be router forwarding targets. Choose the adapter connected to your router's LAN, then run an outside-network check."
+                0 => "No local network address was found. Check this PC’s network connection before setting up port forwarding.",
+                1 => "Use this PC’s local address for the Friend app TCP port forward, then test from another network.",
+                _ => "Several local addresses were found. Choose the network connected to your router, then test from another network."
             };
             return (candidates, detail);
         }
