@@ -130,3 +130,15 @@ cases with no layout findings; 20 representative screenshots were inspected.
 The updated process/companion check sources compile but were not executed on
 the owner's desktop. Native process, separate-PC/network and real game
 save/load/Stop/restart acceptance remain pending; Minecraft remains fixture-only.
+
+## Page sidebars and adjustable widths
+
+The 2026-10-19 presentation slice removes the global navigation rail and gives
+Host, Join and App Settings shared resizable page layouts. Header navigation,
+guarded page changes, independent scrolling, remembered widths and narrow
+stacked layouts remain accessible. PASS: all 1,244 UI tests in 99 files, 26 pure
+renderer checks, the 56-group code-only gate, lint/typecheck/production bundle,
+and 45/45 hosted Windows viewport plans with 159 screenshots and no failures,
+layout findings, skips or missing files. Sixteen representative final screenshots
+were inspected. See [sidebar layout delivery](32-SIDEBAR-LAYOUT.md) for exact
+source/artifact identity, initial test corrections and acceptance boundaries.
