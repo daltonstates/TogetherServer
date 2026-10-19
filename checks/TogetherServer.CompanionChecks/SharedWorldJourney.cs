@@ -122,13 +122,7 @@ internal static partial class SharedWorldJourney
                 Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(client,
                     $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
                     "a Friend PC could not consent to receiving");
-            Require(!(await PostAsync<object, ReceivedSharedWorldResult>(aLocal,
-                $"/api/local/friend/{profile.Id}/shared-world/pull", new { })).Ok,
-                "a save was received before a confirmed graceful Stop");
-            var beforeSave = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
-                $"/api/local/friend/{profile.Id}/shared-world");
-            Require(beforeSave.State == "Transfer unavailable" && beforeSave.Error is not null,
-                "a missing Host save was misreported as a stalled transfer");
+            await RequireNoPublishedSharedSaveAsync(owner, aLocal, profile.Id);
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "first verified fixture change");
             await StartAndStopAsync(owner, profile.Id);
@@ -801,6 +795,87 @@ internal static partial class SharedWorldJourney
         throw new Exception($"Friend did not reconnect: {latest?.State} {latest?.ConnectionCode}");
     }
 
+    private static async Task RequireNoPublishedSharedSaveAsync(HttpClient owner,
+        HttpClient friend, Guid profileId)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        ReceivedSharedWorldResult? result = null;
+        ReceivedSharedWorldStatus? status = null;
+        var attempts = 0;
+        try
+        {
+            var before = await GetAsync<SharedWorldStatus>(owner,
+                $"/api/local/profiles/{profileId}/shared-world", deadline.Token);
+            Require(before.Latest is null, "the Host published a save before a confirmed graceful Stop");
+            while (true)
+            {
+                attempts++;
+                status = null;
+                result = await PostAsync<object, ReceivedSharedWorldResult>(friend,
+                    $"/api/local/friend/{profileId}/shared-world/pull", new { }, deadline.Token);
+                Require(!result.Ok, "a save was received before a confirmed graceful Stop; " +
+                    PreSaveDiagnostic(result, status));
+                Require(result.Code is "NoPublishedSave" or "RosterCatchUpPending",
+                    "pre-save Pull failed for an unexpected reason; " + PreSaveDiagnostic(result, status));
+                status = await GetAsync<ReceivedSharedWorldStatus>(friend,
+                    $"/api/local/friend/{profileId}/shared-world", deadline.Token);
+                var diagnostic = PreSaveDiagnostic(result, status);
+                // An absent entry in LastSharedHostVersions can project as zero.
+                Require(status.Consented && status.HostVersion is null or 0 &&
+                    status.ThisPcVersion is null && status.ReceivedBytes == 0 && status.TotalBytes == 0 &&
+                    status.CompletedUtc is null && status.ReceivedUtc is null && status.ReceiptConfirmed is null,
+                    "pre-save receiving accepted a version, payload, or receipt; " + diagnostic);
+                Require(status.State != "Stalled",
+                    "a missing Host save was misreported as a stalled transfer; " + diagnostic);
+                var unavailable = status.State == "Transfer unavailable" && status.Error is not null;
+                // Background roster catch-up can clear the preceding Pull's UI issue.
+                var pendingProjection = status.State is "Host version not checked" or "Ready to pull" &&
+                    status.Error is null;
+                Require(unavailable || pendingProjection,
+                    "pre-save receiving projected an unexpected state; " + diagnostic);
+                if (result.Code == "NoPublishedSave" && unavailable)
+                {
+                    var after = await GetAsync<SharedWorldStatus>(owner,
+                        $"/api/local/profiles/{profileId}/shared-world", deadline.Token);
+                    Require(after.Latest is null,
+                        "the Host published a save before a confirmed graceful Stop; " + diagnostic);
+                    return;
+                }
+                await Task.Delay(250, deadline.Token);
+            }
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            throw new Exception($"pre-save receiving did not settle within 20 seconds after {attempts} attempts; " +
+                PreSaveDiagnostic(result, status));
+        }
+    }
+
+    private static string PreSaveDiagnostic(ReceivedSharedWorldResult? result,
+        ReceivedSharedWorldStatus? status)
+    {
+        var code = result?.Code is { Length: > 0 and <= 64 } candidate &&
+            candidate.All(char.IsAsciiLetterOrDigit) ? candidate : "UnobservedOrInvalid";
+        var state = status?.State switch
+        {
+            "Transfer unavailable" => "TransferUnavailable",
+            "Host version not checked" => "HostVersionNotChecked",
+            "Ready to pull" => "ReadyToPull",
+            "Stalled" => "Stalled",
+            "Transfer interrupted" => "TransferInterrupted",
+            "Consent off" => "ConsentOff",
+            "Low space" => "LowSpace",
+            "Error" => "Error",
+            "Not paired" => "NotPaired",
+            null => "Unobserved",
+            _ => "Other"
+        };
+        return $"code={code}, state={state}, errorPresent={status?.Error is not null}, " +
+            $"hostVersion={status?.HostVersion?.ToString() ?? "none"}, " +
+            $"thisPcVersion={status?.ThisPcVersion?.ToString() ?? "none"}, " +
+            $"receivedBytes={status?.ReceivedBytes ?? 0}, totalBytes={status?.TotalBytes ?? 0}";
+    }
+
     private static async Task WaitVersionAsync(HttpClient friend, Guid profileId, long expected)
     {
         ReceivedSharedWorldStatus? latest = null;
@@ -960,32 +1035,33 @@ internal static partial class SharedWorldJourney
         Timeout = TimeSpan.FromSeconds(15)
     };
 
-    private static async Task<T> GetAsync<T>(HttpClient client, string path)
+    private static async Task<T> GetAsync<T>(HttpClient client, string path,
+        CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, path);
         request.Headers.Add("X-TogetherServer-Local", "1");
-        using var response = await client.SendAsync(request);
-        return await response.Content.ReadFromJsonAsync<T>(Json) ??
+        using var response = await client.SendAsync(request, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<T>(Json, cancellationToken) ??
             throw new Exception($"empty local GET {path}: {(int)response.StatusCode}");
     }
 
     private static async Task<TResponse> PostAsync<TRequest, TResponse>(HttpClient client,
-        string path, TRequest body) => await MutateAsync<TRequest, TResponse>(client,
-        HttpMethod.Post, path, body);
+        string path, TRequest body, CancellationToken cancellationToken = default) =>
+        await MutateAsync<TRequest, TResponse>(client, HttpMethod.Post, path, body, cancellationToken);
 
     private static async Task<TResponse> PutAsync<TRequest, TResponse>(HttpClient client,
         string path, TRequest body) => await MutateAsync<TRequest, TResponse>(client,
         HttpMethod.Put, path, body);
 
     private static async Task<TResponse> MutateAsync<TRequest, TResponse>(HttpClient client,
-        HttpMethod method, string path, TRequest body)
+        HttpMethod method, string path, TRequest body, CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(method, path)
         { Content = JsonContent.Create(body, options: Json) };
         request.Headers.Add("Origin", client.BaseAddress!.ToString().TrimEnd('/'));
         request.Headers.Add("X-TogetherServer-Local", "1");
-        using var response = await client.SendAsync(request);
-        return await response.Content.ReadFromJsonAsync<TResponse>(Json) ??
+        using var response = await client.SendAsync(request, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<TResponse>(Json, cancellationToken) ??
             throw new Exception($"empty local {method} {path}: {(int)response.StatusCode}");
     }
 

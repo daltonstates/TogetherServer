@@ -54,7 +54,7 @@ jobs:
               (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "0.3.2.1+$revision") { throw 'Candidate identity mismatch.' }
           $changed = @(git diff --no-renames --name-only $revision HEAD)
           if ($LASTEXITCODE -ne 0) { throw 'Could not compare verification source.' }
-          $allowed = '^(docs/|checks/TogetherServer\.(MinecraftChecks|CustomChecks)/Program\.cs$|src/TogetherServer\.MinecraftFixture/Program\.cs$|\.github/workflows/release-0321-continuation\.yml$)'
+          $allowed = '^(docs/|checks/TogetherServer\.(MinecraftChecks|CustomChecks)/Program\.cs$|checks/TogetherServer\.CompanionChecks/SharedWorldJourney\.cs$|src/TogetherServer\.MinecraftFixture/Program\.cs$|\.github/workflows/release-0321-continuation\.yml$)'
           if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Production code changed after the verified candidate.' }
           $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           try {
