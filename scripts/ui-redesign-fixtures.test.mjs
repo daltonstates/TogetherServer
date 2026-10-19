@@ -76,6 +76,7 @@ const localHosting = pureDecoders('FriendLocalHosting.tsx', ['boundedText', 'par
   guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   hashPattern: /^[0-9a-f]{64}$/i, parsePlannedHandoffStatus
 });
+const requiredSetup = pureDecoders('RequiredFeatureSetup.tsx', ['parseRequiredSetup'], { ContractError: contracts.ContractError });
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
 const peers = pureDecoders('WorldPeerPanel.tsx', ['object', 'text', 'flag', 'count', 'identity', 'date', 'list',
   'parsePeer', 'parseBranch', 'parseSession', 'parseSelection', 'parseWorldPeerGroups'], {
@@ -101,6 +102,12 @@ test('all presets decode Host and Friend snapshots with current strict decoders'
     const state = createFixtureState(scenario);
     assert.doesNotThrow(() => contracts.parseSnapshot(state.host), `${scenario} host`);
     assert.doesNotThrow(() => contracts.parseFriendSnapshot(state.friend), `${scenario} friend`);
+    assert.equal(contracts.parseLocalProfile(get(state, '/api/local/profile')).displayName, 'Synthetic owner');
+    const setup = requiredSetup.parseRequiredSetup(get(state, '/api/local/required-setup'));
+    assert.equal(setup.features.length, 1);
+    assert.equal(setup.features[0].id, 'profile-name');
+    assert.equal(setup.features[0].revision, 1);
+    assert.equal(setup.features[0].completed, true);
     if (scenario === 'host-load-error') assert.equal(routeFixture(state, { method: 'GET', path: '/api/local/snapshot' }).status, 503);
     else assert.doesNotThrow(() => contracts.parseSnapshot(get(state, '/api/local/snapshot')), scenario);
   }

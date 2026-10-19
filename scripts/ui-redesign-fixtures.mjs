@@ -322,6 +322,10 @@ export function routeFixture(state, request) {
   let body = request.body ?? {};
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return { status: 400, body: { code: 'SyntheticInvalidJson', message: 'Invalid synthetic request body.' } }; } }
   state.requests.push({ method, path });
+  if (path === '/api/local/profile' && method === 'GET') return reply({ displayName: 'Synthetic owner' });
+  if (path === '/api/local/required-setup' && method === 'GET') return reply({ features: [{
+    id: 'profile-name', revision: 1, title: 'Your name', description: 'Share your name with paired PCs.', completed: true
+  }] });
   if (path === '/api/local/servers' && method === 'GET') {
     if (url.search || Object.keys(body).length) return { status: 400,
       body: { code: 'InvalidServerDirectoryRequest', message: 'The saved server list accepts no query or request body.' } };

@@ -79,6 +79,12 @@ SKIPPED because this account cannot create the link.
 
 The focused hosted inventory covers seven sharing, owner-move and
 receiver-consent/setup surfaces in five viewport/text variants each.
+The first hosted run, `39275404604`, correctly failed before those screens:
+the older harness lacked profile/required-setup responses and still selected
+the old Host/Join navigation. Its 35 attempts are failed evidence. The harness
+now supplies decoded completed synthetic setup and selects saved servers from
+the current Servers directory; the application UI and packaged bytes are
+unchanged by this harness correction.
 It checks actual rendered gaps and rejects a reintroduced recipient-address
 field. Browser execution remains restricted to the dedicated hosted Windows
 runner by the existing harness guard.

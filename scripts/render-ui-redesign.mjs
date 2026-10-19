@@ -902,15 +902,28 @@ try {
         localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ theme, density: 'comfortable', textScale: scale, highContrast: false, quietMode: false, selectedServer: '', favoriteServers: [], favoriteHosts: [], serverOrder: [], serverTabs: {} }));
       }, { ...variant, now: fixtureNow });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
-      await visible(page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true }));
+      const workspaceNavigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true });
+      await visible(workspaceNavigation);
       if (!testCase.bootOnly) {
         // Navigation exists before the snapshot loads. Wait for a real mode workspace before clicking it.
         await visible(page.locator('section.context-workspace'));
         await page.waitForLoadState('networkidle', { timeout: 8000 });
         await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
         record.actions.push({ action: 'navigate-workspace', name: testCase.workspace });
-        await page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true }).getByRole('button', { name: testCase.workspace, exact: true }).click();
-        await visible(page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true }).getByRole('button', { name: testCase.workspace, exact: true }).and(page.locator('[aria-current="page"]')));
+        const workspaceLabel = ['Host', 'Join'].includes(testCase.workspace) ? 'Servers' : testCase.workspace;
+        await workspaceNavigation.getByRole('button', { name: workspaceLabel, exact: true }).click();
+        await visible(workspaceNavigation.getByRole('button', { name: workspaceLabel, exact: true }).and(page.locator('[aria-current="page"]')));
+        if (testCase.workspace === 'Host' || testCase.workspace === 'Join') {
+          const source = testCase.workspace === 'Host' ? state.host.settings.profiles[0] : state.friend.profiles[0];
+          if (source) {
+            const owner = testCase.workspace === 'Host' ? 'this PC' : state.friend.hostProfileName || state.friend.connectionName || 'Friend Host';
+            const name = `Open ${source.name} on ${owner}`;
+            await visible(page.getByRole('button', { name, exact: true }));
+            await page.getByRole('button', { name, exact: true }).click();
+            record.actions.push({ action: 'select-saved-server', name });
+            await visible(page.locator('section.context-workspace'));
+          }
+        }
         await performActions(page, testCase, record);
       }
       const screen = await visible(locatorFor(page, testCase.screen));
