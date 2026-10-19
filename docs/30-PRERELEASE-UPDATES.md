@@ -108,7 +108,14 @@ trust constraints, a verified prepared preview being invalidated on opt-out,
 digest/publisher rejection, disabled staging and metadata failure. Payload bytes
 come from a built managed PE and are never executed.
 
-No dependency, app-version, companion-protocol or storage-schema bump was made.
+The following paragraphs record the original code-only feature delivery. The
+separately authorized [0.3.2.1 prerelease](31-0.3.2.1-PRERELEASE.md) is now
+published and records its later hosted browser/native, compatibility, update
+and installer acceptance. Live promotion of that preview to stable has not
+been requested or performed.
+
+No dependency, app-version, companion-protocol or storage-schema bump was made
+in that initial feature delivery.
 The running production app and its data were not used for validation. No tag or
 GitHub release was created, and no app was installed or replaced.
 
