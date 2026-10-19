@@ -224,8 +224,9 @@ await Check("owner diagnostics reuse canonical state and support export stays bo
         portCheck.Detail.Contains("does not prove that a Friend can reach it", StringComparison.Ordinal) &&
         portCheck.Detail.Contains("join the game", StringComparison.Ordinal),
         "declared-port diagnostics overstated local listener evidence");
-    Require(diagnostics.EvidenceBoundary.Contains("Friend connected", StringComparison.Ordinal) &&
-        diagnostics.EvidenceBoundary.Contains("world saved correctly", StringComparison.Ordinal),
+    Require(diagnostics.EvidenceBoundary.Contains("Friend connection", StringComparison.Ordinal) &&
+        diagnostics.EvidenceBoundary.Contains("game join", StringComparison.Ordinal) &&
+        diagnostics.EvidenceBoundary.Contains("saved progress separately", StringComparison.Ordinal),
         "diagnostic evidence boundary omitted an external acceptance limit");
 
     var secret = SupportReportRedactor.Redact(
@@ -2256,8 +2257,15 @@ await Check("snapshots consume the observation supervisor cache", async () =>
     {
         var first = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
         var second = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
-        Require(first.State == "Unknown" && second.State == "Unknown" &&
-            first.Detail.Contains("observation supervisor", StringComparison.Ordinal),
+        Require(first is
+        {
+            State: "Unknown", PlayerObservationSource: "ObservationPending", OnlinePlayers: null,
+            PlayerCountTrusted: false, PlayerCountObservedUtc: null
+        } && second is
+        {
+            State: "Unknown", PlayerObservationSource: "ObservationPending", OnlinePlayers: null,
+            PlayerCountTrusted: false, PlayerCountObservedUtc: null
+        },
             "a UI snapshot probed the game instead of waiting for the shared observation cache");
         await manager.RefreshObservationsAsync();
         var observed = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
@@ -2777,7 +2785,7 @@ await Check("port diagnostics show local game and Friend listeners honestly", as
     diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), false, [], observed,
         null, CompanionListenerStates.Idle);
     Require(diagnostics.Control.State == "Idle" && diagnostics.Control.RemoteState == "Not needed" &&
-        diagnostics.Control.Detail.Contains("Nothing is wrong", StringComparison.Ordinal),
+        diagnostics.Control.Detail.Contains("Choose Invite friends", StringComparison.Ordinal),
         "an unused Friend listener was presented as a connection failure");
     diagnostics = PortDiagnostics.ReadObserved(snapshot, Games(data), true, [],
         observed with { Udp = [new IPEndPoint(IPAddress.Loopback, gamePort)] });
@@ -4644,6 +4652,8 @@ await Check("planned handoff validates the signed successor contact before Stop"
         new NullHostingPowerGuard(), pairing: pairing);
     var shares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
     var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    pairing.ConfirmSharedRosterPublished(profile.Id, roster);
+    Require(!pairing.SharedRosterDirty(profile.Id), "signed-route fixture roster was not confirmed");
     Require((await manager.RequestPlannedHandoffAsync(profile.Id, successorId)).Ok,
         "signed-route fixture request failed");
     var request = await manager.PlannedHandoffStatusAsync(profile.Id);
@@ -4859,8 +4869,12 @@ await Check("planned handoff requires exact final save receipt before durable ol
             "the selected recipient did not accept the current request");
         var latest = shares.Status(profile).Latest;
         if (latest is not null)
-            Require((await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, ReceiptFor(latest))).Ok,
-                "the recipient did not acknowledge the available preflight copy");
+        {
+            var preflightReceipt = shares.VerifiedReceipt(profile, latest, successorId, roster) ?? ReceiptFor(latest);
+            var acknowledged = await manager.ConfirmSharedWorldReceiptAsync(profile.Id, successorId, preflightReceipt);
+            Require(acknowledged.Ok,
+                $"the recipient did not acknowledge the available preflight copy: {acknowledged.Code}");
+        }
         Require((await manager.ConfirmHandoffPreparationAsync(profile.Id, successorId,
             new(requestId, latest?.VersionHash, SuccessorContact(), sourceIdentity))).Ok,
             "the recipient did not confirm current setup and its signed connection before Stop");
@@ -8740,10 +8754,14 @@ await Check("successor hosting key continues exact save lineage and stays bound 
     Require(successorShares.PublishAfterStop(successor, secondBackup.Backup.Id).Ok,
         "unsigned revoke blocked shared publication");
     var unaffectedManager = new HostManager(successorData, Games(successorData));
-    Require((await unaffectedManager.StartAsync(owner.Id)).Ok &&
-        (await unaffectedManager.StopAsync(owner.Id)).Ok &&
-        !successorPairing.SharedRosterDirty(owner.Id),
-        "unsigned revoke blocked managed Start or post-Stop sharing");
+    var unaffectedStart = await unaffectedManager.StartAsync(owner.Id);
+    Require(unaffectedStart.Ok,
+        $"unsigned revoke blocked managed Start: {unaffectedStart.Code} {unaffectedStart.Message}");
+    var unaffectedStop = await unaffectedManager.StopAsync(owner.Id);
+    Require(unaffectedStop.Ok,
+        $"unsigned revoke blocked managed Stop: {unaffectedStop.Code} {unaffectedStop.Message}");
+    Require(!successorPairing.SharedRosterDirty(owner.Id),
+        "unsigned revoke or managed Stop dirtied signed membership");
     Require(new SharedWorldService(successorData, successorBackups).AuthorizedPublishedLineage(successor),
         "successor lineage became invalid before the Start race");
     var startManager = new HostManager(successorData, Games(successorData));

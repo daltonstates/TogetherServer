@@ -1521,7 +1521,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'), 'Friend UI starts the actual synthetic driver')
   await rememberManagedProcesses(host)
   await api(friend, '/api/local/friend/poll', 'POST')
-  const readiness = play.getByText(/^The Host reports readiness\./u)
+  const readiness = play.getByRole('paragraph').filter({ hasText: /^The Host reports readiness\./u })
   await readiness.waitFor({ state: 'visible' })
   assert.equal(await readiness.count(), 1, 'The selected Friend Play flow must expose one current readiness explanation.')
   assert((await readiness.innerText()).includes('not proof that a player joined'),
