@@ -84,3 +84,25 @@ Desktop/browser/installer smoke, update handoff, real games, Friend-PC/network
 acceptance, and rendered viewport review are not run on the owner's active
 desktop. They need an approved separate PC or unattended Windows session.
 Production settings, credentials, worlds, and the running app are untouched.
+
+## Production build handoff
+
+Requested after the wording cleanup was committed. Built from
+`76a4cb50330109ca9edf59d13efe2ac69efe20a1` with a fresh production UI bundle,
+locked application restore, and self-contained Windows x64 single-file publish.
+
+- EXE: `local-data/plain-language-production-20261019-76a4cb5/TogetherServer.exe`
+- File version: `0.3.2.1`
+- Product version: `0.3.2.1+76a4cb50330109ca9edf59d13efe2ac69efe20a1`
+- Size: 66,029,530 bytes
+- SHA-256: `ff2c057db6877db568a695cced64f24d69d063f1ae8ab9a72a26f7aa77c72d92`
+- Authenticode: `NotSigned`
+
+Static package verification passed: Windows GUI subsystem, bundled assembly
+identical to the current build, and all seven current UI assets embedded
+byte-for-byte. The verifier reads the EXE without loading or launching it.
+`package-evidence.json`, `build-info.json`, and `TogetherServer.exe.sha256` sit
+beside the executable. Binaries and local evidence remain outside Git.
+
+The EXE was not launched or installed, and the running production app was not
+replaced. Native, game, and Friend-network acceptance remains unverified.
