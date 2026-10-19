@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PublicProfile, Run } from './contracts'
 import { ContractError, parseSnapshot } from './contracts'
 import hostSnapshotFixture from '../../contracts/host-snapshot.v1.json'
-import { hasRepeatedPlayerCountFailure, isTransientPlayerObservation, playerCountPresentation, publicPlayerCount } from './playerCountPresentation'
+import { hasRepeatedPlayerCountFailure, isPlayerCountObservationUnavailable, isTransientPlayerObservation, playerCountPresentation, publicPlayerCount } from './playerCountPresentation'
 
 const now = Date.parse('2026-10-19T12:00:05Z')
 const run: Run = {
@@ -44,6 +44,13 @@ describe('completed player-count presentation evidence', () => {
     expect(isTransientPlayerObservation({ ...run, state: 'Unknown', playerObservationSource: null })).toBe(false)
     expect(isTransientPlayerObservation({ ...run, state: 'Unknown', playerObservationSource: 'ObservationStale', playerCountFailureCount: 2 })).toBe(false)
     expect(hasRepeatedPlayerCountFailure({})).toBe(false)
+    const repeated = { ...run, state: 'Unknown', playerObservationSource: 'HealthProbeFailed', playerCountFailureCount: 20 }
+    expect(isPlayerCountObservationUnavailable(repeated)).toBe(true)
+    for (const source of ['IdentityUnknown', 'CustomScriptsUnavailable', null]) {
+      expect(isPlayerCountObservationUnavailable({ ...run, state: 'Unknown', playerObservationSource: source })).toBe(false)
+      expect(isTransientPlayerObservation({ ...run, state: 'Unknown', playerObservationSource: source, playerCountRefreshing: true })).toBe(false)
+    }
+    expect(isPlayerCountObservationUnavailable({ ...run, state: 'Failed', playerObservationSource: 'HealthProbeFailed' })).toBe(false)
   })
 
   it('preserves legacy peer compatibility and checks explicit new peer evidence independently', () => {

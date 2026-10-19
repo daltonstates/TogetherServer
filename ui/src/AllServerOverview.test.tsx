@@ -40,25 +40,28 @@ describe('all-server overview', () => {
     const stale = allServerRows(snapshot(), now + 11_000)[0]
     expect(stale.players).toBe('Unknown')
     expect(stale.deadline).toBeNull()
-    expect(stale.warning).toBe('Player observation is stale')
+    expect(stale.warning).toBe('')
+    const repeated = snapshot(); repeated.runs[0].playerCountFailureCount = 2
+    expect(allServerRows(repeated, now + 11_000)[0].warning).toBe('Player count unavailable')
   })
   it('routes the Host stale Unknown observation to Players and keeps selection stable', () => {
     const data = snapshot(); const selected = data.settings.profiles[0].id
     data.settings.profiles.push({ ...data.settings.profiles[0], id: 'stale-server', name: 'Stale server' })
     data.runs.push({ ...data.runs[0], profileId: 'stale-server', state: 'Unknown',
-      playerCountTrusted: false, onlinePlayers: null, playerCountObservedUtc: '2026-09-29T11:59:40Z' })
+      playerCountTrusted: false, onlinePlayers: null, playerCountObservedUtc: '2026-09-29T11:59:40Z',
+      playerObservationSource: 'ObservationStale', playerCountFailureCount: 2 })
     data.backups!['stale-server'] = { ...data.backups![selected], profileId: 'stale-server' }
     const open = vi.fn()
     const { container, rerender } = render(<AllServerOverview snapshot={data} selectedProfileId={selected} nowMs={now} onOpen={open} />)
     expect(allServerRows(data, now).map(row => row.id)).toEqual([selected, 'stale-server'])
     expect(allServerRows(data, now).find(row => row.id === 'stale-server')).toMatchObject({ state: 'Unknown', players: 'Unknown', deadline: null,
-      warning: 'Player observation is stale', priority: 50,
+      warning: 'Player count unavailable', priority: 50,
       destination: { workspace: 'host', section: 'players', profileId: 'stale-server', label: 'Review players' } })
     expect(container.querySelector('.selected')).toHaveTextContent('Contract fixture')
     fireEvent.click(screen.getByRole('button', { name: 'Review players: Stale server' }))
     expect(open).toHaveBeenCalledWith({ workspace: 'host', section: 'players', profileId: 'stale-server', label: 'Review players' })
     data.runs[1] = { ...data.runs[1], state: 'Ready', playerCountTrusted: true, onlinePlayers: 0,
-      playerCountObservedUtc: '2026-09-29T12:00:00Z' }
+      playerCountObservedUtc: '2026-09-29T12:00:00Z', playerObservationSource: 'ValheimReady', playerCountFailureCount: 0 }
     rerender(<AllServerOverview snapshot={data} selectedProfileId={selected} nowMs={now} onOpen={open} />)
     expect(allServerRows(data, now).map(row => row.id)).toEqual([selected, 'stale-server'])
     expect(container.querySelector('.selected')).toHaveTextContent('Contract fixture')
@@ -66,7 +69,7 @@ describe('all-server overview', () => {
   it('preserves lifecycle and recovery actions ahead of stale player observations', () => {
     const data = snapshot(); const id = data.settings.profiles[0].id
     data.runs[0] = { ...data.runs[0], state: 'Unknown', playerCountTrusted: false, onlinePlayers: null,
-      playerCountObservedUtc: '2026-09-29T11:59:40Z' }
+      playerCountObservedUtc: '2026-09-29T11:59:40Z', playerObservationSource: 'ObservationStale' }
     data.recovery = { lifecycleBlocked: true, notices: [] }
     expect(allServerRows(data, now)[0]).toMatchObject({ warning: 'Local data needs review', priority: 100,
       destination: { workspace: 'settings', section: 'diagnostics' } })
@@ -79,13 +82,15 @@ describe('all-server overview', () => {
     data.runs[0].state = 'Failed'
     expect(allServerRows(data, now)[0]).toMatchObject({ warning: 'Server state needs review', priority: 90,
       destination: { workspace: 'host', section: 'overview', label: 'Review server' } })
-    data.runs[0].state = 'Unknown'; data.runs[0].playerCountObservedUtc = null
+    data.runs[0].state = 'Unknown'; data.runs[0].playerObservationSource = 'IdentityUnknown'
     expect(allServerRows(data, now)[0]).toMatchObject({ warning: 'Server state needs review', priority: 90,
       destination: { workspace: 'host', section: 'overview', label: 'Review server' } })
   })
   it('distinguishes unavailable count, missing backup and failed latest attempt', () => {
     const data = snapshot(); const id = data.settings.profiles[0].id
     data.runs[0].onlinePlayers = null
+    expect(allServerRows(data, now)[0].warning).toBe('')
+    data.runs[0].playerCountFailureCount = 2
     expect(allServerRows(data, now)[0].warning).toBe('Player count unavailable')
     data.runs[0].onlinePlayers = 0
     data.backups![id].completedCount = 0; data.backups![id].lastSuccessfulUtc = null

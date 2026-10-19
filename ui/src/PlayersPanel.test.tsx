@@ -13,6 +13,36 @@ const run: Run = {
 }
 
 describe('PlayersPanel', () => {
+  it('shows progress only for an explicit refresh while background polling keeps the count presentation still', () => {
+    const refresh = vi.fn()
+    const props = { run: { ...run, playerCountRefreshing: true }, nowMs: Date.parse('2026-09-29T12:00:04Z'),
+      refreshing: false, disabled: false, onRefresh: refresh }
+    const view = render(<PlayersPanel {...props} />)
+    expect(screen.getByText('2 / 10 online')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Refresh count' })).toBeDisabled()
+    expect(view.container.querySelector('.icon-spin')).toBeNull()
+    view.rerender(<PlayersPanel {...props} run={run} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh count' }))
+    expect(refresh).toHaveBeenCalledOnce()
+    view.rerender(<PlayersPanel {...props} refreshing />)
+    expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeDisabled()
+    expect(view.container.querySelector('.icon-spin')).toBeInTheDocument()
+    expect(screen.getByText('2 / 10 online')).toBeVisible()
+  })
+
+  it('keeps a dismissed repeated issue dismissed as background retries alternate unavailable and stale evidence', () => {
+    const props = { nowMs: Date.parse('2026-09-29T12:00:04Z'), refreshing: false, disabled: false, onRefresh: vi.fn() }
+    const missing = { ...run, onlinePlayers: null, playerCountFailureCount: 2, playerCountObservedUtc: null }
+    const view = render(<PlayersPanel {...props} run={missing} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    view.rerender(<PlayersPanel {...props} run={{ ...missing, playerCountFailureCount: 3,
+      playerCountRefreshing: true, playerObservationSource: 'ObservationStale' }} />)
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Player count unavailable')).toHaveTextContent('—')
+    expect(screen.getByText('No countdown')).toBeVisible()
+  })
+
   it('keeps initial and first failed checks neutral, warns after repeated failures, and clears on trusted recovery', () => {
     const now = Date.parse('2026-09-29T12:00:04Z')
     const pending = { ...run, onlinePlayers: null, playerCountTrusted: false,
@@ -20,7 +50,10 @@ describe('PlayersPanel', () => {
     const props = { nowMs: now, refreshing: false, disabled: false, onRefresh: vi.fn() }
     const view = render(<PlayersPanel {...props} run={pending} />)
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Refresh count' })).toBeDisabled()
+    expect(screen.queryByText(/Checking|Waiting for a fresh trusted count/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Player count unavailable')).toHaveTextContent('—')
     expect(screen.getByText('No countdown')).toBeVisible()
     view.rerender(<PlayersPanel {...props} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 1 }} />)
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
@@ -80,10 +113,10 @@ describe('PlayersPanel', () => {
     const refresh = vi.fn()
     render(<PlayersPanel run={{ ...run, onlinePlayers: null, playerCountTrusted: false, playerCountFailureCount: 2 }} nowMs={0}
       refreshing={false} disabled={false} onRefresh={refresh} />)
-    expect(screen.getByText('Unavailable')).toBeVisible()
+    expect(screen.getByLabelText('Player count unavailable')).toBeVisible()
     expect(screen.getByText('No countdown')).toBeVisible()
     expect(within(screen.getByRole('note')).getByText('Player count unavailable after repeated checks')).toBeVisible()
-    expect(within(screen.getByRole('note')).getByText('Friend and automatic Stop remain blocked.')).toBeVisible()
+    expect(within(screen.getByRole('note')).getByText('Open player-count help to troubleshoot.')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh count' }))
     expect(refresh).toHaveBeenCalledOnce()
   })
@@ -93,7 +126,7 @@ describe('PlayersPanel', () => {
     render(<PlayersPanel run={{ ...run, onlinePlayers: 0, playerCountFailureCount: 2, autoShutdownAtUtc: '2026-09-29T12:05:00Z' }}
       nowMs={Date.parse('2026-09-29T12:00:11Z')} refreshing={false} disabled={false} onRefresh={vi.fn()}
       profile={{ kind: 'Valheim', crossplay: false }} onOpenLogs={logs} onCheckHealth={health} onOpenHelp={help} />)
-    expect(screen.getByText('Unavailable')).toBeVisible()
+    expect(screen.getByLabelText('Player count unavailable')).toBeVisible()
     expect(screen.getByText('Player count unavailable after repeated checks')).toBeVisible()
     expect(screen.getByText('No countdown')).toBeVisible()
     expect(screen.queryByText(/deadline is in about/)).not.toBeInTheDocument()
@@ -120,9 +153,9 @@ describe('PlayersPanel', () => {
     render(<PlayersPanel run={{ ...run, onlinePlayers: null, playerCountTrusted: false, state: 'Starting' }}
       profile={{ kind: 'Terraria', crossplay: false }} nowMs={Date.parse('2026-09-29T12:00:04Z')}
       refreshing={false} disabled={false} onRefresh={vi.fn()} />)
-    expect(screen.getByText('Unavailable')).toBeVisible()
+    expect(screen.getByLabelText('Player count unavailable')).toBeVisible()
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('Friend and automatic Stop remain blocked.')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.getByText(/cannot verify readiness or report a trusted player count/)).not.toBeVisible()
     fireEvent.click(screen.getByText('Player-count help', { selector: 'summary' }))
     expect(screen.getByText(/cannot verify readiness or report a trusted player count/)).toBeVisible()
@@ -185,15 +218,15 @@ describe('PlayersPanel', () => {
   it.each(unavailableZeroCases)('suppresses an old zero and countdown with $description', ({ change }) => {
     render(<PlayersPanel run={{ ...run, onlinePlayers: 0, autoShutdownAtUtc: '2026-09-29T12:05:00Z', ...change }}
       nowMs={Date.parse('2026-09-29T12:00:04Z')} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
-    expect(within(screen.getByRole('group', { name: 'Players online' })).getByText('Unavailable')).toBeVisible()
+    expect(within(screen.getByRole('group', { name: 'Players online' })).getByLabelText('Player count unavailable')).toBeVisible()
     expect(screen.getByText('No countdown')).toBeVisible()
     expect(screen.queryByRole('note')).not.toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('Friend and automatic Stop remain blocked.')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.queryByText('0 / 10 online')).not.toBeInTheDocument()
     expect(screen.queryByText(/About \d+ min/)).not.toBeInTheDocument()
   })
 
-  it('announces count availability politely without reading each timer/freshness tick or moving focus', () => {
+  it('keeps automatic count changes silent without resetting disclosures or moving focus', () => {
     const initial = { ...run, onlinePlayers: 0, autoShutdownAtUtc: '2026-09-29T12:05:00Z' }
     const now = Date.parse('2026-09-29T12:00:04Z')
     const { rerender } = render(<PlayersPanel run={initial} nowMs={now} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
@@ -201,15 +234,14 @@ describe('PlayersPanel', () => {
     fireEvent.click(sourceSummary)
     const refresh = screen.getByRole('button', { name: 'Refresh count' })
     refresh.focus()
-    const announcement = screen.getByRole('status').textContent
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     rerender(<PlayersPanel run={initial} nowMs={now + 1000} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
-    expect(screen.getByRole('status').textContent).toBe(announcement)
-    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(sourceSummary.closest('details')).toHaveAttribute('open')
     expect(screen.getByText('Observed 5 seconds ago.')).toBeVisible()
     expect(refresh).toHaveFocus()
     rerender(<PlayersPanel run={initial} nowMs={now + 7000} refreshing={false} disabled={false} onRefresh={vi.fn()} />)
-    expect(screen.getByRole('status')).toHaveTextContent('Waiting for a current player count. Friend and automatic Stop remain blocked.')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.getByText('No countdown')).toBeVisible()
     expect(refresh).toHaveFocus()
   })

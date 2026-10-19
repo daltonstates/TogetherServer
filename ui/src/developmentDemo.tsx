@@ -11,6 +11,8 @@ export const developmentDemoScenes = {
   'friend-hosting': 'Friend servers · host this save',
   'friend-missing-server': 'Friend servers · missing server app',
   'friend-offline': 'Friend servers · owner offline, verified copy',
+  'friend-players-online': 'Friend servers · players online',
+  'friend-players-checking': 'Friend servers · background player check',
   'players-refreshing': 'Players · checking quietly',
   'players-repeated-issue': 'Players · repeated lookup issue'
 } as const
@@ -103,9 +105,21 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
   if (scene === 'players-refreshing' || scene === 'players-repeated-issue') Object.assign(state.host.runs[0], {
     state: 'Unknown', processId: 4242, runOperationId: ids.session, playerCountRefreshing: scene === 'players-refreshing',
     playerCountFailureCount: scene === 'players-repeated-issue' ? 2 : 0,
-    playerObservationSource: scene === 'players-refreshing' ? 'ObservationPending' : 'BuiltInQuery',
+    playerObservationSource: scene === 'players-refreshing' ? 'ObservationPending' : 'HealthProbeFailed',
     detail: 'DEMO: waiting for a reliable player count. No real server is queried.'
   })
+  if (scene === 'friend-players-online' || scene === 'friend-players-checking') Object.assign(state.friend.profiles[0], {
+    onlinePlayers: scene === 'friend-players-online' ? 2 : null,
+    playerCountTrusted: scene === 'friend-players-online', playerCountObservedUtc: new Date(FIXED_NOW).toISOString(), maxPlayers: 10,
+    playerCountRefreshing: scene === 'friend-players-checking', playerCountFailureCount: 0,
+    playerObservationSource: scene === 'friend-players-online' ? 'ValheimReady' : 'ObservationPending',
+    canStop: true, canStopNow: false, canRestartNow: false
+  })
+  if (scene.startsWith('players-')) state.host.activity = [{
+    id: '99999999-9999-4999-8999-999999999999', occurredUtc: new Date(FIXED_NOW).toISOString(),
+    category: 'Players', action: 'CountUnavailable', profileId: ids.primary, deviceId: null,
+    severity: 'Warning', visibility: 'AssignedFriends', message: 'DEMO: earlier count check unavailable.'
+  }]
   if (state.host.hostingPower) Object.assign(state.host.hostingPower, { managedServerRunning: false, message: demoBoundary })
   return { scene, state, clockOffset: Date.now() - FIXED_NOW, revision: ++nextRevision, rosterRevision: 1,
     prepared: false, running: false, serverInstalled: scene !== 'friend-missing-server', instance: structuredClone(instance),
@@ -247,7 +261,7 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     if (action === 'stop') { changeRun(session, id, false); if (id === ids.third) session.running = false }
     if (action === 'start' || action === 'restart') changeRun(session, id, true)
     if (action === 'players/refresh' && state.host.runs.find(run => run.profileId === id)?.state !== 'Offline') changeRun(session, id, true)
-    return reply(result({ snapshot: state.host }))
+    return reply(result({ snapshot: state.host, ...(action === 'players/refresh' ? { code: 'PlayerCountRefreshed' } : {}) }))
   }
   return null
 }

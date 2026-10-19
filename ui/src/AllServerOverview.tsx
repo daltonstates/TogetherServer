@@ -3,6 +3,7 @@ import { DismissibleNotice } from './DismissibleNotice'
 import type { HostSnapshot } from './contracts'
 import { isActiveProfile } from './profileLists'
 import { activityDestination, type ActivityDestination } from './notificationState'
+import { hasRepeatedPlayerCountFailure, isPlayerCountObservationUnavailable, playerCountAvailability } from './playerCountPresentation'
 
 type OverviewRow = {
   id: string; name: string; state: string; players: string; source: string; freshness: string
@@ -29,8 +30,7 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
   return snapshot.settings.profiles.map((profile, index) => {
     const run = snapshot.runs.find(item => item.profileId === profile.id)
     const observedAge = age(run?.playerCountObservedUtc, nowMs)
-    const trusted = run?.state === 'Ready' && run.playerCountTrusted && run.onlinePlayers !== null &&
-      observedAge !== null && observedAge <= 10_000
+    const trusted = run !== undefined && playerCountAvailability(run, nowMs).count !== null
     const stale = observedAge !== null && observedAge > 10_000
     const backup = snapshot.backups?.[profile.id]
     const backupAge = age(backup?.lastSuccessfulUtc, nowMs)
@@ -39,7 +39,7 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
     const state = run?.state ?? 'Unknown'
     // The Host projects an expired player observation as Unknown. An Unknown
     // run without that observation still needs the lifecycle review action.
-    const stalePlayerObservation = state === 'Unknown' && stale
+    const stalePlayerObservation = isPlayerCountObservationUnavailable(run)
     let warning = ''
     let priority = 0
     let destination: ActivityDestination = { workspace: 'host', section: 'overview', profileId: profile.id, label: 'Open server' }
@@ -56,7 +56,7 @@ export function allServerRows(snapshot: HostSnapshot, nowMs: number): OverviewRo
       destination = { workspace: 'host', section: 'setup', profileId: profile.id, label: 'Continue maintenance' }
     }
     else if (backupFailed) problem('Latest backup attempt failed', 60, 'backups', 'Review backups')
-    else if ((state === 'Ready' || stalePlayerObservation) && !trusted) problem(stale ? 'Player observation is stale' : 'Player count unavailable', 50, 'players', 'Review players')
+    else if ((state === 'Ready' || stalePlayerObservation) && !trusted && run && hasRepeatedPlayerCountFailure(run)) problem('Player count unavailable', 50, 'players', 'Review players')
     else if (profile.kind !== 'Custom' && !backup) problem('Backup status unavailable', 35, 'backups', 'Review backups')
     else if (profile.kind !== 'Custom' && backup?.completedCount === 0) problem('No completed backup', 30, 'backups', 'Protect world')
     else {

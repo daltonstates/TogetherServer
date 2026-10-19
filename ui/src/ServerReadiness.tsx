@@ -3,7 +3,7 @@ import { Icon } from './Icon'
 import { Button } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import type { Run } from './contracts'
-import { isTransientPlayerObservation } from './playerCountPresentation'
+import { isPlayerCountObservationUnavailable } from './playerCountPresentation'
 
 export type GamePortCheck = {
   profileId: string
@@ -274,9 +274,9 @@ function connectionIssue(control: ControlCheck | undefined, result: InternetRout
   return null
 }
 
-function gameIssue(status: string, game: GamePortCheck | undefined): ReadinessIssue | null {
+function gameIssue(status: string, game: GamePortCheck | undefined, countUnavailable = false): ReadinessIssue | null {
   if (status === 'Offline' || status === 'Starting' || status === 'Process running') return null
-  if (status === 'Unknown') return {
+  if (status === 'Unknown' && !countUnavailable) return {
     title: 'The server state is unknown.',
     detail: 'TogetherServer blocks unsafe start and remote Stop actions until the managed process can be verified.',
     connection: false,
@@ -288,7 +288,7 @@ function gameIssue(status: string, game: GamePortCheck | undefined): ReadinessIs
     connection: false,
     tone: 'bad'
   }
-  if (game?.state === 'Closed on PC' || game?.state === 'Loopback only' || game?.state === 'Unknown') return {
+  if (game?.state === 'Closed on PC' || game?.state === 'Loopback only' || !countUnavailable && game?.state === 'Unknown') return {
     title: 'The game connection needs attention.', detail: game.detail, connection: false,
     tone: game.state === 'Closed on PC' ? 'bad' : 'warning'
   }
@@ -339,13 +339,13 @@ export function ServerReadiness({ profileId, status, ports, routeCheck, onRefres
   const hadPreviousResult = routeCheck !== null
   const guidance = friendGuidance(control, checkedRoute, hadPreviousResult)
   const friend = friendSummary(control, checkedRoute)
-  const countPending = isTransientPlayerObservation(run)
+  const countPending = isPlayerCountObservationUnavailable(run)
   const gameAccess: ReadinessSummary = countPending ? {
-    label: 'Game access', state: 'Checking', tone: 'neutral',
-    detail: 'Waiting for a current server observation. Stop waits for a fresh player count.'
+    label: 'Game access', state: 'Unavailable', tone: 'neutral',
+    detail: 'Server status is currently unavailable.'
   } : gameSummary(status, game)
   const issue = connectionIssue(control, checkedRoute, hadPreviousResult) ??
-    (countPending ? null : gameIssue(status, game))
+    gameIssue(status, game, countPending)
   const friendListenerDetail = control
     ? <>{control.detail}{control.bindAddress && <> Bound to <code>{control.bindAddress}</code> ({control.bindScope ?? 'scope unknown'}).</>}</>
     : 'Waiting for a listener check.'

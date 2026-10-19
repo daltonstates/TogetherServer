@@ -100,7 +100,8 @@ internal sealed class AppBackgroundTasks(
                             ? friend.View().Activity ?? []
                             : data.LoadActivity(100).Where(item => item.Visibility != ActivityVisibility.Device))
                         .Where(item => item.OccurredUtc >= notificationStartedUtc &&
-                            item.Severity is ActivitySeverity.Important or ActivitySeverity.Warning)
+                            item.Severity is ActivitySeverity.Important or ActivitySeverity.Warning &&
+                            !PlayerCountRefreshState.IsRoutineCountActivity(item.Category, item.Action))
                         .DistinctBy(item => item.Id)
                         .OrderBy(item => item.OccurredUtc)
                         .ToList();
@@ -109,7 +110,8 @@ internal sealed class AppBackgroundTasks(
                     var hostSnapshot = await manager.SnapshotAsync();
                     desktop.SetTraySummary(new DesktopTraySummary(
                         hostSnapshot.Runs.Count(run => run.State is "Ready" or "Starting" or "Process running" or "Listening" or "Stopping"),
-                        hostSnapshot.Runs.Count(run => run.State is "Unknown" or "Failed"),
+                        hostSnapshot.Runs.Count(run => run.State == "Failed" || run.State == "Unknown" &&
+                            !PlayerCountRefreshState.IsCountObservationUnavailable(run.State, run.PlayerObservationSource)),
                         friend.View().State));
                     if (notifiedActivity.Count > 1000)
                         notifiedActivity.IntersectWith(visible.Select(item => item.Id));

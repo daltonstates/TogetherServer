@@ -16,6 +16,13 @@ type RoutedActivity = {
   deviceId?: string | null
 }
 
+// Keep routine observations in history without creating notifications or unread
+// badges, including count events saved by an older version of the app.
+export function isRoutinePlayerCountActivity(item: Pick<RoutedActivity, 'category' | 'action'>): boolean {
+  return item.category === 'Players' && ['CountIncreased', 'CountDecreased', 'CountObserved', 'CountUnavailable'].includes(item.action) ||
+    item.category === 'Countdown' && ['Started', 'Canceled'].includes(item.action)
+}
+
 export const activityClearStorageKey = 'togetherserver.activity-clear-markers'
 
 export function activityAfterMarker<T extends ActivityItem>(activity: T[], marker?: string): T[] {

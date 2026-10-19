@@ -7,8 +7,8 @@ import { playerCountPresentation } from './playerCountPresentation'
 export { playerCountAvailability } from './playerCountPresentation'
 import './players.css'
 
-function countLabel(run: Run, count: number | null, refreshing: boolean) {
-  if (count === null) return refreshing ? 'Checking…' : 'Unavailable'
+function countLabel(run: Run, count: number | null) {
+  if (count === null) return '—'
   return run.maxPlayers === null ? `${count} online` : `${count} / ${run.maxPlayers} online`
 }
 
@@ -97,35 +97,30 @@ export function PlayersPanel({ run, activity = [], nowMs, refreshing, disabled, 
     <div className="players-heading">
       <h3 id={`players-${run.profileId}`}>Players</h3>
       <Button className="secondary" disabled={disabled || evidence.refreshing} onClick={onRefresh}>
-        <Icon name={evidence.refreshing ? 'loader' : 'refresh'} />{evidence.refreshing ? 'Checking…' : 'Refresh count'}
+        <Icon name={refreshing ? 'loader' : 'refresh'} />{refreshing ? 'Refreshing…' : 'Refresh count'}
       </Button>
     </div>
     <div className="players-overview">
       <div className="players-stat" role="group" aria-labelledby={`players-count-${run.profileId}`}>
         <div className="players-stat-heading"><Icon name="users" size={19} /><h4 id={`players-count-${run.profileId}`}>Players online</h4></div>
-        <strong className="players-count-value">{countLabel(run, evidence.count, evidence.refreshing)}</strong>
+        <strong className="players-count-value" aria-label={evidence.count === null ? 'Player count unavailable' : undefined}>{countLabel(run, evidence.count)}</strong>
       </div>
       <div className="players-stat" role="group" aria-labelledby={`players-timer-${run.profileId}`}>
         <div className="players-stat-heading"><Icon name="clock" size={19} /><h4 id={`players-timer-${run.profileId}`}>Empty-server timer</h4></div>
         <strong className="players-timer-value">{timerValue}</strong>
-        <p className="players-timer-context">{remainingMinutes === 0
+        {deadline && <p className="players-timer-context">{remainingMinutes === 0
           ? 'The Host must recheck players before Stop.'
           : deadline && remainingMinutes === null ? 'A valid countdown deadline is not available.'
-          : trustedNow ? run.autoShutdownReason ?? 'Waiting for the Host’s current timer state.'
-          : 'Waiting for a fresh trusted count.'}</p>
+          : run.autoShutdownReason}</p>}
       </div>
     </div>
-    {evidence.showWarning && <DismissibleNotice className="players-warning" role="note" scope={run.profileId} noticeKey={evidence.state}>
+    {evidence.showWarning && <DismissibleNotice className="players-warning" role="note" scope={JSON.stringify([run.profileId, run.runOperationId])} noticeKey="player-count-unavailable">
       <Icon name="warning" size={19} />
       <div>
         <strong>Player count unavailable after repeated checks</strong>
-        <p>Friend and automatic Stop remain blocked.</p>
+        <p>Open player-count help to troubleshoot.</p>
       </div>
     </DismissibleNotice>}
-    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{trustedNow
-      ? `${evidence.count} players reported by the game server.`
-      : evidence.showWarning ? 'Player count unavailable after repeated checks. Friend and automatic Stop remain blocked.'
-        : 'Waiting for a current player count. Friend and automatic Stop remain blocked.'}</span>
     <div className="players-disclosures">
       <details className="players-disclosure">
         <summary>Count source & timer details</summary>

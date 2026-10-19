@@ -89,7 +89,7 @@ describe('one grouped server list', () => {
     expect(screen.getByRole('button', { name: /Open Removed PC/ })).toHaveTextContent('No assigned servers')
   })
 
-  it('keeps pending and first unavailable counts quiet and shows a recurring issue after repeated failures', () => {
+  it('keeps pending, first and repeated unavailable counts stable without loading labels or warnings', () => {
     const view = { localServers: [server({ onlinePlayers: null, playerCountTrusted: false, playerCountRefreshing: true,
       playerCountFailureCount: 0, playerCountObservedUtc: null }),
     server({ id: ids.guest, name: 'First miss', onlinePlayers: null, playerCountTrusted: false,
@@ -97,9 +97,9 @@ describe('one grouped server list', () => {
     server({ id: ids.source, name: 'Repeated issue', onlinePlayers: null, playerCountTrusted: false,
       playerCountRefreshing: false, playerCountFailureCount: 2 })], friendHosts: [] }
     show(view)
-    expect(screen.getByRole('button', { name: 'Open Our world on this PC' })).toHaveTextContent('Checking players…')
-    expect(screen.getByRole('button', { name: 'Open First miss on this PC' })).toHaveTextContent('Checking players…')
-    expect(screen.getByRole('button', { name: 'Open Repeated issue on this PC' })).toHaveTextContent('Player count unavailable')
+    expect(screen.getByRole('button', { name: 'Open Our world on this PC' })).toHaveTextContent('Players —')
+    expect(screen.getByRole('button', { name: 'Open First miss on this PC' })).toHaveTextContent('Players —')
+    expect(screen.getByRole('button', { name: 'Open Repeated issue on this PC' })).toHaveTextContent('Players —')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
@@ -108,8 +108,8 @@ describe('one grouped server list', () => {
       server({ id: ids.guest, name: 'Stale count', playerCountObservedUtc: new Date(now - 11_000).toISOString() }),
       server({ id: ids.source, name: 'Future count', playerCountObservedUtc: new Date(now + 1000).toISOString() })], friendHosts: [] })
     expect(screen.getByRole('button', { name: 'Open Our world on this PC' })).toHaveTextContent('0 / 10 online')
-    expect(screen.getByRole('button', { name: 'Open Stale count on this PC' })).toHaveTextContent('Checking players…')
-    expect(screen.getByRole('button', { name: 'Open Future count on this PC' })).toHaveTextContent('Checking players…')
+    expect(screen.getByRole('button', { name: 'Open Stale count on this PC' })).toHaveTextContent('Players —')
+    expect(screen.getByRole('button', { name: 'Open Future count on this PC' })).toHaveTextContent('Players —')
   })
 
   it('shows clear empty groups and a retry without taking an implicit action', () => {

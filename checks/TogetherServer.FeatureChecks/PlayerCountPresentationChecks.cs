@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using TogetherServer;
 
@@ -10,6 +11,23 @@ internal static class PlayerCountPresentationChecks
     internal static void Run()
     {
         static void Require(bool value, string message) { if (!value) throw new Exception(message); }
+        foreach (var source in new[] { "ObservationPending", "ObservationStale", "HealthProbeFailed", "CustomStatusTimedOut" })
+            Require(PlayerCountRefreshState.IsCountObservationUnavailable("Unknown", source) &&
+                !PlayerCountRefreshState.IsCountObservationUnavailable("Failed", source),
+                "a routine count state became a tray warning or hid an actual server failure");
+        foreach (var source in new string?[] { "IdentityUnknown", "CustomScriptsUnavailable", null, "UnrecognizedDriverFailure" })
+            Require(!PlayerCountRefreshState.IsCountObservationUnavailable("Unknown", source),
+                "an identity, setup or unrecognized server problem was hidden as a count request");
+        foreach (var action in new[] { "CountIncreased", "CountDecreased", "CountObserved", "CountUnavailable" })
+            Require(PlayerCountRefreshState.IsRoutineCountActivity("Players", action),
+                "an older Host count event could create a new native alert");
+        Require(PlayerCountRefreshState.IsRoutineCountActivity("Countdown", "Started") &&
+            PlayerCountRefreshState.IsRoutineCountActivity("Countdown", "Canceled"),
+            "automatic countdown churn could create native alerts");
+        foreach (var action in new[] { "AutomaticStopFailed", "AutomaticStopCompleted", "FriendExtended", "UnrecognizedFailure" })
+            Require(!PlayerCountRefreshState.IsRoutineCountActivity("Countdown", action) &&
+                !PlayerCountRefreshState.IsRoutineCountActivity("Lifecycle", action),
+                "an actual lifecycle result or explicit timer action lost its notification");
         var operationId = Guid.NewGuid();
         var unknown = new GameHealthResult(true, "MinecraftLocalStatus", "Ready", "No valid count.");
         var trusted = unknown with { OnlinePlayers = 0, PlayerCountTrusted = true };
@@ -84,5 +102,51 @@ internal static class PlayerCountPresentationChecks
         Require(!legacy.PlayerCountRefreshing && legacy.PlayerCountFailureCount == 0 &&
             legacy.PlayerCountTrusted is null && legacy.PlayerCountObservedUtc is null,
             "a legacy peer fabricated count history or count evidence");
+    }
+
+    internal static void RunQuietCountdown(string root)
+    {
+        // Empty synthetic storage only. Calling the cancellation method directly
+        // exercises timer/credit history without querying or launching a process.
+        using var data = new LocalData(Path.Combine(root, "quiet-countdown-" + Guid.NewGuid().ToString("N")));
+        var manager = new HostManager(data);
+        T Field<T>(string name) => (T)typeof(HostManager)
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(manager)!;
+        var deadlines = Field<Dictionary<Guid, DateTimeOffset>>("shutdownDeadlines");
+        var addedMinutes = Field<Dictionary<Guid, long>>("addedShutdownMinutes");
+        var friendMinutes = Field<Dictionary<Guid, int>>("friendAddedMinutes");
+        var cancel = typeof(HostManager).GetMethod("CancelCountdown", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        foreach (var reason in new[]
+        {
+            "The current player count became unknown.",
+            "The authoritative player count became unavailable.",
+            "A player joined the server."
+        })
+        {
+            var profileId = Guid.NewGuid();
+            deadlines[profileId] = DateTimeOffset.UtcNow.AddMinutes(10);
+            addedMinutes[profileId] = 15;
+            friendMinutes[profileId] = 5;
+            cancel.Invoke(manager, [profileId, reason, false]);
+            if (deadlines.ContainsKey(profileId) || addedMinutes[profileId] != 15 || friendMinutes[profileId] != 5)
+                throw new Exception("Quiet count cancellation retained a live deadline or lost saved added time.");
+            var events = data.LoadActivity().Where(item => item.ProfileId == profileId).ToList();
+            if (events is not [{ Category: "Countdown", Action: "Canceled", Severity: ActivitySeverity.Info,
+                Visibility: ActivityVisibility.AssignedFriends }] ||
+                !events[0].Message.Contains("15 added minutes remain saved", StringComparison.Ordinal))
+                throw new Exception("A routine count change lost its history or generated an attention event.");
+            cancel.Invoke(manager, [profileId, reason, false]);
+            if (data.LoadActivity().Count(item => item.ProfileId == profileId) != 1)
+                throw new Exception("Polling an already-canceled timer repeated its activity event.");
+        }
+
+        var discardedId = Guid.NewGuid();
+        deadlines[discardedId] = DateTimeOffset.UtcNow.AddMinutes(10);
+        addedMinutes[discardedId] = 15;
+        friendMinutes[discardedId] = 5;
+        cancel.Invoke(manager, [discardedId, "Automatic shutdown was turned off.", true]);
+        if (deadlines.ContainsKey(discardedId) || addedMinutes.ContainsKey(discardedId) || friendMinutes.ContainsKey(discardedId))
+            throw new Exception("Quiet notifications changed explicit timer-credit discard behavior.");
     }
 }

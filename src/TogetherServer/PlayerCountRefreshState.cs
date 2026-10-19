@@ -7,6 +7,15 @@ internal sealed record PlayerCountRefreshState(Guid OperationId, bool Refreshing
 {
     internal const int WarningThreshold = 2;
 
+    internal static bool IsCountObservationUnavailable(string state, string? source) =>
+        state == "Unknown" && source is "ObservationPending" or "ObservationStale" or "HealthProbeFailed" or "CustomStatusTimedOut";
+
+    // Apply at the recipient too: an older paired Host may still send these as
+    // Important/Warning. Retain history without a new native notification.
+    internal static bool IsRoutineCountActivity(string category, string action) =>
+        category == "Players" && action is "CountIncreased" or "CountDecreased" or "CountObserved" or "CountUnavailable" ||
+        category == "Countdown" && action is "Started" or "Canceled";
+
     internal PlayerCountRefreshState Completed(GameHealthResult health, bool wasReady)
     {
         var trusted = health.Ok && health.State == "Ready" && health.PlayerCountTrusted &&

@@ -7,7 +7,7 @@ import { friendCheckFreshness } from './FriendConnectionDoctor'
 import { JoinGuide } from './JoinGuide'
 import { OpenGameButton } from './OpenGameButton'
 import { ServerNotificationPreferences } from './DesktopPreferencesPanel'
-import { hasRepeatedPlayerCountFailure, isTransientPlayerObservation, publicPlayerCount } from './playerCountPresentation'
+import { isPlayerCountObservationUnavailable, publicPlayerCount } from './playerCountPresentation'
 import './TaskFirstPages.css'
 
 export type FriendConnectionExplanation = {
@@ -170,18 +170,16 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
   const permissions = effectiveFriendPermissions(snapshot, profile, nowMs)
   const currentProfile = snapshot.profiles.find(item => item.id === profile.id)
   const canJoin = permissions.currentAccess && !!currentProfile?.joinAddress && ['Ready', 'Listening'].includes(currentProfile.state)
-  const countPending = !!currentProfile && publicPlayerCount(currentProfile, nowMs) === null &&
-    !hasRepeatedPlayerCountFailure(currentProfile)
   const playExplanation = !permissions.currentAccess ? connection.detail
     : currentProfile?.state === 'Offline' ? !permissions.actions.start.available
       ? `The game server is stopped. ${permissions.actions.start.reason}`
       : !onStart ? 'The game server is stopped. Ask the Host to start this server.' : 'The game server is stopped.'
-    : isTransientPlayerObservation(currentProfile) ? 'Checking the server. Stop waits for a fresh player count.'
+    : isPlayerCountObservationUnavailable(currentProfile) ? 'Server status is currently unavailable.'
       : friendServerStateExplanation(currentProfile?.state ?? 'Unknown')
   return <section className="friend-play-flow" aria-labelledby={headingId} aria-busy={busy}>
     <div className="panel-heading"><h4 id={headingId}>Play</h4>
       {onRefresh && <Button className="icon-button" aria-label="Refresh server status" title="Refresh server status" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} /></Button>}</div>
-    <p role="status">{playExplanation}</p>
+    <p>{playExplanation}</p>
     <div className="friend-primary-actions">
       {(currentProfile?.state === 'Offline' || pendingAction === 'start' && currentProfile?.state === 'Starting') && permissions.currentAccess && onStart && <Button className="server-primary-action" disabled={busy || !permissions.actions.start.available}
         title={!permissions.actions.start.available ? permissions.actions.start.reason : undefined}
@@ -194,10 +192,6 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
-    {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && !permissions.actions.stop.available && !countPending &&
-      <DismissibleNotice as="p" scope={JSON.stringify([snapshot.connectionId, profile.id, identityKey])} className="warning-text" role="status">{permissions.actions.stop.reason}</DismissibleNotice>}
-    {permissions.currentAccess && permissions.grants.stop && currentProfile?.state === 'Ready' && countPending &&
-      <p className="helper-text" role="status">Checking players. Stop waits for a fresh count of zero.</p>}
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}

@@ -20,15 +20,17 @@ describe('HostLifecycleSummary', () => {
     const pending = { ...run, state: 'Unknown', onlinePlayers: null, playerCountTrusted: false,
       playerObservationSource: 'ObservationStale', playerCountRefreshing: true, playerCountFailureCount: 0 }
     const view = render(<HostLifecycleSummary {...input} run={pending} compact onStart={start} onOpen={open} />)
-    expect(screen.getByText('Checking server status')).toBeVisible()
+    expect(screen.getByText('Server status unavailable')).toBeVisible()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.queryByText('Unknown · Review needed')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
     expect(start).not.toHaveBeenCalled()
     expect(open).not.toHaveBeenCalled()
     view.rerender(<HostLifecycleSummary {...input} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 1 }} compact onStart={start} onOpen={open} />)
-    expect(screen.getByText('Checking server status')).toBeVisible()
+    expect(screen.getByText('Server status unavailable')).toBeVisible()
     view.rerender(<HostLifecycleSummary {...input} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 2 }} compact onStart={start} onOpen={open} />)
-    expect(screen.getByText('Unknown · Review needed')).toBeVisible()
+    expect(screen.getByText('Server status unavailable')).toBeVisible()
+    expect(screen.queryByText('Unknown · Review needed')).not.toBeInTheDocument()
   })
 
   it('keeps compact Offline details without duplicating the parent Start action', () => {
@@ -117,14 +119,14 @@ describe('HostLifecycleSummary', () => {
     expect(hostLifecycleView({ ...input, run: { ...run, state: 'Offline', profileId: 'other' } }).phase).toMatch(/Unknown/)
   })
 
-  it('keeps stale, unsupported and unknown counts on the player-evidence action', () => {
+  it('avoids review prompts for a single stale, unsupported or missing count', () => {
     for (const changed of [
       { ...run, playerCountObservedUtc: '2026-10-08T11:59:49Z' },
       { ...run, onlinePlayers: null, playerCountTrusted: false },
       { ...run, playerObservationSource: 'CustomScriptReady' },
       { ...run, playerCountObservedUtc: '2026-10-08T12:01:00Z' }
     ]) expect(hostLifecycleView({ ...input, run: changed }).next).toMatchObject({
-      kind: 'navigate', label: 'Review player count', destination: { section: 'players' }
+      kind: 'navigate', label: 'Open connection details', destination: { section: 'overview' }
     })
   })
 
@@ -143,14 +145,13 @@ describe('HostLifecycleSummary', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
   })
 
-  it('keeps polite announcements and focus stable as the display clock advances', () => {
+  it('keeps polling silent and focus stable as the display clock advances', () => {
     const { rerender } = render(<HostLifecycleSummary {...input} onOpen={vi.fn()} />)
     const action = screen.getByRole('button', { name: 'Review empty-server timer' })
     action.focus()
-    const announcement = screen.getByRole('status').textContent
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     rerender(<HostLifecycleSummary {...input} nowMs={nowMs + 1000} onOpen={vi.fn()} />)
-    expect(screen.getByRole('status')).toHaveTextContent(announcement!)
-    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(action).toHaveFocus()
   })
 })

@@ -96,7 +96,8 @@ describe('the composed play flow', () => {
     const props = { profile: pending, nowMs, onStop, showServerNotifications: false }
     const view = render(<FriendPlayFlow {...props} snapshot={{ ...snapshot, profiles: [pending] }} />)
     expect(view.container.querySelector('.warning-text')).toBeNull()
-    expect(screen.getByText('Checking players. Stop waits for a fresh count of zero.')).toBeVisible()
+    expect(screen.queryByText(/Checking players|Checking the server/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
     const first = { ...pending, playerCountRefreshing: false, playerCountFailureCount: 1 }
     view.rerender(<FriendPlayFlow {...props} profile={first} snapshot={{ ...snapshot, profiles: [first] }} />)
@@ -104,6 +105,8 @@ describe('the composed play flow', () => {
     expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Stop server' }))
     expect(onStop).not.toHaveBeenCalled()
+    view.rerender(<FriendPlayFlow {...props} profile={profile} snapshot={snapshot} />)
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeEnabled()
   })
 
   it('places local hosting beside Start without granting remote Start permission', () => {
@@ -120,14 +123,14 @@ describe('the composed play flow', () => {
     expect(hostHere).toHaveBeenCalledOnce()
   })
 
-  it('retains the Unknown-player Stop guard after dismissal and repeats the warning for another connection', () => {
+  it('keeps repeated missing counts quiet while preserving Stop safety across polls and connections', () => {
     const onStop = vi.fn()
     const unknown = { ...profile, onlinePlayers: null, joinAddress: null, playerCountFailureCount: 2 }
     const props = { profile: unknown, nowMs, onStop, showServerNotifications: false }
     const current = { ...snapshot, profiles: [unknown] }
     const view = render(<FriendPlayFlow {...props} snapshot={current} />)
     expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByRole('button', { name: 'Dismiss notification' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Stop server' }))
@@ -135,7 +138,7 @@ describe('the composed play flow', () => {
     view.rerender(<FriendPlayFlow {...props} snapshot={{ ...current, lastConnectedUtc: '2026-10-08T15:00:05Z' }} />)
     expect(screen.queryByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).not.toBeInTheDocument()
     view.rerender(<FriendPlayFlow {...props} snapshot={{ ...current, connectionId: 'another-Host' }} />)
-    expect(screen.getByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).toBeInTheDocument()
+    expect(screen.queryByText(/Player count is Unknown\. Refresh players/, { selector: '.warning-text' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
     expect(onStop).not.toHaveBeenCalled()
   })
@@ -155,13 +158,15 @@ describe('the composed play flow', () => {
     expect(fetcher.mock.calls[0][0]).toBe('/api/local/desktop/notifications')
     expect(screen.queryByRole('checkbox', { name: /Quiet mode/ })).not.toBeInTheDocument()
   })
-  it('keeps occupied Stop blockers visible while Connection Doctor stays in server tools', () => {
+  it('keeps occupied Stop disabled with its reason available on demand and no warning banner', () => {
     const occupied = { ...profile, onlinePlayers: 1 }
     const doctor = vi.fn()
     render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [occupied] }} profile={occupied} nowMs={nowMs}
       onStop={vi.fn()} onOpenConnectionDoctor={doctor} />)
     expect(screen.getByRole('heading', { name: 'Play' })).toBeInTheDocument()
-    expect(screen.getAllByRole('status').find(element => element.textContent?.includes('Players are online.'))).toHaveTextContent('Wait until the server reports zero players.')
+    expect(screen.getByRole('button', { name: 'Stop server' })).toBeDisabled()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Players are online\. Wait/).every(element => element.closest('details'))).toBe(true)
     expect(screen.getByRole('button', { name: 'Open Connection Doctor' })).not.toBeVisible()
     fireEvent.click(screen.getByLabelText('Server tools and connection help'))
     fireEvent.click(screen.getByRole('button', { name: 'Open Connection Doctor' }))
@@ -183,7 +188,7 @@ describe('the composed play flow', () => {
     const starting = { ...profile, state: 'Starting' }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [starting] }} profile={starting} nowMs={nowMs} onStart={onStart} />)
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('Wait for its readiness observation')
+    expect(screen.getByText(/Wait for its readiness observation/, { selector: '.friend-play-flow > p' })).toBeVisible()
     view.rerender(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs}
       connectionDetails={<p>Masked connection controls</p>} requirements={<p>Requirements slot</p>} />)
     expect(screen.getByRole('button', { name: 'Open game' })).toBeInTheDocument()
@@ -200,7 +205,7 @@ describe('the composed play flow', () => {
     const listening = { ...profile, kind: 'Terraria', state: 'Listening', onlinePlayers: null }
     const paused = { ...snapshot, state: 'Disabled', remoteControlsEnabled: false, profiles: [listening] }
     const view = render(<FriendPlayFlow snapshot={paused} profile={listening} nowMs={nowMs} />)
-    expect(screen.getByRole('status')).toHaveTextContent('readiness, player count and a real join remain unverified')
+    expect(screen.getByText(/readiness, player count and a real join remain unverified/, { selector: '.friend-play-flow > p' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open game' })).toBeEnabled()
     view.rerender(<FriendPlayFlow snapshot={paused} profile={listening} nowMs={nowMs + 46_000} />)
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
@@ -212,13 +217,13 @@ describe('the composed play flow', () => {
     const offline = { ...profile, state: 'Offline', maintenanceEnabled: true }
     const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [offline] }} profile={offline} nowMs={nowMs} onStart={onStart} />)
     expect(screen.getByRole('button', { name: 'Start server' })).toBeDisabled()
-    expect(screen.getByRole('status')).toHaveTextContent('paused lifecycle controls for maintenance')
+    expect(screen.getByText(/paused lifecycle controls for maintenance/, { selector: '.friend-play-flow > p' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Start server' }))
     expect(onStart).not.toHaveBeenCalled()
     const denied = { ...offline, maintenanceEnabled: false, canStart: false }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [denied] }} profile={denied} nowMs={nowMs} onStart={onStart} />)
     expect(screen.getByRole('button', { name: 'Start server' })).toBeDisabled()
-    expect(screen.getByRole('status')).toHaveTextContent('The Host has not granted Start for this server.')
+    expect(screen.getByText(/The Host has not granted Start for this server/, { selector: '.friend-play-flow > p' })).toBeVisible()
     const pending = { ...denied, canStart: true, operation: { id: 'operation', action: 'start', state: 'Pending' as const,
       ok: null, code: 'Pending', message: '', requestedUtc: '2026-10-08T15:00:00Z', completedUtc: null } }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [pending] }} profile={pending} nowMs={nowMs} onStart={onStart} />)

@@ -44,9 +44,17 @@ export function playerCountPresentation(run: Run, nowMs = Date.now(), refreshing
 export function isTransientPlayerObservation(run: (CountRefreshEvidence & {
   state: string; playerObservationSource?: string | null
 }) | undefined): boolean {
-  return !!run && run.state === 'Unknown' && !hasRepeatedPlayerCountFailure(run) &&
-    (run.playerCountRefreshing === true || ['ObservationPending', 'ObservationStale', 'HealthProbeFailed']
-      .includes(run.playerObservationSource ?? ''))
+  return !!run && isPlayerCountObservationUnavailable(run) && !hasRepeatedPlayerCountFailure(run)
+}
+
+// A count lookup cannot establish readiness, but it also does not call for a
+// global warning. Keep identity and actual server failures outside this list.
+export function isPlayerCountObservationUnavailable(run: {
+  state: string; playerObservationSource?: string | null
+} | undefined): boolean {
+  return !!run && run.state === 'Unknown' &&
+    ['ObservationPending', 'ObservationStale', 'HealthProbeFailed', 'CustomStatusTimedOut']
+      .includes(run.playerObservationSource ?? '')
 }
 
 export function publicPlayerCount(profile: PublicProfile, nowMs = Date.now()): number | null {

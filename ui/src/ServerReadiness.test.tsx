@@ -21,7 +21,7 @@ function diagnostics(state: string, detail: string): PortDiagnostics {
 }
 
 describe('ServerReadiness Friend connection wording', () => {
-  it('keeps a transient count observation neutral, then exposes repeated or identity failures', () => {
+  it('keeps count-only observations neutral while exposing actual identity failures', () => {
     const pending: Run = { profileId: 'server-1', runOperationId: null, state: 'Unknown', detail: 'Waiting for a fresh probe.',
       processId: 123, onlinePlayers: null, maxPlayers: null, autoShutdownAtUtc: null, autoShutdownReason: null,
       hostAddedTime: false, playerNames: null, playerCountTrusted: false, friendAddedMinutes: 0, addedShutdownMinutes: 0,
@@ -29,13 +29,18 @@ describe('ServerReadiness Friend connection wording', () => {
     const props = { profileId: 'server-1', status: 'Unknown', ports: diagnostics('Idle', 'Idle'), routeCheck: null,
       onRefresh: vi.fn(), busy: false }
     const view = render(<ServerReadiness {...props} run={pending} />)
-    expect(screen.getByText('Waiting for a current server observation. Stop waits for a fresh player count.',
+    expect(screen.getByText('Server status is currently unavailable.',
       { selector: '.readiness-summary-detail' })).toBeVisible()
     expect(screen.queryByText('The server state is unknown.')).not.toBeInTheDocument()
     view.rerender(<ServerReadiness {...props} run={{ ...pending, playerCountRefreshing: false, playerCountFailureCount: 2 }} />)
-    expect(screen.getByText('The server state is unknown.')).toBeVisible()
+    expect(screen.queryByText('The server state is unknown.')).not.toBeInTheDocument()
     view.rerender(<ServerReadiness {...props} run={{ ...pending, playerCountRefreshing: false, playerObservationSource: null }} />)
     expect(screen.getByText('The server state is unknown.')).toBeVisible()
+    const closed = diagnostics('Idle', 'Idle')
+    closed.games[0] = { ...closed.games[0], state: 'Closed on PC', detail: 'The game port is closed.' }
+    view.rerender(<ServerReadiness {...props} ports={closed} run={{ ...pending, playerCountFailureCount: 2 }} />)
+    expect(screen.getByText('The game connection needs attention.')).toBeVisible()
+    expect(screen.getAllByText('The game port is closed.').some(element => element.closest('.readiness-action'))).toBe(true)
   })
 
   it('presents an unused listener as a normal idle state without a repair warning', () => {

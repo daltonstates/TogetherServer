@@ -322,7 +322,9 @@ public sealed partial class HostManager
                         (previousCountState?.FailureCount ?? 0) < PlayerCountRefreshState.WarningThreshold)
                         Activity("Players", "CountUnavailable",
                             "The player count stayed unavailable across repeated checks. TogetherServer keeps retrying; Friend and automatic Stop remain blocked.",
-                            ActivitySeverity.Warning, result.ProfileId,
+                            // The Players pane owns the contextual count issue.
+                            // Routine retry streaks must not produce native alerts.
+                            ActivitySeverity.Info, result.ProfileId,
                             visibility: ActivityVisibility.AssignedFriends);
                     if (PlayerCountRefreshState.ShouldRecordLifecycleChange(
                         previousObservation?.OperationId == result.OperationId ? previousObservation : null,
@@ -2292,7 +2294,7 @@ public sealed partial class HostManager
                         addedMinutes > 0
                             ? $"The empty-server countdown started for {settings.IdleMinutes} minutes plus {addedMinutes} saved added minute{(addedMinutes == 1 ? "" : "s")}."
                             : $"The empty-server countdown started for {settings.IdleMinutes} minutes.",
-                        ActivitySeverity.Important, view.ProfileId,
+                        ActivitySeverity.Info, view.ProfileId,
                         visibility: ActivityVisibility.AssignedFriends);
                 }
             }
@@ -2381,11 +2383,14 @@ public sealed partial class HostManager
             friendAddedMinutes.Remove(profileId);
         }
         if (wasRunning)
+            // Count changes and unavailable observations cancel the timer safely.
+            // Keep their history without creating a notification on every cycle;
+            // actual lifecycle, recovery and policy failures have their own events.
             Activity("Countdown", "Canceled", "The empty-server countdown was canceled. " + reason +
                 (!discardAddedTime && savedMinutes > 0
                     ? $" {savedMinutes} added minute{(savedMinutes == 1 ? " remains" : "s remain")} saved for the next empty-server countdown."
                     : ""),
-                ActivitySeverity.Important, profileId,
+                ActivitySeverity.Info, profileId,
                 visibility: ActivityVisibility.AssignedFriends);
     }
 

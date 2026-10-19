@@ -4,6 +4,7 @@ import {
   activityDestination,
   activityClearStorageKey,
   collapseRepeatedActivity,
+  isRoutinePlayerCountActivity,
   readActivityClearMarkers,
   readActivityClearMarkersFrom,
   withActivityClearMarker,
@@ -12,6 +13,17 @@ import {
 
 describe('notification activity state', () => {
   const activity = [{ id: 'new' }, { id: 'cleared-through' }, { id: 'old' }]
+
+  it('keeps background count and automatic timer churn out of notifications while retaining real action failures', () => {
+    for (const action of ['CountIncreased', 'CountDecreased', 'CountObserved', 'CountUnavailable'])
+      expect(isRoutinePlayerCountActivity({ category: 'Players', action })).toBe(true)
+    for (const action of ['Started', 'Canceled'])
+      expect(isRoutinePlayerCountActivity({ category: 'Countdown', action })).toBe(true)
+    for (const item of [{ category: 'Countdown', action: 'AutomaticStopFailed' },
+      { category: 'Countdown', action: 'FriendExtended' }, { category: 'Lifecycle', action: 'StateChanged' },
+      { category: 'Backup', action: 'BackupFailed' }, { category: 'Players', action: 'UnexpectedDriverFailure' }])
+      expect(isRoutinePlayerCountActivity(item)).toBe(false)
+  })
 
   it('shows only activity newer than the saved clear marker', () => {
     expect(activityAfterMarker(activity, 'cleared-through')).toEqual([{ id: 'new' }])

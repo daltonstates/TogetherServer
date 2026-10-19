@@ -4,7 +4,7 @@ import type { Run } from './contracts'
 import type { Profile } from './GameProfile'
 import type { ActivityDestination } from './notificationState'
 import { playerCountAvailability } from './PlayersPanel'
-import { isTransientPlayerObservation } from './playerCountPresentation'
+import { hasRepeatedPlayerCountFailure, isPlayerCountObservationUnavailable } from './playerCountPresentation'
 import { Icon } from './Icon'
 
 export type HostLifecycleSummaryProps = {
@@ -38,9 +38,9 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
     Stopping: 'Stopping · Waiting for confirmed exit', Failed: 'Failed · Review needed', Unknown: 'Unknown · Review needed'
   }
   const state = observed?.state ?? 'Unknown'
-  const checkingObservation = isTransientPlayerObservation(observed ?? undefined)
-  const phase = checkingObservation ? 'Checking server status' : Object.hasOwn(phases, state) ? phases[state] : 'Unknown · Review needed'
-  const detail = checkingObservation ? 'Waiting for a current player count. Friend and automatic Stop remain blocked.'
+  const countUnavailable = isPlayerCountObservationUnavailable(observed ?? undefined)
+  const phase = countUnavailable ? 'Server status unavailable' : Object.hasOwn(phases, state) ? phases[state] : 'Unknown · Review needed'
+  const detail = countUnavailable ? ''
     : observed?.detail || 'The current server state is unavailable. Review it before starting another run.'
   const navigate = (section: 'overview' | 'players' | 'setup', label: string, reason: string): HostLifecycleView => ({
     phase, detail, next: { kind: 'navigate', label, reason,
@@ -51,7 +51,7 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
     destination: { workspace: 'settings', section: 'diagnostics', profileId: profile.id, label: 'Review recovery' }
   } }
   if (profile.maintenance?.enabled) return navigate('setup', 'Continue maintenance', 'Review the maintenance guide and its remaining checks.')
-  if (checkingObservation) return navigate('players', 'View players', 'TogetherServer keeps checking automatically. No action is needed while this check completes.')
+  if (countUnavailable) return navigate('players', 'View players', 'Player count and timer details.')
   switch (observed?.state) {
     case 'Offline': return startGate.allowed
       ? { phase, detail, next: { kind: 'start', label: 'Start server', reason: 'Start rechecks the saved setup, process identity, world and ports.' } }
@@ -62,7 +62,7 @@ export function hostLifecycleView({ profile, run, nowMs, startGate, lifecycleBlo
     case 'Stopping': return navigate('overview', 'Review Stop', 'Wait for confirmed process exit. A Stop request does not prove the world was saved.')
     case 'Ready': {
       const players = playerCountAvailability(observed, nowMs)
-      if (players.count === null) return navigate('players', 'Review player count', players.reason)
+      if (players.count === null && hasRepeatedPlayerCountFailure(observed)) return navigate('players', 'View players', 'Player count and timer details.')
       if (players.count === 0 && observed.autoShutdownAtUtc) return navigate('players', 'Review empty-server timer', 'The Host owns this countdown and must recheck zero players before Stop.')
       return navigate('overview', 'Open connection details', 'Use the saved connection details and confirm a real game join separately.')
     }
@@ -95,8 +95,7 @@ export function HostLifecycleSummary(props: HostLifecycleSummaryProps) {
           if (view.next.kind === 'navigate') props.onOpen(view.next.destination)
         }}><Icon name={actionIcon} />{actionLabel}</Button>)}
     </div>
-    <p className="helper-text">{view.detail}</p>
+    {view.detail && <p className="helper-text">{view.detail}</p>}
     <small>{view.next.reason}</small>
-    <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{view.phase}. {showAction ? `Next action: ${view.next.label}.` : view.next.reason}</span>
   </section>
 }

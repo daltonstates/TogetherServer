@@ -60,7 +60,8 @@ Choose your server > Backups > Sharing & hosting to change hosting permissions.
 Choose Morgan's Meadow under Friend servers to try Host on this PC beside Start.
 Prepare this PC simulates the checks; Start server on this PC simulates hosting.
 The resulting local server is labeled Hosted for Morgan. The bar also offers
-missing-server, offline-Host, checking-players and repeated-player-issue scenes.
+missing-server, offline-Host, players-online, background-player-check and
+repeated-player-issue scenes. Routine checks stay quiet; Stop safety still applies.
 
 The demo uses loopback port 5129 and its own %LOCALAPPDATA%\TogetherServer-Demo
 folder. Production and ordinary development settings/worlds are not loaded.

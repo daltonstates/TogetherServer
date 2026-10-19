@@ -43,7 +43,7 @@ import { DismissibleNotice } from './DismissibleNotice'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
 import { PlayersPanel, playerCountAvailability } from './PlayersPanel'
-import { isTransientPlayerObservation, playerCountPresentation, publicPlayerCount } from './playerCountPresentation'
+import { isPlayerCountObservationUnavailable, publicPlayerCount } from './playerCountPresentation'
 import { RecentSessions } from './RecentSessions'
 import { allServerRows } from './AllServerOverview'
 import { WorldLoadRehearsalPanel, parseWorldLoadResult } from './WorldLoadRehearsal'
@@ -89,6 +89,7 @@ import {
   activityDestination,
   type ActivityDestination,
   collapseRepeatedActivity,
+  isRoutinePlayerCountActivity,
   readActivityClearMarkersFrom,
   withActivityClearMarker,
   writeActivityClearMarkersTo
@@ -231,7 +232,7 @@ function ServerCountdown({ deadline, nowMs }: { deadline: string | null; nowMs: 
   return label ? <span className="server-compact-countdown" role="timer" title="The Host rechecks players before automatic Stop."><Icon name="clock" size={14} />{label}</span> : null
 }
 
-function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs, players,
+function ServerActivity({ state, online, capacity, deadline, nowMs, players,
   onRefresh, refreshing = false, refreshDisabled = false }: {
   state: string; online: number | null; capacity: number | null; deadline: string | null; timerReason: string | null; nowMs: number; players?: string[] | null
   onRefresh?: () => void; refreshing?: boolean; refreshDisabled?: boolean
@@ -248,7 +249,6 @@ function ServerActivity({ state, online, capacity, deadline, timerReason, nowMs,
       {countdown && <span className="idle-countdown" role="timer" title="No players are online and automatic shutdown is on.">{countdown}</span>}
     </div>
     {!!players?.length && <small className="player-names">Players: {players.join(', ')}</small>}
-    {timerReason && <small className="idle-reason">Timer not running · {timerReason}</small>}
   </div>
 }
 
@@ -573,6 +573,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   }, [commandPaletteOpen, hostMobileDetail, snapshot?.mode, workspacePage, requiredSetup.ready])
 
   const applySnapshot = useCallback((next: Snapshot) => {
+    setNowMs(Date.now())
     snapshotEpochRef.current += 1
     setSnapshot(next)
   }, [])
@@ -613,6 +614,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const retainedActivity = activityAfterMarker(recentActivity, activityClearMarkers[activitySource])
   const activityHistory = attentionHistory.sources.find(source => source.source === activitySource)
   const visibleActivity = retainedActivity.filter(item => !activityHistory?.dismissedIds.includes(item.id))
+  const notificationActivity = visibleActivity.filter(item => !isRoutinePlayerCountActivity(item))
   const recoverySignature = dataRecovery ? JSON.stringify({ lifecycleBlocked: dataRecovery.lifecycleBlocked,
     notices: dataRecovery.notices.map(item => [item.stateFile, item.quarantinedFile, item.detectedUtc]) }) : ''
 
@@ -658,7 +660,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     if (notice || update?.state === 'Available') setNotificationUnread(true)
   }, [notice, update?.state, update?.latestVersion])
 
-  const latestActivityId = visibleActivity[0]?.id ?? null
+  const latestActivityId = notificationActivity[0]?.id ?? null
   const latestActivityWasRead = !!latestActivityId && !!activityHistory?.readIds.includes(latestActivityId)
   useEffect(() => {
     if (latestActivityId) setNotificationUnread(!latestActivityWasRead)
@@ -788,6 +790,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     if (signal.aborted || snapshotEpochRef.current !== startedEpoch) return
 
     setSnapshot(next)
+    setNowMs(Date.now())
     setAppInstance(currentInstance)
     setDataRecovery(recovery)
     setLoadError('')
@@ -810,7 +813,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const refreshServerDirectory = useCallback(async (signal?: AbortSignal) => {
     try {
       const next = await getLocalJson('/api/local/servers', parseServerDirectory, signal)
-      if (!signal?.aborted) { setServerDirectory(next); setServerDirectoryError('') }
+      if (!signal?.aborted) { setServerDirectory(next); setNowMs(Date.now()); setServerDirectoryError('') }
     } catch (error) {
       if (!signal?.aborted) setServerDirectoryError(errorMessage(error))
     }
@@ -1272,7 +1275,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     try {
       const result = await change(`/api/local/friend/${id}/${action}`, 'POST')
       const next = await readSnapshot()
-      if (result.code === 'PlayerCountPending') { applySnapshot(next); return }
+      if (result.code === 'PlayerCountPending' || action === 'refresh' &&
+        (['PlayerCountRefreshed', 'PlayerCountUnavailable'].includes(result.code) || result.code === 'ServerNotReady' && next.mode === 'Friend' &&
+          isPlayerCountObservationUnavailable(next.profiles.find(profile => profile.id === id)))) { applySnapshot(next); return }
       const feedback = serverActionNotice(result.ok, result.message, next, id, action)
       setNotice(feedback)
       setActionNotices(current => ({ ...current, [id]: feedback }))
@@ -1350,7 +1355,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     try {
       const result = await changeAction(path, method, body)
       applySnapshot(result.snapshot)
-      if (result.code === 'PlayerCountPending') return
+      if (result.code === 'PlayerCountPending' || key.startsWith('players-') &&
+        (['PlayerCountRefreshed', 'PlayerCountUnavailable'].includes(result.code) || result.code === 'ServerNotReady' && result.snapshot.mode === 'Host' &&
+          isPlayerCountObservationUnavailable(result.snapshot.runs.find(run => key === `players-${run.profileId}`)))) return
       const profileId = snapshot?.mode === 'Host' ? snapshot.settings.profiles.find(item => path.includes(item.id))?.id : undefined
       const feedback = profileId ? serverActionNotice(result.ok, result.message, result.snapshot, profileId, path.split('/').at(-1) ?? '')
         : { good: result.ok, text: result.message }
@@ -1906,8 +1913,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const hostOverviewRows = snapshot?.mode === 'Host' ? allServerRows(snapshot, nowMs) : []
   const currentProblems = hostOverviewRows.filter(row => row.priority > 20)
   const visibleDevices = filterFriendPcs(companion?.devices ?? [], savedProfiles, deviceFilters, nowMs)
-  const attentionCount = visibleActivity.length + storageWarnings.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
-  const groupedActivity = collapseRepeatedActivity(visibleActivity)
+  const attentionCount = notificationActivity.length + storageWarnings.length + (notice ? 1 : 0) + (update?.state === 'Available' ? 1 : 0)
+  const groupedNotifications = collapseRepeatedActivity(notificationActivity)
   const commands: WorkspaceCommand[] = [
     { id: 'nav-host', label: 'Open Servers', detail: 'Your servers and connected friend servers', icon: 'server', keywords: 'Alt+1 host join', run: () => navigateWorkspace(snapshot?.mode === 'Friend' ? 'join' : 'host') },
     { id: 'nav-join', label: 'Connect server', detail: 'Use a friend’s server code', icon: 'link', keywords: 'Alt+2', run: () => void requestDirectoryAction('connect') },
@@ -2029,8 +2036,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
             <div className="notification-panel-heading"><div><strong>Notifications</strong><small>Recent app and connection activity</small></div>{visibleActivity.length > 0 && <Button className="text-button" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
             {update?.state === 'Available' && <DismissibleNotice noticeKey={update.latestVersion} className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></DismissibleNotice>}
             {notice && <DismissibleNotice noticeKey={notice.receivedAtMs} onDismiss={() => setNotice(null)} className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></DismissibleNotice>}
-            {groupedActivity.slice(0, 8).map(({ item, repeatCount }) => <DismissibleNotice scope={activitySource} noticeKey={item.id} className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{snapshot?.mode === 'Host' && activityDestination(item) && <Button className="text-button" onClick={() => openActivity(item)}>{activityDestination(item)!.label}</Button>}{snapshot?.mode === 'Friend' && item.profileId && snapshot.profiles.some(profile => profile.id === item.profileId) && <Button className="text-button" onClick={() => openFriendServer(item.profileId!)}>Open server</Button>}</div></DismissibleNotice>)}
-            {!notice && update?.state !== 'Available' && visibleActivity.length === 0 && <p className="notification-empty">No recent activity.</p>}
+            {groupedNotifications.slice(0, 8).map(({ item, repeatCount }) => <DismissibleNotice scope={activitySource} noticeKey={item.id} className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{snapshot?.mode === 'Host' && activityDestination(item) && <Button className="text-button" onClick={() => openActivity(item)}>{activityDestination(item)!.label}</Button>}{snapshot?.mode === 'Friend' && item.profileId && snapshot.profiles.some(profile => profile.id === item.profileId) && <Button className="text-button" onClick={() => openFriendServer(item.profileId!)}>Open server</Button>}</div></DismissibleNotice>)}
+            {!notice && update?.state !== 'Available' && notificationActivity.length === 0 && <p className="notification-empty">No recent notifications.</p>}
           </div>
         </details>
         <Button className="secondary icon-button app-settings-trigger" aria-label="App settings" title="App Settings" onClick={() => navigateWorkspace('settings')}><Icon name="settings" size={19} /></Button>
@@ -2205,7 +2212,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   <GameCompatibilityPanel key={`${snapshot.connectionId}-${profile.id}-${profile.gameKind ?? profile.kind}`} profileId={profile.id} host={false} />
                 </PaneErrorBoundary></details>} />}
               {joinSection === 'connection' && <details className="friend-server-support" open><summary>Players & server tools</summary>
-                <ServerActivity state={permissions.currentAccess ? profile.state : 'Unknown'} online={permissions.currentAccess ? profile.onlinePlayers : null} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
+                <ServerActivity state={permissions.currentAccess ? profile.state : 'Unknown'} online={permissions.currentAccess ? publicPlayerCount(profile, nowMs) : null} capacity={profile.maxPlayers} deadline={profile.autoShutdownAtUtc} timerReason={profile.autoShutdownReason} nowMs={nowMs}
                   refreshing={pending === `friend-refresh-${profile.id}`} refreshDisabled={!!pending || !['Connected', 'Disabled'].includes(snapshot.state)}
                   onRefresh={() => void friendAction(profile.id, 'refresh')} />
                 <div className="actions server-actions">
@@ -2213,8 +2220,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                 {profile.state === 'Ready' && snapshot.state === 'Connected' && profile.canExtendTimer && <Button className="secondary" disabled={!!pending || operationBusy || !permissions.actions.extend.available} title={!permissions.actions.extend.available ? permissions.actions.extend.reason : undefined} onClick={() => void friendAction(profile.id, 'extend')}>{pending === `friend-extend-${profile.id}` ? <><Icon name="loader" />Adding time…</> : <>Add {profile.timerExtensionMinutes} minutes</>}</Button>}
                 {['Ready', 'Listening'].includes(profile.state) && ['Valheim', 'MinecraftJava', 'MinecraftBedrock', 'Terraria'].includes(profile.kind) && <Button className="text-button" disabled={!!pending || !profile.joinAddress} onClick={() => void probeGameEndpoint(profile.id)}>{pending === `probe-game-${profile.id}` ? 'Checking game connection...' : 'Check game connection from this PC'}</Button>}
               </div>
-                {!permissions.actions.restart.available && profile.canRestartNow && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">{permissions.actions.restart.reason}</DismissibleNotice>}
-                {!permissions.actions.extend.available && profile.canExtendTimer && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">{permissions.actions.extend.reason}</DismissibleNotice>}
               </details>}
                 {joinSection === 'logs' && logAvailability.visible && <div className="friend-log-surface">
                 {<PaneErrorBoundary title="Shared server logs" resetKey={profile.id}><ServerLogViewer
@@ -2228,7 +2233,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                 {operationConflict.conflicts.every(conflict => conflict.canReplace) ? <Button disabled={!!pending || operationBusy} onClick={() => void friendAction(profile.id, 'replace')}>{pending === `friend-replace-${profile.id}` ? <><Icon name="loader" />Switching…</> : <>Stop empty server and start this one</>}</Button>
                   : <small>{operationConflict.conflicts.find(conflict => !conflict.canReplace)?.blockReason ?? 'The other server cannot be stopped safely.'}</small>}</DismissibleNotice>}
               {(joinSection === 'play' || joinSection === 'connection') && <FriendStopBlockers snapshot={snapshot} profile={profile} />}
-              {joinSection === 'connection' && profile.state === 'Ready' && !profile.canRestartNow && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Restart unavailable: {profile.restartReason || 'Both Start and safe Stop access are required.'}</DismissibleNotice>}
               {joinSection === 'connection' && profile.canExtendTimer && <p className="helper-text">Time allowance: {profile.timerExtensionRemainingMinutes} minutes remaining; each request adds {profile.timerExtensionMinutes} minutes.{profile.maintenanceEnabled || snapshot.state !== 'Connected' ? ' Controls are currently paused.' : ''}</p>}
               {joinSection === 'shared-saves' && !peerRecovery && profile.kind !== 'Custom' && <>
                 <FriendLocalHosting key={`local-hosting-${connectionKey}`} presentation="card"
@@ -2350,7 +2354,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   separateCopySourceProfileId: profile.separateCopySourceProfileId, sourceName: null, sourceHostName: null }} />}
                 <div className="server-command-header">
                   <div className="profile-top"><div className="server-identity"><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · {profile.worldId}</p></div>
-                    <div className="server-current-state"><span className={`status ${statusTone(isTransientPlayerObservation(status) ? 'Starting' : status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{isTransientPlayerObservation(status) ? 'Checking players…' : status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
+                    <div className="server-current-state"><span className={`status ${isPlayerCountObservationUnavailable(status) ? '' : statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{isPlayerCountObservationUnavailable(status) ? 'Status unavailable' : status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
                       {['Ready', 'Listening'].includes(status?.state ?? '') && <Button className="text-button server-player-link" onClick={() => selectHostTab('players')}><Icon name="users" />{count === null ? 'Players unknown' : `${count}${status?.maxPlayers !== null && status?.maxPlayers !== undefined ? ` / ${status.maxPlayers}` : ''} online`}</Button>}
                       {count === 0 && <ServerCountdown deadline={status?.autoShutdownAtUtc ?? null} nowMs={nowMs} />}
                     </div>
@@ -2365,7 +2369,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                     <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void changeScope(() => { setHostServerTab('overview'); setUiPreferences(current => ({ ...current, serverTabs: { ...current.serverTabs, [profile.id]: 'overview' } })); void inviteFriend(profile.id) })}><Icon name="invite" /><span>Invite friends</span></Button>
                     <Button className="secondary icon-button" aria-label="More server actions" title="More server actions" onClick={() => setServerToolsProfileId(profile.id)}><Icon name="more" /></Button>
                   </div>
-                  {status && !['Offline', 'Ready'].includes(status.state) && <p className="server-progress" role="status">{status.detail}</p>}
+                  {status && !['Offline', 'Ready'].includes(status.state) && !isPlayerCountObservationUnavailable(status) && <p className="server-progress" role="status">{status.detail}</p>}
                   {dirty && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or cancel setup changes before server actions.</DismissibleNotice>}
                   {!friendAppAddress && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Set this PC’s address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Network</Button></DismissibleNotice>}
                   {!dirty && hasUnsavedServerEdits && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or discard file changes before starting.</DismissibleNotice>}
@@ -2400,7 +2404,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   {status?.state === 'Offline' && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
                   {['Ready', 'Listening'].includes(status?.state ?? '') && !gameAddress && <div className="connection-empty"><h2>Connection details</h2><p>The joining address is unavailable. Confirm the Host route before sharing it.</p><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Set connection address</Button></div>}
                   {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <DismissibleNotice scope={connectionKey} noticeKey={shownBackupStatus.lastFailureUtc} as="p" className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></DismissibleNotice>}
-                  {status?.state === 'Ready' && playerCountPresentation(status, nowMs).showWarning && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker"><Icon name="warning" />Player count has been unavailable repeatedly. <Button className="text-button" onClick={() => selectHostTab('players')}>Review players</Button></DismissibleNotice>}
                 </>}
                 {hostServerTab === 'logs' && <PaneErrorBoundary title="Server logs" resetKey={profile.id}><ServerLogViewer endpoint={`/api/local/profiles/${profile.id}/logs`}
                   onNavigateIssue={destination => destination === 'health' ? void run(`health-${profile.id}`, `/api/local/profiles/${profile.id}/health`, 'POST') : selectHostTab('files')}
@@ -2539,7 +2542,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   {dirty && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Save or cancel setup changes before using server tools.</DismissibleNotice>}
                   {dataRecovery?.lifecycleBlocked && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Resolve local data recovery before restarting.</DismissibleNotice>}
                   {status?.state !== 'Offline' && <p className="helper-text">Edit setup is available when this server is Offline.</p>}
-                  {status?.state === 'Unknown' && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</DismissibleNotice>}
+                  {status?.state === 'Unknown' && !isPlayerCountObservationUnavailable(status) && <DismissibleNotice scope={connectionKey} as="p" className="warning-text">Process identity is uncertain. Start, Stop, archive, backup restore, and world reuse remain blocked; TogetherServer will not clear this record on PID reuse, executable mismatch, or access failure.</DismissibleNotice>}
                 <details className="server-support-disclosure"><summary><Icon name="plug" />Status & connection checks</summary>
                   {status && ['Offline', 'Ready'].includes(status.state) && <p className="helper-text">{status.detail}</p>}
                   {status?.state === 'Ready' && <small>{profile.kind === 'Fixture' ? 'Synthetic fixture evidence.' : 'Readiness was observed locally; confirm a real game join separately.'}</small>}

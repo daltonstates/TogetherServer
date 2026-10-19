@@ -119,7 +119,7 @@ function playerLabel(server: DirectoryServer, nowMs: number): string {
     Number.isFinite(observed) && observed <= nowMs && nowMs - observed <= 10_000
   if (fresh) return `${server.onlinePlayers}${server.maxPlayers === null ? '' : ` / ${server.maxPlayers}`} online`
   if (server.state === 'Offline') return 'Offline'
-  return server.playerCountFailureCount >= 2 ? 'Player count unavailable' : 'Checking players…'
+  return 'Players —'
 }
 
 export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, onSelect, onAddLocal, onConnect }: {
