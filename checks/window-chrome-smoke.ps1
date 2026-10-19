@@ -321,6 +321,32 @@ function Same-ClientRect($Expected) {
     return [Math]::Abs($actual.Left - $Expected.Left) -le 2 -and [Math]::Abs($actual.Top - $Expected.Top) -le 2 -and
         [Math]::Abs($actual.Right - $Expected.Right) -le 2 -and [Math]::Abs($actual.Bottom - $Expected.Bottom) -le 2
 }
+function Same-RestoredBounds([bool]$Maximized, $Window, $Client) {
+    # The visible client is the invariant. Windows may change its invisible
+    # maximized resize frame during shell restoration. Normal outer bounds
+    # must still match, including the final restore after maximized journeys.
+    return (Same-ClientRect $Client) -and ($Maximized -or (Same-Rect $Window))
+}
+function Record-Geometry([string]$Phase) {
+    $handle = App-Handle
+    $outer = Read-Rect
+    $client = Read-ClientRect
+    $screen = [Windows.Forms.Screen]::FromHandle($handle)
+    $area = $screen.WorkingArea
+    $bounds = $screen.Bounds
+    $geometry = [pscustomobject]@{ phase = $Phase;
+        window = @($outer.Left, $outer.Top, $outer.Right, $outer.Bottom);
+        clientScreen = @($client.Left, $client.Top, $client.Right, $client.Bottom);
+        workArea = @($area.Left, $area.Top, $area.Right, $area.Bottom);
+        monitor = @($bounds.Left, $bounds.Top, $bounds.Right, $bounds.Bottom);
+        maximized = [TogetherServerChromeSmoke]::IsZoomed($handle);
+        minimized = [TogetherServerChromeSmoke]::IsIconic($handle);
+        visible = [TogetherServerChromeSmoke]::IsWindowVisible($handle);
+        dpi = [TogetherServerChromeSmoke]::GetDpiForWindow($handle) }
+    $windowGeometry.Add($geometry)
+    Write-Host "Geometry $Phase`: maximized=$($geometry.maximized), minimized=$($geometry.minimized), window=[$($geometry.window -join ',')], client=[$($geometry.clientScreen -join ',')]."
+    return $geometry
+}
 function Record-Pass([string]$Name) {
     $results.Add([pscustomobject]@{ name = $Name; status = 'PASS'; dpi = [TogetherServerChromeSmoke]::GetDpiForWindow((App-Handle)) })
     Write-Host "PASS $Name"
@@ -382,14 +408,7 @@ try {
         $label = if ($maximized) { 'Maximized' } else { 'Normal' }
         $screen = [Windows.Forms.Screen]::FromHandle((App-Handle))
         $area = $screen.WorkingArea
-        $bounds = $screen.Bounds
-        $geometry = [pscustomobject]@{ phase = "$label before taskbar click";
-            window = @($before.Left, $before.Top, $before.Right, $before.Bottom);
-            clientScreen = @($clientBefore.Left, $clientBefore.Top, $clientBefore.Right, $clientBefore.Bottom);
-            workArea = @($area.Left, $area.Top, $area.Right, $area.Bottom);
-            monitor = @($bounds.Left, $bounds.Top, $bounds.Right, $bounds.Bottom);
-            dpi = [TogetherServerChromeSmoke]::GetDpiForWindow((App-Handle)) }
-        $windowGeometry.Add($geometry)
+        $geometry = Record-Geometry "$label before taskbar click"
         if ($maximized) {
             # GetWindowRect can include Windows' invisible maximized resize
             # frame. The actual client screen rectangle must exactly fill the
@@ -403,14 +422,16 @@ try {
         Wait-Until { return [TogetherServerChromeSmoke]::IsIconic((App-Handle)) } "$label taskbar click did not minimize the active app."
         Click-Element (Taskbar-Button)
         Wait-Until { return ![TogetherServerChromeSmoke]::IsIconic((App-Handle)) -and
-            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) -and (Same-ClientRect $clientBefore) } "$label taskbar click did not restore its prior state/window/client bounds."
+            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-RestoredBounds $maximized $before $clientBefore) } "$label taskbar click did not restore its prior state/visible bounds."
+        Record-Geometry "$label after taskbar restore" | Out-Null
         Record-Pass "$label taskbar click minimizes and restores prior state/bounds"
 
         Invoke-Chrome 'Minimize'
         Wait-Until { return [TogetherServerChromeSmoke]::IsIconic((App-Handle)) } 'Caption minimize did not take effect.'
         Require ((Local-Post '/api/local/show').ok) 'ShowAsync reveal failed.'
         Wait-Until { return ![TogetherServerChromeSmoke]::IsIconic((App-Handle)) -and
-            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) -and (Same-ClientRect $clientBefore) } 'ShowAsync lost the pre-minimize state/window/client bounds.'
+            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-RestoredBounds $maximized $before $clientBefore) } 'ShowAsync lost the pre-minimize state/visible bounds.'
+        Record-Geometry "$label after ShowAsync restore" | Out-Null
         Record-Pass "$label caption minimize and ShowAsync preserve state/bounds"
 
         Invoke-Chrome 'Minimize'
@@ -418,7 +439,8 @@ try {
         $duplicate = Start-App
         Require ($duplicate.WaitForExit(15000) -and !$app.HasExited) 'Duplicate launch did not hand off to the recorded instance.'
         Wait-Until { return ![TogetherServerChromeSmoke]::IsIconic((App-Handle)) -and
-            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) -and (Same-ClientRect $clientBefore) } 'Single-instance reveal lost prior state/window/client bounds.'
+            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-RestoredBounds $maximized $before $clientBefore) } 'Single-instance reveal lost prior state/visible bounds.'
+        Record-Geometry "$label after single-instance restore" | Out-Null
         Record-Pass "$label single-instance reveal preserves state/bounds"
     }
     Invoke-Chrome 'Restore'
@@ -452,12 +474,14 @@ try {
             try { Capture-DesktopFailure 'tray-unavailable-desktop' } catch { Write-Host "Optional tray desktop capture unavailable: $($_.Exception.GetType().Name)" }
             Require ((Local-Post '/api/local/show').ok) 'Could not reveal disposable app after unavailable runner tray UI.'
             Wait-Until { return [TogetherServerChromeSmoke]::IsWindowVisible((App-Handle)) -and
-                [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) -and (Same-ClientRect $clientBefore) } 'ShowAsync after tray UI skip lost state/window/client bounds.'
+                [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-RestoredBounds $maximized $before $clientBefore) } 'ShowAsync after tray UI skip lost state/visible bounds.'
+            Record-Geometry "$label after unavailable tray recovery" | Out-Null
             continue
         }
         Click-Element $tray.element -Double
         Wait-Until { return [TogetherServerChromeSmoke]::IsWindowVisible((App-Handle)) -and
-            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) -and (Same-ClientRect $clientBefore) } 'Tray double-click lost prior state/window/client bounds.'
+            [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-RestoredBounds $maximized $before $clientBefore) } 'Tray double-click lost prior state/visible bounds.'
+        Record-Geometry "$label after tray restore" | Out-Null
         Record-Pass $trayCase
     }
     if ([TogetherServerChromeSmoke]::IsZoomed((App-Handle))) { Invoke-Chrome 'Restore' }
@@ -467,6 +491,7 @@ try {
 } catch {
     $failure = $_
     $results.Add([pscustomobject]@{ name = 'Native window chrome acceptance'; status = 'FAIL'; reason = $_.Exception.Message })
+    try { Record-Geometry 'Failure state' | Out-Null } catch { Write-Host "Failure geometry unavailable: $($_.Exception.GetType().Name)" }
     try { Save-ShellDiagnostics } catch { Write-Host "Shell diagnostics unavailable: $($_.Exception.GetType().Name)" }
     try { Capture-DesktopFailure } catch { Write-Host "Failure desktop capture unavailable: $($_.Exception.GetType().Name)" }
 } finally {
