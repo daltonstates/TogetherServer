@@ -407,6 +407,7 @@ function nativeNotifications() {
     postMessage: vi.fn()
   } })
   return async (destination: DesktopNotificationTarget) => {
+    await waitFor(() => expect(listeners.size).toBeGreaterThan(0))
     await act(async () => {
       listeners.forEach(listener => listener({ data: { type: 'together-notification', destination } }))
     })
@@ -651,7 +652,8 @@ describe('Task-first app and Host PC navigation', () => {
   it('keeps the old native Settings/app alias mode-independent and opens Appearance', async () => {
     const notify = nativeNotifications()
     state = friend()
-    render(<App />)
+    // Settle the initial Friend/setup effects before delivering the native message once.
+    await act(async () => { render(<App />) })
     await screen.findByRole('region', { name: 'Play' })
     await notify({ workspace: 'settings', section: 'app', profileId: null, connectionId: null })
     const settings = await screen.findByRole('region', { name: 'App Settings' })
@@ -1120,13 +1122,19 @@ describe('Host task structure', () => {
   })
 
   it('remembers command-palette destinations for returning to a server and exposes Chat and Players commands', async () => {
-    await openHost()
+    const workspace = await openHost()
     fireEvent.click(screen.getByRole('button', { name: 'Commands' }))
     const search = await screen.findByRole('combobox', { name: 'Search commands' })
     fireEvent.change(search, { target: { value: 'Contract fixture players' } })
     fireEvent.keyDown(search, { key: 'Enter' })
-    await waitFor(() => expect(serverSections().getByRole('button', { name: 'Players' })).toHaveAttribute('aria-current', 'page'))
-    expect(JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1')!).serverTabs[id]).toBe('players')
+    // The selected tab commits before its preferences are written by the shell effect.
+    await waitFor(() => {
+      expect(workspace).toHaveAttribute('data-server-tab', 'players')
+      expect(serverSections().getByRole('button', { name: 'Players' })).toHaveAttribute('aria-current', 'page')
+      expect(JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1')!)).toMatchObject({
+        selectedServer: id, serverTabs: { [id]: 'players' }
+      })
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Commands' }))
     fireEvent.change(await screen.findByRole('combobox', { name: 'Search commands' }), { target: { value: 'Contract fixture chat' } })
     expect(screen.getByRole('option', { name: /Contract fixture · Chat/ })).toBeInTheDocument()

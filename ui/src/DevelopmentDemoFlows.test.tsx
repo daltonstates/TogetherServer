@@ -18,6 +18,15 @@ function DemoApp() {
   return <App key={revision} developmentDemoControls={<DevelopmentDemoControls />} />
 }
 
+async function selectServerSection(name: string) {
+  const sections = await screen.findByRole('navigation', { name: 'Selected server sections' })
+  const button = within(sections).getByRole('button', { name, exact: true })
+  // The app awaits its scope/draft guard before applying a section change.
+  // Flush that action and its effects before checking the destination surface.
+  await act(async () => { fireEvent.click(button) })
+  await waitFor(() => expect(button).toHaveAttribute('aria-current', 'page'))
+}
+
 beforeEach(() => {
   window.localStorage.clear()
   realFetch = vi.fn(async () => { throw new Error('Unexpected real request') })
@@ -87,7 +96,7 @@ it('keeps a player lookup quiet, shows a repeated problem, and clears it after a
   expect(screen.queryByText('Player count has been unavailable repeatedly.')).not.toBeInTheDocument()
   expect(document.querySelector('.server-progress')).toBeNull()
   expect(screen.queryByText('Checking players…')).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Players' }))
+  await selectServerSection('Players')
   let players = await screen.findByRole('region', { name: 'Players' })
   expect(within(players).queryByRole('note')).not.toBeInTheDocument()
   expect(within(players).getByRole('button', { name: 'Refresh count' })).toBeDisabled()
@@ -95,7 +104,7 @@ it('keeps a player lookup quiet, shows a repeated problem, and clears it after a
   expect(within(players).getByLabelText('Player count unavailable')).toHaveTextContent('—')
   await act(async () => controller?.reset('players-repeated-issue'))
   await screen.findByRole('heading', { name: 'Meadow friends · DEMO' })
-  fireEvent.click(screen.getByRole('button', { name: 'Players' }))
+  await selectServerSection('Players')
   players = await screen.findByRole('region', { name: 'Players' })
   expect(within(players).getByText('Player count unavailable after repeated checks')).toBeInTheDocument()
   fireEvent.click(within(players).getByRole('button', { name: 'Refresh count' }))
@@ -115,7 +124,7 @@ it.each(['friend-players-online', 'friend-players-checking'] as const)('keeps %s
   expect(play.querySelector('.warning-text')).toBeNull()
   const row = await screen.findByRole('button', { name: 'Open Morgan’s Meadow · DEMO on Morgan' })
   expect(row).toHaveTextContent(scene === 'friend-players-online' ? '2 / 10 online' : 'Players —')
-  fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+  await selectServerSection('Settings')
   expect(screen.queryByText(/Restart unavailable:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Players are online/, { selector: '.inline-blocker' })).not.toBeInTheDocument()
   expect(realFetch).not.toHaveBeenCalled()
@@ -148,7 +157,7 @@ it('retains unrelated explicit refresh failures while the latest count observati
   })
   render(<DemoApp />)
   await screen.findByRole('heading', { name: 'Meadow friends · DEMO' })
-  fireEvent.click(screen.getByRole('button', { name: 'Players' }))
+  await selectServerSection('Players')
   const players = await screen.findByRole('region', { name: 'Players' })
   fireEvent.click(within(players).getByRole('button', { name: 'Refresh count' }))
   await waitFor(() => expect(screen.getAllByText('Synthetic recovery requires review.').some(element => element.closest('[role=status], [role=alert]'))).toBe(true))
