@@ -134,10 +134,10 @@ jobs:
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/continuation -Force
           $checks = [Collections.Generic.List[object]]::new()
-          function Invoke-Check([string]$Name, [scriptblock]$Action) {
+          function Invoke-Check([string]$CheckLabel, [scriptblock]$Action) {
             $outcome = 'failed'; $global:LASTEXITCODE = 0
-            try { & $Action; if ($LASTEXITCODE -ne 0) { throw "$Name returned $LASTEXITCODE." }; $outcome = 'passed' }
-            finally { $checks.Add(@{name=$Name;outcome=$outcome}) }
+            try { & $Action; if ($LASTEXITCODE -ne 0) { throw "$CheckLabel returned $LASTEXITCODE." }; $outcome = 'passed' }
+            finally { $checks.Add(@{name=$CheckLabel;outcome=$outcome}) }
           }
           try {
             foreach ($name in @('MinecraftChecks','CustomChecks','SharedHistoryChecks','UpdateChecks')) {
