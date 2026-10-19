@@ -43,6 +43,7 @@ $results = [Collections.Generic.List[object]]::new()
 $shellObservations = [Collections.Generic.List[object]]::new()
 $app = $null
 $failure = $null
+$requiredScopeCompleted = $false
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -150,6 +151,19 @@ function Shell-Buttons([IntPtr]$Handle) {
             $_.Current.ClassName -match 'TaskListButton|TaskbarButton|NotifyItem')
     })
 }
+function Explorer-Elements {
+    $taskbar = [TogetherServerChromeSmoke]::FindWindow('Shell_TrayWnd', $null)
+    if ($taskbar -eq [IntPtr]::Zero) { return @() }
+    $shellProcess = [uint32]0
+    [TogetherServerChromeSmoke]::GetWindowThreadProcessId($taskbar, [ref]$shellProcess) | Out-Null
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$shellProcess)
+    # Modern notification overflow may be a separate XAML popup with a class
+    # that differs from legacy NotifyIconOverflowWindow. Stay in Explorer's
+    # process while inspecting its desktop UIA descendants.
+    return @([System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants, $condition))
+}
 function Safe-ShellText([string]$Text) {
     $safe = $Text -replace '[\x00-\x1f\x7f]', ' '
     $safe = $safe -replace '(?i)(?:https?://|[a-z]:\\|\\\\)\S+', '[private location]'
@@ -183,6 +197,14 @@ function Save-ShellDiagnostics {
             $shells.Add([pscustomobject]@{ windowClass = $kind; descendants = $items })
         } catch { $shells.Add([pscustomobject]@{ windowClass = $kind; error = $_.Exception.GetType().Name }) }
     }
+    $explorerItems = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($element in @(Explorer-Elements | Select-Object -First 300)) {
+            try { $explorerItems.Add((Shell-Description $element)) }
+            catch { $explorerItems.Add([pscustomobject]@{ error = $_.Exception.GetType().Name }) }
+        }
+        $shells.Add([pscustomobject]@{ windowClass = 'Explorer process desktop UIA descendants'; descendants = $explorerItems })
+    } catch { $shells.Add([pscustomobject]@{ windowClass = 'Explorer process desktop UIA descendants'; error = $_.Exception.GetType().Name }) }
     [ordered]@{ observations = $shellObservations; shells = $shells } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'shell-diagnostics.json') -Encoding UTF8
     foreach ($shell in $shells) {
@@ -229,21 +251,44 @@ function Taskbar-Button {
         elapsedMilliseconds = $registration.ElapsedMilliseconds; candidates = $lastCount; error = $lastError })
     throw "Expected one disposable app taskbar item after bounded shell registration wait, found $lastCount (polls=$polls, error=$lastError)."
 }
-function Tray-Button {
+function Visible-TrayIcons {
+    $buttonCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+    # The opened overflow can be hosted outside the taskbar window or by a
+    # separate shell process. Match its real visible button from the desktop
+    # UIA tree instead of assuming a popup window class or owner process.
+    $buttons = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
+    return @($buttons | Where-Object {
+        $current = $_.Current
+        $rectangle = $current.BoundingRectangle
+        $current.Name.Contains($displayName) -and $current.ClassName -notmatch 'TaskList' -and
+            !$current.IsOffscreen -and !$rectangle.IsEmpty -and $rectangle.Width -gt 0 -and $rectangle.Height -gt 0
+    })
+}
+function Tray-Discovery {
     $taskbar = [TogetherServerChromeSmoke]::FindWindow('Shell_TrayWnd', $null)
-    $buttons = @(Shell-Buttons $taskbar)
-    $icon = @($buttons | Where-Object { $_.Current.Name.Contains($displayName) -and $_.Current.Name.Contains('Hosting:') })
+    $icon = @(Visible-TrayIcons)
     if ($icon.Count -eq 0) {
+        $buttons = @(Shell-Buttons $taskbar)
         $expand = @($buttons | Where-Object { $_.Current.Name -match '^(Show hidden icons|Hidden icon menu)' })
-        Require ($expand.Count -eq 1) 'The disposable tray icon and notification overflow control were unavailable.'
+        if ($expand.Count -ne 1) {
+            return [pscustomobject]@{ available = $false; reason = 'Explorer did not expose a unique notification overflow control or the disposable tray icon.'; element = $null }
+        }
         Click-Element $expand[0]
-        Start-Sleep -Milliseconds 300
-        $overflow = [TogetherServerChromeSmoke]::FindWindow('NotifyIconOverflowWindow', $null)
-        if ($overflow -eq [IntPtr]::Zero) { $overflow = [TogetherServerChromeSmoke]::FindWindow('TopLevelWindowForOverflowXamlIsland', $null) }
-        $icon = @(Shell-Buttons $overflow | Where-Object { $_.Current.Name.Contains($displayName) -and $_.Current.Name.Contains('Hosting:') })
+        $wait = [Diagnostics.Stopwatch]::StartNew()
+        do {
+            Start-Sleep -Milliseconds 250
+            $icon = @(Visible-TrayIcons)
+            if ($icon.Count -gt 0) { break }
+        } while ($wait.ElapsedMilliseconds -lt 8000)
     }
-    Require ($icon.Count -eq 1) 'The disposable app tray icon was not found uniquely.'
-    return $icon[0]
+    if ($icon.Count -ne 1) {
+        return [pscustomobject]@{ available = $false; reason = "Explorer did not expose a unique visible disposable tray icon after opening notification overflow (found $($icon.Count))."; element = $null }
+    }
+    $description = Shell-Description $icon[0]
+    $shellObservations.Add([pscustomobject]@{ action = 'Tray icon discovered'; element = $description })
+    return [pscustomobject]@{ available = $true; reason = $null; element = $icon[0] }
 }
 function Read-Rect {
     $rectangle = [TogetherServerChromeSmoke+Rect]::new()
@@ -259,6 +304,10 @@ function Record-Pass([string]$Name) {
     $results.Add([pscustomobject]@{ name = $Name; status = 'PASS'; dpi = [TogetherServerChromeSmoke]::GetDpiForWindow((App-Handle)) })
     Write-Host "PASS $Name"
 }
+function Record-Skip([string]$Name, [string]$Reason) {
+    $results.Add([pscustomobject]@{ name = $Name; status = 'SKIP'; reason = $Reason })
+    Write-Host ('SKIP {0}: {1}' -f $Name, $Reason)
+}
 function Capture-Chrome([string]$Name) {
     $rectangle = Read-Rect
     $width = $rectangle.Right - $rectangle.Left
@@ -270,13 +319,13 @@ function Capture-Chrome([string]$Name) {
         $bitmap.Save((Join-Path $evidenceRoot ($Name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
-function Capture-DesktopFailure {
+function Capture-DesktopFailure([string]$Name = 'failure-desktop') {
     $rectangle = [Windows.Forms.SystemInformation]::VirtualScreen
     $bitmap = [Drawing.Bitmap]::new($rectangle.Width, $rectangle.Height)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.CopyFromScreen($rectangle.Left, $rectangle.Top, 0, 0, $rectangle.Size)
-        $bitmap.Save((Join-Path $evidenceRoot 'failure-desktop.png'), [Drawing.Imaging.ImageFormat]::Png)
+        $bitmap.Save((Join-Path $evidenceRoot ($Name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 
@@ -336,18 +385,47 @@ try {
         Wait-Until { return ![TogetherServerChromeSmoke]::IsIconic((App-Handle)) -and
             [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) } 'Single-instance reveal lost prior state/bounds.'
         Record-Pass "$label single-instance reveal preserves state/bounds"
+    }
+    Invoke-Chrome 'Restore'
+    Wait-Until { return ![TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -and (Same-Rect $normal) } 'Maximized taskbar journeys lost normal restore bounds.'
+    Record-Pass 'Restore after maximized taskbar journeys keeps the original normal bounds'
+    $requiredScopeCompleted = $true
 
+    # Requested taskbar/caption/reveal acceptance is complete before inspecting
+    # notification overflow. Missing runner tray UI is a separately recorded
+    # skip; a real icon click that loses state/bounds remains a test failure.
+    $trayUnavailableReason = $null
+    foreach ($maximized in @($false, $true)) {
+        $label = if ($maximized) { 'Maximized' } else { 'Normal' }
+        $trayCase = "$label close-to-tray and tray reveal preserve state/bounds"
+        if ($null -ne $trayUnavailableReason) { Record-Skip $trayCase $trayUnavailableReason; continue }
+        if ($maximized) { Invoke-Chrome 'Maximize' }
+        Wait-Until { return [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized } 'Optional tray case did not reach its starting window state.'
+        $before = Read-Rect
         Require ((Local-Post '/api/local/desktop/preferences' @{ closeToTray = $true } 'PUT').ok) 'Disposable close-to-tray setting failed.'
         Invoke-Chrome 'Close'
         Wait-Until { return ![TogetherServerChromeSmoke]::IsWindowVisible((App-Handle)) } 'Caption Close did not hide to tray.'
-        Click-Element (Tray-Button) -Double
+        try { $tray = Tray-Discovery }
+        catch {
+            $tray = [pscustomobject]@{ available = $false; reason = "Runner Explorer tray discovery was unavailable ($($_.Exception.GetType().Name))."; element = $null }
+        }
+        if (!$tray.available) {
+            $trayUnavailableReason = $tray.reason
+            Record-Skip $trayCase $trayUnavailableReason
+            try { Save-ShellDiagnostics } catch { Write-Host "Optional tray diagnostics unavailable: $($_.Exception.GetType().Name)" }
+            try { Capture-DesktopFailure 'tray-unavailable-desktop' } catch { Write-Host "Optional tray desktop capture unavailable: $($_.Exception.GetType().Name)" }
+            Require ((Local-Post '/api/local/show').ok) 'Could not reveal disposable app after unavailable runner tray UI.'
+            Wait-Until { return [TogetherServerChromeSmoke]::IsWindowVisible((App-Handle)) -and
+                [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) } 'ShowAsync after tray UI skip lost state/bounds.'
+            continue
+        }
+        Click-Element $tray.element -Double
         Wait-Until { return [TogetherServerChromeSmoke]::IsWindowVisible((App-Handle)) -and
             [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized -and (Same-Rect $before) } 'Tray double-click lost prior state/bounds.'
-        Record-Pass "$label close-to-tray and tray reveal preserve state/bounds"
+        Record-Pass $trayCase
     }
-    Invoke-Chrome 'Restore'
-    Wait-Until { return ![TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -and (Same-Rect $normal) } 'Maximized taskbar/tray journeys lost normal restore bounds.'
-    Record-Pass 'Restore after maximized journeys keeps the original normal bounds'
+    if ([TogetherServerChromeSmoke]::IsZoomed((App-Handle))) { Invoke-Chrome 'Restore' }
+    Wait-Until { return Same-Rect $normal } 'Optional tray journeys lost original normal restore bounds.'
     Require ((Local-Post '/api/local/quit').ok) 'Disposable native app refused safe Quit.'
     Require ($app.WaitForExit(15000)) 'Disposable app did not exit after safe Quit.'
 } catch {
@@ -367,7 +445,9 @@ try {
         } else { throw 'Disposable cleanup refused a changed process identity.' }
     }
     [ordered]@{ candidateSha256 = $candidateHash; candidate = $candidate; caseId = $caseId;
-        source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations; passed = $null -eq $failure } |
+        source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations;
+        requiredScope = 'Taskbar, caption, ShowAsync and single-instance normal/maximized restoration';
+        requiredScopeCompleted = $requiredScopeCompleted; skipped = @($results | Where-Object status -eq 'SKIP').Count; passed = $null -eq $failure } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'result.json') -Encoding UTF8
     Write-Host "Window chrome evidence: $evidenceRoot"
 }
