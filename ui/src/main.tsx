@@ -293,7 +293,7 @@ function useModalDialog(open: boolean) {
   return ref
 }
 
-export function App() {
+export function App({ developmentDemoControls }: { developmentDemoControls?: React.ReactNode } = {}) {
   const { confirm, confirmationDialog } = useConfirmation()
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(() => {
     try { return readUiPreferences(window.localStorage) }
@@ -1934,7 +1934,7 @@ export function App() {
       void run(`resume-${profileId}`, `/api/local/profiles/${profileId}/resume-hosting`, 'POST')
   }
 
-  if (!requiredSetup.ready) return <><RequiredFeatureSetup setup={requiredSetup} appName={appInstance?.displayName}
+  if (!requiredSetup.ready) return <>{developmentDemoControls}<RequiredFeatureSetup setup={requiredSetup} appName={appInstance?.displayName}
     renderStep={(feature, complete, busy) => feature.id === 'profile-name' && feature.revision === 1
       ? <ProfileSettings profile={localProfile} required busy={busy} onSaved={complete} /> : null}
     safety={<details className="required-setup-safety"><summary>Existing hosting and recovery</summary>
@@ -1958,6 +1958,7 @@ export function App() {
     </details>} />{confirmationDialog}</>
 
   return <div className={appInstance?.isStaging ? 'shell app-shell staging-shell' : 'shell app-shell'}>
+    {developmentDemoControls}
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><span><strong>{appInstance?.displayName ?? 'TogetherServer'}</strong><small>Game server workspace</small></span></div>
       <HeaderTools>
@@ -1981,7 +1982,7 @@ export function App() {
 
     {update?.state === 'Available' && !update.promptSnoozed && !uiPreferences.quietMode && <DismissibleNotice noticeKey={update.latestVersion} as="aside" className="update-banner" role="status"><div><strong>TogetherServer {update.latestVersion} is available</strong><span>{updateBlockedReason ?? `Update and restart when ready · ${update.publisherTrust}.`}</span></div><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></DismissibleNotice>}
 
-    {appInstance?.isStaging && <DismissibleNotice as="aside" className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>App <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Separate development servers and data. Production data is not loaded or copied.</span></DismissibleNotice>}
+    {appInstance?.isStaging && !appInstance.isDemo && <DismissibleNotice as="aside" className="staging-banner" role="status"><strong>DEVELOPMENT / STAGING</strong><span>App <code>{appInstance.localPort}</code> · Friend control <code>{developmentControlPort}</code>. Separate development servers and data. Production data is not loaded or copied.</span></DismissibleNotice>}
 
     {showUpdatePrompt && update?.state === 'Available' && <dialog ref={updatePromptRef} className="panel modal-dialog update-dialog" aria-labelledby="update-dialog-title" onCancel={event => { event.preventDefault(); dismissUpdatePrompt() }}>
       <div className="modal-heading"><div><h2 id="update-dialog-title">Update TogetherServer</h2><p>Version {update.latestVersion} is available. TogetherServer will reopen after the update.</p></div></div>
@@ -2702,5 +2703,25 @@ export function App() {
 }
 
 const appRoot = document.getElementById('root')
-if (appRoot) createRoot(appRoot).render(
-  <React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>)
+if (appRoot) {
+  const root = createRoot(appRoot)
+  if (new URLSearchParams(window.location.search).get('demo') === 'sharing') {
+    void import('./developmentDemoBootstrap').then(async ({ prepareDevelopmentDemo }) => {
+      const demo = await prepareDevelopmentDemo(window.location.search)
+      if (!demo) {
+        root.render(<p role="alert">This demo requires the TogetherServer DEVELOPMENT DEMO application.</p>)
+        return
+      }
+      const activeDemo = demo
+      function DemoApplication() {
+        const revision = activeDemo.useDevelopmentDemoRevision()
+        return <App key={revision} developmentDemoControls={<activeDemo.DevelopmentDemoControls />} />
+      }
+      root.render(<React.StrictMode><AppErrorBoundary><DemoApplication /></AppErrorBoundary></React.StrictMode>)
+    }).catch(() => {
+      root.render(<p role="alert">The isolated demo could not start. Reopen TogetherServer DEVELOPMENT DEMO.</p>)
+    })
+  } else {
+    root.render(<React.StrictMode><AppErrorBoundary><App /></AppErrorBoundary></React.StrictMode>)
+  }
+}

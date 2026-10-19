@@ -349,6 +349,7 @@ export type AppInstanceView = {
   kind: 'Production' | 'Staging'
   displayName: string
   isStaging: boolean
+  isDemo?: boolean
   freshWorldsOnly: boolean
   startupAvailable: boolean
   updatesAvailable: boolean
@@ -1077,6 +1078,7 @@ export const parseAppInstance: Decoder<AppInstanceView> = (value, context = 'app
     kind: literal(source.kind, ['Production', 'Staging'] as const, `${context}.kind`),
     displayName: text(source.displayName, `${context}.displayName`),
     isStaging: flag(source.isStaging, `${context}.isStaging`),
+    ...(source.isDemo === undefined ? {} : { isDemo: flag(source.isDemo, `${context}.isDemo`) }),
     freshWorldsOnly: flag(source.freshWorldsOnly, `${context}.freshWorldsOnly`),
     startupAvailable: flag(source.startupAvailable, `${context}.startupAvailable`),
     updatesAvailable: flag(source.updatesAvailable, `${context}.updatesAvailable`),

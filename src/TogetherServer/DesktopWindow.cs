@@ -29,6 +29,7 @@ internal sealed class DesktopWindow
     private readonly bool startInTray;
     private readonly string displayName;
     private readonly bool isStaging;
+    private readonly bool isDemo;
     private readonly QolLocalPreferences? localPreferences;
     private readonly DesktopNotificationPreferences? notifications;
     private readonly DesktopDraftFlushGate draftFlush;
@@ -61,7 +62,8 @@ internal sealed class DesktopWindow
 
     public DesktopWindow(Uri address, string dataDirectory, Action stopApplication, bool closeToTray, bool startInTray,
         string displayName = "TogetherServer", bool isStaging = false,
-        QolLocalPreferences? localPreferences = null, DesktopNotificationPreferences? notifications = null)
+        QolLocalPreferences? localPreferences = null, DesktopNotificationPreferences? notifications = null,
+        bool isDemo = false)
     {
         this.address = address;
         this.stopApplication = stopApplication;
@@ -69,6 +71,7 @@ internal sealed class DesktopWindow
         this.startInTray = startInTray;
         this.displayName = displayName;
         this.isStaging = isStaging;
+        this.isDemo = isDemo;
         this.localPreferences = localPreferences;
         this.notifications = notifications;
         draftFlush = new(address);
@@ -137,6 +140,7 @@ internal sealed class DesktopWindow
 
     public async Task<string?> PickFileAsync(string title, string filter, string? initialDirectory = null)
     {
+        if (isDemo) return null;
         try { await shown.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { return null; }
         var target = form;
@@ -175,6 +179,7 @@ internal sealed class DesktopWindow
 
     public async Task<string?> PickFolderAsync(string title, string? initialDirectory = null)
     {
+        if (isDemo) return null;
         try { await shown.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { return null; }
         var target = form;
@@ -212,6 +217,7 @@ internal sealed class DesktopWindow
 
     public bool OpenFolder(string path)
     {
+        if (isDemo) return false;
         try
         {
             if (!Path.IsPathFullyQualified(path) || !Directory.Exists(path)) return false;
@@ -230,6 +236,7 @@ internal sealed class DesktopWindow
 
     public bool OpenTextFile(string path)
     {
+        if (isDemo) return false;
         try
         {
             if (!Path.IsPathFullyQualified(path) || !File.Exists(path)) return false;
@@ -673,7 +680,12 @@ internal sealed class DesktopWindow
             };
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: browserDataDirectory, options: options);
             if (window.IsDisposed || !TrySetLoadState(GuiLoadState.InitializingWebView)) return;
-            var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = content.BackColor };
+            var view = new WebView2
+            {
+                Dock = DockStyle.Fill,
+                DefaultBackgroundColor = content.BackColor,
+                AllowExternalDrop = !isDemo
+            };
             content.Controls.Add(view);
             await view.EnsureCoreWebView2Async(environment);
             if (window.IsDisposed || IsLoadTerminal)
@@ -682,6 +694,28 @@ internal sealed class DesktopWindow
                 return;
             }
             uiBridge = view.CoreWebView2;
+            if (isDemo)
+            {
+                // Demo interaction stays in the fake transport. Native navigation,
+                // dropped files and browser shortcuts must not bypass it.
+                var settings = view.CoreWebView2.Settings;
+                settings.AreDevToolsEnabled = false;
+                settings.AreDefaultContextMenusEnabled = false;
+                settings.AreBrowserAcceleratorKeysEnabled = false;
+                settings.AreHostObjectsAllowed = false;
+                view.CoreWebView2.LaunchingExternalUriScheme += (_, eventArgs) => eventArgs.Cancel = true;
+                view.CoreWebView2.FrameNavigationStarting += (_, eventArgs) => eventArgs.Cancel = true;
+                view.CoreWebView2.DownloadStarting += (_, eventArgs) => eventArgs.Cancel = true;
+                view.CoreWebView2.PermissionRequested += (_, eventArgs) => eventArgs.State = CoreWebView2PermissionState.Deny;
+                view.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All,
+                    CoreWebView2WebResourceRequestSourceKinds.All);
+                view.CoreWebView2.WebResourceRequested += (_, eventArgs) =>
+                {
+                    if (IsDemoResourceAllowed(address, eventArgs.Request.Uri, eventArgs.Request.Method)) return;
+                    eventArgs.Response = environment.CreateWebResourceResponse(Stream.Null, 403,
+                        "Demo request blocked", "Content-Type: text/plain");
+                };
+            }
             view.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
             {
                 try
@@ -694,6 +728,11 @@ internal sealed class DesktopWindow
             };
             view.CoreWebView2.NavigationStarting += (_, eventArgs) =>
             {
+                if (isDemo)
+                {
+                    eventArgs.Cancel = !IsDemoDocumentAllowed(address, eventArgs.Uri);
+                    return;
+                }
                 if (Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var destination) &&
                     destination.Scheme == address.Scheme && destination.Host == address.Host &&
                     destination.Port == address.Port) return;
@@ -703,7 +742,7 @@ internal sealed class DesktopWindow
             view.CoreWebView2.NewWindowRequested += (_, eventArgs) =>
             {
                 eventArgs.Handled = true;
-                OpenApprovedExternal(eventArgs.Uri);
+                if (!isDemo) OpenApprovedExternal(eventArgs.Uri);
             };
             view.CoreWebView2.NavigationCompleted += async (_, eventArgs) =>
             {
@@ -888,13 +927,13 @@ internal sealed class DesktopWindow
         return new Point(bounds.Left, top >= int.MinValue ? (int)top : int.MinValue);
     }
 
-    private static void ShowLoadError(Form window, Control content, Label loading, string message, bool offerRuntimeLink)
+    private void ShowLoadError(Form window, Control content, Label loading, string message, bool offerRuntimeLink)
     {
         if (window.IsDisposed) return;
         content.Controls.Clear();
         loading.Text = message;
         content.Controls.Add(loading);
-        if (!offerRuntimeLink) return;
+        if (!offerRuntimeLink || isDemo) return;
         var button = new Button
         {
             Text = "Get WebView2 from Microsoft",
@@ -912,9 +951,9 @@ internal sealed class DesktopWindow
         content.Controls.Add(button);
     }
 
-    private static void OpenApprovedExternal(string? target)
+    private void OpenApprovedExternal(string? target)
     {
-        if (target is null || !IsApprovedExternal(target)) return;
+        if (isDemo || target is null || !IsApprovedExternal(target)) return;
         try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         { DesktopLaunch.ShowError("Could not open the selected page.\n\n" + ex.Message); }
@@ -929,6 +968,29 @@ internal sealed class DesktopWindow
         const string prefix = "https://github.com/daltonstates/TogetherServer/releases/tag/";
         return target.StartsWith(prefix, StringComparison.Ordinal) && target.Length <= prefix.Length + 33 &&
             AppUpdater.ValidReleaseNotesLink(target, target[prefix.Length..]);
+    }
+
+    internal static bool IsDemoResourceAllowed(Uri localAddress, string? target, string? method)
+    {
+        if (!string.Equals(method, "GET", StringComparison.Ordinal) ||
+            !IsDemoOrigin(localAddress, target, out var destination)) return false;
+        return destination.AbsolutePath is "/" or "/index.html" or "/favicon.svg" or
+            "/api/local/instance" or "/api/local/window" ||
+            destination.AbsolutePath.StartsWith("/assets/", StringComparison.Ordinal);
+    }
+
+    internal static bool IsDemoDocumentAllowed(Uri localAddress, string? target) =>
+        IsDemoOrigin(localAddress, target, out var destination) &&
+        destination.AbsolutePath is "/" or "/index.html";
+
+    private static bool IsDemoOrigin(Uri localAddress, string? target, out Uri destination)
+    {
+        destination = null!;
+        if (!Uri.TryCreate(target, UriKind.Absolute, out var parsed) || parsed.UserInfo.Length != 0 ||
+            parsed.Scheme != localAddress.Scheme || parsed.Host != localAddress.Host ||
+            parsed.Port != localAddress.Port) return false;
+        destination = parsed;
+        return true;
     }
 
     private void HideToTray(Form window, NotifyIcon tray)
@@ -964,6 +1026,13 @@ internal sealed class DesktopWindow
         requestingQuit = true;
         try
         {
+            // Demo drafts are session-only fake data. Quit must also work when
+            // bootstrap fails before the browser's draft bridge is installed.
+            if (isDemo)
+            {
+                stopApplication();
+                return;
+            }
             // Flush before calling /quit: protected draft writes need the local
             // API's mode gate, which the guarded quit endpoint also acquires.
             if (!await FlushDraftsForQuitAsync(window))

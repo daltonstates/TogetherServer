@@ -3,6 +3,14 @@ using System.Reflection;
 using System.Text.Json;
 using TogetherServer;
 
+// Select the inert demo before native helpers, console setup or any real
+// hosting, Friend, discovery, updater or recovery service can be constructed.
+if (AppInstance.RequestsDemo(args))
+{
+    await DemoApplication.RunAsync(args);
+    return;
+}
+
 if (MinecraftConsoleCapture.IsCommand(args))
 {
     Environment.ExitCode = await MinecraftConsoleCapture.RunAsync(args);
@@ -2358,30 +2366,7 @@ app.MapGet("/api/local/friend/{id:guid}/logs", async (HttpContext context, Guid 
 app.MapPost("/api/local/friend/{id:guid}/{action}", async (Guid id, string action) =>
     friendMode ? Results.Json(await friend.RequestAsync(id, action)) : Results.Conflict(new { ok = false, code = "HostMode" }));
 
-var assembly = Assembly.GetExecutingAssembly();
-var assets = assembly.GetManifestResourceNames()
-    .Where(name => name.StartsWith("Ui/", StringComparison.Ordinal))
-    .ToDictionary(name => name[3..].Replace('\\', '/'), name => name, StringComparer.OrdinalIgnoreCase);
-app.MapGet("/{**path}", async (HttpContext context, string? path) =>
-{
-    var requested = string.IsNullOrWhiteSpace(path) ? "index.html" : path.TrimStart('/');
-    if (requested.Contains("..", StringComparison.Ordinal) || !assets.TryGetValue(requested, out var resource))
-    {
-        context.Response.StatusCode = StatusCodes.Status404NotFound;
-        await context.Response.WriteAsync("UI asset not found. Build ui/ before publishing.");
-        return;
-    }
-    context.Response.ContentType = Path.GetExtension(requested).ToLowerInvariant() switch
-    {
-        ".html" => "text/html; charset=utf-8",
-        ".js" => "text/javascript; charset=utf-8",
-        ".css" => "text/css; charset=utf-8",
-        ".svg" => "image/svg+xml",
-        _ => "application/octet-stream"
-    };
-    await using var stream = assembly.GetManifestResourceStream(resource)!;
-    await stream.CopyToAsync(context.Response.Body);
-});
+BundledUi.Map(app);
 
 DiagnosticOutput.WriteLine($"{instance.DisplayName} {(friendMode ? "Friend" : "Host")} local GUI: http://127.0.0.1:{port}/");
 await companionServer.SyncAsync();

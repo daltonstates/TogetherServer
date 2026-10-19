@@ -222,6 +222,9 @@ describe('runtime contracts', () => {
 
     expect(instance.isStaging).toBe(true)
     expect(instance.freshWorldsOnly).toBe(true)
+    expect(instance.isDemo).toBeUndefined()
+    expect(parseAppInstance({ ...instance, isDemo: true }).isDemo).toBe(true)
+    expect(() => parseAppInstance({ ...instance, isDemo: 'true' })).toThrow(ContractError)
     expect(() => parseAppInstance({ ...instance, companionPort: '5132' })).toThrow(ContractError)
   })
 
