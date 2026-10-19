@@ -994,8 +994,10 @@ internal sealed class DesktopWindow
 
     private void HideToTray(Form window, NotifyIcon tray)
     {
-        window.Hide();
+        // Changing the taskbar flag recreates the native handle and can show a
+        // maximized form again. Apply visibility after that recreation.
         window.ShowInTaskbar = false;
+        window.Hide();
         if (trayHintShown) return;
         trayHintShown = true;
         NotifyCore(displayName + " is still running", "Open it from the tray icon. Right-click the icon to quit.",
