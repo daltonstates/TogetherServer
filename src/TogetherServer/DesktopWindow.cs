@@ -557,17 +557,21 @@ internal sealed class DesktopWindow
 
         void BeginDrag(object? _, MouseEventArgs eventArgs)
         {
-            if (eventArgs.Button != MouseButtons.Left || window.WindowState == FormWindowState.Maximized) return;
+            if (eventArgs.Button != MouseButtons.Left) return;
+            // The native drag loop consumes mouse-up, where WinForms normally
+            // raises DoubleClick. Handle the second press before starting it.
+            if (eventArgs.Clicks == 2)
+            {
+                ToggleMaximize(window, maximize);
+                return;
+            }
+            if (window.WindowState == FormWindowState.Maximized) return;
             ReleaseCapture();
             SendMessage(window.Handle, 0x00A1, new IntPtr(2), IntPtr.Zero);
         }
-        void Toggle(object? _, EventArgs __) => ToggleMaximize(window, maximize);
         titleBar.MouseDown += BeginDrag;
         mark.MouseDown += BeginDrag;
         title.MouseDown += BeginDrag;
-        titleBar.DoubleClick += Toggle;
-        mark.DoubleClick += Toggle;
-        title.DoubleClick += Toggle;
         var maximizeChromeUpdateQueued = false;
         void RefreshMaximizeChrome()
         {

@@ -140,13 +140,27 @@ function Invoke-Chrome([string]$Action) {
 function Click-Element($Element, [switch]$Double) {
     $rectangle = $Element.Current.BoundingRectangle
     Require (!$rectangle.IsEmpty -and $rectangle.Width -gt 0 -and $rectangle.Height -gt 0) 'Shell button has no clickable bounds.'
-    Require ([TogetherServerChromeSmoke]::SetCursorPos([int]($rectangle.Left + $rectangle.Width / 2),
-        [int]($rectangle.Top + $rectangle.Height / 2))) 'Could not position the approved smoke input.'
+    Click-Point ([int]($rectangle.Left + $rectangle.Width / 2)) ([int]($rectangle.Top + $rectangle.Height / 2)) -Double:$Double
+}
+function Click-Point([int]$X, [int]$Y, [switch]$Double) {
+    Require ([TogetherServerChromeSmoke]::SetCursorPos($X, $Y)) 'Could not position the approved smoke input.'
     for ($click = 0; $click -lt $(if ($Double) { 2 } else { 1 }); $click++) {
         [TogetherServerChromeSmoke]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [TogetherServerChromeSmoke]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
         if ($Double -and $click -eq 0) { Start-Sleep -Milliseconds 80 }
     }
+}
+function Double-Titlebar([string]$Region) {
+    $client = Read-ClientRect
+    $scale = [TogetherServerChromeSmoke]::GetDpiForWindow((App-Handle)) / 96.0
+    $x = switch ($Region) {
+        'Title text' { $client.Left + 100 * $scale }
+        'App mark' { $client.Left + 24 * $scale }
+        default { $client.Left + ($client.Right - $client.Left) / 2 }
+    }
+    $y = $client.Top + $(if ($Region -eq 'Title text') { 18 } else { 21 }) * $scale
+    $shellObservations.Add([pscustomobject]@{ action = 'Physical titlebar double-click'; region = $Region; x = $x; y = $y })
+    Click-Point ([int]$x) ([int]$y) -Double
 }
 function Shell-Elements([IntPtr]$Handle) {
     if ($Handle -eq [IntPtr]::Zero) { return @() }
@@ -398,6 +412,34 @@ try {
     Capture-Chrome 'normal-caption'
     Record-Pass 'Custom client frame and accessible equal-size caption controls'
 
+    # Physical mouse input exercises the WinForms/native drag-loop boundary;
+    # invoking a caption button or sending a maximize command cannot prove it.
+    $area = [Windows.Forms.Screen]::FromHandle((App-Handle)).WorkingArea
+    Require ([TogetherServerChromeSmoke]::MoveWindow((App-Handle), $area.Left + 40, $area.Top + 30,
+        [Math]::Min(800, $area.Width - 80), [Math]::Min(600, $area.Height - 60), $true)) 'Could not position the disposable titlebar case.'
+    foreach ($region in @('Empty titlebar', 'Title text', 'App mark', 'Updated position')) {
+        if ($region -eq 'Updated position') {
+            $previous = Read-Rect
+            Require ([TogetherServerChromeSmoke]::MoveWindow((App-Handle), $previous.Left + 20, $previous.Top + 10,
+                ($previous.Right - $previous.Left) - 40, ($previous.Bottom - $previous.Top) - 20, $true)) 'Could not update the disposable normal position.'
+        }
+        $before = Read-Rect
+        $clientBefore = Read-ClientRect
+        Require (![TogetherServerChromeSmoke]::IsZoomed((App-Handle))) 'Titlebar case did not start in normal state.'
+        Record-Geometry "$region before double-click" | Out-Null
+        Double-Titlebar $region
+        Wait-Until { return [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -and
+            (Same-ClientRect $area) } "$region double-click did not maximize inside the work area."
+        Record-Geometry "$region after double-click maximize" | Out-Null
+        Double-Titlebar $region
+        Wait-Until { return ![TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -and
+            ![TogetherServerChromeSmoke]::IsIconic((App-Handle)) -and
+            (Same-Rect $before) -and (Same-ClientRect $clientBefore) } "$region double-click did not restore its last normal position and size."
+        Record-Geometry "$region after double-click restore" | Out-Null
+        Record-Pass "$region double-click maximizes and restores its last normal position/size"
+    }
+    $normal = Read-Rect
+
     foreach ($maximized in @($false, $true)) {
         if ($maximized) { Invoke-Chrome 'Maximize' } else { Require ((Local-Post '/api/local/show').ok) 'Could not reveal native app.' }
         Wait-Until { return [TogetherServerChromeSmoke]::IsZoomed((App-Handle)) -eq $maximized } 'Expected starting window state was not reached.'
@@ -507,7 +549,7 @@ try {
     }
     [ordered]@{ candidateSha256 = $candidateHash; candidate = $candidate; caseId = $caseId;
         source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations; windowGeometry = $windowGeometry;
-        requiredScope = 'Taskbar, caption, ShowAsync and single-instance normal/maximized restoration';
+        requiredScope = 'Physical titlebar double-click, taskbar, caption, ShowAsync and single-instance normal/maximized restoration';
         requiredScopeCompleted = $requiredScopeCompleted; skipped = @($results | Where-Object status -eq 'SKIP').Count; passed = $null -eq $failure } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'result.json') -Encoding UTF8
     Write-Host "Window chrome evidence: $evidenceRoot"
