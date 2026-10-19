@@ -37,6 +37,7 @@ const { parseNotificationPreferences, parseDesktopUpdateDetails, parseUpdatePrep
 const { parseProtectedDraftResult } = await import(new URL('protectedUiDrafts.ts', sourceRoot).href);
 const { normalizedDirectIpHttpsEndpoint } = await import(new URL('sharedWorldUx.ts', sourceRoot).href);
 const { parsePlannedHandoffStatus } = await import(new URL('plannedHandoff.ts', sourceRoot).href);
+const { hostPcSections } = await import(new URL('workspaceSections.ts', sourceRoot).href);
 const ts = createRequire(new URL('../package.json', sourceRoot))('typescript');
 
 // Extract actual pure decoders into memory, excluding components and all imports.
@@ -607,6 +608,10 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.equal(focused.plans.length, 35, 'seven move/sharing surfaces each cover five viewport/text variants');
   assert.equal(focused.inventory.length, focused.plans.length);
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
+  for (const item of hostPcSections) {
+    const plan = plans.find(plan => plan.testCase.id === `host-pc-${item.id}`);
+    assert.equal(plan.testCase.section[2], item.label, `Host PC ${item.id} uses the actual sidebar action label`);
+  }
   const sidebars = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, args: ['--sidebar-only'] });
   for (const id of ['sidebar-host-long-names', 'sidebar-join-long-names', 'sidebar-settings']) {

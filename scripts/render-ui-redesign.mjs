@@ -58,8 +58,8 @@ const hostTabs = [
 // Server controls is an aria-labelled div (a group screen, not an ARIA region).
 hostTabs[0][2] = { css: '[aria-label="Server controls"]', text: 'Stop server' };
 const pcSections = [
-  ['access', 'Friend access', 'Friend access'], ['stop', 'Stop & timer', 'Stop & timer'],
-  ['network', 'Connection help', 'Connection help'], ['diagnostics', 'Diagnostics', 'Server diagnostics'],
+  ['access', 'Access', 'Friend access'], ['stop', 'Shutdown', 'Stop & timer'],
+  ['network', 'Network', 'Connection help'], ['diagnostics', 'Diagnostics', 'Server diagnostics'],
   ['advanced', 'Advanced', 'Advanced'],
 ];
 const joinSections = [

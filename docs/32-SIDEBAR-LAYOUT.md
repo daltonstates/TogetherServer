@@ -34,7 +34,11 @@ pane. No new dependency, backend contract or server action is involved.
   Initial hosted run 39294068837 attempted all 45 viewport plans with zero layout
   findings but failed 11 cases: seven encountered a missing ordinary Friend
   hosting-status fixture, and four tried to select a closed This PC settings
-  disclosure. Both harness gaps are corrected; a full hosted rerun is required.
+  disclosure. Run 39294698188 resolved nine failures, leaving two desktop Access
+  selectors using the former label. The literal action labels now match the
+  current sidebar and have a source-derived regression check. A full hosted
+  rerun is required. The final menu action also restores keyboard focus to the
+  bell after opening Attention; all 123 focused navigation/resize/demo tests pass.
   The sidebar-only hosted inventory
   includes Host/Join long names, settings, first-use states, server files,
   Friend access, Attention and updates at desktop/tablet/narrow sizes and 150%
