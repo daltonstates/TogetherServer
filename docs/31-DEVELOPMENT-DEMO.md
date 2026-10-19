@@ -18,8 +18,17 @@ Validation on 2026-10-19:
 
 - `scripts/verify-code-only.ps1` passed: pinned SDK/Node, locked dependency installation/restore, TypeScript, lint, solution build with zero warnings/errors, all 52 source/synthetic groups including demo identity/marker/URI/middleware checks, whitespace and diagnostic isolation. The existing synthetic source-link subcases were skipped because this account cannot create symbolic links.
 - Focused UI verification passed 141 tests across five files, including bootstrap trust gating, normal shell/contracts and 20 demo transport/UI cases. The whole-app owner permission -> Join -> Prepare -> explicit Start journey was then expanded and both whole-app cases passed again. No real fetch was dispatched by the demo cases.
-- Packaging PowerShell parsed successfully. The Python verifier passed pure extraction, synthetic package and rejection checks; the final published EXE will also be verified before delivery.
+- Packaging PowerShell parsed successfully. The Python verifier passed pure extraction, synthetic package and rejection checks. The final package below passed actual compressed-bundle verification.
 
 Local evidence is ignored under `local-data/demo-code-only.log`, `demo-ui-final.log`, `demo-ui-owner-flow.log` and `demo-ui-integration.log`.
 
 No app, game, browser, installer or native dialog was launched for testing on the owner's active desktop. Production was not launched, stopped, installed or replaced. Native visual acceptance and real game/Friend-PC/network/save acceptance remain separate and unverified by this demo.
+
+Delivered local package built from source commit `62343ce`:
+
+- `local-data/shared-hosting-demo-20261019-62343ce/TogetherServer DEVELOPMENT DEMO.exe`
+- `README-DEMO.txt` contains the Host > Backups > Sharing & hosting and Join testing steps.
+- `package-evidence.json` records GUI PE subsystem 2, exact equality of the extracted bundled assembly to the current Release assembly, and hashes for all seven embedded current UI assets, including the demo/bootstrap chunks.
+- EXE SHA-256: `600A75A8381090E49167555B25DC8C2460E44C79DE91C2DA7EDF6CA8CBC8B328`. Authenticode: `NotSigned`.
+
+The UI build and native single-file publish passed. The existing main UI chunk size advisory remains; it did not fail the build. Build/package evidence is ignored under `local-data/demo-package-build.log`. The package was left closed for owner testing.
