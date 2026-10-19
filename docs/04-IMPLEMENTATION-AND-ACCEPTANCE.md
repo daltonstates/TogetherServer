@@ -112,3 +112,21 @@ Factorio has a separate built-in preview driver. Fixture checks must cover owner
 Terraria source checks cover copy-once `.wld` import with the original unchanged, managed-path enforcement, fixed executable/port/world selection, TCP-only listener evidence, unknown player count, and disabled automatic crash recovery. An owner-installed server/client must still prove fixed launch and `exit`, real readiness, zero/positive/zero occupancy, a Friend join, recognizable saved change after restart, and the intended network route. Until a trusted count is implemented and accepted, Friend and automatic Stop stay blocked.
 
 The Host move kit must export a completed hash-verified backup without credentials or game binaries, verify all hashes again when selected on another PC, reject tampering, and leave source and existing destination worlds untouched. The owner installs the game server and copies the payload into a fresh offline save location, then pairs Friend PCs again. A real destination-PC join and saved restart remain external acceptance.
+
+## Paired-PC planned hosting moves
+
+The 2026-10-19 slice adds selected paired-PC requests, recipient Accept/Decline,
+guided game preparation and signed connection discovery without owner address
+entry. First-save moves retain graceful Stop, exact final receipt, source
+fencing, fresh destination storage and explicit destination Start. Backups and
+sharing spacing also uses component-owned gaps, including expanded help and
+enlarged text. See the [delivery and acceptance record](31-PAIRED-PC-HOSTING-MOVES.md)
+for exact source, artifact hashes, composed UI evidence and remaining checks.
+
+PASS: 56 code-only source/synthetic groups, 219 final focused UI regressions,
+25 pure screenshot-fixture tests, production bundling and static EXE/embedded
+asset verification. The final hosted Windows rendered review passed all 35
+cases with no layout findings; 20 representative screenshots were inspected.
+The updated process/companion check sources compile but were not executed on
+the owner's desktop. Native process, separate-PC/network and real game
+save/load/Stop/restart acceptance remain pending; Minecraft remains fixture-only.

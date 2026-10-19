@@ -62,7 +62,8 @@ Serialized validation on 2026-10-19:
 | Final move, ordinary hosting, shared-save and shell regression files | PASS: 219 tests in six files |
 | Pure hosted screenshot fixtures | PASS: 25 tests |
 | Production React bundle | PASS: existing advisory for a JavaScript chunk over 500 kB |
-| Hosted rendered review | Pending: 35 planned captures |
+| Hosted rendered review | PASS: all 35 cases, 134 screenshots including scroll coverage, zero failed or skipped cases and zero layout findings |
+| Final EXE static package check | PASS: current assembly and all seven UI assets embedded byte-for-byte; app not loaded or launched |
 
 The final broad UI run passed 1,233 cases; three new tests expected a pause
 message that a later freshness notice replaced. Their assertions now check the
@@ -88,8 +89,9 @@ The first hosted run, `39275404604`, correctly failed before those screens:
 the older harness lacked profile/required-setup responses and still selected
 the old Host/Join navigation. Its 35 attempts are failed evidence. The harness
 now supplies decoded completed synthetic setup and selects saved servers from
-the current Servers directory; the application UI and packaged bytes are
-unchanged by this harness correction.
+the current Servers directory. These fixture corrections leave production
+behavior unchanged; synthetic demo fixtures are also bundled, so the final
+distribution is rebuilt from the reviewed revision and matched by UI hash.
 The second run, `39276176121`, captured all owner surfaces with no layout
 findings, but failed 17 cases: the recipient section still used the old Join
 sidebar label, and two short-window dialogs attempted to scroll the inert
@@ -100,7 +102,49 @@ It checks actual rendered gaps and rejects a reintroduced recipient-address
 field. Browser execution remains restricted to the dedicated hosted Windows
 runner by the existing harness guard.
 
+Final hosted run
+[`39277838390`](https://github.com/daltonstates/TogetherServer/actions/runs/39277838390)
+passed at source `3a8953978ba0512288dcb86019a0b8b73f903bee`, job
+`118146565697`, artifact `12197479546`. The ZIP SHA-256 is
+`39724557d8d73f813eb0e8ddd6bbbf9b9fdbd960d7ab84bc1637355261486289`.
+Its UI index hash matches the final distribution below. All seven surfaces
+were visually inspected at desktop and narrow 150% text, with additional
+short-window dialogs and scroll segments: 20 representative images, with no
+remaining visual findings. The 15 intentional error-state cases contain the
+synthetic unavailable game-compatibility inventory; they are expected fixture
+states, not failed captures or real game compatibility evidence. The expanded
+permission help gap measures 12 px at default text; the move grid gap measures
+16 px at default text and 24 px at 150% text.
+
+## Production build
+
+The final source revision is `3a8953978ba0512288dcb86019a0b8b73f903bee`.
+The unpublished production EXE is
+`local-data/move-hosting-production-20261019-3a89539/TogetherServer.exe`:
+
+- File version: `0.3.2.1`; product version includes the exact source revision.
+- Size: 66,057,399 bytes.
+- SHA-256: `a11e4ae0350021e4bb643f26e83908cf78e0deacf52dd59057d63f99de6bc7de`.
+- Static package verification: PASS. Windows GUI subsystem, matching bundled
+  assembly and all seven current UI assets verified without loading the app.
+- UI index SHA-256:
+  `60d21e98d8102ccfe36aa0e212e9f2c9be68e978b8830a88347b95a982f51b1c`.
+- Authenticode: NotSigned. The EXE was not launched or installed; the running
+  production app was not replaced. No release or tag was created.
+
+The artifact directory contains `artifact.json` and `package-evidence.json`.
+Validation logs and downloaded hosted evidence are under
+`local-data/move-hosting-review/`. These disposable files remain out of Git.
+
+## Remaining acceptance
+
 Native Windows, separate-PC transfer, actual incoming routes, game joins and
 recognizable save/load/Stop/restart acceptance remain separate gates. No app,
 game, console fixture, browser or native dialog is launched on the owner's
 active desktop; production data and worlds remain untouched.
+Updated process and companion check sources compile; their execution remains
+pending in an approved isolated Windows session.
+In particular, record a real first-save move between two paired PCs, recipient
+Accept/Decline, game-specific preparation, exact final receipt and source
+fencing, explicit destination Start and recognizable world loading before
+claiming end-to-end game acceptance. Minecraft acceptance remains fixture-only.
