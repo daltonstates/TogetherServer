@@ -85,7 +85,11 @@ public sealed class AppInstance
         {
             switch (arguments[index].ToLowerInvariant())
             {
-                case "--demo": case "--staging": case "--desktop": case "--host": case "--friend":
+                case "--demo":
+                case "--staging":
+                case "--desktop":
+                case "--host":
+                case "--friend":
                     break;
                 case "--port" when index + 1 < arguments.Length &&
                     int.TryParse(arguments[index + 1], out var port) && port is >= 1024 and <= 65535:

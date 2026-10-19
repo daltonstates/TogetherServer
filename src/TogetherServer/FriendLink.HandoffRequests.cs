@@ -110,8 +110,11 @@ internal sealed partial class FriendLink
             using var key = LoadPcSigningKey(config.DeviceId);
             contact = new(1, root, config.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
                 1, [route], "");
-            contact = contact with { Signature = Convert.ToBase64String(key.SignData(
-                WorldPeerService.ContactBasis(contact), HashAlgorithmName.SHA256)) };
+            contact = contact with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                WorldPeerService.ContactBasis(contact), HashAlgorithmName.SHA256))
+            };
         }
         finally { gate.Release(); }
         return await HandoffExchangeAsync<PlannedHandoffResult>(profileId, "prepared",

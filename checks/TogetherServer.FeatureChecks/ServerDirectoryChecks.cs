@@ -44,14 +44,17 @@ internal static class ServerDirectoryChecks
         var guestId = Guid.NewGuid();
         var unknownId = Guid.NewGuid();
         var sourceId = Guid.NewGuid();
-        var settings = new HostSettings { Profiles =
+        var settings = new HostSettings
+        {
+            Profiles =
         [
             new() { Id = ownerId, Name = "My world", Kind = GameKinds.Valheim,
                 WorldDirectory = "C:\\Private\\world", ExecutablePath = "C:\\Private\\server.exe" },
             new() { Id = guestId, Name = "Guest local copy", Kind = GameKinds.Valheim,
                 SeparateCopySourceProfileId = sourceId, SeparateCopyBranchHash = new string('B', 64) },
             new() { Id = unknownId, Name = "Waiting", Kind = GameKinds.MinecraftJava }
-        ] };
+        ]
+        };
         var runs = new RunView[]
         {
             new(ownerId, "Ready", "Private process details", 123, OnlinePlayers: 0, MaxPlayers: 10,
@@ -96,15 +99,19 @@ internal static class ServerDirectoryChecks
         var ids = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
         var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         data.SaveProtected("friend-connections.protected", JsonSerializer.SerializeToUtf8Bytes(new
-            { ids, selectedId = ids[1] }, json));
+        { ids, selectedId = ids[1] }, json));
         for (var index = 0; index < ids.Length; index++)
         {
             var configuration = new FriendConfiguration
             {
-                DisplayName = index == 2 ? "Host 192.0.2.10" : "Friend PC " + index, HostProfileName = "Player " + index,
-                HostId = Guid.NewGuid(), DeviceId = Guid.NewGuid(),
-                Endpoint = "https://192.0.2.10:5131", Fingerprint = new string('A', 64),
-                Credential = new string('C', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+                DisplayName = index == 2 ? "Host 192.0.2.10" : "Friend PC " + index,
+                HostProfileName = "Player " + index,
+                HostId = Guid.NewGuid(),
+                DeviceId = Guid.NewGuid(),
+                Endpoint = "https://192.0.2.10:5131",
+                Fingerprint = new string('A', 64),
+                Credential = new string('C', 64),
+                CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
                 KnownRevoked = index == 2,
                 CachedProfiles = [new(Guid.NewGuid(), "Saved server " + index, "Ready", "192.0.2.99:2456",
                     Kind: GameKinds.Valheim, OnlinePlayers: 0, MaxPlayers: 10, CanStart: true, CanStop: true,
@@ -124,8 +131,11 @@ internal static class ServerDirectoryChecks
         var hosts = friend.ServerDirectoryHosts();
         Require(hosts.Count == 3 && hosts[0].ConnectionId == ids[0] && hosts[1].ConnectionId == ids[1],
             "directory omitted saved unselected Host connections");
-        Require(hosts[0].Servers is [{ Name: "Saved server 0", State: "Unknown", OnlinePlayers: null,
-            PlayerCountTrusted: false, PlayerCountObservedUtc: null }], "cached metadata revived a count after restart");
+        Require(hosts[0].Servers is [
+            {
+                Name: "Saved server 0", State: "Unknown", OnlinePlayers: null,
+                PlayerCountTrusted: false, PlayerCountObservedUtc: null
+            }], "cached metadata revived a count after restart");
         Require(hosts[2].State == "Revoked" && hosts[2].Servers.Count == 0,
             "removed saved Host exposed its former assigned servers");
         Require(hosts[2].ConnectionName == "Player 2's Host" &&

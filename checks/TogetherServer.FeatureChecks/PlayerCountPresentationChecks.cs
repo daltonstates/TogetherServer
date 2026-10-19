@@ -132,8 +132,11 @@ internal static class PlayerCountPresentationChecks
             if (deadlines.ContainsKey(profileId) || addedMinutes[profileId] != 15 || friendMinutes[profileId] != 5)
                 throw new Exception("Quiet count cancellation retained a live deadline or lost saved added time.");
             var events = data.LoadActivity().Where(item => item.ProfileId == profileId).ToList();
-            if (events is not [{ Category: "Countdown", Action: "Canceled", Severity: ActivitySeverity.Info,
-                Visibility: ActivityVisibility.AssignedFriends }] ||
+            if (events is not [
+                {
+                    Category: "Countdown", Action: "Canceled", Severity: ActivitySeverity.Info,
+                    Visibility: ActivityVisibility.AssignedFriends
+                }] ||
                 !events[0].Message.Contains("15 added minutes remain saved", StringComparison.Ordinal))
                 throw new Exception("A routine count change lost its history or generated an attention event.");
             cancel.Invoke(manager, [profileId, reason, false]);

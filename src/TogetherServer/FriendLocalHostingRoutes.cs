@@ -94,8 +94,12 @@ internal static class FriendLocalHostingRoutes
                 var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
                     context.Request.ContentLength, 512, context.RequestAborted);
                 var request = ParseStart(bytes ?? []);
-                if (!request.AcceptSplitWarning) return Results.Json(new { ok = false, code = "SplitWarningRequired",
-                    message = "Confirm that another Host may still be running and both histories remain separate." });
+                if (!request.AcceptSplitWarning) return Results.Json(new
+                {
+                    ok = false,
+                    code = "SplitWarningRequired",
+                    message = "Confirm that another Host may still be running and both histories remain separate."
+                });
                 return Results.Json(await manager.StartSeparateCopyAsync(localProfileId, request.BranchHash));
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ArgumentException)

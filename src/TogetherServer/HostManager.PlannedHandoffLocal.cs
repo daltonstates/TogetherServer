@@ -78,9 +78,13 @@ public sealed partial class HostManager
                     state.PreparedServerRoot, version, state.Setup, state.ExecutablePath) is { } issue) return issue;
             var profile = new ServerProfile
             {
-                Id = version.ProfileId, Kind = version.Game, WorldId = version.WorldId,
-                WorldDirectory = SuccessorWorldRoot(data, version), GamePort = state.Setup.GamePort,
-                ExecutablePath = state.ExecutablePath, Crossplay = version.PortableSetup.Crossplay,
+                Id = version.ProfileId,
+                Kind = version.Game,
+                WorldId = version.WorldId,
+                WorldDirectory = SuccessorWorldRoot(data, version),
+                GamePort = state.Setup.GamePort,
+                ExecutablePath = state.ExecutablePath,
+                Crossplay = version.PortableSetup.Crossplay,
                 Minecraft = version.Game == GameKinds.MinecraftJava ? new() { ServerJarPath = state.Setup.ServerFile! } : null,
                 Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = state.FactorioRconPort ?? 0 } : null
             };

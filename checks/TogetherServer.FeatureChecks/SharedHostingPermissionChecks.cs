@@ -228,8 +228,11 @@ internal static class SharedHostingPermissionChecks
             Data = new(Path.Combine(root, "save-hosting-" + label + "-" + Guid.NewGuid().ToString("N")));
             var target = Profile("Synthetic target", 2456, kind);
             configureProfile?.Invoke(target); ProfileId = target.Id;
-            Data.SaveSettings(new HostSettings { MaxConcurrentServers = 3,
-                Profiles = [target, Profile("Synthetic sibling", 2458, kind)] });
+            Data.SaveSettings(new HostSettings
+            {
+                MaxConcurrentServers = 3,
+                Profiles = [target, Profile("Synthetic sibling", 2458, kind)]
+            });
             var issuer = new PairingService(Data, Clock);
             var code = issuer.IssueServer(ProfileId, false, false, "https://127.0.0.1:5131", new string('A', 64), refresh: false);
             var access = issuer.Activate(new(ProfileId, code.Code, ServerScope: true)) ??
@@ -248,7 +251,12 @@ internal static class SharedHostingPermissionChecks
         }
         private ServerProfile Profile(string name, int port, string kind) => new()
         {
-            Name = name, ServerName = name, Kind = kind, WorldId = "SyntheticPermission", WorldSource = "New", GamePort = port,
+            Name = name,
+            ServerName = name,
+            Kind = kind,
+            WorldId = "SyntheticPermission",
+            WorldSource = "New",
+            GamePort = port,
             WorldDirectory = Path.Combine(Data.RootPath, "never-open-world-" + Guid.NewGuid().ToString("N")),
             ExecutablePath = Path.Combine(Data.RootPath, "never-start-server.exe")
         };

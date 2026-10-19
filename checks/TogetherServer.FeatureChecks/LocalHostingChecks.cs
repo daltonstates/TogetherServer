@@ -170,8 +170,11 @@ internal static class LocalHostingChecks
             WriteCopy(head, bytes);
             Data.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
             {
-                DeviceId = DeviceId, DisplayName = "Synthetic local hosting", Endpoint = "https://192.0.2.10:5131",
-                Fingerprint = new string('A', 64), Credential = new string('C', 64),
+                DeviceId = DeviceId,
+                DisplayName = "Synthetic local hosting",
+                Endpoint = "https://192.0.2.10:5131",
+                Fingerprint = new string('A', 64),
+                Credential = new string('C', 64),
                 CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
                 ApprovedSharedWorldGroups = new() { [ProfileId] = GroupId },
                 SharedWorldSigningKeys = new() { [ProfileId] = Public(owner) },

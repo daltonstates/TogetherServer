@@ -24,8 +24,11 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
 
     internal static bool CurrentSignedControlRoute(bool verified, WorldSeparateCopyBranch? branch,
         LocalHostingRouteEvidence? current) => verified && branch is not null &&
-        current?.Identity is { Enabled: true, Active: true, ListenerOwned: true,
-            ListenerState: CompanionListenerStates.Listening } identity &&
+        current?.Identity is
+        {
+            Enabled: true, Active: true, ListenerOwned: true,
+            ListenerState: CompanionListenerStates.Listening
+        } identity &&
         identity.Endpoint.TrimEnd('/') == branch.Offer.Proposal.CandidateAddress.TrimEnd('/') &&
         string.Equals(identity.CertificateFingerprint, branch.Offer.CandidateTlsFingerprint, StringComparison.OrdinalIgnoreCase);
 
@@ -173,8 +176,13 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         async Task<LocalHostingStatus> Result(string code, string message, bool? ok = false)
         {
             var status = await Status();
-            return status with { Ok = ok ?? status.Ok, Code = code, Message = message,
-                ReadyForManualStart = (ok ?? status.Ok) && status.ReadyForManualStart };
+            return status with
+            {
+                Ok = ok ?? status.Ok,
+                Code = code,
+                Message = message,
+                ReadyForManualStart = (ok ?? status.Ok) && status.ReadyForManualStart
+            };
         }
         try
         {

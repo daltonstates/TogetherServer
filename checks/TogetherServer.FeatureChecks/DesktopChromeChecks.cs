@@ -20,32 +20,32 @@ internal static class DesktopChromeChecks
             "Custom chrome lost a Windows caption/system/minimize/maximize/resize style.");
 
         foreach (var dpi in new[] { 96, 120, 144, 192, 288 })
-        foreach (var logicalSize in new[] { new Size(46, 42), new Size(52, 48) })
-        {
-            var scale = dpi / 96f;
-            var size = new Size((int)(logicalSize.Width * scale), (int)(logicalSize.Height * scale));
-            var bounds = Enum.GetValues<DesktopCaptionGlyph>().ToDictionary(glyph => glyph,
-                glyph => Bounds(DesktopChrome.GlyphStrokes(glyph, size, dpi)));
-            foreach (var (glyph, rectangle) in bounds)
+            foreach (var logicalSize in new[] { new Size(46, 42), new Size(52, 48) })
             {
-                Require(Near(rectangle.Width, 12 * scale), $"{glyph} lost the shared 12-DIP width at {dpi} DPI.");
-                Require(Near(rectangle.Left + rectangle.Width / 2, size.Width / 2f) &&
-                        Near(rectangle.Top + rectangle.Height / 2, size.Height / 2f),
-                    $"{glyph} was not centered at {dpi} DPI.");
-                Require(rectangle.Left >= DesktopChrome.StrokeWidth(dpi) &&
-                        rectangle.Right <= size.Width - DesktopChrome.StrokeWidth(dpi),
-                    $"{glyph} would clip its stroke at {dpi} DPI.");
+                var scale = dpi / 96f;
+                var size = new Size((int)(logicalSize.Width * scale), (int)(logicalSize.Height * scale));
+                var bounds = Enum.GetValues<DesktopCaptionGlyph>().ToDictionary(glyph => glyph,
+                    glyph => Bounds(DesktopChrome.GlyphStrokes(glyph, size, dpi)));
+                foreach (var (glyph, rectangle) in bounds)
+                {
+                    Require(Near(rectangle.Width, 12 * scale), $"{glyph} lost the shared 12-DIP width at {dpi} DPI.");
+                    Require(Near(rectangle.Left + rectangle.Width / 2, size.Width / 2f) &&
+                            Near(rectangle.Top + rectangle.Height / 2, size.Height / 2f),
+                        $"{glyph} was not centered at {dpi} DPI.");
+                    Require(rectangle.Left >= DesktopChrome.StrokeWidth(dpi) &&
+                            rectangle.Right <= size.Width - DesktopChrome.StrokeWidth(dpi),
+                        $"{glyph} would clip its stroke at {dpi} DPI.");
+                }
+                Require(bounds[DesktopCaptionGlyph.Close] == bounds[DesktopCaptionGlyph.Maximize] &&
+                        bounds[DesktopCaptionGlyph.Close] == bounds[DesktopCaptionGlyph.Restore],
+                    $"Close, maximize and restore differ in apparent extent at {dpi} DPI.");
+                var close = DesktopChrome.GlyphStrokes(DesktopCaptionGlyph.Close, size, dpi);
+                Require(close.Length == 2 && close.All(stroke =>
+                        Near(Math.Abs(stroke.End.X - stroke.Start.X), Math.Abs(stroke.End.Y - stroke.Start.Y))) &&
+                        Math.Sign(close[0].End.X - close[0].Start.X) != Math.Sign(close[1].End.X - close[1].Start.X),
+                    "The close glyph no longer forms two complete crossing diagonals.");
+                Require(Near(DesktopChrome.StrokeWidth(dpi), 1.5f * scale), "Caption stroke weight failed DPI scaling.");
             }
-            Require(bounds[DesktopCaptionGlyph.Close] == bounds[DesktopCaptionGlyph.Maximize] &&
-                    bounds[DesktopCaptionGlyph.Close] == bounds[DesktopCaptionGlyph.Restore],
-                $"Close, maximize and restore differ in apparent extent at {dpi} DPI.");
-            var close = DesktopChrome.GlyphStrokes(DesktopCaptionGlyph.Close, size, dpi);
-            Require(close.Length == 2 && close.All(stroke =>
-                    Near(Math.Abs(stroke.End.X - stroke.Start.X), Math.Abs(stroke.End.Y - stroke.Start.Y))) &&
-                    Math.Sign(close[0].End.X - close[0].Start.X) != Math.Sign(close[1].End.X - close[1].Start.X),
-                "The close glyph no longer forms two complete crossing diagonals.");
-            Require(Near(DesktopChrome.StrokeWidth(dpi), 1.5f * scale), "Caption stroke weight failed DPI scaling.");
-        }
 
         var rightMonitor = new Rectangle(1920, -1080, 1920, 1080);
         var workingArea = new Rectangle(1960, -1040, 1880, 1040);
@@ -66,23 +66,26 @@ internal static class DesktopChromeChecks
 
         foreach (var monitor in new[] { new Rectangle(0, 0, 1024, 768), new Rectangle(-1920, 0, 1920, 1080),
                      new Rectangle(1920, -1080, 1920, 1080) })
-        foreach (var insets in new[] { new Rectangle(0, 0, 0, 48), new Rectangle(40, 0, 0, 0),
+            foreach (var insets in new[] { new Rectangle(0, 0, 0, 48), new Rectangle(40, 0, 0, 0),
                      new Rectangle(0, 40, 0, 0), new Rectangle(0, 0, 40, 0), new Rectangle(40, 40, 0, 0) })
-        {
-            var work = new Rectangle(monitor.Left + insets.X, monitor.Top + insets.Y,
-                monitor.Width - insets.X - insets.Width, monitor.Height - insets.Y - insets.Height);
-            var info = new DesktopMinMaxInfo
             {
-                Reserved = new(17, 23), MaxPosition = new(-8, -8), MaxSize = new(monitor.Width + 16, monitor.Height + 16),
-                MinTrackSize = new(380, 560), MaxTrackSize = new(8000, 4000)
-            };
-            Require(DesktopChrome.ApplyMaximizedWorkArea(ref info, monitor, work), "A valid monitor work area was rejected.");
-            Require(info.MaxPosition == new Point(insets.X, insets.Y) && info.MaxSize == new Point(work.Width, work.Height),
-                "The native maximized frame retained invisible border inflation or lost monitor-relative taskbar insets.");
-            Require(info.Reserved == new Point(17, 23) && info.MinTrackSize == new Point(380, 560) &&
-                    info.MaxTrackSize == new Point(8000, 4000),
-                "The work-area override changed WinForms' reserved or track constraints.");
-        }
+                var work = new Rectangle(monitor.Left + insets.X, monitor.Top + insets.Y,
+                    monitor.Width - insets.X - insets.Width, monitor.Height - insets.Y - insets.Height);
+                var info = new DesktopMinMaxInfo
+                {
+                    Reserved = new(17, 23),
+                    MaxPosition = new(-8, -8),
+                    MaxSize = new(monitor.Width + 16, monitor.Height + 16),
+                    MinTrackSize = new(380, 560),
+                    MaxTrackSize = new(8000, 4000)
+                };
+                Require(DesktopChrome.ApplyMaximizedWorkArea(ref info, monitor, work), "A valid monitor work area was rejected.");
+                Require(info.MaxPosition == new Point(insets.X, insets.Y) && info.MaxSize == new Point(work.Width, work.Height),
+                    "The native maximized frame retained invisible border inflation or lost monitor-relative taskbar insets.");
+                Require(info.Reserved == new Point(17, 23) && info.MinTrackSize == new Point(380, 560) &&
+                        info.MaxTrackSize == new Point(8000, 4000),
+                    "The work-area override changed WinForms' reserved or track constraints.");
+            }
         var unchanged = new DesktopMinMaxInfo { MaxPosition = new(11, 12), MaxSize = new(300, 200) };
         foreach (var invalid in new[] { Rectangle.Empty, new Rectangle(0, 0, -1, 40), new Rectangle(2000, 0, 100, 100) })
             Require(!DesktopChrome.ApplyMaximizedWorkArea(ref unchanged, new(0, 0, 1024, 768), invalid) &&
@@ -97,18 +100,18 @@ internal static class DesktopChromeChecks
             "The native client rectangle no longer matches the first RECT in NCCALCSIZE_PARAMS.");
         foreach (var work in new[] { new Rectangle(0, 0, 1024, 720), new Rectangle(-1920, 40, 1920, 1040),
                      new Rectangle(1960, -1040, 1880, 1040) })
-        foreach (var frame in new[] { 8, 10, 12, 16, 24 })
-        {
-            var outer = Rectangle.Inflate(work, frame, frame);
-            Require(DesktopChrome.ClientBounds(outer, true, work) == work,
-                "Maximized client content extends into Windows' invisible resize frame or taskbar.");
-            Require(DesktopChrome.ClientBounds(outer, false, work) == outer,
-                "Normal borderless bounds were changed by maximized client handling.");
-            var native = new DesktopNativeRectangle();
-            native.SetBounds(DesktopChrome.ClientBounds(outer, true, work));
-            Require(native.Bounds == work && native.Left == work.Left && native.Bottom == work.Bottom,
-                "Native client RECT conversion lost its screen position or size.");
-        }
+            foreach (var frame in new[] { 8, 10, 12, 16, 24 })
+            {
+                var outer = Rectangle.Inflate(work, frame, frame);
+                Require(DesktopChrome.ClientBounds(outer, true, work) == work,
+                    "Maximized client content extends into Windows' invisible resize frame or taskbar.");
+                Require(DesktopChrome.ClientBounds(outer, false, work) == outer,
+                    "Normal borderless bounds were changed by maximized client handling.");
+                var native = new DesktopNativeRectangle();
+                native.SetBounds(DesktopChrome.ClientBounds(outer, true, work));
+                Require(native.Bounds == work && native.Left == work.Left && native.Bottom == work.Bottom,
+                    "Native client RECT conversion lost its screen position or size.");
+            }
         var normal = new Rectangle(-100, 50, 800, 600);
         Require(DesktopChrome.ClientBounds(normal, true, Rectangle.Empty) == normal &&
                 DesktopChrome.ClientBounds(normal, true, new Rectangle(2000, 0, 100, 100)) == normal,

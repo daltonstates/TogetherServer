@@ -505,23 +505,26 @@ async function openAttention(page) {
   await eventually(() => navigation.getByRole('button', { name: 'Open Attention Center', exact: true, includeHidden: true }).getAttribute('aria-current'),
     value => value === 'page', 'Attention navigation completes through the notification menu')
 }
-async function openHostServerPicker(page) {
-  const sidebar = page.getByRole('complementary', { name: 'Host navigation', exact: true })
+async function openServerDirectory(page) {
+  const sidebar = page.getByRole('complementary', { name: 'Server navigation', exact: true })
   await sidebar.waitFor({ state: 'visible' })
-  const picker = sidebar.locator('details.context-picker')
-  await picker.waitFor({ state: 'visible' })
-  assert.equal(await picker.count(), 1, 'The Host sidebar must expose one selected-server picker.')
-  if (!await picker.evaluate(element => element.open)) await picker.locator(':scope > summary').click()
-  await picker.getByRole('textbox', { name: 'Find selected server', exact: true }).waitFor({ state: 'visible' })
-  return picker
+  const directory = sidebar.getByRole('region', { name: 'Servers', exact: true })
+  await directory.waitFor({ state: 'visible' })
+  assert.equal(await directory.count(), 1, 'The sidebar must expose one unified local and Friend server directory.')
+  await directory.getByRole('searchbox', { name: 'Find a server or friend', exact: true }).waitFor({ state: 'visible' })
+  return directory
 }
 async function selectHostServer(page, name) {
   await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).getByRole('button', { name: 'Servers', exact: true }).click()
-  const directory = page.getByRole('complementary', { name: 'Server navigation', exact: true }).getByRole('region', { name: 'Servers', exact: true })
-  await directory.waitFor({ state: 'visible' })
+  const directory = await openServerDirectory(page)
   await directory.getByRole('searchbox', { name: 'Find a server or friend', exact: true }).fill('')
-  await directory.getByRole('button', { name: `Open ${name} on this PC`, exact: true }).click()
-  await page.getByRole('region', { name: `${name} workspace`, exact: true }).waitFor()
+  const row = directory.getByRole('button', { name: `Open ${name} on this PC`, exact: true })
+  await row.click()
+  await eventually(() => row.getAttribute('aria-current'), value => value === 'true', 'selected local server directory row')
+  const workspace = page.getByRole('region', { name: `${name} workspace`, exact: true })
+  await workspace.waitFor()
+  await eventually(() => workspace.getAttribute('data-server-tab'), value => value === 'overview',
+    'directory selection completes before a subsequent server section request')
 }
 async function selectServer(page, name, tab = 'Overview') {
   await selectHostServer(page, name)
@@ -1113,31 +1116,84 @@ async function headerOverlayRegression(page, host) {
 async function serverNavigation(page, profiles) {
   await selectServer(page, profiles.valheim.name, 'Logs')
   await selectServer(page, profiles.bedrock.name, 'Files')
-  await selectHostServer(page, profiles.valheim.name)
-  await eventually(() => page.locator('.server-detail').getAttribute('data-server-tab'), value => value === 'logs', 'per-server last tab')
-  const picker = await openHostServerPicker(page)
-  const search = picker.getByRole('textbox', { name: 'Find selected server', exact: true })
-  await search.fill('Bedrock')
-  assert.equal(await picker.locator('.context-picker-option').count(), 1)
-  assert((await picker.locator('.context-picker-option').innerText()).includes(profiles.bedrock.name))
-  await search.fill('')
-  await picker.getByRole('button', { name: `Pin ${profiles.extra.name}`, exact: true }).click()
-  await eventually(() => picker.locator('.context-picker-option').first().innerText(), value => value.includes(profiles.extra.name), 'favorite server ordering')
-  await picker.getByRole('button', { name: `Unpin ${profiles.extra.name}`, exact: true }).click()
-  await picker.getByRole('button', { name: 'Reorder servers', exact: true }).click()
-  await picker.getByRole('button', { name: `Move ${profiles.extra.name} up`, exact: true }).click()
-  await picker.getByRole('button', { name: `Move ${profiles.extra.name} up`, exact: true }).click()
-  await picker.getByRole('button', { name: 'Finish ordering', exact: true }).click()
+  await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).getByRole('button', { name: 'App Settings', exact: true }).click()
+  await page.getByRole('region', { name: 'App Settings', exact: true }).waitFor({ state: 'visible' })
+  await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).getByRole('button', { name: 'Servers', exact: true }).click()
+  await page.getByRole('region', { name: `${profiles.bedrock.name} workspace`, exact: true }).waitFor()
+  assert.equal(await page.locator('.server-detail').getAttribute('data-server-tab'), 'files',
+    'Header navigation must preserve the selected server and its open tab.')
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await openHostServerPicker(page)
-  await eventually(() => picker.locator('.context-picker-option').first().innerText(), value => value.includes(profiles.extra.name), 'saved manual ordering after reload')
-  await picker.locator(':scope > summary').click()
+  await page.getByRole('region', { name: `${profiles.bedrock.name} workspace`, exact: true }).waitFor()
+  assert.equal(await page.locator('.server-detail').getAttribute('data-server-tab'), 'files',
+    'Reload must restore the selected server and its saved tab.')
+  await selectHostServer(page, profiles.valheim.name)
+  await eventually(() => page.locator('.server-detail').getAttribute('data-server-tab'), value => value === 'overview',
+    'Opening a directory row leads with its Overview')
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.getByRole('region', { name: `${profiles.valheim.name} workspace`, exact: true }).waitFor()
+  await eventually(() => page.locator('.server-detail').getAttribute('data-server-tab'), value => value === 'logs',
+    'The previous explicit tab choice remains saved for its own server')
+  const directory = await openServerDirectory(page)
+  const rows = directory.locator('.server-directory-row')
+  const search = directory.getByRole('searchbox', { name: 'Find a server or friend', exact: true })
+  assert.equal(await rows.count(), 3, 'All three saved local servers must be reachable in the directory.')
+  await directory.getByRole('heading', { name: 'Your servers', exact: true }).waitFor()
+  await directory.getByRole('heading', { name: 'Friend servers', exact: true }).waitFor()
+  await search.fill('Bedrock')
+  await eventually(() => rows.count(), count => count === 1, 'directory search filters by game')
+  const bedrock = directory.getByRole('button', { name: `Open ${profiles.bedrock.name} on this PC`, exact: true })
+  await bedrock.waitFor({ state: 'visible' })
+  assert.equal(await page.getByRole('region', { name: `${profiles.valheim.name} workspace`, exact: true }).isVisible(), true,
+    'Filtering the directory must preserve the selected workspace.')
+  await search.fill('no-synthetic-server-matches')
+  await directory.getByText('No matching servers.', { exact: true }).waitFor()
+  assert.equal(await rows.count(), 0, 'An unmatched search must not show an unrelated server.')
+  await search.fill(profiles.extra.name)
+  await eventually(() => rows.count(), count => count === 1, 'directory search filters by server name')
+  await directory.getByRole('button', { name: `Open ${profiles.extra.name} on this PC`, exact: true }).click()
+  await page.getByRole('region', { name: `${profiles.extra.name} workspace`, exact: true }).waitFor()
+  assert.equal(await page.getByRole('region', { name: `${profiles.valheim.name} workspace`, exact: true }).count(), 0,
+    'Selecting a filtered row must replace the previous server workspace.')
+  await search.fill('')
+  await eventually(() => rows.count(), count => count === 3, 'cleared directory search restores every saved server')
+  const order = await rows.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label')))
+  const sidebar = page.getByRole('complementary', { name: 'Server navigation', exact: true })
+  const divider = page.getByRole('separator', { name: 'Server sidebar width', exact: true })
+  await divider.waitFor({ state: 'visible' })
+  assert.equal(await divider.getAttribute('aria-controls'), await sidebar.getAttribute('id'),
+    'The resize separator must identify the actual server navigation pane.')
+  await divider.press('Home')
+  await divider.press('ArrowLeft')
+  assert.equal(await divider.getAttribute('aria-valuenow'), '200', 'Keyboard resizing must respect the sidebar minimum.')
+  await divider.press('Shift+ArrowRight')
+  await divider.press('ArrowRight')
+  await eventually(() => divider.getAttribute('aria-valuenow'), value => value === '250', 'shift and ordinary sidebar width increments')
+  await eventually(() => sidebar.boundingBox(), bounds => bounds && Math.abs(bounds.width - 250) <= 1,
+    'the painted sidebar matches its accessible resize value')
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.getByRole('region', { name: `${profiles.extra.name} workspace`, exact: true }).waitFor()
+  await openServerDirectory(page)
+  await divider.waitFor({ state: 'visible' })
+  assert.equal(await divider.getAttribute('aria-valuenow'), '250', 'Reload must retain the owner-selected sidebar width.')
+  await eventually(() => rows.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label'))),
+    value => JSON.stringify(value) === JSON.stringify(order), 'directory order remains stable after reload')
+  assert.equal(await directory.locator('.server-directory-row[aria-current="true"]').count(), 1,
+    'The directory must identify exactly one selected server after reload.')
+  assert.equal(await directory.getByRole('button', { name: `Open ${profiles.extra.name} on this PC`, exact: true }).getAttribute('aria-current'), 'true')
+  // The unified directory has no favorite/manual-order editor. Exercise the actual
+  // named rows, search, canonical order and remembered selection instead.
+  await divider.press('End')
+  await divider.press('ArrowRight')
+  assert.equal(await divider.getAttribute('aria-valuenow'), await divider.getAttribute('aria-valuemax'),
+    'Keyboard resizing must respect the current available maximum.')
+  await divider.dblclick()
+  await eventually(() => divider.getAttribute('aria-valuenow'), value => value === '268', 'double-click resets the server sidebar width')
   await screenshot(page, 'host-wide-100', { width: 1440, height: 900 })
 }
 async function setupReview(page, host, profiles) {
   await selectServer(page, profiles.valheim.name)
-  const addServer = page.getByRole('complementary', { name: 'Host navigation', exact: true }).getByRole('button', { name: 'Add server', exact: true })
-  assert.equal(await addServer.count(), 1, 'The populated Host sidebar exposes one canonical Add server action.')
+  const addServer = (await openServerDirectory(page)).getByRole('button', { name: 'New server', exact: true })
+  assert.equal(await addServer.count(), 1, 'The populated server directory exposes one canonical New server action.')
   await addServer.click()
   const dialog = page.getByRole('dialog', { name: 'Add new server' })
   await dialog.getByRole('heading', { name: 'Choose a game', exact: true }).waitFor()
@@ -1410,7 +1466,8 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   assert.equal(hostSettings.companionBindAddress, '127.0.0.1', 'The fixture listener must remain loopback only.')
   const page = await openPage(friend, context)
   await page.getByLabel('Server code', { exact: true }).fill(invitation.password)
-  await page.getByRole('button', { name: 'Connect', exact: true }).click()
+  await page.locator('form.join-row').filter({ has: page.getByLabel('Server code', { exact: true }) })
+    .getByRole('button', { name: 'Connect', exact: true }).click()
   const paired = await eventually(() => api(friend, '/api/local/snapshot'), value => value.state === 'Connected' && value.profiles.some(profile => profile.id === profiles.valheim.id), 'pinned loopback Friend pairing')
   assert(guidExpression.test(paired.connectionId) && guidExpression.test(paired.hostId), 'Pairing must identify the actual saved connection and pinned Host.')
   const devices = (await api(host, '/api/local/companion')).devices
@@ -1424,28 +1481,38 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await api(friend, '/api/local/friend/poll', 'POST')
   const first = page.locator(`#friend-server-${profiles.valheim.id}`)
   const second = page.locator(`#friend-server-${profiles.bedrock.id}`)
-  const selectedServer = page.getByRole('combobox', { name: 'Selected server', exact: true })
-  await eventually(() => selectedServer.locator('option').count(), count => count === 2, 'the two currently assigned Friend servers')
-  await selectedServer.selectOption(profiles.bedrock.id)
-  await selectWorkspaceSection(page, 'Join sections', 'Play', 'play')
+  const directory = await openServerDirectory(page)
+  const owner = paired.hostProfileName?.trim() || paired.connectionName
+  assert(owner, 'The paired Host must supply the directory owner label for this saved connection.')
+  const friendRows = directory.locator('.server-directory-host .server-directory-row')
+  await eventually(() => friendRows.count(), count => count === 2, 'the two currently assigned Friend directory rows')
+  const bedrockRow = directory.getByRole('button', { name: `Open ${profiles.bedrock.name} on ${owner}`, exact: true })
+  const valheimRow = directory.getByRole('button', { name: `Open ${profiles.valheim.name} on ${owner}`, exact: true })
+  await bedrockRow.click()
+  await selectWorkspaceSection(page, 'Selected server sections', 'Play', 'play')
   await second.waitFor()
   assert.equal(await second.getByRole('button', { name: 'Start server', exact: true }).isDisabled(), true)
+  assert.equal(await bedrockRow.getAttribute('aria-current'), 'true', 'Friend permissions must belong to the selected directory row.')
   assert.equal(await first.count(), 0, 'Join renders only the selected assigned server.')
-  await selectedServer.selectOption(profiles.valheim.id)
+  await valheimRow.click()
   await first.waitFor({ state: 'visible' })
+  assert.equal(await valheimRow.getAttribute('aria-current'), 'true')
+  assert.equal(await second.count(), 0, 'Selecting another Friend row must unmount the previous server card.')
   const play = first.getByRole('region', { name: 'Play', exact: true })
   await play.getByRole('button', { name: 'Start server', exact: true }).click()
   await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'), 'Friend UI starts the actual synthetic driver')
   await rememberManagedProcesses(host)
   await api(friend, '/api/local/friend/poll', 'POST')
-  const readiness = play.getByRole('status').filter({ hasText: /^The Host reports readiness\./u })
+  const readiness = play.getByText(/^The Host reports readiness\./u)
   await readiness.waitFor({ state: 'visible' })
-  assert.equal(await readiness.count(), 1, 'The selected Friend Play flow must expose one current readiness status.')
+  assert.equal(await readiness.count(), 1, 'The selected Friend Play flow must expose one current readiness explanation.')
+  assert((await readiness.innerText()).includes('not proof that a player joined'),
+    'Host readiness must retain its explicit real-game join boundary.')
   assert.equal(await first.getByRole('button', { name: 'Stop server', exact: true }).count(), 0)
   assert.equal(await first.getByRole('button', { name: 'View logs', exact: true }).count(), 0)
-  assert.equal(await page.getByRole('navigation', { name: 'Join sections', exact: true }).getByRole('button', { name: 'Logs', exact: true }).count(), 0,
+  assert.equal(await page.getByRole('navigation', { name: 'Selected server sections', exact: true }).getByRole('button', { name: 'Logs', exact: true }).count(), 0,
     'The selected server has no log section without its separate View logs grant.')
-  assert.equal(await page.getByRole('combobox', { name: 'Join sections', exact: true, includeHidden: true }).locator('option[value="logs"]').count(), 0,
+  assert.equal(await page.getByRole('combobox', { name: 'Selected server sections', exact: true, includeHidden: true }).locator('option[value="logs"]').count(), 0,
     'Mobile section navigation must enforce the same View logs presentation.')
   await play.locator('summary[aria-label="Server tools and connection help"]').click()
   await play.getByRole('button', { name: 'Open Connection help', exact: true }).click()
@@ -1455,7 +1522,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   assert.equal(await doctor.locator(':scope > summary').evaluate(element => element === document.activeElement), true,
     'The Connection help summary receives keyboard focus.')
   // The OS/Open game control is only observed; this harness never invokes a native client.
-  await selectWorkspaceSection(page, 'Join sections', 'Chat', 'chat')
+  await selectWorkspaceSection(page, 'Selected server sections', 'Chat', 'chat')
   const chat = first.locator('.server-chat')
   const message = 'Synthetic browser message kept during navigation'
   await chat.getByLabel('Message', { exact: true }).fill(message)
@@ -1585,7 +1652,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   const chatViewport = page.viewportSize() ?? { width: 1440, height: 900 }
   await screenshot(page, 'friend-chat-confirmed-narrow', { width: 390, height: 844 }, signedMessage)
   await page.setViewportSize(chatViewport)
-  await selectWorkspaceSection(page, 'Join sections', 'Connection settings', 'connection')
+  await selectWorkspaceSection(page, 'Selected server sections', 'Settings', 'connection')
   await page.getByRole('button', { name: 'Add another Host', exact: true }).click()
   await page.getByRole('button', { name: 'Cancel and return to saved Host', exact: true }).click()
   await first.getByRole('region', { name: 'Play', exact: true }).waitFor()
@@ -1609,11 +1676,15 @@ async function attentionAndLargeText(page) {
   await setAppearanceTextScale(page, '150')
   await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
   await page.setViewportSize({ width: 1440, height: 900 })
-  const picker = await openHostServerPicker(page)
-  await picker.locator('.context-picker-options').getByRole('button').first().click()
+  const directory = await openServerDirectory(page)
+  await directory.locator('.server-directory-row').first().click()
   const selectedDetailHeader = page.locator('.server-detail-card > .server-command-header > .profile-top')
   await screenshot(page, 'host-narrow-150', { width: 390, height: 844 }, selectedDetailHeader)
+  assert.equal(await page.getByRole('separator', { name: 'Server sidebar width', exact: true, includeHidden: true }).isVisible(), false,
+    'Narrow stacked navigation must hide the desktop resize divider.')
   await screenshot(page, 'host-tablet-150', { width: 768, height: 1024 }, selectedDetailHeader)
+  assert.equal(await page.getByRole('separator', { name: 'Server sidebar width', exact: true }).isVisible(), true,
+    'The tablet workspace must retain its accessible resize divider.')
   assert(report.layout.filter(layout => 'liveStatusCount' in layout).every(layout => layout.liveStatusCount > 0),
     'Each screenshot surface should retain accessible status announcements; geometry-only records are separate evidence.')
 }
@@ -1703,7 +1774,7 @@ try {
   await hostPage.getByRole('complementary', { name: 'Server navigation', exact: true }).getByRole('region', { name: 'Servers', exact: true }).waitFor()
   await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage, profiles))
   await step('staging notifications, shared App Settings, keyboard commands and accessible mobile header navigation at viewport boundaries', () => headerOverlayRegression(hostPage, host))
-  await step('saved-server search, per-server tabs, favorites and durable manual ordering', () => serverNavigation(hostPage, profiles))
+  await step('unified server directory search, selected rows, remembered tabs and sidebar width across reload', () => serverNavigation(hostPage, profiles))
   await step('setup blockers, nonsecret reuse, applied port suggestion and paused-step recovery', () => setupReview(hostPage, host, profiles))
   await step('raw and guided protected drafts survive immediate navigation without changing files', () => editorRecovery(hostPage, host, profiles))
   await step('real synthetic lifecycle, Logs reading controls and contributing weekly sessions', () => lifecycleLogsAndSessions(hostPage, host, profiles))

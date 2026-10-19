@@ -110,6 +110,13 @@ jobs:
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           ./scripts/verify-release.ps1 -AppPath $candidate -Suite ${{ matrix.suite }} -AllowInteractiveTests
 
+      - name: Verify current native window controls with the same candidate
+        if: matrix.suite == 'Desktop'
+        shell: pwsh
+        run: |
+          # Explicit opt-in: this dedicated hosted runner owns its disposable desktop.
+          ./checks/window-chrome-smoke.ps1 -AppPath local-data/release-candidate/TogetherServer.exe -AllowInteractiveTests
+
       - name: Preserve QoL screenshots and validation summaries
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -131,6 +138,8 @@ jobs:
             legacy-sha256: 5ED1EC1755855F38BAA87415A580ACF63D06FA610660D9F7A897FC22008559AA
           - legacy-version: '0.3.2'
             legacy-sha256: 638B1919D47D2CDCD02FF5A589BEE1207B7BEB8915366E8943EDF1F8EBFD2C5A
+          - legacy-version: '0.3.2.1'
+            legacy-sha256: FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE
     name: Verify ${{ matrix.legacy-version }} compatibility
     runs-on: windows-latest
     timeout-minutes: 20
@@ -158,7 +167,10 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/daltonstates/TogetherServer/releases/download/v$legacyVersion/TogetherServer-win-x64.exe" -OutFile $legacy
           $expected = '${{ matrix.legacy-sha256 }}'
           if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $expected) { throw "Published $legacyVersion digest mismatch." }
-          if ((Get-Item -LiteralPath $legacy).VersionInfo.FileVersion -ne "$legacyVersion.0") { throw 'Legacy app version mismatch.' }
+          $parsedLegacyVersion = [Version]$legacyVersion
+          $expectedLegacyFileVersion = [Version]::new($parsedLegacyVersion.Major, $parsedLegacyVersion.Minor,
+            $parsedLegacyVersion.Build, [Math]::Max(0, $parsedLegacyVersion.Revision))
+          if ([Version](Get-Item -LiteralPath $legacy).VersionInfo.FileVersion -ne $expectedLegacyFileVersion) { throw 'Legacy app version mismatch.' }
 
       - name: Test both old and new Host/Friend role directions
         shell: pwsh

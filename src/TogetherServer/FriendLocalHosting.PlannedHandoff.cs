@@ -68,12 +68,20 @@ internal sealed partial class FriendLocalHostingService
             (!request.Pending || request.PreparedVersionHash == access.Version?.VersionHash);
         var state = Unavailable(request.Code, request.Message) with
         {
-            Ok = ready || running || prepared, Allowed = access.Allowed, Consented = access.Consented,
-            Name = access.Name, Game = version?.Game ?? access.Game, GameVersion = version?.PortableSetup.GameVersion,
-            NeedsServerFile = server is null, ServerFile = server,
-            GamePort = local?.Setup.GamePort ?? ports.GamePort, ControlPort = snapshot.Settings.CompanionPort,
+            Ok = ready || running || prepared,
+            Allowed = access.Allowed,
+            Consented = access.Consented,
+            Name = access.Name,
+            Game = version?.Game ?? access.Game,
+            GameVersion = version?.PortableSetup.GameVersion,
+            NeedsServerFile = server is null,
+            ServerFile = server,
+            GamePort = local?.Setup.GamePort ?? ports.GamePort,
+            ControlPort = snapshot.Settings.CompanionPort,
             LocalProfileId = restored?.Restored == true ? profileId : null,
-            ReadyForManualStart = ready, Running = running, HandoffRequest = request,
+            ReadyForManualStart = ready,
+            Running = running,
+            HandoffRequest = request,
             Steps = [new("permission", access.Allowed ? "Ready" : "ActionRequired", access.Message),
                 new("server", local?.Prepared == true ? "Ready" : "ActionRequired", local?.Prepared == true ?
                     "This PC's installed game setup passed preparation. Current files are checked again before restore and Start." :
@@ -105,7 +113,7 @@ internal sealed partial class FriendLocalHostingService
         {
             var current = await link.HandoffRequestAsync(profileId, cancellationToken) ?? request;
             return (await PlannedStatusAsync(connection, profileId, current, cancellationToken)) with
-                { Ok = ok, Code = code, Message = message, ReadyForManualStart = false };
+            { Ok = ok, Code = code, Message = message, ReadyForManualStart = false };
         }
         try
         {

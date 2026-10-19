@@ -153,7 +153,7 @@ export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, 
     <label className="server-directory-search"><span className="sr-only">Find a server or friend</span><Input type="search" placeholder="Find a server or friend" value={search} onChange={event => setSearch(event.target.value)} /></label>
     <div className="server-directory-actions"><Button className="secondary" disabled={busy} onClick={onAddLocal}><Icon name="plus" size={15} />New server</Button>
       <Button className="secondary" disabled={busy} onClick={onConnect}><Icon name="link" size={15} />Connect</Button></div>
-    {error && <p className="helper-text" role="status">The full server list is unavailable. <button className="text-button" onClick={onRetry}>Retry</button></p>}
+    {error && <p className="helper-text" role="status">The full server list is unavailable. <Button className="text-button" onClick={onRetry}>Retry</Button></p>}
     <div className="server-directory-group"><h3>Your servers</h3>{local.filter(server => !server.separateCopySourceProfileId).map(server => row(server, { kind: 'local', profileId: server.id }))}
       {!local.some(server => !server.separateCopySourceProfileId) && <p className="server-directory-empty">{query ? 'No matching servers.' : 'Create a server on this PC.'}</p>}</div>
     {local.some(server => !!server.separateCopySourceProfileId) && <div className="server-directory-group"><h3>Hosting for friends</h3>
@@ -164,6 +164,6 @@ export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, 
       {!host.servers.length && <Button className="server-directory-row" disabled={busy} onClick={() => onSelect({ kind: 'friend', connectionId: host.connectionId, profileId: '' })}>
         Open {host.connectionName}<small>{host.state} · No assigned servers</small></Button>}</div>)}
       {!friends.length && <p className="server-directory-empty">{query ? 'No matching friends.' : 'Connect using a friend’s server code.'}</p>}</div>
-    {view.friendHosts.some(removed) && <label className="server-directory-removed"><input type="checkbox" checked={showRemoved} onChange={event => setShowRemoved(event.target.checked)} />Show removed access</label>}
+    {view.friendHosts.some(removed) && <label className="server-directory-removed"><Input type="checkbox" checked={showRemoved} onChange={event => setShowRemoved(event.target.checked)} />Show removed access</label>}
   </section>
 }

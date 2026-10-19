@@ -713,13 +713,13 @@ try {
   page.setDefaultTimeout(25000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message.slice(0, 300)));
-  const workspaces = page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true });
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true });
   const requiredSetup = page.getByRole('region', { name: 'Required app setup', exact: true });
-  await workspaces.or(requiredSetup).waitFor({ state: 'visible' });
+  await navigation.or(requiredSetup).waitFor({ state: 'visible' });
   if (await requiredSetup.isVisible()) {
     await requiredSetup.getByLabel('Your name', { exact: true }).fill('Native fixture tester');
     await requiredSetup.getByRole('button', { name: 'Save and continue', exact: true }).click();
-    await workspaces.waitFor({ state: 'visible' });
+    await navigation.waitFor({ state: 'visible' });
     const completedSetup = await json('/api/local/required-setup');
     assert.ok(completedSetup.features.length > 0 && completedSetup.features.every(feature => feature.completed),
       'The native required setup must be persisted before ordinary navigation becomes available.');
@@ -727,11 +727,15 @@ try {
   const openChat = async () => {
     let roomScope = { received: false, ready: false, code: 'Unavailable', profileMatches: false, hostIdentityPresent: false };
     try {
-      await workspaces.getByRole('button', { name: 'Host', exact: true }).click();
-      const picker = page.getByRole('complementary', { name: 'Host navigation', exact: true }).locator('details.context-picker');
-      if (!await picker.evaluate(element => element.open)) await picker.locator(':scope > summary').click();
-      await picker.getByRole('textbox', { name: 'Find selected server', exact: true }).fill('');
-      await picker.locator('.context-picker-options').getByRole('button', { name: /^Native desktop fixture/ }).click();
+      await navigation.getByRole('button', { name: 'Servers', exact: true }).click();
+      const directory = page.getByRole('complementary', { name: 'Server navigation', exact: true })
+        .getByRole('region', { name: 'Servers', exact: true });
+      await directory.waitFor({ state: 'visible' });
+      await directory.getByRole('searchbox', { name: 'Find a server or friend', exact: true }).fill('');
+      const server = directory.getByRole('button', { name: 'Open Native desktop fixture on this PC', exact: true });
+      await server.click();
+      await page.getByRole('region', { name: 'Native desktop fixture workspace', exact: true }).waitFor();
+      assert.equal(await server.getAttribute('aria-current'), 'true', 'The exact local fixture must be selected in the server directory.');
       const mobileSections = page.getByRole('combobox', { name: 'Selected server sections', exact: true });
       if (await mobileSections.isVisible()) await mobileSections.selectOption('chat');
       else await page.getByRole('navigation', { name: 'Selected server sections', exact: true }).getByRole('button', { name: 'Chat', exact: true }).click();
@@ -755,7 +759,8 @@ try {
         const chat = detail?.querySelector('.server-chat');
         const tab = detail?.getAttribute('data-server-tab');
         const count = selector => Math.min(8, detail?.querySelectorAll(selector).length ?? 0);
-        return { hostWorkspaceSelected: !!document.querySelector('.workspace-nav [aria-label="Host"][aria-current="page"]'),
+        return { hostWorkspaceSelected: !!document.querySelector('.host-context-workspace .server-directory-row[aria-current="true"]') &&
+            !!document.querySelector('.header-tools [aria-label="Servers"][aria-current="page"]'),
           expectedDetailPresent: !!detail, chatTabSelected: tab === 'chat', chatPanelPresent: !!chat,
           composerPresent: !!chat?.querySelector('.server-chat-compose'),
           expectedMessagePresent: !!document.getElementById(`chat-${expectedProfile}`),
@@ -770,8 +775,10 @@ try {
     }
   };
   if (mode === 'appearance') {
-    await workspaces.getByRole('button', { name: 'App Settings', exact: true }).click();
-    await page.getByRole('navigation', { name: 'App settings sections', exact: true })
+    await navigation.getByRole('button', { name: 'App Settings', exact: true }).click();
+    const mobileSettings = page.getByRole('combobox', { name: 'App settings sections', exact: true });
+    if (await mobileSettings.isVisible()) await mobileSettings.selectOption('appearance');
+    else await page.getByRole('navigation', { name: 'App settings sections', exact: true })
       .getByRole('button', { name: 'Appearance', exact: true }).click();
     await page.getByLabel('Text size', { exact: true }).selectOption('150');
     await page.getByLabel('Layout', { exact: true }).selectOption('compact');
@@ -808,7 +815,7 @@ try {
       return settleDraft(route);
     });
     await page.getByLabel('Message', { exact: true }).fill(marker);
-    await page.waitForFunction(() => document.querySelector('.server-chat-compose')?.textContent?.includes('Saving unfinished message'));
+    await page.waitForFunction(() => document.querySelector('.server-chat-compose')?.textContent?.includes('Saving draft'));
     const beforeQuit = await json('/api/local/ui-drafts/read', identity);
     assert.equal(beforeQuit.text, null, 'Draft must be absent until native Quit asks the page to flush.');
     fs.writeFileSync(out(`${mode}-ready.json`), JSON.stringify({ ready: true }));
@@ -816,7 +823,7 @@ try {
       await page.locator('.server-chat-compose').getByRole('alert').filter({ hasText: 'Synthetic draft storage rejection.' }).waitFor({ state: 'visible' });
       assert.equal(await page.getByLabel('Message', { exact: true }).inputValue(), marker,
         'A rejected draft save must retain the exact unfinished message in the open app.');
-      assert.equal(await page.getByRole('button', { name: 'Retry unfinished message', exact: true }).isVisible(), true);
+      assert.equal(await page.getByRole('button', { name: 'Retry saving draft', exact: true }).isVisible(), true);
       assert.equal(await page.locator('.server-chat-compose').getByRole('button', { name: 'Send', exact: true }).isDisabled(), true);
       assert.equal((await json('/api/local/ui-drafts/read', identity)).text, null,
         'A rejected native flush must not be reported as a persisted draft.');
@@ -831,7 +838,7 @@ try {
     assert.equal(result.ok, true); assert.equal(result.text, marker);
     await openChat();
     assert.equal(await page.getByLabel('Message', { exact: true }).inputValue(), '');
-    await page.getByRole('button', { name: 'Use recovered message', exact: true }).click();
+    await page.getByRole('button', { name: 'Use saved draft', exact: true }).click();
     assert.equal(await page.getByLabel('Message', { exact: true }).inputValue(), marker);
     await page.screenshot({ path: out('native-quit-recovered-draft.png') });
   } else if (mode === 'clear') {

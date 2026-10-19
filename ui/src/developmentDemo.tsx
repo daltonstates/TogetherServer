@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { Button, Select } from './Controls'
 // @ts-expect-error The shared renderer fixtures are plain JavaScript; this adapter types the consumed state below.
 import { createFixtureState, routeFixture, fixtureIds, FIXED_NOW } from '../../scripts/ui-redesign-fixtures.mjs'
 import type { AppInstanceView, Device, FriendSnapshot, HostSnapshot, Run } from './contracts'
@@ -54,10 +55,10 @@ export function DevelopmentDemoControls() {
   return <aside className="development-demo-controls" aria-label="Demo controls">
     <div><strong>DEMO · FAKE DATA</strong><span>No real game, save files, network or PC changes. Resets when this window reloads.</span>
       <span>Isolated demo app: {activeSession.instance.localPort} · fake Friend control: {activeSession.instance.companionPort}</span></div>
-    <label>Demo scene<select value={activeSession.scene} onChange={event => activeController?.reset(event.target.value as DevelopmentDemoScene)}>
+    <label>Demo scene<Select value={activeSession.scene} onChange={event => activeController?.reset(event.target.value as DevelopmentDemoScene)}>
       {Object.entries(developmentDemoScenes).map(([id, label]) => <option value={id} key={id}>{label}</option>)}
-    </select></label>
-    <button type="button" onClick={() => activeController?.reset()}>Reset fake data</button>
+    </Select></label>
+    <Button type="button" onClick={() => activeController?.reset()}>Reset fake data</Button>
   </aside>
 }
 

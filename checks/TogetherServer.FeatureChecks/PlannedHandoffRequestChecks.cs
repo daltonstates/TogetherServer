@@ -77,8 +77,13 @@ internal static class PlannedHandoffRequestChecks
         using var recipientData = new LocalData(Path.Combine(root, "planned-recipient-" + Guid.NewGuid().ToString("N")));
         var controlPort = FreePort();
         var endpoint = $"https://192.0.2.44:{controlPort}";
-        recipientData.SaveSettings(new HostSettings { CompanionEndpoint = endpoint,
-            CompanionPort = controlPort, CompanionBindAddress = "0.0.0.0", CompanionListeningEnabled = true });
+        recipientData.SaveSettings(new HostSettings
+        {
+            CompanionEndpoint = endpoint,
+            CompanionPort = controlPort,
+            CompanionBindAddress = "0.0.0.0",
+            CompanionListeningEnabled = true
+        });
         recipientData.SaveProtected($"shared-world-pc-signing-{fixture.DeviceId:N}.protected", fixture.MemberKey.ExportPkcs8PrivateKey());
         using var certificate = new HostIdentity(recipientData).Ensure(endpoint);
         var fingerprint = HostIdentity.Fingerprint(certificate);
@@ -190,8 +195,12 @@ internal static class PlannedHandoffRequestChecks
             JsonSerializer.SerializeToUtf8Bytes(fixture.Roster, Json));
         recipientData.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
         {
-            DeviceId = fixture.DeviceId, DisplayName = "Offline old Host", Endpoint = "https://192.0.2.20:5131",
-            Fingerprint = new string('A', 64), Credential = new string('C', 64), CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
+            DeviceId = fixture.DeviceId,
+            DisplayName = "Offline old Host",
+            Endpoint = "https://192.0.2.20:5131",
+            Fingerprint = new string('A', 64),
+            Credential = new string('C', 64),
+            CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(1),
             ConsentedSharedWorldProfiles = [fixture.Profile.Id],
             CachedProfiles = [new(fixture.Profile.Id, "Synthetic moved server", "Offline", null, Kind: GameKinds.Fixture)],
             ApprovedSharedWorldGroups = new() { [fixture.Profile.Id] = fixture.Roster.GroupId },
@@ -261,9 +270,17 @@ internal static class PlannedHandoffRequestChecks
         internal Fixture(string root)
         {
             Data = new(Path.Combine(root, "planned-source-" + Guid.NewGuid().ToString("N")));
-            Profile = new() { Kind = GameKinds.Fixture, Name = "Synthetic move", ServerName = "Synthetic move",
-                WorldId = "SyntheticMove", GamePort = 2456, SharedSavesEnabled = true,
-                Backups = new() { Enabled = true }, ExecutablePath = Path.Combine(Data.RootPath, "never-run.synthetic") };
+            Profile = new()
+            {
+                Kind = GameKinds.Fixture,
+                Name = "Synthetic move",
+                ServerName = "Synthetic move",
+                WorldId = "SyntheticMove",
+                GamePort = 2456,
+                SharedSavesEnabled = true,
+                Backups = new() { Enabled = true },
+                ExecutablePath = Path.Combine(Data.RootPath, "never-run.synthetic")
+            };
             Profile.WorldDirectory = Data.NewWorldDirectory(Profile.Id);
             Directory.CreateDirectory(Profile.WorldDirectory);
             File.WriteAllText(SavePath, "synthetic final-world bytes");
@@ -292,7 +309,7 @@ internal static class PlannedHandoffRequestChecks
             new(Roster.OwnerPublicKey, Profile.Id, Roster.GroupId), DeviceId, Convert.ToBase64String(MemberKey.ExportSubjectPublicKeyInfo()),
             1, [new(endpoint, fingerprint)], ""));
         internal WorldPeerContactCard Sign(WorldPeerContactCard value) => value with
-            { Signature = Convert.ToBase64String(MemberKey.SignData(WorldPeerService.ContactBasis(value), HashAlgorithmName.SHA256)) };
+        { Signature = Convert.ToBase64String(MemberKey.SignData(WorldPeerService.ContactBasis(value), HashAlgorithmName.SHA256)) };
         public void Dispose() { MemberKey.Dispose(); Data.Dispose(); }
     }
 

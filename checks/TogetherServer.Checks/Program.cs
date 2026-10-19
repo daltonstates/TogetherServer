@@ -4654,8 +4654,11 @@ await Check("planned handoff validates the signed successor contact before Stop"
     {
         var draft = new WorldPeerContactCard(1, new(roster.OwnerPublicKey, profile.Id, roster.GroupId),
             successorId, publicKey, 1, [new(address, new string('A', 64))], "");
-        return draft with { Signature = Convert.ToBase64String(successor.SignData(
-            WorldPeerService.ContactBasis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+            WorldPeerService.ContactBasis(draft), HashAlgorithmName.SHA256))
+        };
     }
     foreach (var address in new[]
     {
@@ -4827,15 +4830,21 @@ await Check("planned handoff requires exact final save receipt before durable ol
     {
         var draft = new WorldPeerContactCard(1, new(roster.OwnerPublicKey, profile.Id, roster.GroupId),
             successorId, successorKey, 1, [new("https://192.0.2.1:5132", new string('A', 64))], "");
-        return draft with { Signature = Convert.ToBase64String(successor.SignData(
-            WorldPeerService.ContactBasis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+            WorldPeerService.ContactBasis(draft), HashAlgorithmName.SHA256))
+        };
     }
     SharedWorldReceipt ReceiptFor(SharedWorldVersion current)
     {
         var draft = new SharedWorldReceipt(1, current.GroupId, profile.Id, current.VersionHash,
             successorId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        return draft with { Signature = Convert.ToBase64String(successor.SignData(
-            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+        return draft with
+        {
+            Signature = Convert.ToBase64String(successor.SignData(
+            SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+        };
     }
     async Task RequestAndPrepareAsync()
     {
@@ -5014,7 +5023,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
         "old Host resumed Start or sharing after restart");
     var oldHostStatus = await restarted.SharedWorldStatusAsync(profile.Id);
     Require(await restarted.PlannedHandoffStatusAsync(profile.Id) is
-        { Pending: false, Code: "OldHostFenced", RecipientState: "Completed" } &&
+    { Pending: false, Code: "OldHostFenced", RecipientState: "Completed" } &&
         oldHostStatus.Authority is
         {
             State: "OldHostFenced", ExactManagedProcessRunning: false,

@@ -118,7 +118,8 @@ public sealed partial class HostManager
                 if (version.Game == GameKinds.Factorio && (rconPort == gamePort || rconPort == settings.CompanionPort)) continue;
                 var candidate = new ServerProfile
                 {
-                    Kind = version.Game, GamePort = gamePort,
+                    Kind = version.Game,
+                    GamePort = gamePort,
                     Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = rconPort } : null
                 };
                 var ports = driver.Ports(candidate);

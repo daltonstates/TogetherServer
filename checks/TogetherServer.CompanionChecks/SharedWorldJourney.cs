@@ -789,8 +789,11 @@ internal static partial class SharedWorldJourney
             "the receiving PC's local key did not match its enrolled identity");
         var receipt = new SharedWorldReceipt(1, roster.GroupId, profileId, expectedVersion.VersionHash,
             credentials.DeviceId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        receipt = receipt with { Signature = Convert.ToBase64String(key.SignData(
-            SharedWorldReceiptTrust.Basis(receipt), HashAlgorithmName.SHA256)) };
+        receipt = receipt with
+        {
+            Signature = Convert.ToBase64String(key.SignData(
+            SharedWorldReceiptTrust.Basis(receipt), HashAlgorithmName.SHA256))
+        };
         var acknowledged = await CompanionPostAsync<SharedWorldReceipt, SharedWorldReceiptResult>(recipient,
             $"api/companion/servers/{profileId}/shared-world/receipts", receipt);
         Require(acknowledged.Ok, $"the recipient's preflight receipt failed: {acknowledged.Code}");
@@ -798,8 +801,11 @@ internal static partial class SharedWorldJourney
         var contact = new WorldPeerContactCard(1, new(roster.OwnerPublicKey, profileId, roster.GroupId),
             credentials.DeviceId, publicKey, 1,
             [new(settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate))], "");
-        contact = contact with { Signature = Convert.ToBase64String(key.SignData(
-            WorldPeerService.ContactBasis(contact), HashAlgorithmName.SHA256)) };
+        contact = contact with
+        {
+            Signature = Convert.ToBase64String(key.SignData(
+            WorldPeerService.ContactBasis(contact), HashAlgorithmName.SHA256))
+        };
         var preparation = new PlannedHandoffPreparation(requestId, expectedVersion.VersionHash,
             contact, source.SetupIdentity);
         var prepared = await CompanionPostAsync<PlannedHandoffPreparation, PlannedHandoffResult>(recipient,

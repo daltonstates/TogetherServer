@@ -8,8 +8,11 @@ internal static class ServerDirectoryRoutes
             return Results.StatusCode(StatusCodes.Status403Forbidden);
         if (context.Request.QueryString.HasValue || context.Request.ContentLength is > 0 ||
             context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
-            return Results.BadRequest(new { code = "InvalidServerDirectoryRequest",
-                message = "The saved server list accepts no query or request body." });
+            return Results.BadRequest(new
+            {
+                code = "InvalidServerDirectoryRequest",
+                message = "The saved server list accepts no query or request body."
+            });
         return null;
     }
 

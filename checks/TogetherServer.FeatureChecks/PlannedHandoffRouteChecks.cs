@@ -144,10 +144,13 @@ internal static class PlannedHandoffRouteChecks
         {
             var binding = new WorldSuccessorBinding(deviceId, Public(candidate), Public(hosting), "");
             draft = draft with { SuccessorBinding = binding };
-            draft = draft with { SuccessorBinding = binding with
+            draft = draft with
             {
-                Signature = Sign(candidate, WorldAuthorityTrust.BindingBasis(draft, binding))
-            } };
+                SuccessorBinding = binding with
+                {
+                    Signature = Sign(candidate, WorldAuthorityTrust.BindingBasis(draft, binding))
+                }
+            };
         }
         var proposal = draft with { Signature = Sign(quorum ? candidate : owner, WorldAuthorityTrust.ProposalBasis(draft)) };
         SharedWorldReceipt? receipt = null;
