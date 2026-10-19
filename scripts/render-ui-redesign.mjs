@@ -76,6 +76,9 @@ const appSections = [
 ];
 const cases = [
   ...extraReviewCases.filter(testCase => !isDialogReview(testCase)),
+  { id: 'sidebar-host-long-names', scenario: 'host-ready', workspace: 'Host', sidebarReview: true, screen: { css: '.server-directory' } },
+  { id: 'sidebar-join-long-names', scenario: 'friend-connected', workspace: 'Join', sidebarReview: true, screen: { css: '.server-directory' } },
+  { id: 'sidebar-settings', scenario: 'host-ready', workspace: 'App Settings', sidebarReview: true, screen: heading('Appearance') },
   { id: 'app-loading', scenario: 'host-loading', workspace: 'Host', bootOnly: true, pendingState: true, screen: { css: 'main', text: 'Loading TogetherServer' } },
   { id: 'app-load-error', scenario: 'host-load-error', workspace: 'Host', bootOnly: true, screen: { css: '[role="alert"]', text: 'Could not connect to TogetherServer' } },
   { id: 'host-session-recovery', scenario: 'host-session-recovery', workspace: 'Host', screen: heading('App reopened after an interruption') },
@@ -264,11 +267,11 @@ const dialogs = [
   { id: 'dialog-revoke-custom-certification', scenario: 'host-custom-certified-offline', workspace: 'Host', section: ['Selected server sections', 'setup', 'Setup & maintenance'],
     steps: [{ button: 'Remove control approval' }], screen: { role: 'dialog', name: 'Remove Custom control approval?' } },
   { id: 'dialog-chat-navigation-guard', scenario: 'host-chat-notice', workspace: 'Host', section: ['Selected server sections', 'chat', 'Chat'],
-    steps: [{ button: 'Edit notice' }, { fill: 'Notice text', value: 'Synthetic unsaved room notice' }, { nav: 'TogetherServer workspaces', button: 'Join' }],
+    steps: [{ button: 'Edit notice' }, { fill: 'Notice text', value: 'Synthetic unsaved room notice' }, { nav: 'TogetherServer navigation', button: 'App Settings' }],
     screen: { role: 'dialog', name: 'Discard unsaved chat edits?' } },
   { id: 'dialog-mode-change-with-setup-draft', scenario: 'host-setup-access-review', workspace: 'Host', action: 'setup-game', game: 'Valheim',
     steps: [{ fill: /^World name/, value: 'Synthetic draft' }, { fill: /^Game password/, value: 'synthetic-only' }, { button: 'Finish later' },
-      { button: 'Finish later', within: '.settings-dialog-footer' }, { nav: 'TogetherServer workspaces', button: 'Join' }],
+      { button: 'Finish later', within: '.settings-dialog-footer' }, { nav: 'TogetherServer navigation', button: 'App Settings' }],
     screen: { role: 'dialog', name: 'Keep a draft and change pages?' } },
   ...[['reload', 'Reload this list', 'Reload player list?'], ['discard', 'Discard unsaved list edits', 'Discard player list edits?']].map(([id, button, name]) => ({
     id: `dialog-player-list-${id}`, scenario: 'host-valheim-maintenance', workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
@@ -292,13 +295,19 @@ const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups',
   ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation|^move-hosting-/.test(testCase.id)).map(testCase => testCase.id)]);
 const reviewCases = args.includes('--move-hosting-only')
   ? [...cases, ...dialogs].filter(testCase => testCase.id.startsWith('move-hosting-'))
+  : args.includes('--sidebar-only') ? cases.filter(testCase => testCase.sidebarReview ||
+    ['host-files', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates'].includes(testCase.id))
   : [...cases, ...dialogs];
 const plans = reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
-  ...(largeTextPages.has(testCase.id) ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
-  ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
+  ...(largeTextPages.has(testCase.id) || testCase.sidebarReview ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
+  ...(testCase.sidebarReview ? [
+    { testCase, variant: { id: 'darkdesktop150', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 150 } },
+    { testCase, variant: { id: 'darkwide', viewport: { width: 1600, height: 1000 }, theme: 'dark', scale: 100 } },
+  ] : []),
+  ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') || testCase.sidebarReview ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
-manifest.coverage = { scope: args.includes('--move-hosting-only') ? 'move-hosting' : 'all',
+manifest.coverage = { scope: args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
   mainPages: reviewCases.filter(testCase => !isDialogReview(testCase)).length,
   dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: variants.map(item => item.id),
   text150Pages: reviewCases.filter(testCase => largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
@@ -319,6 +328,20 @@ function locatorFor(page, screen) {
   return screen.css ? page.locator(screen.css).filter({ hasText: screen.text }) : page.getByRole(screen.role, { name: screen.name, exact: typeof screen.name === 'string' });
 }
 async function visible(locator) { await locator.first().waitFor({ state: 'visible', timeout: 8000 }); return locator.first(); }
+async function navigateHeader(page, workspace, record) {
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true });
+  await visible(navigation);
+  record.actions.push({ action: 'navigate-workspace', name: workspace });
+  if (workspace === 'Attention') {
+    await navigation.getByLabel(/^Notifications/).click();
+    await navigation.getByRole('button', { name: 'Open Attention Center', exact: true }).click();
+    await visible(page.getByRole('heading', { name: 'Attention Center', exact: true }));
+  } else {
+    const name = ['Host', 'Join'].includes(workspace) ? 'Servers' : workspace;
+    await navigation.getByRole('button', { name, exact: true }).click();
+    await visible(navigation.getByRole('button', { name, exact: true }).and(page.locator('[aria-current="page"]')));
+  }
+}
 async function section(page, [label, value, button], record) {
   // Both owned and paired servers now use the selected-server sidebar.
   if (label === 'Join sections') label = 'Selected server sections';
@@ -590,6 +613,62 @@ async function independentScrollEvidence(page, record) {
   await sidebar.evaluate((el, top) => { el.scrollTop = top; }, initial[0].top);
 }
 
+async function sidebarResizeEvidence(page, testCase, record) {
+  if (await page.locator('.workspace-nav').count()) throw new Error('The global sidebar is still present');
+  const splitter = page.getByRole('separator');
+  const viewport = page.viewportSize();
+  if (viewport.width <= 700) {
+    if (await splitter.isVisible()) throw new Error('Sidebar resizing must be hidden in the stacked layout');
+    const sidebar = await page.locator('.context-sidebar').boundingBox();
+    const content = await page.locator('.context-content').boundingBox();
+    if (content.y < sidebar.y + sidebar.height) throw new Error('Narrow sidebar and content overlap');
+    record.assertions.push({ sidebarResize: 'stacked layout, divider hidden', sidebar, content });
+    return;
+  }
+  await visible(splitter);
+  const width = () => splitter.evaluate(el => Number(el.getAttribute('aria-valuenow')));
+  const initial = await width();
+  const initialBounds = await page.locator('.context-sidebar').boundingBox();
+  if (initialBounds.x > 1) throw new Error('Page sidebar did not reclaim the left edge');
+  const before = `${record.id}--before-resize.png`;
+  await page.screenshot({ path: resolve(output, before), animations: 'disabled' });
+  record.screenshots.push({ file: before, kind: 'sidebar-before-resize' });
+  const bounds = await splitter.boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + Math.min(bounds.height / 2, 220));
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 160, bounds.y + Math.min(bounds.height / 2, 220), { steps: 8 });
+  await page.mouse.up();
+  const dragged = await width();
+  if (dragged <= initial) throw new Error('Dragging did not widen the sidebar');
+  const draggedBounds = await page.locator('.context-sidebar').boundingBox();
+  if (Math.abs(draggedBounds.width - dragged) > 2) throw new Error('Rendered sidebar width differs from its accessible value');
+  await splitter.press('Home');
+  if (await width() !== 200) throw new Error('Home did not set the minimum sidebar width');
+  await splitter.press('End');
+  const maximum = await splitter.evaluate(el => Number(el.getAttribute('aria-valuemax')));
+  if (await width() !== maximum) throw new Error('End did not set the available maximum sidebar width');
+  await splitter.dblclick();
+  if (await width() !== Math.min(268, maximum)) throw new Error('Double-click did not reset sidebar width');
+  await splitter.press('End');
+  await splitter.press('ArrowLeft');
+  const saved = await width();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await visible(page.locator('section.context-workspace'));
+  await navigateHeader(page, testCase.workspace, record);
+  await visible(splitter);
+  if (await width() !== saved) throw new Error('Sidebar width was not remembered after reload');
+  await page.setViewportSize({ width: 760, height: viewport.height });
+  await page.waitForFunction(() => document.querySelector('.context-content').getBoundingClientRect().width >= 359);
+  await page.waitForFunction(saved => Number(document.querySelector('[role="separator"]').getAttribute('aria-valuenow')) < saved, saved);
+  const constrained = await width();
+  if (constrained >= saved) throw new Error('Sidebar did not shrink to protect content in a smaller window');
+  await page.setViewportSize(viewport);
+  await page.waitForFunction(saved => Number(document.querySelector('[role="separator"]').getAttribute('aria-valuenow')) === saved, saved);
+  record.assertions.push({ sidebarResize: { initial, dragged, maximum, saved, constrained, restored: await width() } });
+  await page.mouse.move(0, 0);
+  await page.keyboard.press('Escape');
+}
+
 function scrollCaptureOffsets(height, contentHeight) {
   if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(contentHeight) || contentHeight < 0)
     throw new Error('Scroll capture requires finite positive pane height and nonnegative content height');
@@ -841,6 +920,10 @@ try {
     let context;
     try {
       const state = createFixtureState(testCase.scenario);
+      if (testCase.sidebarReview) {
+        for (const profile of state.host.settings.profiles) profile.name = `${profile.name} · Our weekend adventure with a very long server name`;
+        for (const profile of state.friend.profiles) profile.name = `${profile.name} · Our friends' shared adventure with a very long server name`;
+      }
       context = await browser.newContext({ viewport: variant.viewport, colorScheme: variant.theme, deviceScaleFactor: 1, serviceWorkers: 'block', acceptDownloads: false, locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
       const pending = new Set(), deliberatelyFailedURLs = new Set(), deliberatelyPendingURLs = new Set();
       await context.route('**/*', async route => {
@@ -904,17 +987,13 @@ try {
         localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ theme, density: 'comfortable', textScale: scale, highContrast: false, quietMode: false, selectedServer: '', favoriteServers: [], favoriteHosts: [], serverOrder: [], serverTabs: {} }));
       }, { ...variant, now: fixtureNow });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
-      const workspaceNavigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true });
-      await visible(workspaceNavigation);
+      await visible(page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }));
       if (!testCase.bootOnly) {
         // Navigation exists before the snapshot loads. Wait for a real mode workspace before clicking it.
         await visible(page.locator('section.context-workspace'));
         await page.waitForLoadState('networkidle', { timeout: 8000 });
         await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
-        record.actions.push({ action: 'navigate-workspace', name: testCase.workspace });
-        const workspaceLabel = ['Host', 'Join'].includes(testCase.workspace) ? 'Servers' : testCase.workspace;
-        await workspaceNavigation.getByRole('button', { name: workspaceLabel, exact: true }).click();
-        await visible(workspaceNavigation.getByRole('button', { name: workspaceLabel, exact: true }).and(page.locator('[aria-current="page"]')));
+        await navigateHeader(page, testCase.workspace, record);
         if (testCase.workspace === 'Host' || testCase.workspace === 'Join') {
           const source = testCase.workspace === 'Host' ? state.host.settings.profiles[0] : state.friend.profiles[0];
           if (source) {
@@ -991,6 +1070,7 @@ try {
           evidence: 'The asserted confirmation dialog is the active surface; underlying picker buttons are expected to fail hit testing.' };
         else await pickerEvidence(page, record);
       }
+      if (testCase.sidebarReview) await sidebarResizeEvidence(page, testCase, record);
       record.layoutFindings.push(...await layoutFindings(page));
       if (testCase.id.startsWith('move-hosting-')) {
         const spacing = await page.evaluate(() => {

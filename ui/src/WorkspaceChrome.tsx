@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Input } from './Controls'
 import { Icon, type IconName } from './Icon'
 
@@ -14,15 +14,9 @@ export type WorkspaceCommand = {
   run: () => void
 }
 
-const navigation: Array<{ id: WorkspacePage; label: string; icon: IconName; shortcut: string }> = [
-  { id: 'host', label: 'Servers', icon: 'server', shortcut: 'Alt+1' },
-  { id: 'attention', label: 'Attention', icon: 'bell', shortcut: 'Alt+3' },
-  { id: 'settings', label: 'App Settings', icon: 'settings', shortcut: 'Alt+4' }
-]
-
 /** Header disclosures share dismissal, focus recovery and the available viewport height. */
 export function HeaderTools({ children }: { children: ReactNode }) {
-  const toolsRef = useRef<HTMLDivElement | null>(null)
+  const toolsRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     const tools = toolsRef.current
@@ -71,27 +65,7 @@ export function HeaderTools({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  return <div ref={toolsRef} className="header-tools">{children}</div>
-}
-
-export function WorkspaceNavigation({ page, activeRuns, unread, onNavigate }: {
-  page: WorkspacePage
-  activeRuns: number
-  unread: boolean
-  onNavigate: (page: WorkspacePage) => void
-}) {
-  const statusId = useId()
-  return <nav className="workspace-nav" aria-label="TogetherServer navigation">
-    {navigation.map(item => <Button key={item.id} className={page === item.id || item.id === 'host' && page === 'join' ? 'workspace-nav-item selected' : 'workspace-nav-item'}
-      aria-label={item.label} aria-current={page === item.id || item.id === 'host' && page === 'join' ? 'page' : undefined}
-      aria-describedby={item.id === 'host' && activeRuns > 0 ? `${statusId}-running` : item.id === 'attention' && unread ? `${statusId}-unread` : undefined}
-      title={`${item.label} (${item.shortcut})`} onClick={() => onNavigate(item.id === 'host' && page === 'join' ? 'join' : item.id)}>
-      <span className="workspace-nav-icon"><Icon name={item.icon} /></span>
-      <span className="workspace-nav-label">{item.label}</span>
-      {item.id === 'host' && activeRuns > 0 && <span className="workspace-nav-count" aria-label={`${activeRuns} running`}>{activeRuns}<span className="sr-only" id={`${statusId}-running`}>{activeRuns} servers running</span></span>}
-      {item.id === 'attention' && unread && <span className="workspace-nav-unread"><span className="sr-only" id={`${statusId}-unread`}>New activity</span></span>}
-    </Button>)}
-  </nav>
+  return <nav ref={toolsRef} className="header-tools" aria-label="TogetherServer navigation">{children}</nav>
 }
 
 export function CommandPalette({ open, commands, onClose }: {

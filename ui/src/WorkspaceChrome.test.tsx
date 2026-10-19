@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { CommandPalette, HeaderTools, WorkspaceNavigation, type WorkspaceCommand } from './WorkspaceChrome'
+import { CommandPalette, HeaderTools, type WorkspaceCommand } from './WorkspaceChrome'
 
 describe('HeaderTools', () => {
   function openTools() {
@@ -18,6 +18,7 @@ describe('HeaderTools', () => {
   it('keeps only the chosen header menu open', async () => {
     const { notifications, settings } = openTools()
     fireEvent.click(screen.getByText('Notifications'))
+    expect(screen.getByRole('navigation', { name: 'TogetherServer navigation' })).toHaveClass('header-tools')
     expect(notifications).toHaveAttribute('open')
     fireEvent.click(screen.getByText('App settings'))
     await waitFor(() => expect(notifications).not.toHaveAttribute('open'))
@@ -49,34 +50,6 @@ describe('HeaderTools', () => {
     screen.getByRole('button', { name: 'Commands' }).focus()
     expect(notifications).not.toHaveAttribute('open')
     expect(screen.getByRole('button', { name: 'Commands' })).toHaveFocus()
-  })
-})
-
-describe('WorkspaceNavigation', () => {
-  it('groups local and friend server views under one Servers workspace', () => {
-    const navigate = vi.fn()
-    render(<WorkspaceNavigation page="host" activeRuns={2} unread onNavigate={navigate} />)
-    expect(screen.getByRole('button', { name: 'Servers' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.queryByRole('button', { name: 'Host' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Join' })).not.toBeInTheDocument()
-    const settings = screen.getByRole('button', { name: 'App Settings' })
-    expect(settings).not.toHaveAttribute('title')
-    fireEvent.mouseEnter(settings)
-    expect(screen.getByRole('tooltip')).toHaveTextContent('App Settings (Alt+4)')
-    fireEvent.mouseLeave(settings)
-    expect(screen.getByText('2')).toHaveAccessibleName('2 running')
-    expect(screen.getByRole('button', { name: 'Servers' })).toHaveAccessibleDescription('2 servers running')
-    expect(screen.getByRole('button', { name: 'Attention' })).toHaveAccessibleDescription('New activity')
-    fireEvent.click(screen.getByRole('button', { name: 'Attention' }))
-    expect(navigate).toHaveBeenCalledWith('attention')
-  })
-
-  it('keeps Servers selected when viewing a friend server and preserves that selection when clicked', () => {
-    const navigate = vi.fn()
-    render(<WorkspaceNavigation page="join" activeRuns={1} unread={false} onNavigate={navigate} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Servers' }))
-    expect(navigate).toHaveBeenCalledExactlyOnceWith('join')
-    expect(screen.getByRole('button', { name: 'Servers' })).toHaveAttribute('aria-current', 'page')
   })
 })
 

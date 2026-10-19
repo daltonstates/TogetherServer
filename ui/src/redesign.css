@@ -35,7 +35,6 @@
   --color-shadow: #00000080;
   --color-shadow-soft: #00000014;
   --redesign-sidebar: 212px;
-  --redesign-rail: 56px;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -85,27 +84,17 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .status-strip-dot { box-shadow: none; }
 .staging-banner { background: var(--color-accent-soft); border-color: var(--color-accent); color: var(--color-accent-text); }
 
-/* The shell owns the rail; contextual navigation lives alongside its content. */
-.app-shell .app-body, .shell .app-body { grid-template-columns: var(--redesign-rail) minmax(0, 1fr); }
-.workspace-nav {
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
-  min-width: 0; padding: 12px 5px; background: var(--color-shell);
-  border-right: 1px solid var(--color-border-subtle); border-bottom: 0; overflow: visible;
-}
-.workspace-nav .workspace-nav-item.ui-button {
-  display: grid; place-items: center; flex: none; width: 44px; min-width: 44px;
-  height: 44px; min-height: 44px; padding: 6px; border: 1px solid transparent;
-  border-radius: 7px; background: transparent; color: var(--color-text-muted);
-}
-.workspace-nav .workspace-nav-item.selected { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent-text); }
-.workspace-nav .workspace-nav-item:hover:not(:disabled) { background: var(--color-surface-raised); color: var(--color-text); }
-.workspace-nav-label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.workspace-nav-count { position: absolute; top: 1px; right: 0; margin: 0; min-width: 15px; padding: 1px 3px; font-size: 9px; }
-.workspace-nav-unread { top: 4px; right: 4px; border-color: var(--color-shell); }
-.workspace-nav-item[aria-label="App Settings"] { margin-block-start: auto; }
-.app-shell .workspace-scroll { padding: 20px 24px 28px 12px; }
-:root[data-density="compact"] .app-shell .workspace-scroll { padding: 16px 20px 24px 12px; }
-.app-shell .workspace-scroll > * { max-width: 1440px; }
+/* Global navigation lives in the header; each page owns its remaining sidebar. */
+.app-shell .app-body, .shell .app-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.header-servers-trigger.ui-button { min-height: 44px; gap: 8px; }
+.header-tools > .icon-button { width: 44px; min-width: 44px; min-height: 44px; }
+.header-tools .ui-button[aria-current="page"] { border-color: var(--color-accent-border); background: var(--color-accent-soft); color: var(--color-accent-text); }
+.header-server-count { min-width: 18px; padding: 2px 5px; border-radius: 12px; font-size: 11px; background: var(--color-accent); color: var(--color-accent-ink); }
+.notification-center-link.ui-button { margin: 0 12px 12px; }
+.app-shell .workspace-scroll { padding: 12px 16px 20px 0; }
+:root[data-density="compact"] .app-shell .workspace-scroll { padding: 8px 12px 16px 0; }
+.app-shell .workspace-scroll > * { width: 100%; max-width: none; margin-inline: 0; }
+.app-shell .workspace-scroll > :not(.context-workspace) { margin-inline-start: 12px; }
 .page-heading h1 { font-size: 1.6rem; font-weight: 600; letter-spacing: -.025em; }
 .page-heading p { color: var(--color-text-muted); line-height: 1.5; }
 .page-heading-actions, .actions { gap: 8px; }
@@ -230,9 +219,20 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 
 /* Shared shell contract: section navigation and the selected server picker. */
 .app-shell .context-workspace {
-  display: grid; grid-template-columns: var(--redesign-sidebar) minmax(0, 1fr);
-  align-items: start; gap: 12px; min-width: 0;
+  display: grid;
+  grid-template-columns: clamp(200px, var(--sidebar-width, 268px), min(520px, calc(100% - 372px))) 12px minmax(0, 1fr);
+  align-items: start; gap: 0; min-width: 0;
 }
+.app-shell .context-workspace > .context-sidebar { border-inline-start: 0; border-radius: 0 10px 10px 0; }
+.sidebar-resizer {
+  display: grid; place-items: center; align-self: stretch; min-height: 44px;
+  cursor: col-resize; touch-action: none; user-select: none;
+}
+.sidebar-resizer > span { width: 3px; height: 40px; border-radius: 3px; background: var(--color-border-strong); }
+.sidebar-resizer:is(:hover, :focus-visible), [data-resizing] > .sidebar-resizer { background: var(--color-accent-soft); }
+.sidebar-resizer:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.sidebar-resizer:is(:hover, :focus-visible) > span, [data-resizing] > .sidebar-resizer > span { background: var(--color-accent); }
+body:has([data-resizing]) { cursor: col-resize; user-select: none; }
 .app-shell .context-content { min-width: 0; display: grid; gap: 12px; }
 .app-shell .context-content > * { min-width: 0; }
 .app-shell .context-sidebar { align-content: start; }
@@ -300,12 +300,10 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 .context-picker-popover small { color: var(--color-text-muted); line-height: 1.5; }
 .context-sidebar-caption { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 6px; }
 .context-sidebar-caption strong { font-size: .875rem; font-weight: 600; }
-@media (max-width: 960px) {
-  .app-shell .context-workspace { grid-template-columns: 180px minmax(0, 1fr); }
-}
 @media (max-width: 700px) {
-  .app-shell .context-workspace { grid-template-columns: minmax(0, 1fr); }
-  .app-shell .context-sidebar { position: static; padding: 10px; }
+  .app-shell .context-workspace { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .app-shell .context-workspace > .context-sidebar { position: static; padding: 10px; border: 1px solid var(--color-border-subtle); border-radius: 10px; }
+  .sidebar-resizer { display: none; }
   .app-shell .context-sidebar .section-mobile-picker { display: grid; gap: 6px; }
   .section-mobile-picker .ui-select { width: 100%; }
   .app-shell .context-sidebar .section-sidebar-links { display: none; }
@@ -321,8 +319,8 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
   .settings-card-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 700px) {
-  .app-shell .app-body, .shell .app-body { grid-template-columns: var(--redesign-rail) minmax(0, 1fr); }
   .app-shell .workspace-scroll, :root[data-density="compact"] .app-shell .workspace-scroll { padding: 12px; }
+  .app-shell .workspace-scroll > :not(.context-workspace) { margin-inline-start: 0; }
   .app-shell :is(.workspace-layout, .context-layout, .host-master-detail), .settings-workspace > .settings-layout { grid-template-columns: minmax(0, 1fr); }
   .app-shell :is(.context-sidebar, .workspace-sidebar) { position: static; }
   .app-shell :is(.context-sidebar, .workspace-sidebar) nav { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); }
@@ -365,9 +363,13 @@ body, .shell { background: var(--color-canvas); color: var(--color-text); }
 }
 @media (forced-colors: active) {
   .ui-button, .settings-card.ui-button, .panel, .settings-dialog, .ui-tooltip { border-color: CanvasText; box-shadow: none; }
-  .workspace-nav .workspace-nav-item.selected { border-color: Highlight; }
+  .sidebar-resizer > span { background: CanvasText; }
   .ui-tooltip::after { border-color: CanvasText; }
   :is(.ui-button, .ui-input, .ui-select, .ui-textarea, summary):focus-visible { outline-color: Highlight; }
+}
+@media (max-width: 600px) {
+  .header-servers-trigger.ui-button { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
+  .header-servers-trigger > span { display: none; }
 }
 
 /* Each desktop column owns its scroll. The compact mobile view keeps one page scroll. */

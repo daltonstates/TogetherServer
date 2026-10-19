@@ -469,13 +469,14 @@ describe('Task-first app and Host PC navigation', () => {
     fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
     await screen.findByRole('region', { name: 'Contract fixture workspace' })
     expect(screen.queryByRole('region', { name: 'App reopened after an interruption' })).not.toBeInTheDocument()
-    fireEvent.click(workspaces().getByRole('button', { name: 'Attention' }))
+    fireEvent.click(workspaces().getByLabelText(/^Notifications/))
+    fireEvent.click(workspaces().getByRole('button', { name: 'Open Attention Center' }))
     fireEvent.click(await screen.findByText('Session recovery'))
     expect(screen.getByRole('region', { name: 'App reopened after an interruption' })).toBeVisible()
     expectNoMutation()
   })
 
-  it('uses the same global Settings after switching from Host to Join and back', async () => {
+  it('keeps global Settings and sidebar widths after switching from Host to Join and back', async () => {
     const savedHost = structuredClone(host())
     transport.change.mockImplementation(async (path: string) => {
       if (path === '/api/local/mode/friend') state = friend()
@@ -483,6 +484,9 @@ describe('Task-first app and Host PC navigation', () => {
       return { ok: true, code: 'Requested', message: 'Mode changed.', snapshot: state }
     })
     await openHost()
+    expect(document.querySelector('.workspace-nav')).toBeNull()
+    expect(screen.getByRole('navigation', { name: 'TogetherServer navigation' }).closest('header')).not.toBeNull()
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowRight' })
     for (const mode of ['Host', 'Join', 'Host']) {
       if (mode === 'Join') {
         fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
@@ -494,8 +498,10 @@ describe('Task-first app and Host PC navigation', () => {
         await screen.findByRole('region', { name: 'Contract fixture workspace' })
       }
       await act(async () => { await Promise.resolve() })
+      expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '278')
       fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
       const settings = await screen.findByRole('region', { name: 'App Settings' })
+      expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '268')
       expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
       const sections = within(within(settings).getByRole('navigation', { name: 'App settings sections' }))
       expect(sections.getAllByRole('button').map(button => button.textContent)).toEqual([
@@ -517,7 +523,7 @@ describe('Task-first app and Host PC navigation', () => {
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
     await act(async () => { await Promise.resolve() })
     fireEvent.click(within(document.querySelector('.header-tools')! as HTMLElement)
-      .getByRole('button', { name: 'App settings' }))
+      .getByRole('button', { name: 'App Settings' }))
     const settings = await screen.findByRole('region', { name: 'App Settings' })
     expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
     const sections = within(settings).getByRole('navigation', { name: 'App settings sections' })

@@ -6,6 +6,7 @@ import { ProfileAccess, ProfileSettings, useLocalProfile } from './ProfileSettin
 import { RequiredFeatureSetup, useRequiredFeatureSetup } from './RequiredFeatureSetup'
 import { AppSettings } from './AppSettings'
 import { SectionSidebar } from './SectionSidebar'
+import { ResizableWorkspace } from './ResizableWorkspace'
 import { appSections, hostPcSections, joinSections, workspaceDestination, type AppSection, type HostPcSection, type JoinSection } from './workspaceSections'
 import { useConfirmation } from './Confirmation'
 import { Tooltip } from './Tooltip'
@@ -95,7 +96,7 @@ import {
   writeActivityClearMarkersTo
 } from './notificationState'
 import {
-  CommandPalette, HeaderTools, StatusStrip, WorkspaceNavigation,
+  CommandPalette, HeaderTools, StatusStrip,
   type WorkspaceCommand, type WorkspacePage
 } from './WorkspaceChrome'
 import './theme.css'
@@ -2027,6 +2028,11 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><span><strong>{appInstance?.displayName ?? 'TogetherServer'}</strong><small>Game server workspace</small></span></div>
       <HeaderTools>
+        <Button className={`secondary header-servers-trigger${workspacePage === 'host' || workspacePage === 'join' ? ' selected' : ''}`}
+          aria-label="Servers" aria-current={workspacePage === 'host' || workspacePage === 'join' ? 'page' : undefined}
+          title={`Servers (Alt+1)${activeRuns ? ` · ${activeRuns} running` : ''}`}
+          onClick={() => navigateWorkspace(snapshot?.mode === 'Friend' ? 'join' : 'host')}><Icon name="server" size={19} /><span>Servers</span>
+          {activeRuns > 0 && <span className="header-server-count" aria-hidden="true">{activeRuns}</span>}</Button>
         <details className="notification-menu" onToggle={event => { if (event.currentTarget.open) setNotificationUnread(false) }}>
           <Tooltip content={notificationUnread ? 'Notifications, new activity' : 'Notifications'}><summary aria-label={notificationUnread ? 'Notifications, new activity' : 'Notifications'}>
             <Icon name="bell" size={19} />
@@ -2034,13 +2040,15 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
           </summary></Tooltip>
           <div className="notification-panel">
             <div className="notification-panel-heading"><div><strong>Notifications</strong><small>Recent app and connection activity</small></div>{visibleActivity.length > 0 && <Button className="text-button" onClick={clearNotificationActivity}>Clear activity</Button>}</div>
+            <Button className="secondary notification-center-link" aria-current={workspacePage === 'attention' ? 'page' : undefined}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); navigateWorkspace('attention') }}><Icon name="bell" />Open Attention Center</Button>
             {update?.state === 'Available' && <DismissibleNotice noticeKey={update.latestVersion} className="notification-item update" role="status"><span><Icon name="refresh" /></span><div><strong>Update available · v{update.latestVersion}</strong><p>{updateBlockedReason ?? 'Restart TogetherServer to install the latest version.'}</p><Button disabled={updateBusy || !!pending || !!updateBlockedReason} title={updateBlockedReason} onClick={() => setShowUpdatePrompt(true)}>{updateBusy ? <><Icon name="loader" />Preparing update…</> : 'Update and restart'}</Button></div></DismissibleNotice>}
             {notice && <DismissibleNotice noticeKey={notice.receivedAtMs} onDismiss={() => setNotice(null)} className={`notification-item ${notice.good ? 'good' : 'bad'}`} role="status"><span><Icon name={notice.good ? 'check' : 'warning'} /></span><div><strong>{notice.good ? 'Updated' : 'Needs attention'}</strong><p>{notice.text}</p></div></DismissibleNotice>}
             {groupedNotifications.slice(0, 8).map(({ item, repeatCount }) => <DismissibleNotice scope={activitySource} noticeKey={item.id} className={`notification-item ${item.severity === 'Warning' ? 'bad' : item.severity === 'Important' ? 'good' : ''}`} key={item.id}><span><Icon name={item.severity === 'Warning' ? 'warning' : 'check'} /></span><div><strong>{item.category}</strong><p>{item.message}</p><small>{new Date(item.occurredUtc).toLocaleString()}{repeatCount > 1 ? ` · Repeated ${repeatCount} times` : ''}</small>{snapshot?.mode === 'Host' && activityDestination(item) && <Button className="text-button" onClick={() => openActivity(item)}>{activityDestination(item)!.label}</Button>}{snapshot?.mode === 'Friend' && item.profileId && snapshot.profiles.some(profile => profile.id === item.profileId) && <Button className="text-button" onClick={() => openFriendServer(item.profileId!)}>Open server</Button>}</div></DismissibleNotice>)}
             {!notice && update?.state !== 'Available' && notificationActivity.length === 0 && <p className="notification-empty">No recent notifications.</p>}
           </div>
         </details>
-        <Button className="secondary icon-button app-settings-trigger" aria-label="App settings" title="App Settings" onClick={() => navigateWorkspace('settings')}><Icon name="settings" size={19} /></Button>
+        <Button className="secondary icon-button app-settings-trigger" aria-label="App Settings" aria-current={workspacePage === 'settings' ? 'page' : undefined} title="App Settings (Alt+4)" onClick={() => navigateWorkspace('settings')}><Icon name="settings" size={19} /></Button>
         <Button className="command-trigger" aria-label="Commands" title="Commands (Ctrl K)" onClick={() => setCommandPaletteOpen(true)}><Icon name="search" size={16} /><span>Commands</span><kbd>Ctrl K</kbd></Button>
       </HeaderTools>
     </header>
@@ -2058,7 +2066,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
 
     <CommandPalette open={commandPaletteOpen} commands={commands} onClose={() => setCommandPaletteOpen(false)} />
     <div className="app-body">
-      <WorkspaceNavigation page={workspacePage} activeRuns={activeRuns} unread={notificationUnread} onNavigate={navigateWorkspace} />
       <main className="workspace-main"><div className="workspace-scroll" ref={scrollContainer}
         onScrollCapture={event => {
           const target = workspaceScrollTarget()
@@ -2103,25 +2110,24 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
         </details>}
       </AttentionWorkspace></PaneErrorBoundary>}
 
-      {workspacePage === 'settings' && snapshot && <section className="context-workspace app-settings-workspace" aria-label="App Settings">
-        <aside className="context-sidebar" aria-label="App settings navigation" tabIndex={0}><SectionSidebar title="App Settings" label="App settings sections"
-          sections={appSections} section={appSection} onSelect={section => void changeScope(() => setAppSection(section))} /></aside>
-        <div className="context-content settings-content"><AppSettings profile={localProfile} preferences={uiPreferences} onPreferencesChange={setUiPreferences}
+      {workspacePage === 'settings' && snapshot && <ResizableWorkspace area="settings" className="app-settings-workspace" label="App Settings"
+        sidebarLabel="App settings navigation" contentClassName="settings-content" sidebar={<SectionSidebar title="App Settings" label="App settings sections"
+          sections={appSections} section={appSection} onSelect={section => void changeScope(() => setAppSection(section))} />}>
+        <AppSettings profile={localProfile} preferences={uiPreferences} onPreferencesChange={setUiPreferences}
           section={appSection} onSectionChange={section => void changeScope(() => setAppSection(section))} onBusyChange={setAppSettingsBusy}
           desktop={desktopPreferences} instance={appInstance} update={update} busy={!!pending} desktopBusy={desktopBusy} updateBusy={updateBusy}
           onDesktopChange={patch => void saveDesktopPreference(patch)} notice={notice} onClearNotice={() => setNotice(null)}
-          onCheckUpdate={async () => (await checkUpdate(false))?.state === 'Available'} onReviewUpdate={() => setShowUpdatePrompt(true)} onReloadUpdate={reloadUpdate} onQuit={() => void quitApp()} /></div>
-      </section>}
+          onCheckUpdate={async () => (await checkUpdate(false))?.state === 'Available'} onReviewUpdate={() => setShowUpdatePrompt(true)} onReloadUpdate={reloadUpdate} onQuit={() => void quitApp()} />
+      </ResizableWorkspace>}
 
-      {workspacePage === 'join' && snapshot?.mode === 'Friend' && <section className="context-workspace join-context-workspace">
-        <aside className="context-sidebar" aria-label="Server navigation" tabIndex={0}>
+      {workspacePage === 'join' && snapshot?.mode === 'Friend' && <ResizableWorkspace area="servers" className="join-context-workspace" sidebarLabel="Server navigation" sidebar={<>
           <ProfileAccess profile={localProfile} onOpen={() => void changeScope(() => { setWorkspacePage('settings'); setAppSection('profile') })} />
           {directoryControl}
           <p className="server-directory-selected">{selectedFriendProfile?.name || 'Selected friend server'}</p>
           <SectionSidebar title="Server" label="Selected server sections" sections={joinSections.filter(section => friendConnectionHidden ? section.id === 'pairing' : section.id !== 'logs' ||
             !!selectedFriendProfile && friendLogAvailability(selectedFriendProfile.canViewLogs, snapshot.hostCapabilities).visible)}
             section={showPairing || !snapshot.endpoint || friendConnectionHidden ? 'pairing' : joinSection} onSelect={selectJoinSection} />
-        </aside><div className="context-content">
+        </>}>
         {joinSection === 'shared-saves' && peerRecovery && <section className="panel">
           <Button className="text-button" onClick={() => setPeerRecovery(null)}>Return to selected server saves</Button>
           <FriendSharedWorlds profileId={peerRecovery.profileId} sourceBranchHash={peerRecovery.branchHash}
@@ -2303,10 +2309,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
           onConnected={async () => { setPeerRecovery(null); applySnapshot(await readSnapshot()); setShowPairing(false); setJoinSection('play') }}
           onChanged={async () => { applySnapshot(await readSnapshot()) }}
           onRecoverBranch={(profileId, branchHash) => { setPeerRecovery({ profileId, branchHash }); setJoinSection('shared-saves'); setShowPairing(false) }} />}
-        </div></section>}
+        </ResizableWorkspace>}
 
-      {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <section className="context-workspace host-context-workspace">
-        <aside className="context-sidebar" aria-label="Server navigation" tabIndex={0}>
+      {workspacePage === 'host' && snapshot?.mode === 'Host' && draft && <ResizableWorkspace area="servers" className="host-context-workspace" sidebarLabel="Server navigation" sidebar={<>
           <ProfileAccess profile={localProfile} onOpen={() => void changeScope(() => { setWorkspacePage('settings'); setAppSection('profile') })} />
           {directoryControl}
           <p className="server-directory-selected">{selectedHostProfile?.name || 'Selected server'}</p>
@@ -2316,7 +2321,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
           <details className="server-sections-disclosure" open={hostScope === 'pc'}><summary>This PC settings</summary>
             <SectionSidebar title="This PC" label="This Host PC sections" sections={hostPcSections}
               section={hostScope === 'pc' ? hostSettingsSection : undefined} onSelect={openHostSettings} /></details>
-        </aside><div className="context-content">
+        </>}>
         {hostScope === 'server' && <>
         {savedProfiles.length > 0 && <>
         <section className="host-workspace-shell">
@@ -2729,7 +2734,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
             {removeDeviceConfirm && <div className="settings-inline-confirm" role="alert"><strong>Remove access for {serverAccessDevice.name}?</strong><p>This PC will need a new code to connect again.</p><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(false)}>Keep access</Button><Button className="danger-outline" disabled={!!pending} onClick={() => void revokeDevice(serverAccessDevice.id)}>Confirm remove access</Button></div></div>}
           </div>}
         </SettingsDialog>}
-        </div></section>}
+        </ResizableWorkspace>}
       </div></main>
     </div>
     {serverNotification && <SettingsDialog title={`Notifications for ${serverNotification.name}`} busy={serverNotificationBusy}

@@ -15,11 +15,6 @@
   z-index: var(--z-surface);
   isolation: isolate;
 }
-.workspace-nav {
-  position: relative;
-  z-index: var(--z-raised);
-  isolation: isolate;
-}
 .app-shell :is(.context-workspace, .workspace-layout, .context-layout, .host-master-detail),
 .settings-workspace { isolation: isolate; }
 .app-shell :is(.context-sidebar, .workspace-sidebar, .server-master),

@@ -497,6 +497,14 @@ async function selectWorkspaceSection(page, label, name, value) {
     await eventually(() => button.getAttribute('aria-current'), current => current === 'page', `${name} section navigation`)
   }
 }
+async function openAttention(page) {
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
+  const notifications = navigation.locator('.notification-menu')
+  if (!await notifications.evaluate(element => element.open)) await notifications.locator(':scope > summary').click()
+  await notifications.getByRole('button', { name: 'Open Attention Center', exact: true }).click()
+  await eventually(() => navigation.getByRole('button', { name: 'Open Attention Center', exact: true, includeHidden: true }).getAttribute('aria-current'),
+    value => value === 'page', 'Attention navigation completes through the notification menu')
+}
 async function openHostServerPicker(page) {
   const sidebar = page.getByRole('complementary', { name: 'Host navigation', exact: true })
   await sidebar.waitFor({ state: 'visible' })
@@ -508,10 +516,11 @@ async function openHostServerPicker(page) {
   return picker
 }
 async function selectHostServer(page, name) {
-  await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).getByRole('button', { name: 'Host', exact: true }).click()
-  const picker = await openHostServerPicker(page)
-  await picker.getByRole('textbox', { name: 'Find selected server', exact: true }).fill('')
-  await picker.locator('.context-picker-options').getByRole('button', { name: new RegExp(`^${name}`) }).click()
+  await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).getByRole('button', { name: 'Servers', exact: true }).click()
+  const directory = page.getByRole('complementary', { name: 'Server navigation', exact: true }).getByRole('region', { name: 'Servers', exact: true })
+  await directory.waitFor({ state: 'visible' })
+  await directory.getByRole('searchbox', { name: 'Find a server or friend', exact: true }).fill('')
+  await directory.getByRole('button', { name: `Open ${name} on this PC`, exact: true }).click()
   await page.getByRole('region', { name: `${name} workspace`, exact: true }).waitFor()
 }
 async function selectServer(page, name, tab = 'Overview') {
@@ -533,7 +542,7 @@ async function acceptAppConfirmation(page, title, confirmLabel) {
 async function completeRequiredProfileSetup(page, instance) {
   await step(`required profile setup gates the fresh ${instance.name} before ordinary navigation`, async () => {
     const setup = page.getByRole('region', { name: 'Required app setup', exact: true })
-    const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+    const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
     await setup.waitFor({ state: 'visible' })
     const before = await api(instance, '/api/local/required-setup')
     assert.deepEqual(before.features.map(feature => ({ id: feature.id, revision: feature.revision, completed: feature.completed })),
@@ -623,7 +632,7 @@ async function openPage(instance, context) {
   })
   await page.goto(instance.origin, { waitUntil: 'domcontentloaded' })
   await completeRequiredProfileSetup(page, instance)
-  await page.getByRole('navigation', { name: 'TogetherServer workspaces' }).waitFor()
+  await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).waitFor()
   // These nodes come from the candidate's embedded bundle, never a Vite server or page.setContent.
   assert(await page.locator('script[src^="/assets/"]').count() > 0, 'The candidate must serve its bundled React assets.')
   return page
@@ -669,7 +678,7 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
     density: document.documentElement.dataset.density, textScale: getComputedStyle(document.documentElement).getPropertyValue('--qol-text-scale').trim(),
     highContrast: document.documentElement.dataset.highContrast,
     liveStatusCount: document.querySelectorAll('[role="status"],[aria-live="polite"]').length,
-    headerControls: [...document.querySelectorAll('.header-tools > details > summary, .header-tools > .app-settings-trigger, .header-tools > .command-trigger')]
+    headerControls: [...document.querySelectorAll('.header-tools > .header-servers-trigger, .header-tools > details > summary, .header-tools > .app-settings-trigger, .header-tools > .command-trigger')]
       .map(control => { const bounds = control.getBoundingClientRect(); return { name: control.getAttribute('aria-label'),
         left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height } }) }))
   report.layout.push({ name, ...metrics })
@@ -678,13 +687,14 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
   report.screenshots.push(`${name}.png`)
   if (!assertLayout) return // Baseline is observation-only, never a passing layout assertion.
   assert(metrics.documentWidth <= metrics.width + 1, `${name}: the rendered page must not overflow horizontally.`)
-  assert.equal(metrics.headerControls.length, 3, `${name}: all three header controls must be present.`)
+  assert.deepEqual(metrics.headerControls.map(control => control.name?.replace(/^Notifications.*$/u, 'Notifications')),
+    ['Servers', 'Notifications', 'App Settings', 'Commands'], `${name}: all four header navigation controls must be present.`)
   assert(metrics.headerControls.every(control => control.name && control.width > 0 && control.height > 0 &&
     control.left >= -1 && control.right <= metrics.width + 1), `${name}: named header controls must fit inside the viewport.`)
 }
 
 async function firstUseAndSetupRecovery(page, host) {
-  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
   const firstHost = page.getByRole('region', { name: 'Host or join a server', exact: true })
   const viewports = [{ width: 1440, height: 900 }, { width: 390, height: 844 }]
   const assertEmptyBackend = async () => {
@@ -700,7 +710,7 @@ async function firstUseAndSetupRecovery(page, host) {
       await setAppearanceTextScale(page, textScale)
       await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
         value => value === (textScale === '150' ? '24px' : '16px'), `${phase} ${textScale} percent text`)
-      await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+      await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
       await firstHost.waitFor({ state: 'visible' })
       for (const viewport of viewports) {
         const name = `${phase}-${viewport.width}x${viewport.height}-${textScale}`
@@ -804,7 +814,7 @@ async function firstUseAndSetupRecovery(page, host) {
   await page.setViewportSize({ width: 1440, height: 900 })
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await setAppearanceTextScale(page, '100')
-  await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+  await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
 }
 
 async function openAppearanceEditor(page, { baseline = false } = {}) {
@@ -836,28 +846,42 @@ async function setAppearanceTextScale(page, textScale, options) {
   await closeAppearanceEditor(page)
 }
 
-async function routingAndAppearance(page) {
-  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
-  for (const [shortcut, destination] of [['Alt+2', 'Join'], ['Alt+3', 'Attention'], ['Alt+4', 'App Settings'], ['Alt+1', 'Host']]) {
+async function routingAndAppearance(page, profiles) {
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
+  for (const [shortcut, destination] of [['Alt+3', 'Open Attention Center'], ['Alt+4', 'App Settings'], ['Alt+1', 'Servers']]) {
     // Global navigation deliberately leaves a focused editor's typing alone.
     await page.locator('.brand').click()
     await page.keyboard.press(shortcut)
-    await eventually(() => navigation.getByRole('button', { name: destination, exact: true }).getAttribute('aria-current'),
+    await eventually(() => navigation.getByRole('button', { name: destination, exact: true, includeHidden: true }).getAttribute('aria-current'),
       value => value === 'page', `keyboard opens ${destination}`)
   }
+  await page.locator('.brand').click()
+  await page.keyboard.press('Alt+2')
+  await page.getByLabel('Server code', { exact: true }).waitFor({ state: 'visible' })
+  assert.equal(await navigation.getByRole('button', { name: 'Servers', exact: true }).getAttribute('aria-current'), 'page',
+    'Connect opens the Friend pairing flow inside Servers.')
+  await selectHostServer(page, profiles.valheim.name)
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await page.keyboard.press('Control+k')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
   await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Attention')
   await page.keyboard.press('Enter')
   await palette.waitFor({ state: 'hidden' })
-  assert.equal(await navigation.getByRole('button', { name: 'Attention', exact: true }).getAttribute('aria-current'), 'page')
-  await navigation.getByRole('button', { name: 'Join', exact: true }).click()
+  assert.equal(await navigation.getByRole('button', { name: 'Open Attention Center', exact: true, includeHidden: true }).getAttribute('aria-current'), 'page')
   await page.keyboard.press('Control+k')
-  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Host')
+  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Connect server')
   await page.keyboard.press('Enter')
   await palette.waitFor({ state: 'hidden' })
-  await eventually(() => navigation.getByRole('button', { name: 'Host', exact: true }).getAttribute('aria-current'), value => value === 'page', 'Host palette navigation from Join')
+  await page.getByLabel('Server code', { exact: true }).waitFor({ state: 'visible' })
+  await page.keyboard.press('Control+k')
+  await palette.getByRole('combobox', { name: 'Search commands' }).fill('Open Servers')
+  await page.keyboard.press('Enter')
+  await palette.waitFor({ state: 'hidden' })
+  await eventually(() => navigation.getByRole('button', { name: 'Servers', exact: true }).getAttribute('aria-current'),
+    value => value === 'page', 'Servers palette navigation from Friend pairing')
+  assert.equal(await page.getByLabel('Server code', { exact: true }).isVisible(), true,
+    'Open Servers preserves the current Friend pairing mode.')
+  await selectHostServer(page, profiles.valheim.name)
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await page.keyboard.press('Control+k')
   await palette.getByRole('combobox', { name: 'Search commands' }).fill('Synthetic Bedrock B')
@@ -912,7 +936,7 @@ async function headerOverlayRegression(page, host) {
       name: `${profile.name} long browser layout command destination`.slice(0, 64) }))
     await route.fulfill({ response, json: state })
   }
-  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
   const notifications = page.locator('.notification-menu > summary')
   const appSettings = page.locator('.header-tools .app-settings-trigger')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
@@ -940,6 +964,8 @@ async function headerOverlayRegression(page, host) {
   await page.route(snapshotRoute, handler)
   try {
     if (baselineUiDir) {
+      // The explicitly supplied historical bundle keeps its original rail.
+      const baselineNavigation = page.getByRole('navigation', { name: 'TogetherServer workspaces', exact: true })
       const baselinePattern = `${host.origin}/**`
       report.baselineUi = { codeIdentity: 'a1eb74e', provenance: 'Caller-supplied built baseline; CI must build the named commit.',
         indexSha256: createHash('sha256').update(await readFile(path.join(baselineUiDir, 'index.html'))).digest('hex'),
@@ -963,16 +989,16 @@ async function headerOverlayRegression(page, host) {
       await page.route(baselinePattern, baselineAssets)
       try {
         await page.reload({ waitUntil: 'domcontentloaded' })
-        await navigation.waitFor()
+        await baselineNavigation.waitFor()
         await eventually(() => page.locator('.staging-banner').isVisible(), value => value, 'baseline uses the same actual staging banner')
         for (const textScale of ['100', '150']) {
           const viewport = { width: 1180, height: 774 }, name = `baseline-a1eb74e-notifications-1180x774-${textScale}`
           await page.setViewportSize(viewport)
-          await navigation.getByRole('button', { name: 'Settings', exact: true }).click()
+          await baselineNavigation.getByRole('button', { name: 'Settings', exact: true }).click()
           await setAppearanceTextScale(page, textScale, { baseline: true })
           await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
             value => value === (textScale === '150' ? '24px' : '16px'), `baseline ${textScale} percent text`)
-          await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+          await baselineNavigation.getByRole('button', { name: 'Host', exact: true }).click()
           await notifications.click()
           const panel = page.locator('.notification-panel')
           await panel.waitFor({ state: 'visible' })
@@ -994,6 +1020,7 @@ async function headerOverlayRegression(page, host) {
     // APIs/snapshot fixture stayed unchanged. Restore candidate embedded assets before any assertion journey.
     await page.reload({ waitUntil: 'domcontentloaded' })
     await navigation.waitFor()
+    assert.equal(await page.locator('.workspace-nav').count(), 0, 'Candidate navigation lives in the header without a global rail.')
     await eventually(() => page.locator('.staging-banner').isVisible(), value => value, 'actual staging banner')
     for (const textScale of ['100', '150']) {
       await page.setViewportSize({ width: 1440, height: 900 })
@@ -1001,7 +1028,7 @@ async function headerOverlayRegression(page, host) {
       await setAppearanceTextScale(page, textScale)
       await eventually(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize),
         value => value === (textScale === '150' ? '24px' : '16px'), `${textScale} percent overlay text`)
-      await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+      await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
       for (const viewport of viewports) {
         const suffix = `${viewport.width}x${viewport.height}-${textScale}`
         await page.setViewportSize(viewport)
@@ -1061,16 +1088,15 @@ async function headerOverlayRegression(page, host) {
         await box(close, `command-close-${suffix}`)
         await close.click(); await palette.waitFor({ state: 'hidden' })
         if (viewport.width <= 700) {
-          const mobileControls = await navigation.locator('.workspace-nav-item').evaluateAll(elements => elements.map(element => {
-            const label = element.querySelector('.workspace-nav-label'), bounds = element.getBoundingClientRect(),
-              icon = element.querySelector('.workspace-nav-icon svg').getBoundingClientRect()
-            return { name: element.getAttribute('aria-label'), width: bounds.width, height: bounds.height, label: label.textContent,
-              iconVisible: icon.width > 0 && icon.height > 0 }
+          const mobileControls = await navigation.locator(':scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
+            const bounds = element.getBoundingClientRect(), icon = element.querySelector('svg')?.getBoundingClientRect()
+            return { name: element.getAttribute('aria-label')?.replace(/^Notifications.*$/u, 'Notifications'),
+              width: bounds.width, height: bounds.height, iconVisible: !!icon && icon.width > 0 && icon.height > 0 }
           }))
           report.layout.push({ name: `mobile-navigation-${suffix}`, mobileControls })
-          assert.deepEqual(mobileControls.map(control => control.name), ['Host', 'Join', 'Attention', 'App Settings'])
-          assert(mobileControls.every(control => control.iconVisible && control.label === control.name && control.width >= 44 && control.height >= 44),
-            `${suffix}: the icon rail retains all four accessible names, painted icons and 44px touch targets.`)
+          assert.deepEqual(mobileControls.map(control => control.name), ['Servers', 'Notifications', 'App Settings', 'Commands'])
+          assert(mobileControls.every(control => control.iconVisible && control.width >= 44 && control.height >= 44),
+            `${suffix}: header navigation retains four accessible names, painted icons and 44px touch targets.`)
         }
       }
     }
@@ -1081,7 +1107,7 @@ async function headerOverlayRegression(page, host) {
     await navigation.waitFor()
     await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
     await setAppearanceTextScale(page, '100')
-    await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+    await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
   }
 }
 async function serverNavigation(page, profiles) {
@@ -1433,17 +1459,17 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   const chat = first.locator('.server-chat')
   const message = 'Synthetic browser message kept during navigation'
   await chat.getByLabel('Message', { exact: true }).fill(message)
-  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
   const recoveryDiagnostics = { stage: 'leaving-compose', activeWorkspace: null, attentionReached: false,
     composerUnmounted: false, selectedConnectionMatches: false, selectedHostMatches: false, serverStillAssigned: false,
     protectedReadOk: false, persistedTextMatches: false, joinReached: false, recoveryPromptVisible: false,
     recoveredTextMatches: false, composerDomCount: null, recoveryButtonDomCount: null }
   report.chatRecovery.push(recoveryDiagnostics)
   try {
-    await navigation.getByRole('button', { name: 'Attention', exact: true }).click()
+    await openAttention(page)
     // A click returns before protected flush completes. Confirm navigation before
     // issuing Join so its new navigation epoch cannot supersede pending Attention.
-    await eventually(() => navigation.getByRole('button', { name: 'Attention', exact: true }).getAttribute('aria-current'),
+    await eventually(() => navigation.getByRole('button', { name: 'Open Attention Center', exact: true, includeHidden: true }).getAttribute('aria-current'),
       value => value === 'page', 'Attention navigation completes after chat draft flush')
     recoveryDiagnostics.attentionReached = true
     await eventually(() => chat.count(), value => value === 0, 'Friend composer unmounted on Attention')
@@ -1462,8 +1488,8 @@ async function friendPlayAndChat(host, friend, context, profiles) {
     assert(recoveryDiagnostics.protectedReadOk && recoveryDiagnostics.persistedTextMatches,
       'Completed navigation must protect the exact unfinished message in its selected connection/server scope.')
     recoveryDiagnostics.stage = 'returning-to-compose'
-    await navigation.getByRole('button', { name: 'Join', exact: true }).click()
-    await eventually(() => navigation.getByRole('button', { name: 'Join', exact: true }).getAttribute('aria-current'),
+    await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
+    await eventually(() => navigation.getByRole('button', { name: 'Servers', exact: true }).getAttribute('aria-current'),
       value => value === 'page', 'Join navigation completes before chat recovery')
     recoveryDiagnostics.joinReached = true
     await chat.waitFor({ state: 'visible' })
@@ -1475,7 +1501,7 @@ async function friendPlayAndChat(host, friend, context, profiles) {
     assert(recoveryDiagnostics.recoveredTextMatches, 'Review must restore the exact protected message into the composer.')
     recoveryDiagnostics.stage = 'recovered'
   } finally {
-    recoveryDiagnostics.activeWorkspace = await navigation.locator('button[aria-current="page"]').getAttribute('aria-label').catch(() => null)
+    recoveryDiagnostics.activeWorkspace = await navigation.locator('button[aria-current="page"]').evaluate(element => element.getAttribute('aria-label') || element.textContent.trim()).catch(() => null)
     recoveryDiagnostics.composerDomCount = await chat.count().catch(() => null)
     recoveryDiagnostics.recoveryButtonDomCount = await chat.getByRole('button', { name: 'Use recovered message', exact: true }).count().catch(() => null)
   }
@@ -1567,8 +1593,8 @@ async function friendPlayAndChat(host, friend, context, profiles) {
   await screenshot(page, 'friend-play-narrow', { width: 390, height: 844 }, play)
 }
 async function attentionAndLargeText(page) {
-  const navigation = page.getByRole('navigation', { name: 'TogetherServer workspaces' })
-  await navigation.getByRole('button', { name: 'Attention', exact: true }).click()
+  const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true })
+  await openAttention(page)
   const attention = page.locator('.attention-workspace')
   const history = attention.locator('.attention-history-disclosure')
   await history.waitFor({ state: 'visible' })
@@ -1581,7 +1607,7 @@ async function attentionAndLargeText(page) {
   await screenshot(page, 'attention-narrow', { width: 390, height: 844 })
   await navigation.getByRole('button', { name: 'App Settings', exact: true }).click()
   await setAppearanceTextScale(page, '150')
-  await navigation.getByRole('button', { name: 'Host', exact: true }).click()
+  await navigation.getByRole('button', { name: 'Servers', exact: true }).click()
   await page.setViewportSize({ width: 1440, height: 900 })
   const picker = await openHostServerPicker(page)
   await picker.locator('.context-picker-options').getByRole('button').first().click()
@@ -1674,9 +1700,9 @@ try {
     () => firstUseAndSetupRecovery(hostPage, host))
   const profiles = await seedProfiles(host)
   await hostPage.reload({ waitUntil: 'domcontentloaded' })
-  await hostPage.getByRole('complementary', { name: 'Host navigation', exact: true }).locator('.context-picker-trigger').waitFor()
-  await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage))
-  await step('staging notifications, shared App Settings, keyboard commands and accessible mobile icon rail at viewport boundaries', () => headerOverlayRegression(hostPage, host))
+  await hostPage.getByRole('complementary', { name: 'Server navigation', exact: true }).getByRole('region', { name: 'Servers', exact: true }).waitFor()
+  await step('workspace keyboard, command palette and appearance preferences', () => routingAndAppearance(hostPage, profiles))
+  await step('staging notifications, shared App Settings, keyboard commands and accessible mobile header navigation at viewport boundaries', () => headerOverlayRegression(hostPage, host))
   await step('saved-server search, per-server tabs, favorites and durable manual ordering', () => serverNavigation(hostPage, profiles))
   await step('setup blockers, nonsecret reuse, applied port suggestion and paused-step recovery', () => setupReview(hostPage, host, profiles))
   await step('raw and guided protected drafts survive immediate navigation without changing files', () => editorRecovery(hostPage, host, profiles))

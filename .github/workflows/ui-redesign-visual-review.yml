@@ -46,9 +46,11 @@ jobs:
         shell: pwsh
         env:
           MOVE_HOSTING_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-move-hosting-') }}
+          SIDEBAR_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-sidebar-') }}
         run: |
           $reviewArguments = @('--allow-isolated-browser-tests', '--hosted-runner', 'github-actions')
           if ($env:MOVE_HOSTING_REVIEW -eq 'true') { $reviewArguments += '--move-hosting-only' }
+          if ($env:SIDEBAR_REVIEW -eq 'true') { $reviewArguments += '--sidebar-only' }
           node scripts/render-ui-redesign.mjs @reviewArguments
       - name: Record hosted job outcome
         if: always()

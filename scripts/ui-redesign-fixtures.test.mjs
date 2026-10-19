@@ -594,6 +594,13 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.equal(focused.plans.length, 35, 'seven move/sharing surfaces each cover five viewport/text variants');
   assert.equal(focused.inventory.length, focused.plans.length);
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
+  const sidebars = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
+    { manifest: {}, worldReviewCases, accessReviewCases, args: ['--sidebar-only'] });
+  for (const id of ['sidebar-host-long-names', 'sidebar-join-long-names', 'sidebar-settings']) {
+    const variants = sidebars.plans.filter(plan => plan.testCase.id === id);
+    assert.equal(variants.length, 7, `${id} covers desktop, wide, tablet, narrow, short and 150 percent text`);
+    assert.ok(variants.every(plan => plan.testCase.sidebarReview), `${id} performs real resize checks on the hosted runner`);
+  }
   const captures = new Set(plans.map(plan => plan.testCase.id));
   for (const expected of [
     ...['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'].map(id => `host-${id}`),
