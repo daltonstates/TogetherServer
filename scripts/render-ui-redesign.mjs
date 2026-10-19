@@ -320,6 +320,8 @@ function locatorFor(page, screen) {
 }
 async function visible(locator) { await locator.first().waitFor({ state: 'visible', timeout: 8000 }); return locator.first(); }
 async function section(page, [label, value, button], record) {
+  // Both owned and paired servers now use the selected-server sidebar.
+  if (label === 'Join sections') label = 'Selected server sections';
   record.actions.push({ action: 'select-section', label, value, button });
   const select = page.getByRole('combobox', { name: label, exact: true });
   if (await select.isVisible()) await select.selectOption(value);
@@ -1037,7 +1039,9 @@ try {
       await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
       record.screenshots.push({ file: filename, kind: 'viewport' });
       await captureScrollEvidence(page, record, output);
-      if (variant.id === 'darkshortdesktop' && testCase.action !== 'picker') await independentScrollEvidence(page, record);
+      // An open modal makes the workspace inert. Its own complete scroll
+      // evidence is captured above; wheel input cannot scroll background panes.
+      if (!hasDialog && variant.id === 'darkshortdesktop' && testCase.action !== 'picker') await independentScrollEvidence(page, record);
       // A full page companion makes below-fold content reviewable; the viewport shot preserves overlay placement.
       if (!hasDialog && testCase.action?.startsWith('tooltip') !== true && await page.evaluate(() => document.documentElement.scrollHeight > innerHeight + 10)) {
         const full = `${record.id}--full.png`;

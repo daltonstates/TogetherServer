@@ -85,6 +85,12 @@ the old Host/Join navigation. Its 35 attempts are failed evidence. The harness
 now supplies decoded completed synthetic setup and selects saved servers from
 the current Servers directory; the application UI and packaged bytes are
 unchanged by this harness correction.
+The second run, `39276176121`, captured all owner surfaces with no layout
+findings, but failed 17 cases: the recipient section still used the old Join
+sidebar label, and two short-window dialogs attempted to scroll the inert
+background. The harness now selects the shared selected-server sidebar and
+checks dialog scroll coverage separately from background pane independence.
+These failed runs are retained as failed evidence.
 It checks actual rendered gaps and rejects a reintroduced recipient-address
 field. Browser execution remains restricted to the dedicated hosted Windows
 runner by the existing harness guard.
