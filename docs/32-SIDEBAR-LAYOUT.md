@@ -20,14 +20,22 @@ pane. No new dependency, backend contract or server action is involved.
 ## Validation
 
 - PASS: 116 focused UI tests across shell navigation/guards, header menus and
-  resizing behavior; 25 pure renderer fixture/inventory checks.
+  resizing behavior, then all 1,244 UI tests in 99 files. The initial full run
+  had one stale demo navigation selector and a 5-second three-page test timeout;
+  the navigation path was updated, the round-trip passed independently, and
+  its bounded timeout was increased to 10 seconds before the complete pass.
+- PASS: 26 pure renderer fixture/inventory checks.
 - PASS: code-only gate, including TypeScript, lint, locked dependency restore,
   solution compilation (zero warnings/errors) and all 56 source/synthetic groups.
   The source-link subcase remains skipped because this account cannot create
   symbolic links. No app, browser or game process was launched locally.
 - PASS: production UI bundle. Its existing chunk-over-500kB warning remains.
-- Pending: broad UI suite and hosted rendered layout/drag/keyboard/persistence
-  review. The sidebar-only hosted inventory
+- Pending: final hosted rendered layout/drag/keyboard/persistence review.
+  Initial hosted run 39294068837 attempted all 45 viewport plans with zero layout
+  findings but failed 11 cases: seven encountered a missing ordinary Friend
+  hosting-status fixture, and four tried to select a closed This PC settings
+  disclosure. Both harness gaps are corrected; a full hosted rerun is required.
+  The sidebar-only hosted inventory
   includes Host/Join long names, settings, first-use states, server files,
   Friend access, Attention and updates at desktop/tablet/narrow sizes and 150%
   text. Exact results will be recorded after those checks complete.

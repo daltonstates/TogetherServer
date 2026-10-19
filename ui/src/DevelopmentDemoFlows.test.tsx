@@ -130,7 +130,7 @@ it('keeps earlier count warnings out of the notification badge and menu while pr
   fireEvent.click(screen.getByLabelText('Notifications'))
   expect(screen.getByText('No recent notifications.')).toBeVisible()
   expect(screen.queryByText('DEMO: earlier count check unavailable.')).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: 'Attention' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Open Attention Center' }))
   expect(await screen.findByText('DEMO: earlier count check unavailable.')).toBeInTheDocument()
   expect(realFetch).not.toHaveBeenCalled()
 }, 15_000)

@@ -97,6 +97,19 @@ const get = (state, path) => {
   return response.body;
 };
 
+test('ordinary Friend hosting status is a decoded denial without inventing a hosting grant', () => {
+  const state = createFixtureState('friend-connected');
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const response = routeFixture(state, { method: 'GET', path });
+  assert.equal(response.status, 200);
+  const view = localHosting.parseLocalHostingStatus(response.body);
+  assert.equal(view.allowed, false);
+  assert.equal(view.consented, false);
+  assert.equal(view.readyForManualStart, false);
+  assert.equal(view.localProfileId, null);
+  assert.equal(routeFixture(state, { method: 'POST', path }), null, 'a status fixture adds no hosting mutation');
+});
+
 test('all presets decode Host and Friend snapshots with current strict decoders', () => {
   for (const scenario of fixtureScenarios) {
     const state = createFixtureState(scenario);

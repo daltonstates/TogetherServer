@@ -469,6 +469,14 @@ export function routeFixture(state, request) {
     if (suffix === 'live-save-acceptance' && method === 'GET') return reply(liveAcceptance(state));
     if (suffix.startsWith('live-save-acceptance/') && method === 'POST') return unavailable('Installed game acceptance or capture');
     if (suffix.startsWith('custom-scripts')) return unavailable('Custom script reveal or writes');
+    if (suffix === 'shared-world/hosting' && !host && method === 'GET') return reply({
+      ok: false, code: 'SharedWorldUnavailable', message: 'No shared hosting grant in this synthetic fixture.',
+      allowed: false, consented: false, game: null, name: 'Shared server', needsServerFile: false,
+      needsPassword: false, serverFile: null, gameVersion: null, gamePort: 2456, controlPort: 5131,
+      localProfileId: null, branchHash: null, readyForManualStart: false, running: false,
+      steps: ['permission', 'server', 'save', 'ports', 'connection'].map(key => ({ key,
+        state: key === 'permission' ? 'ActionRequired' : 'Unknown', message: boundary }))
+    });
     if (suffix === 'game-password/reveal' && method === 'POST') return reply(result({ password: 'SYNTHETIC-ONLY' }));
     if ((suffix === 'requirements' || suffix === 'compatibility') && method === 'GET') return unavailableState('Game compatibility inventory', result({ ok: false, requirements: null,
       ...(suffix === 'compatibility' ? { clientVersion: null, clientVersionSource: 'Unknown', versionComparison: 'Unknown', addOnComparison: 'Unknown' } : {}) }));

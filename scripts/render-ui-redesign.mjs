@@ -345,6 +345,10 @@ async function navigateHeader(page, workspace, record) {
 async function section(page, [label, value, button], record) {
   // Both owned and paired servers now use the selected-server sidebar.
   if (label === 'Join sections') label = 'Selected server sections';
+  if (label === 'This Host PC sections') {
+    const disclosure = page.locator('.server-sections-disclosure');
+    if (!await disclosure.evaluate(el => el.open)) await disclosure.locator(':scope > summary').click();
+  }
   record.actions.push({ action: 'select-section', label, value, button });
   const select = page.getByRole('combobox', { name: label, exact: true });
   if (await select.isVisible()) await select.selectOption(value);

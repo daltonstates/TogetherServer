@@ -515,7 +515,7 @@ describe('Task-first app and Host PC navigation', () => {
     }
     expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/mode/friend', '/api/local/mode/host'])
     expectNoServerAction()
-  })
+  }, 10_000)
 
   it.each(['Host', 'Friend'] as const)('opens Appearance from the header settings gear in %s without changing mode', async mode => {
     if (mode === 'Friend') state = friend()
