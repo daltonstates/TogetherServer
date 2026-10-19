@@ -26,7 +26,7 @@
 .server-command-header .inline-blocker, .server-progress { margin: .75rem 0 0; }
 .server-progress { color: var(--color-text-muted); font-size: .8125rem; line-height: 1.5; }
 .server-command-header .action-feedback { margin-block: .75rem 0; }
-.server-tabs { flex-wrap: nowrap; gap: .25rem; padding-inline: var(--server-inset); scrollbar-width: thin; }
+.server-tabs { flex-wrap: nowrap; gap: .25rem; padding-inline: var(--server-inset); }
 .server-tabs .ui-button { display: inline-flex; align-items: center; gap: .45rem; min-height: 46px; padding: .65rem .7rem; font-size: .8125rem; }
 .server-tabs .icon { flex-shrink: 0; width: 16px; height: 16px; opacity: .8; }
 .server-tab-content { display: flex; flex-direction: column; gap: var(--server-gap); min-width: 0; padding: var(--server-inset); }

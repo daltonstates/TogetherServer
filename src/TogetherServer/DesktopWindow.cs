@@ -538,9 +538,9 @@ internal sealed class DesktopWindow
             AutoSize = true,
             Location = new Point(47, 12)
         };
-        var close = ChromeButton("×", "Close " + displayName);
-        var maximize = ChromeButton("□", "Maximize " + displayName);
-        var minimize = ChromeButton("—", "Minimize " + displayName);
+        var close = ChromeButton(DesktopCaptionGlyph.Close, "Close " + displayName);
+        var maximize = ChromeButton(DesktopCaptionGlyph.Maximize, "Maximize " + displayName);
+        var minimize = ChromeButton(DesktopCaptionGlyph.Minimize, "Minimize " + displayName);
         close.Dock = DockStyle.Right;
         maximize.Dock = DockStyle.Right;
         minimize.Dock = DockStyle.Right;
@@ -601,18 +601,16 @@ internal sealed class DesktopWindow
         return content;
     }
 
-    private static Button ChromeButton(string text, string accessibleName)
+    private static ChromeCaptionButton ChromeButton(DesktopCaptionGlyph glyph, string accessibleName)
     {
-        var button = new Button
+        var button = new ChromeCaptionButton(glyph)
         {
-            Text = text,
             AccessibleName = accessibleName,
             TabStop = false,
             Width = 46,
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.Transparent,
             ForeColor = SecondaryTextColor,
-            Font = new Font("Segoe UI Symbol", 11),
             Margin = Padding.Empty,
             UseVisualStyleBackColor = false
         };
@@ -628,14 +626,14 @@ internal sealed class DesktopWindow
     private static void ChromeLeave(object? sender, EventArgs _) =>
         ((Button)sender!).BackColor = Color.Transparent;
 
-    private void UpdateMaximizeChrome(Form window, Button maximize)
+    private void UpdateMaximizeChrome(Form window, ChromeCaptionButton maximize)
     {
         var maximized = window.WindowState == FormWindowState.Maximized;
-        maximize.Text = maximized ? "❐" : "□";
+        maximize.SetGlyph(maximized ? DesktopCaptionGlyph.Restore : DesktopCaptionGlyph.Maximize);
         maximize.AccessibleName = (maximized ? "Restore " : "Maximize ") + displayName;
     }
 
-    private void ToggleMaximize(Form window, Button maximize)
+    private void ToggleMaximize(Form window, ChromeCaptionButton maximize)
     {
         if (window.WindowState == FormWindowState.Maximized) window.WindowState = FormWindowState.Normal;
         else if (window is ChromeForm chrome) chrome.MaximizeWithinWorkingArea();
@@ -888,8 +886,9 @@ internal sealed class DesktopWindow
 
     private static void RevealWindow(Form window)
     {
-        if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
         if (window is ChromeForm chrome) chrome.PrepareForReveal();
+        else if (window.WindowState == FormWindowState.Minimized)
+            SendMessage(window.Handle, DesktopChrome.SystemCommandMessage, new IntPtr(DesktopChrome.RestoreCommand), IntPtr.Zero);
         window.ShowInTaskbar = true;
         window.Show();
         window.BringToFront();
@@ -1079,6 +1078,27 @@ internal sealed class DesktopWindow
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
+    private sealed class ChromeCaptionButton(DesktopCaptionGlyph initialGlyph) : Button
+    {
+        private DesktopCaptionGlyph glyph = initialGlyph;
+
+        internal void SetGlyph(DesktopCaptionGlyph value)
+        {
+            if (glyph == value) return;
+            glyph = value;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs eventArgs)
+        {
+            base.OnPaint(eventArgs);
+            eventArgs.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using var pen = new Pen(ForeColor, DesktopChrome.StrokeWidth(DeviceDpi));
+            foreach (var stroke in DesktopChrome.GlyphStrokes(glyph, ClientSize, DeviceDpi))
+                eventArgs.Graphics.DrawLine(pen, stroke.Start, stroke.End);
+        }
+    }
+
     private sealed class ChromeForm : Form
     {
         private const int ResizeBorder = 7;
@@ -1095,9 +1115,23 @@ internal sealed class DesktopWindow
 
         public void AllowActivation() => suppressActivation = false;
 
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var parameters = base.CreateParams;
+                parameters.Style |= DesktopChrome.WindowStyles;
+                return parameters;
+            }
+        }
+
         public void PrepareForReveal()
         {
             suppressActivation = false;
+            // SC_RESTORE preserves Windows' restore-to-maximized placement. A
+            // WindowState = Normal assignment would discard that information.
+            if (WindowState == FormWindowState.Minimized)
+                SendMessage(Handle, DesktopChrome.SystemCommandMessage, new IntPtr(DesktopChrome.RestoreCommand), IntPtr.Zero);
             if (rememberedPlacement is { } saved)
             {
                 rememberedPlacement = null;
@@ -1142,15 +1176,33 @@ internal sealed class DesktopWindow
         protected override void WndProc(ref Message message)
         {
             const int hitTest = 0x0084;
+            const int calculateNonClientSize = 0x0083;
+            const int getMinMaxInfo = 0x0024;
+            if (message.Msg == getMinMaxInfo)
+            {
+                // Shell maximize/restore and snap can bypass our caption
+                // button. Keep their full client frame inside this monitor's
+                // work area, including a top or left taskbar.
+                var screen = Screen.FromHandle(message.HWnd);
+                MaximizedBounds = RelativeMaximizedBounds(screen.Bounds, screen.WorkingArea);
+            }
+            if (message.Msg == calculateNonClientSize && message.WParam != IntPtr.Zero)
+            {
+                // Retain the standard native styles for shell behavior, but
+                // use the whole window as our custom-drawn client frame.
+                message.Result = IntPtr.Zero;
+                return;
+            }
             if (message.Msg == hitTest && WindowState == FormWindowState.Normal)
             {
                 base.WndProc(ref message);
                 var screen = new Point(unchecked((short)(long)message.LParam), unchecked((short)((long)message.LParam >> 16)));
                 var point = PointToClient(screen);
-                var left = point.X <= ResizeBorder;
-                var right = point.X >= ClientSize.Width - ResizeBorder;
-                var top = point.Y <= ResizeBorder;
-                var bottom = point.Y >= ClientSize.Height - ResizeBorder;
+                var border = (int)Math.Ceiling(ResizeBorder * DeviceDpi / 96d);
+                var left = point.X <= border;
+                var right = point.X >= ClientSize.Width - border;
+                var top = point.Y <= border;
+                var bottom = point.Y >= ClientSize.Height - border;
                 message.Result = (left, right, top, bottom) switch
                 {
                     (true, _, true, _) => new IntPtr(13),
@@ -1161,7 +1213,7 @@ internal sealed class DesktopWindow
                     (_, true, _, _) => new IntPtr(11),
                     (_, _, true, _) => new IntPtr(12),
                     (_, _, _, true) => new IntPtr(15),
-                    _ => message.Result
+                    _ => new IntPtr(1)
                 };
                 return;
             }

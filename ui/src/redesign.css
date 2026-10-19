@@ -270,7 +270,6 @@ body:has([data-resizing]) { cursor: col-resize; user-select: none; }
 .app-shell .host-focused-detail .server-detail { display: block; }
 .app-shell .server-detail-card { margin: 0; }
 .app-shell :is(.server-log-viewer, .server-log-console, .server-log-empty) { background: var(--color-field); }
-.app-shell .server-log-console { scrollbar-color: var(--color-border-strong) var(--color-field); }
 .app-shell .server-log-line { min-width: 0; }
 .app-shell .server-log-line.severity-error { background: var(--color-danger-bg); }
 .app-shell .server-log-actions { flex-wrap: wrap; max-width: 100%; min-width: 0; }
@@ -374,11 +373,11 @@ body:has([data-resizing]) { cursor: col-resize; user-select: none; }
 
 /* Each desktop column owns its scroll. The compact mobile view keeps one page scroll. */
 .app-shell .context-content { align-content: start; }
-.app-shell .context-sidebar { scrollbar-width: thin; scrollbar-color: var(--color-border-strong) transparent; }
 .app-shell .context-sidebar:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -3px; }
 @media (min-width: 701px) {
-  .app-shell .workspace-scroll:has(> .context-workspace) {
-    display: flex; flex-direction: column; gap: 12px; overflow: hidden; padding-block-end: 8px;
+  .app-shell .workspace-scroll:has(> .context-workspace),
+  :root[data-density="compact"] .app-shell .workspace-scroll:has(> .context-workspace) {
+    display: flex; flex-direction: column; gap: 12px; overflow: hidden; padding: 0;
   }
   .app-shell .workspace-scroll > .context-workspace {
     flex: 1 1 auto; min-height: 0; align-items: stretch;
@@ -386,10 +385,17 @@ body:has([data-resizing]) { cursor: col-resize; user-select: none; }
   .app-shell .context-workspace > .context-sidebar {
     position: relative; top: auto; min-height: 0; max-height: 100%;
     overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable;
+    border: 0; border-radius: 0;
+  }
+  .sidebar-resizer {
+    background: var(--color-surface); border-inline-end: 1px solid var(--color-border-subtle);
   }
   .app-shell .context-workspace > .context-content {
     min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain;
-    scrollbar-gutter: stable; padding: 4px 6px 24px 4px;
+    scrollbar-gutter: stable; padding: 16px 16px 24px;
+  }
+  :root[data-density="compact"] .app-shell .context-workspace > .context-content {
+    padding: 12px 12px 20px;
   }
   .app-shell .workspace-scroll:has(> .context-workspace) > .startup-recovery {
     flex: 0 0 auto; max-height: min(260px, 32dvh); overflow-y: auto;

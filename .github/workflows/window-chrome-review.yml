@@ -1,0 +1,43 @@
+name: Window chrome review
+
+on:
+  push:
+    branches: ['review/ui-redesign-sidebar-chrome-*']
+    paths-ignore: ['docs/**', '**/*.md']
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact review source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install pinned .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Install pinned Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the bundled candidate without launching it
+        shell: pwsh
+        run: ./scripts/build.ps1 -ReleaseName release-candidate
+      - name: Verify native window behavior on this dedicated hosted runner
+        shell: pwsh
+        run: ./checks/window-chrome-smoke.ps1 -AppPath local-data/release-candidate/TogetherServer.exe -AllowInteractiveTests
+      - name: Preserve exact candidate and native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: window-chrome-review
+          path: |
+            local-data/release-candidate/TogetherServer.exe
+            local-data/ci-evidence/window-chrome/
+          if-no-files-found: error
+          retention-days: 7

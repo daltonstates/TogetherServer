@@ -295,8 +295,8 @@ const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups',
   ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation|^move-hosting-/.test(testCase.id)).map(testCase => testCase.id)]);
 const reviewCases = args.includes('--move-hosting-only')
   ? [...cases, ...dialogs].filter(testCase => testCase.id.startsWith('move-hosting-'))
-  : args.includes('--sidebar-only') ? cases.filter(testCase => testCase.sidebarReview ||
-    ['host-files', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates'].includes(testCase.id))
+  : args.includes('--sidebar-only') ? [...cases, ...dialogs].filter(testCase => testCase.sidebarReview ||
+    ['host-files', 'host-logs', 'host-sessions', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates', 'dialog-protection'].includes(testCase.id))
   : [...cases, ...dialogs];
 const plans = reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
@@ -671,6 +671,56 @@ async function sidebarResizeEvidence(page, testCase, record) {
   record.assertions.push({ sidebarResize: { initial, dragged, maximum, saved, constrained, restored: await width() } });
   await page.mouse.move(0, 0);
   await page.keyboard.press('Escape');
+}
+
+async function workspaceChromeEvidence(page, record) {
+  const evidence = await page.evaluate(() => {
+    const bounds = selector => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const r = element.getBoundingClientRect();
+      return r.width && r.height ? { top: r.top, right: r.right, bottom: r.bottom, left: r.left } : null;
+    };
+    const panes = ['.context-sidebar', '.context-content'].map(bounds);
+    const workspace = bounds('.context-workspace'), scroll = bounds('.workspace-scroll');
+    const footer = bounds('.status-strip');
+    const findings = [];
+    if (innerWidth > 700 && workspace && scroll && panes.every(Boolean)) {
+      for (const [index, pane] of panes.entries()) {
+        for (const edge of ['top', 'bottom'])
+          if (Math.abs(pane[edge] - workspace[edge]) > 1)
+            findings.push({ kind: 'workspace-pane-edge-gap', pane: index, edge, paneEdge: pane[edge], workspaceEdge: workspace[edge] });
+      }
+      if (!bounds('.workspace-scroll > .startup-recovery') && Math.abs(workspace.top - scroll.top) > 1)
+        findings.push({ kind: 'workspace-header-gap', workspaceTop: workspace.top, scrollTop: scroll.top });
+      if (Math.abs(workspace.bottom - scroll.bottom) > 1 || footer && Math.abs(scroll.bottom - footer.top) > 1)
+        findings.push({ kind: 'workspace-footer-gap', workspaceBottom: workspace.bottom, scrollBottom: scroll.bottom, footerTop: footer?.top });
+      if (Math.abs(panes[1].right - innerWidth) > 1)
+        findings.push({ kind: 'workspace-right-gutter', contentRight: panes[1].right, viewport: innerWidth });
+    }
+    const candidates = new Set(document.querySelectorAll('.context-sidebar,.context-content,dialog[open],textarea,.server-log-console'));
+    for (const element of document.querySelectorAll('body *')) {
+      const style = getComputedStyle(element);
+      if ((element.scrollHeight > element.clientHeight + 1 && /auto|scroll/.test(style.overflowY)) ||
+          (element.scrollWidth > element.clientWidth + 1 && /auto|scroll/.test(style.overflowX))) candidates.add(element);
+    }
+    const scrollbars = [...candidates].flatMap(element => {
+      const r = element.getBoundingClientRect();
+      if (!r.width || !r.height) return [];
+      const bar = getComputedStyle(element, '::-webkit-scrollbar');
+      const thumb = getComputedStyle(element, '::-webkit-scrollbar-thumb');
+      const button = getComputedStyle(element, '::-webkit-scrollbar-button');
+      const sample = { tag: element.tagName, className: element.className, width: bar.width, height: bar.height,
+        thumb: thumb.backgroundColor, button: button.display, overflowY: getComputedStyle(element).overflowY };
+      if (bar.width !== '10px' || bar.height !== '10px' || button.display !== 'none' ||
+          !thumb.backgroundColor || thumb.backgroundColor === 'rgba(0, 0, 0, 0)')
+        findings.push({ kind: 'unthemed-scrollbar', ...sample });
+      return [sample];
+    });
+    return { workspace, scroll, panes, footer, scrollbars, findings };
+  });
+  record.workspaceChrome = evidence;
+  record.layoutFindings.push(...evidence.findings);
 }
 
 function scrollCaptureOffsets(height, contentHeight) {
@@ -1075,6 +1125,7 @@ try {
         else await pickerEvidence(page, record);
       }
       if (testCase.sidebarReview) await sidebarResizeEvidence(page, testCase, record);
+      await workspaceChromeEvidence(page, record);
       record.layoutFindings.push(...await layoutFindings(page));
       if (testCase.id.startsWith('move-hosting-')) {
         const spacing = await page.evaluate(() => {

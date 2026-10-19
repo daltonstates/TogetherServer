@@ -57,6 +57,10 @@ Use the gear in the app header to enable **Open at Windows sign-in** and **Close
 
 Build a fresh unsigned production-mode EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1`. Use the development/staging package below when the stable app must remain open at the same time. The repository pins .NET in `global.json` and Node in `.node-version`.
 
+The latest local handoff is `local-data/latest-build/TogetherServer.exe`.
+See [workspace cleanup and window controls](docs/35-WORKSPACE-AND-WINDOW-CHROME.md)
+for artifact retention, shared scrollbar styling and taskbar minimize/restore.
+
 ## Develop beside the stable app
 
 Use the explicit staging instance when friends need the stable app to keep working while a candidate is tested. Build and assemble it with:
