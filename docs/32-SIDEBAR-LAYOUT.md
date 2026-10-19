@@ -66,3 +66,20 @@ matches the local production UI bundle. Downloaded evidence and the separate
 audit remain under ignored `local-data/sidebar-layout/review-39295264032/` and
 `local-data/sidebar-layout/signoff-audit.json`. The hosted manifest is retained
 unchanged; visual signoff is recorded here and in the separate audit.
+
+## Production EXE
+
+Built from `c58585613f0eb95ba55e7e217341acf204b4df63` into the fresh folder
+`local-data/sidebar-production-20261019-c585856/TogetherServer.exe`.
+
+- Version: `0.3.2.1`; product version includes the exact source revision.
+- Size: 66,069,551 bytes; Authenticode: `NotSigned`.
+- SHA-256: `dd822c147dac826f63e914d8505303758cff6b062ea4eb0d4d815c521eac51da`.
+- PASS: static GUI executable, matching bundled assembly and all seven current
+  embedded UI assets. The UI index matches the hosted review above.
+- The EXE was not launched or installed. The previously running production
+  process retained its PID, start time and executable path. No release or tag
+  was created.
+
+The artifact folder includes `TogetherServer.exe.sha256`, `artifact.json` and
+`package-evidence.json`; these local build outputs remain out of Git.
