@@ -35,6 +35,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Remembered Friend revocation", () => FriendRevocationVisibilityChecks.RunAsync(root)),
     ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
     ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root)),
+    ("Legacy roster bootstrap races and trust floors", () => SharedRosterBootstrapChecks.RunAsync(root)),
     ("Solo and descendant world recovery", () => SoloRecoveryChecks.RunAsync(root)),
     ("Signed peer world directory", () => { SharedWorldPeerChecks.Run(root); return Task.CompletedTask; }),
     ("Fixed signed peer protocol", () => { WorldPeerProtocolChecks.Run(); return Task.CompletedTask; }),

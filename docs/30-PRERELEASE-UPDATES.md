@@ -57,14 +57,16 @@ this checkbox alone does not establish that acceptance.
    asset names and checksums. The first authorized preview is `v0.3.2.1`;
    its fourth numeric component is retained throughout update verification.
 3. Publish the GitHub release with **This is a pre-release** selected. Only
-   enrolled PCs are offered it. Development devices without the checkbox need
-   one initial installation containing this feature.
+   enrolled PCs with a compatible updater are offered it. The published 0.3.2
+   updater accepts only three-part tags, so 0.3.2.1 needs one direct installation
+   even if that release is later promoted to stable. This installation also
+   supplies the enrollment checkbox for subsequent previews.
 4. Give each subsequent preview a higher numeric version. Never replace tested
    assets under an existing tag to deliver another build.
 5. When the exact candidate passes acceptance, clear the prerelease designation
-   and mark that release latest without changing its assets. Stable PCs are then
-   offered those same tested bytes. Preview PCs already running them need no
-   reinstall just because the release was promoted.
+   and mark that release latest without changing its assets. Stable PCs with a
+   compatible updater are then offered those same tested bytes. Preview PCs
+   already running them need no reinstall just because the release was promoted.
 
 The [0.3.2.1 prerelease record](31-0.3.2.1-PRERELEASE.md) tracks the separately
 authorized publication, four-part version support and exact-candidate acceptance.
