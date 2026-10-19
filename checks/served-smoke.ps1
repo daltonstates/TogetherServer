@@ -251,7 +251,10 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     }
     if ($customReady.state -ne 'Ready' -or $customReady.onlinePlayers -ne 0 -or
         @($customReady.playerNames).Count -ne 1 -or $customReady.playerCountTrusted -ne $false -or
-        !$customReady.autoShutdownReason.Contains('certification')) { throw 'Packaged uncertified custom status did not remain display-only and fail closed.' }
+        $null -ne $customReady.autoShutdownAtUtc) { throw 'Packaged uncertified custom status did not remain display-only and fail closed.' }
+    if ($customReady.autoShutdownReason -ne 'Automatic shutdown needs an owner-tested Custom setup and a current player count.') {
+        throw 'Packaged uncertified custom status did not explain its shutdown blocker.'
+    }
     $customStopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/stop" -Method Post -Headers $headers
     if (!$customStopped.ok -or $customStopped.code -ne 'CustomStopped') { throw "Custom Stop failed: $($customStopped.message)" }
     $customRemoved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body (@{ profiles = @() } | ConvertTo-Json)
@@ -265,7 +268,7 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     Write-Host 'PASS local mutation gate'
     if (!$js.Content.Contains('Update and restart') -or !$js.Content.Contains('Check for updates') -or
         !$js.Content.Contains('Clear activity') -or !$js.Content.Contains('Not now') -or
-        !$js.Content.Contains('Nothing needs fixing') -or !$js.Content.Contains('waiting for a server code')) {
+        !$js.Content.Contains('No current server problems are reported.') -or !$js.Content.Contains('waiting for a server code')) {
         throw 'The update, notification, or calm idle-Friend controls were not bundled.'
     }
     $updateForbidden = $false

@@ -146,8 +146,9 @@ await Check("protected scripts are required and never authorize remote stop", as
         Require(ready.OnlinePlayers == 0 && ready.MaxPlayers == 4, "script count was not displayed");
         Require(ready.PlayerNames?.SequenceEqual(["Alice", "Bob"]) == true, "script player list was not displayed");
         Require(!ready.PlayerCountTrusted, "script count was marked authoritative");
-        Require(ready.AutoShutdownAtUtc is null && ready.AutoShutdownReason?.Contains("certification", StringComparison.OrdinalIgnoreCase) == true,
-            "custom zero count started automatic shutdown");
+        Require(ready.AutoShutdownAtUtc is null, "untrusted custom zero count started automatic shutdown");
+        Require(ready.AutoShutdownReason == "Automatic shutdown needs an owner-tested Custom setup and a current player count.",
+            $"untrusted custom zero count did not explain its shutdown blocker: {ready.AutoShutdownReason}");
         using var permit = RemoteStopSafety.TryAcquire(await manager.SnapshotAsync(), profile.Id, data, games);
         Require(!permit.Allowed && permit.Code == "PlayerCountUntrusted", "custom zero count authorized Friend Stop");
         Require((await manager.SetCustomScriptsAsync(profile.Id, Scripts())).Code == "ProfileInUse",

@@ -671,8 +671,8 @@ try
         declaredPorts.Detail.Contains("does not prove that a Friend can reach it", StringComparison.Ordinal) &&
         declaredPorts.Detail.Contains("join the game", StringComparison.Ordinal) &&
         routeDiagnostic.State == "Unavailable" &&
-        routeDiagnostic.Detail.Contains("does not prove that a Friend connected", StringComparison.Ordinal) &&
-        routeDiagnostic.Detail.Contains("joined the game", StringComparison.Ordinal),
+        routeDiagnostic.Detail.Contains("This tests the app port.", StringComparison.Ordinal) &&
+        routeDiagnostic.Detail.Contains("A Friend connection and game join still need checking.", StringComparison.Ordinal),
         "owner diagnostics overstated local listener or outside TCP evidence");
     var supportExport = await OwnerGetJson<SupportReportExport>(owner, "/api/local/support-report");
     Require(supportExport.FileName == SupportReportExporter.FileName &&
