@@ -106,3 +106,44 @@ also archived separately after the check completed.
   source evidence; an actual runner exercises only its current desktop DPI.
   Mixed-DPI/multiple-monitor transitions and real game/save/Friend-network
   acceptance were not exercised by this slice.
+
+## Titlebar double-click follow-up
+
+Double-clicking the empty titlebar, title text or app mark now maximizes the
+window; double-clicking again restores its last normal position and size. The
+caption handles the second left-button press before entering the native drag
+loop, which consumes the mouse-up where WinForms raises `DoubleClick`. A single
+press still uses the existing drag behavior; caption buttons keep their own
+actions.
+
+PASS: local app compilation with zero warnings/errors, PowerShell parsing,
+dry-run and the foreground guard before any desktop/path access. No local app,
+browser or native-input test was launched. The unchanged UI bundle retains
+index SHA-256 `d7fae879483afe918d2d019a2789b8f45aba909476f645fcc334502f29174e44`;
+the automatic [hosted UI regression](https://github.com/daltonstates/TogetherServer/actions/runs/39330394047)
+also passed.
+
+PASS: [hosted Windows native review](https://github.com/daltonstates/TogetherServer/actions/runs/39330394059)
+at `adaad14151ea3809a3f95108525c8221812bc482`: all 14 checks, zero skips at
+96 DPI. Physical mouse double-clicks cover all three titlebar regions and a
+second moved/resized normal window. The first restores exactly to
+`[40,30,840,630]`, the updated one to `[60,40,820,620]`; maximized visible
+clients fill `[0,0,1024,720]`. Existing normal/maximized taskbar, caption,
+ShowAsync, single-instance, tray and final normal recovery checks also pass.
+Artifact `12224716036` ZIP SHA-256 is
+`e2d071c0400ba54470264a8ca952908647d8cba42084e6e01c8371ad80b881c2`.
+
+The latest handoff is now `local-data/latest-build-titlebar/TogetherServer.exe`,
+the exact tested 66,071,341-byte EXE, version
+`0.3.2.1+adaad14151ea3809a3f95108525c8221812bc482`, SHA-256
+`d2c0cd82e12a5a27725362775e81a34f6a21f2ab453f840753d9f0501ed6a4f5`.
+Static inspection verified the bundled code against the local CI-mode build
+with compiler/PDB identity fields recorded separately, all seven current UI
+assets, the native WebView loader and x64 GUI header. It remains unsigned and
+was not launched or installed locally. Build identity, package evidence and
+all native results accompany the EXE; temporary extraction is outside the
+checkout under `%TEMP%/togetherserver-titlebar-39330394059`.
+
+The owner's running copy in `local-data/latest-build` was left byte-identical
+and running. Exit that copy before opening the new handoff. Actual mixed-DPI
+and multiple-monitor transitions remain outside the recorded native evidence.
