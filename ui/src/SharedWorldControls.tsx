@@ -1361,7 +1361,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     {!available && <p>{status?.thisPcVersion != null ?
       'Save sharing could not be checked on this Host. You can still recover your verified copy below.' :
       'Connect to a Host with shared-save support before receiving saves.'}</p>}
-    <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || (busy && !status?.consented)}
+    <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || !status || (busy && !status.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
     {status && !status.consented && <DismissibleNotice as="p" scope={noticeScope} role="note">Turn on Allow saves on this PC before choosing Get latest save.</DismissibleNotice>}
     {transferPhase && <p role="note">Get latest save is unavailable while this copy is being received, verified or acknowledged.</p>}

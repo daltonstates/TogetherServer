@@ -40,6 +40,29 @@ function openHostSharingDetails(name: string) {
 }
 
 describe('Shared saves controls', () => {
+  it('waits for this PC\'s saved consent before enabling the receiving choice', async () => {
+    let release!: (response: Response) => void
+    const pending = new Promise<Response>(resolve => { release = resolve })
+    const mutations: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method) mutations.push(url)
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/handoff/restore')) return reply({ staged: false })
+      if (url.endsWith('/shared-world')) return pending
+      return reply([])
+    }))
+    render(<FriendSharedWorlds profileId={profile} available />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
+    const consent = screen.getByRole('checkbox', { name: 'Allow saves on this PC' })
+    expect(consent).toBeDisabled()
+    expect(mutations).toEqual([])
+    release(reply({ consented: true, hostVersion: null, thisPcVersion: null,
+      state: 'Waiting for a completed save', error: null }))
+    await waitFor(() => expect(consent).toBeEnabled())
+    expect(consent).toBeChecked()
+    expect(mutations).toEqual([])
+  })
+
   it('keeps guarded recovery usable from a verified copy when Host support is unknown after restart', async () => {
     const calls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {

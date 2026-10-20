@@ -72,12 +72,24 @@ async function nav(page, name) {
     .or(page.getByRole('tab', { name: exact(name) })).or(page.getByRole('link', { name: exact(name) })));
   await match.first().click({ timeout: 15000 });
 }
-async function checked(page, name) {
+async function choice(page, name, enabled) {
   const control = visible(page.getByRole('checkbox', { name })).first();
   await control.waitFor({ state: 'visible', timeout });
-  if (!await control.isChecked()) await control.click({ timeout });
-  await until(() => control.isChecked(), Boolean, 'saved checkbox choice');
+  await until(() => control.isEnabled(), Boolean, 'saved checkbox enabled');
+  if (await control.isChecked() !== enabled) {
+    // A native checkbox toggles before React receives the durable save result.
+    // Wait for that result before another click or navigation can race it.
+    const saving = page.waitForResponse(response => response.request().method() === 'PUT'
+      && new URL(response.url()).origin === new URL(page.url()).origin
+      && new URL(response.url()).pathname.startsWith('/api/local/'), { timeout });
+    await control.click({ timeout });
+    const response = await saving;
+    const result = await response.json();
+    if (!response.ok() || result?.ok === false) throw new Error('The checkbox save was rejected');
+  }
+  await until(() => control.isChecked(), value => value === enabled, 'saved checkbox choice');
 }
+const checked = (page, name) => choice(page, name, true);
 async function read(page, suffix = '/api/local/snapshot') {
   return page.evaluate(async endpoint => {
     const response = await fetch(endpoint, { credentials: 'same-origin', headers: { 'X-TogetherServer-Local': '1' } });
@@ -248,6 +260,38 @@ try {
     await sharedSaves(friend);
     await checked(friend, /Allow saves on this PC/);
     await shot(host, '03-host-sharing'); await shot(friend, '03-friend-consent');
+  });
+  await stage('hosting permission withdrawal blocks the action', async () => {
+    await choice(host, /^Can host this save for /, false);
+    await nav(friend, 'Play');
+    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
+      value => !value.allowed && !value.readyForManualStart && !value.running, 'withdrawn hosting permission');
+    await until(() => visible(friend.getByRole('button', { name: 'Host on this PC', exact: true })).count(),
+      count => count === 0, 'removed hosting action');
+    if (hostingStartRequests) throw new Error('Removing hosting permission dispatched Start');
+    await shot(friend, '03-hosting-permission-removed');
+    await checked(host, /^Can host this save for /);
+    await sharedSaves(friend); await nav(friend, 'Play');
+    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
+      value => value.allowed && value.consented, 'restored hosting permission without losing consent');
+    report.failurePathCoverage = { hostingGrantWithdrawal: true };
+  });
+  await stage('local save consent is required and cancel starts nothing', async () => {
+    await sharedSaves(friend);
+    await choice(friend, /Allow saves on this PC/, false);
+    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world`),
+      value => value.consented === false, 'local save consent withdrawn');
+    await nav(friend, 'Play'); await button(friend, 'Host on this PC');
+    const dialog = friend.getByRole('dialog', { name: 'Host on this PC', exact: true });
+    await dialog.waitFor({ state: 'visible', timeout });
+    const consent = dialog.getByRole('checkbox', { name: /Keep this save on my PC and host my own copy/ });
+    if (await consent.isChecked() || await dialog.getByRole('button', { name: 'Continue and start', exact: true }).isEnabled())
+      throw new Error('Hosting did not require this PC\'s explicit save consent');
+    await shot(friend, '03-explicit-local-consent-required');
+    await dialog.getByRole('button', { name: 'Close Host on this PC', exact: true }).click();
+    if (hostingStartRequests) throw new Error('Canceling local consent dispatched Start');
+    await sharedSaves(friend); await checked(friend, /Allow saves on this PC/);
+    report.failurePathCoverage.localConsentAndCancel = true;
   });
   await stage('bidirectional signed chat and mute', async () => {
     await chat(host, 'Local UI owner message');

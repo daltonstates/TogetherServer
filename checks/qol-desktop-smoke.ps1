@@ -4,7 +4,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (!$AllowInteractiveTests) {
-    throw 'ForegroundSafety: QoL desktop smoke opens a native app, browser debugging connection and file picker. -AllowInteractiveTests requires explicit owner approval for a separate Windows test PC or unattended CI runner. Never run on the active owner desktop.'
+    throw 'ForegroundSafety: QoL desktop smoke opens a native app, browser debugging connection and file picker, clicks Explorer tray/notification surfaces and changes foreground focus. -AllowInteractiveTests requires explicit owner approval for a separate Windows test PC or unattended CI runner. Never run on the active owner desktop.'
 }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or $PSVersionTable.PSVersion.Major -lt 7) {
     throw 'QoL desktop smoke requires Windows and PowerShell 7 on the approved dedicated runner.'
@@ -41,8 +41,8 @@ $caseResults = [ordered]@{
     rejectedFlush = @{ name = 'Rejected draft keeps native app open'; status = 'SKIP'; reason = 'Not reached.' }
     startup = @{ name = 'Windows startup unavailable in development staging'; status = 'SKIP'; reason = 'Not reached.' }
     isolation = @{ name = 'Candidate and fake boundary unchanged'; status = 'SKIP'; reason = 'Not reached.' }
-    explorerQuit = @{ name = 'Explorer tray menu Quit'; status = 'SKIP'; reason = 'Not exercised by this smoke.' }
-    notifications = @{ name = 'OS balloon delivery and click'; status = 'SKIP'; reason = 'Not exercised by this smoke.' }
+    explorerQuit = @{ name = 'Explorer tray menu Quit and protected draft flush'; status = 'SKIP'; reason = 'Not reached.' }
+    notifications = @{ name = 'OS balloon delivery, physical click and native navigation'; status = 'SKIP'; reason = 'Not reached.' }
     cleanup = @{ name = 'Exact disposable process cleanup'; status = 'SKIP'; reason = 'Not reached.' }
 }
 $dataRoot = Join-Path $caseRoot 'staging-data'
@@ -677,6 +677,7 @@ function Post-Json([string]$Path, $Body = $null, [string]$Method = 'POST') {
     if ($null -ne $Body) { $arguments.ContentType = 'application/json'; $arguments.Body = $Body | ConvertTo-Json -Depth 20 -Compress }
     return Invoke-RestMethod @arguments
 }
+. (Join-Path $PSScriptRoot 'qol-native-shell-helper.ps1')
 
 # CDP attaches only to this disposable WebView2. It never launches Chromium or
 # calls Browser.close on the remote native browser. A process exit detaches it.
@@ -786,7 +787,32 @@ try {
     await page.screenshot({ path: out('native-150-percent.png') });
     await openChat();
     await page.screenshot({ path: out('native-chat-150-percent.png') });
-  } else if (mode === 'arm-draft' || mode === 'arm-failed-draft') {
+  } else if (mode === 'notification-click') {
+    await openChat();
+    await page.evaluate(() => {
+      window.__qolSmokeNotificationClicks = 0;
+      window.__qolSmokeNotificationListener = event => {
+        const target = event.data?.destination;
+        if (event.data?.type === 'together-notification' && target?.workspace === 'settings' &&
+          target?.section === 'app' && target.profileId == null && target.connectionId == null)
+          window.__qolSmokeNotificationClicks++;
+      };
+      window.chrome.webview.addEventListener('message', window.__qolSmokeNotificationListener);
+    });
+    assert.equal(await navigation.getByRole('button', { name: 'Servers', exact: true }).getAttribute('aria-current'), 'page');
+    fs.writeFileSync(out('notification-click-ready.json'), JSON.stringify({ ready: true }));
+    await page.waitForFunction(() => window.__qolSmokeNotificationClicks === 1);
+    await page.getByRole('region', { name: 'App preferences', exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await navigation.getByRole('button', { name: 'App Settings', exact: true }).getAttribute('aria-current'), 'page');
+    const mobileSections = page.getByRole('combobox', { name: 'App settings sections', exact: true });
+    if (await mobileSections.isVisible()) assert.equal(await mobileSections.inputValue(), 'appearance');
+    else assert.equal(await page.getByRole('navigation', { name: 'App settings sections', exact: true })
+      .getByRole('button', { name: 'Appearance', exact: true }).getAttribute('aria-current'), 'location');
+    assert.equal(await page.evaluate(() => window.__qolSmokeNotificationClicks), 1);
+    fs.writeFileSync(out('notification-click-result.json'), JSON.stringify({ nativeMessageObserved: true,
+      exactSettingsDestination: true, navigationChanged: true, clicks: 1 }));
+    await page.screenshot({ path: out('native-notification-settings.png') });
+  } else if (mode === 'arm-draft' || mode === 'arm-failed-draft' || mode === 'arm-tray-draft') {
     await openChat();
     const identity = { purpose: 'chat', profileId, connectionId: null, key: 'compose' };
     const baseline = await json('/api/local/ui-drafts/read', identity);
@@ -869,6 +895,9 @@ try {
     await page.evaluate(() => {
       if (window.__qolSmokeNativeListener) window.chrome.webview.removeEventListener('message', window.__qolSmokeNativeListener);
       delete window.__qolSmokeNativeListener;
+      if (window.__qolSmokeNotificationListener) window.chrome.webview.removeEventListener('message', window.__qolSmokeNotificationListener);
+      delete window.__qolSmokeNotificationListener;
+      delete window.__qolSmokeNotificationClicks;
     });
   }
   fs.writeSync(1, `PASS native WebView phase ${mode}\n`);
@@ -991,6 +1020,9 @@ try {
     Begin-Case 'appearance'
     $app = Start-TestApp
     Wait-TestApp $true
+    # Keep setup activity quiet in this disposable app. The notification case
+    # explicitly allows only its real first-close Lifecycle hint later.
+    Require ((Post-Json '/api/local/desktop/notifications' @{ quietMode = $true } 'PUT').quietMode) 'Disposable app notification quiet mode did not save.'
     $snapshot = Invoke-RestMethod "$baseUrl/api/local/snapshot" -TimeoutSec 3
     $settings = $snapshot.settings
     $settings.profiles = @(@{ id = $profileId; kind = 'Fixture'; name = 'Native desktop fixture'; worldId = 'native-fixture';
@@ -1064,13 +1096,33 @@ try {
     Begin-Case 'tray'
     Require ((Post-Json '/api/local/desktop/preferences' @{ closeToTray = $true } 'PUT').ok) 'Close-to-tray could not be enabled in the disposable instance.'
     $originalId = $app.Id; $originalTicks = $app.Ticks
+    Begin-Case 'notifications'
+    $allowedNotifications = Post-Json '/api/local/desktop/notifications' @{ allowedEvents = @('Lifecycle') } 'PUT'
+    Require (@($allowedNotifications.allowedEvents).Count -eq 1 -and $allowedNotifications.allowedEvents[0] -eq 'Lifecycle') 'The disposable notification event choice did not save.'
+    $notificationState = Post-Json '/api/local/desktop/notifications' @{ quietMode = $false } 'PUT'
+    $nativeShellProof.notification.systemAllowsNotifications = $notificationState.systemAllowsNotifications -eq $true
+    Require ($notificationState.systemAllowsNotifications -eq $true) 'Windows does not currently accept notifications in this dedicated session; OS delivery acceptance cannot pass. No Windows preference was changed.'
+    Require (@(Find-QolBalloon).Count -eq 0) 'An earlier matching development notification is already visible; fresh delivery cannot be identified.'
+    $nodePhase = Start-WebViewPhase 'notification-click'
+    Wait-PhaseReady $nodePhase
     Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
     Wait-TestApp $false
     Require ($app.Id -eq $originalId -and $app.Ticks -eq $originalTicks) 'Close-to-tray replaced the app process.'
-    Require ((Post-Json '/api/local/show').ok) 'The tray-hidden native window did not reopen.'
+    $balloon = Wait-QolBalloon
+    $nativeShellProof.notification.freshTitleAndBodyObserved = $true
+    Save-QolShellScreenshot $balloon.Element 'native-os-notification.png'
+    Click-QolShellElement $balloon.Element $balloon.Root
+    $nativeShellProof.notification.physicalClickSent = $true
     Wait-TestApp $true
+    Wait-Until { [TogetherServerQolShellCheck]::GetForegroundWindow() -eq $windowHandle } 'Clicking the actual notification did not foreground the exact disposable native window.' 10
+    $nativeShellProof.notification.exactAppForeground = $true
+    Finish-WebViewPhase $nodePhase; $nodePhase = $null
+    Require (Test-Path -LiteralPath (Join-Path $caseRoot 'notification-click-result.json')) 'The actual balloon click did not reach the fixed native App Settings destination.'
+    $nativeShellProof.notification.nativeDestinationVerified = $true
+    Pass-Case 'notifications'
     Require-RectNear $remembered
-    Write-Host 'PASS Close-to-tray hides and reopens the exact same native app'
+    Write-Host 'PASS actual first-close Windows notification is delivered, clicked and opens App Settings in the exact native app'
+    Write-Host 'PASS Close-to-tray hides and notification click reopens the exact same native app'
     Pass-Case 'tray'
 
     # The actual native OpenFileDialog receives only a compiled, copied fixture.
@@ -1228,9 +1280,23 @@ try {
     Write-Host 'PASS a synthetic storage rejection leaves the actual native app open with an owner-visible explanation'
     Pass-Case 'rejectedFlush'
 
-    Begin-Case 'startup'
+    Begin-Case 'explorerQuit'
+    Require ((Post-Json '/api/local/desktop/notifications' @{ quietMode = $true } 'PUT').quietMode) 'Disposable app quiet mode could not suppress a second cold-start tray hint during Quit acceptance.'
+    Require ((Post-Json '/api/local/desktop/preferences' @{ closeToTray = $true } 'PUT').ok) 'Tray Quit setup could not retain close-to-tray.'
+    $nodePhase = Start-WebViewPhase 'arm-tray-draft'
+    Wait-PhaseReady $nodePhase
     Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
-    Require ($app.Process.WaitForExit(25000)) 'The clean native window did not quit.'
+    Wait-TestApp $false
+    Invoke-QolExplorerQuit
+    Require ($app.Process.WaitForExit(25000)) 'The real Explorer tray-menu Quit did not flush its draft and exit the exact app within 25 seconds.'
+    Require (Test-Path -LiteralPath (Join-Path $caseRoot 'arm-tray-draft-native-request.json')) 'Explorer tray Quit bypassed the native protected draft-flush bridge.'
+    Finish-WebViewPhase $nodePhase; $nodePhase = $null
+    $nativeShellProof.trayQuit.nativeFlushObserved = $true
+    $nativeShellProof.trayQuit.exactProcessExited = $true
+    Pass-Case 'explorerQuit'
+    Write-Host 'PASS actual Explorer tray/overflow icon and app-owned Quit menu flush a protected draft and exit the exact native app'
+
+    Begin-Case 'startup'
     # AppInstance.Resolve explicitly rejects --startup for DEVELOPMENT, and
     # Program has no --desktop --tray launch option. Never bypass that boundary.
     $caseResults['startup'].status = 'SKIP'
@@ -1241,7 +1307,6 @@ try {
     Require ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -eq $candidateHash) 'Original candidate bytes changed.'
     Require ((Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash -eq $sentinelHash) 'The fake production marker changed.'
     Pass-Case 'isolation'
-    Write-Host 'SKIP Explorer tray-context-menu Quit and OS balloon delivery/click: this smoke proves the shared native Close/Quit path and tray hiding, not OS notification acceptance.'
     Write-Host 'No game was started; no updater replacement, installer, terms acceptance, public listener or personal registry setting was used.'
     Write-Host "QoL native artifacts and synthetic state: $caseRoot"
     $testSucceeded = $true
@@ -1296,7 +1361,8 @@ finally {
         screenshotExportCompleted = $exportSucceeded
         cases = @($caseResults.Values)
         screenshots = @($screenshots.ToArray())
-        boundary = 'Dedicated approved Windows runner; synthetic state only. Windows --startup coverage belongs to the existing production-mode disposable-candidate gate. Real games, installer, updater replacement and OS notification acceptance are not established.'
+        nativeShell = $nativeShellProof
+        boundary = 'Dedicated approved Windows runner; synthetic state only. Native tray Quit and the actual first-close OS notification delivery/click are asserted. Windows --startup coverage belongs to the existing production-mode disposable-candidate gate. Real games, installer and updater replacement are not established.'
     }
     [IO.File]::WriteAllText((Join-Path $evidenceRoot 'summary.json'), ($summary | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
     Write-Host 'Redacted native CI evidence exported: top-level screenshots and fixed result summary only.'

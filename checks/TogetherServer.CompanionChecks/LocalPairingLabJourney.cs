@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Http.Json;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using TogetherServer;
@@ -46,9 +46,10 @@ internal static partial class CoreRemoteJourney
         var clock = Stopwatch.StartNew();
         using var job = new LocalPairingLabJob();
         var stageNames = new List<string> { "isolated-apps", "pinned-pairing", "separate-permissions-and-consent", "signed-chat",
-            "synthetic-stop-copy-receipts", "password-permission-revoke", "password-reveal", "guided-hosting",
-            "local-copy-hosting", "new-host-notice" };
-        if (lanAddress is not null) stageNames.AddRange(["new-host-authenticated-connect", "new-host-permission-isolation", "new-host-stop-and-transfer"]);
+            "synthetic-stop-copy-receipts", "password-permission-revoke", "unsupported-password-source-denied", "guided-hosting",
+            "local-copy-hosting" };
+        if (lanAddress is not null) stageNames.AddRange(["new-host-notice", "new-host-authenticated-connect", "new-host-permission-isolation", "new-host-stop-and-transfer",
+            "new-host-restart-reconnect", "new-host-revocation-isolation"]);
         stageNames.Add("lost-response-cleanup");
         if (lanAddress is not null) stageNames.Add("new-host-receipt-confirmed");
         stageNames.Add("cleanup");
@@ -67,9 +68,14 @@ internal static partial class CoreRemoteJourney
         var observerData = Path.Combine(root, "friend-b");
         var profile = new ServerProfile
         {
-            Kind = GameKinds.Fixture, Name = "Local pairing lab", ServerName = "Synthetic lab",
-            WorldId = "lab-world", WorldSource = "New", WorldDirectory = Path.Combine(hostData, "worlds", "lab-world"),
-            ExecutablePath = Path.GetFullPath(fixturePath), GamePort = FreeUdpPair(),
+            Kind = GameKinds.Fixture,
+            Name = "Local pairing lab",
+            ServerName = "Synthetic lab",
+            WorldId = "lab-world",
+            WorldSource = "New",
+            WorldDirectory = Path.Combine(hostData, "worlds", "lab-world"),
+            ExecutablePath = Path.GetFullPath(fixturePath),
+            GamePort = FreeUdpPair(),
             Backups = new() { Enabled = false, MinimumFreeSpaceMb = 0 }
         };
         using var owner = LocalClient(hostPort);
@@ -89,6 +95,8 @@ internal static partial class CoreRemoteJourney
         var connectedOwner = false;
         var connectedObserver = false;
         var transferredCandidateCopy = false;
+        var restartedHostConnections = false;
+        var isolatedRevocation = false;
         var hostedCopy = false;
         string? failureCode = null;
         string? activeStage = null;
@@ -204,15 +212,21 @@ internal static partial class CoreRemoteJourney
                     "Synthetic UI rehearsal payload " + runId.ToString("N"));
                 LabRequire((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", new()
                 {
-                    Profiles = [profile], MaxConcurrentServers = 1, CompanionBindAddress = transportAddress,
-                    CompanionEndpoint = $"https://{transportAddress}:{appPorts[3]}", CompanionPort = appPorts[3]
+                    Profiles = [profile],
+                    MaxConcurrentServers = 1,
+                    CompanionBindAddress = transportAddress,
+                    CompanionEndpoint = $"https://{transportAddress}:{appPorts[3]}",
+                    CompanionPort = appPorts[3]
                 })).Ok, "HostSettingsRejected");
                 // Configure each route before pairing; only explicit actions enable listeners.
                 LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateHostModeRejected");
                 LabRequire((await PutAsync<HostSettings, ActionResult>(first, "/api/local/settings", new()
                 {
-                    Profiles = [], CompanionBindAddress = transportAddress, CompanionPort = appPorts[4],
-                    CompanionEndpoint = $"https://{transportAddress}:{appPorts[4]}", CompanionListeningEnabled = false,
+                    Profiles = [],
+                    CompanionBindAddress = transportAddress,
+                    CompanionPort = appPorts[4],
+                    CompanionEndpoint = $"https://{transportAddress}:{appPorts[4]}",
+                    CompanionListeningEnabled = false,
                     RemoteControlsEnabled = false
                 })).Ok, "CandidateSettingsRejected");
                 LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "CandidateFriendModeRejected");
@@ -221,8 +235,11 @@ internal static partial class CoreRemoteJourney
                     LabRequire((await PostAsync<object, JsonElement>(second, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "ObserverHostModeRejected");
                     LabRequire((await PutAsync<HostSettings, ActionResult>(second, "/api/local/settings", new()
                     {
-                        Profiles = [], CompanionBindAddress = transportAddress, CompanionPort = appPorts[5],
-                        CompanionEndpoint = $"https://{transportAddress}:{appPorts[5]}", CompanionListeningEnabled = false
+                        Profiles = [],
+                        CompanionBindAddress = transportAddress,
+                        CompanionPort = appPorts[5],
+                        CompanionEndpoint = $"https://{transportAddress}:{appPorts[5]}",
+                        CompanionListeningEnabled = false
                     })).Ok, "ObserverSettingsRejected");
                     LabRequire((await PostAsync<object, JsonElement>(second, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "ObserverFriendModeRejected");
                 }
@@ -242,378 +259,502 @@ internal static partial class CoreRemoteJourney
             }
             else
             {
-            await Stage("pinned-pairing", async () =>
-            {
-                var invite = await PostAsync<ServerInviteRequest, JsonElement>(owner,
-                    $"/api/local/servers/{profile.Id}/invite", new(false, false, true));
-                LabRequire(invite.GetProperty("ok").GetBoolean() && invite.GetProperty("listenerActive").GetBoolean(), "InviteListenerUnavailable");
-                var code = invite.GetProperty("password").GetString();
-                LabRequire(!string.IsNullOrWhiteSpace(code), "InviteMissing");
-                LabRequire((await PostAsync<FriendPairRequest, FriendActionResult>(first, "/api/local/friend/pair", new(code!))).Ok, "FirstPairingFailed");
-                deviceA = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices.Single().Id;
-                LabRequire((await PostAsync<FriendPairRequest, FriendActionResult>(second, "/api/local/friend/pair", new(code!))).Ok, "SecondPairingFailed");
-                var devices = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
-                LabRequire(devices.Count == 2, "DistinctDevicesRequired");
-                deviceB = devices.Single(device => device.Id != deviceA).Id;
-                var a = await WaitForConnectedAsync(first, allowDisabled: true);
-                var b = await WaitForConnectedAsync(second, allowDisabled: true);
-                connectionA = a.ConnectionId;
-                originalHostId = a.HostId;
-                LabRequire(a.LastConnectedUtc is not null && b.LastConnectedUtc is not null && a.HostId == b.HostId &&
-                    a.Profiles.Single().Id == profile.Id && b.Profiles.Single().Id == profile.Id, "PinnedAuthenticationNotObserved");
-                WindowsListenerOwners.RequireTogetherServerOwner(appPorts[3], processes[0].Process);
-                return null;
-            });
-
-            await Stage("separate-permissions-and-consent", async () =>
-            {
-                var devices = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
-                LabRequire(devices.All(device => !device.CanViewPassword &&
-                    (device.SaveReceiveProfileIds?.Count ?? 0) == 0 &&
-                    !(device.SharedWorldGrants?.Values.Any(grants => grants.Receive || grants.EligibleHost) ?? false)), "GrantsDefaultedOn");
-                LabRequire((await PutAsync<object, SharedWorldResult>(owner,
-                    $"/api/local/profiles/{profile.Id}/shared-world/hosting", new { enabled = true })).Ok, "OwnerSharingRejected");
-                var clients = new[] { (Id: deviceA, Client: first), (Id: deviceB, Client: second) };
-                foreach (var pc in clients)
+                await Stage("pinned-pairing", async () =>
                 {
-                    LabRequire((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                        $"/api/local/devices/{pc.Id}/shared-world/{profile.Id}", new(true))).Ok, "ReceiveGrantRejected");
-                    var before = await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world");
-                    LabRequire(!before.Consented, "RemoteGrantImpliedLocalConsent");
-                    LabRequire((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(pc.Client,
-                        $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok, "LocalConsentRejected");
-                    await PairingLabWaitAsync(async () =>
-                    {
-                        _ = await PostAsync<object, ReceivedSharedWorldResult>(pc.Client,
-                            $"/api/local/friend/{profile.Id}/shared-world/check", new { });
-                        using var response = await owner.GetAsync($"/api/local/profiles/{profile.Id}/shared-world/governance");
-                        if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return false;
-                        response.EnsureSuccessStatusCode();
-                        var roster = await response.Content.ReadFromJsonAsync<SharedWorldRoster>(Json);
-                        return roster?.Members.Any(member => member.DeviceId == pc.Id && !string.IsNullOrWhiteSpace(member.PublicKey)) == true;
-                    }, "SigningEnrollmentNotObserved");
-                }
-                LabRequire((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
-                    $"/api/local/devices/{deviceA}/shared-world/{profile.Id}/grants", new(new(Receive: true, EligibleHost: true)))).Ok, "EligibleHostGrantRejected");
-                var current = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
-                LabRequire(current.Single(device => device.Id == deviceA).SharedWorldGrants?.GetValueOrDefault(profile.Id)?.EligibleHost == true &&
-                    current.Single(device => device.Id == deviceB).SharedWorldGrants?.GetValueOrDefault(profile.Id)?.EligibleHost != true &&
-                    current.All(device => !device.CanViewPassword), "IndependentGrantScopeLost");
-                signedRoster = await PairingLabGetAsync<SharedWorldRoster>(owner, $"/api/local/profiles/{profile.Id}/shared-world/governance");
-                LabRequire(SharedWorldRosterTrust.Verify(signedRoster), "CurrentSignedRosterRequired");
-                groupKey = new SharedWorldPeerRoot(signedRoster.OwnerPublicKey, profile.Id, signedRoster.GroupId).GroupKey;
-                return null;
-            });
-
-            await Stage("signed-chat", async () =>
-            {
-                var sent = await PostAsync<ChatPostRequest, ChatRoomView>(owner,
-                    $"/api/local/profiles/{profile.Id}/chat/messages", new("Synthetic lab host message"));
-                LabRequire(sent.Ok && sent.Entries.Count == 1, "HostChatRejected");
-                var a = await PostAsync<object, ChatRoomView>(first, $"/api/local/friend/{profile.Id}/chat/sync", new { });
-                var b = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{profile.Id}/chat/sync", new { });
-                LabRequire(a.Ok && b.Ok && a.Entries.Single().Id == b.Entries.Single().Id, "SignedChatCopiesDiffer");
-                LabRequire((await PostAsync<ChatPostRequest, ChatRoomView>(first,
-                    $"/api/local/friend/{profile.Id}/chat/messages", new("Synthetic lab Friend reply"))).Ok, "FriendChatRejected");
-                b = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{profile.Id}/chat/sync", new { });
-                LabRequire(b.Ok && b.Entries.Count == 2, "SecondFriendMissedReply");
-                LabRequire((await PutAsync<ChatMemberChange, ChatRoomView>(owner,
-                    $"/api/local/profiles/{profile.Id}/chat/members/{deviceA}", new(false))).Ok, "ChatRemovalRejected");
-                var denied = await PostAsync<object, ChatRoomView>(first, $"/api/local/friend/{profile.Id}/chat/sync", new { });
-                LabRequire(!denied.Ok && denied.Code == "ChatAccessDenied" && denied.Entries.Count == 0, "ChatRemovalNotEnforced");
-                LabRequire((await PutAsync<ChatMemberChange, ChatRoomView>(owner,
-                    $"/api/local/profiles/{profile.Id}/chat/members/{deviceA}", new(true))).Ok, "ChatReadmissionRejected");
-                return null;
-            });
-
-            await Stage("synthetic-stop-copy-receipts", async () =>
-            {
-                var seed = "Synthetic fixture payload " + runId.ToString("N");
-                await File.WriteAllTextAsync(Path.Combine(profile.WorldDirectory, "world.dat"), seed);
-                var start = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-                var run = start.Snapshot.Runs.Single(item => item.ProfileId == profile.Id);
-                if (run.ProcessId is not null) TrackRun(run);
-                LabRequire(start.Ok, "FixtureStartRejected");
-                _ = await WaitForRunStateAsync(owner, profile.Id, "Process running");
-                LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok, "FixturePipeStopRejected");
-                _ = await WaitForRunStateAsync(owner, profile.Id, "Offline");
-                var shared = await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world");
-                LabRequire(shared.Latest is { Number: 1 }, "StoppedSyntheticCopyNotPublished");
-                foreach (var pc in new[] { (Client: first, Data: friendData, Device: deviceA), (Client: second, Data: observerData, Device: deviceB) })
-                {
-                    await PairingLabWaitAsync(async () =>
-                    {
-                        _ = await PostAsync<object, FriendView>(pc.Client, "/api/local/friend/poll", new { });
-                        _ = await PostAsync<object, ReceivedSharedWorldResult>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
-                        var received = await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world");
-                        return received.ThisPcVersion == 1 && received.ReceiptConfirmed == true;
-                    }, "VerifiedCopyReceiptNotObserved");
-                    var payload = Path.Combine(pc.Data, "received-shared-worlds", pc.Device.ToString("N"), profile.Id.ToString("N"), shared.Latest!.VersionHash, "payload", "world.dat");
-                    LabRequire(await File.ReadAllTextAsync(payload) == seed, "ReceivedSyntheticBytesDiffer");
-                }
-                shared = await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world");
-                LabRequire(shared.ConfirmedCopies == 2, "BothSignedReceiptsNotConfirmed");
-                return null;
-            });
-
-            await Stage("password-permission-revoke", async () =>
-            {
-                foreach (var allowed in new[] { true, false })
-                {
-                    LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(owner,
-                        $"/api/local/devices/{deviceA}/permissions", new(false, false, Scope: "password", CanViewPassword: allowed))).Ok, "PasswordPermissionChangeRejected");
+                    var invite = await PostAsync<ServerInviteRequest, JsonElement>(owner,
+                        $"/api/local/servers/{profile.Id}/invite", new(false, false, true));
+                    LabRequire(invite.GetProperty("ok").GetBoolean() && invite.GetProperty("listenerActive").GetBoolean(), "InviteListenerUnavailable");
+                    var code = invite.GetProperty("password").GetString();
+                    LabRequire(!string.IsNullOrWhiteSpace(code), "InviteMissing");
+                    LabRequire((await PostAsync<FriendPairRequest, FriendActionResult>(first, "/api/local/friend/pair", new(code!))).Ok, "FirstPairingFailed");
+                    deviceA = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices.Single().Id;
+                    LabRequire((await PostAsync<FriendPairRequest, FriendActionResult>(second, "/api/local/friend/pair", new(code!))).Ok, "SecondPairingFailed");
                     var devices = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
-                    LabRequire(devices.Single(device => device.Id == deviceA).CanViewPassword == allowed &&
-                        !devices.Single(device => device.Id == deviceB).CanViewPassword, "PasswordPermissionScopeLost");
-                }
-                return null;
-            });
-            await Stage("password-reveal", async () =>
-            {
-                var result = await PostAsync<object, GamePasswordResult>(first,
-                    $"/api/local/friend/{profile.Id}/game-password/reveal", new { connectionId = connectionA });
-                LabRequire(!result.Ok && result.Password is null && result.Code == "GamePasswordUnsupported", "FixturePasswordBoundaryChanged");
-                return "ValheimPasswordSourceRequiresSeparateAcceptance";
-            });
+                    LabRequire(devices.Count == 2, "DistinctDevicesRequired");
+                    deviceB = devices.Single(device => device.Id != deviceA).Id;
+                    var a = await WaitForConnectedAsync(first, allowDisabled: true);
+                    var b = await WaitForConnectedAsync(second, allowDisabled: true);
+                    connectionA = a.ConnectionId;
+                    originalHostId = a.HostId;
+                    LabRequire(a.LastConnectedUtc is not null && b.LastConnectedUtc is not null && a.HostId == b.HostId &&
+                        a.Profiles.Single().Id == profile.Id && b.Profiles.Single().Id == profile.Id, "PinnedAuthenticationNotObserved");
+                    WindowsListenerOwners.RequireTogetherServerOwner(appPorts[3], processes[0].Process);
+                    return null;
+                });
 
-            await Stage("guided-hosting", async () =>
-            {
-                prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
-                    $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                    new(true, true, ServerFile: Path.GetFullPath(fixturePath)));
-                LabRequire(prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
-                    prepared.ReadyForManualStart && !prepared.Running, "SyntheticHostingPreparationRejected");
-                var exactLocalProfile = prepared.LocalProfileId ?? throw new PairingLabFailure("PreparedProfileMissing");
-                localProfileId = exactLocalProfile;
-                var before = await CandidateSnapshotAsync();
-                LabRequire(before.Runs.All(run => run.ProcessId is null), "PreparationStartedProcess");
-                if (lanAddress is not null)
+                await Stage("separate-permissions-and-consent", async () =>
                 {
-                    // First preparation records the exact branch. Only then can
-                    // its deliberately enabled listener satisfy the normal gates.
-                    LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerModeRejected");
-                    before.Settings.CompanionListeningEnabled = true;
-                    before.Settings.RemoteControlsEnabled = true;
-                    LabRequire((await PutAsync<HostSettings, ActionResult>(first, "/api/local/settings", before.Settings)).Ok, "CandidateListenerRejected");
-                    LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerRestoreRejected");
-                    await PairingLabWaitAsync(async () =>
+                    var devices = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
+                    LabRequire(devices.All(device => !device.CanViewPassword &&
+                        (device.SaveReceiveProfileIds?.Count ?? 0) == 0 &&
+                        !(device.SharedWorldGrants?.Values.Any(grants => grants.Receive || grants.EligibleHost) ?? false)), "GrantsDefaultedOn");
+                    LabRequire((await PutAsync<object, SharedWorldResult>(owner,
+                        $"/api/local/profiles/{profile.Id}/shared-world/hosting", new { enabled = true })).Ok, "OwnerSharingRejected");
+                    var clients = new[] { (Id: deviceA, Client: first), (Id: deviceB, Client: second) };
+                    foreach (var pc in clients)
                     {
-                        var companion = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
-                        return companion.GetProperty("listenerActive").GetBoolean();
-                    }, "CandidateListenerUnavailable");
-                    WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], processes.Single(process => process.Role == "friend-a").Process);
+                        LabRequire((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
+                            $"/api/local/devices/{pc.Id}/shared-world/{profile.Id}", new(true))).Ok, "ReceiveGrantRejected");
+                        var before = await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world");
+                        LabRequire(!before.Consented, "RemoteGrantImpliedLocalConsent");
+                        LabRequire((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(pc.Client,
+                            $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok, "LocalConsentRejected");
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            _ = await PostAsync<object, ReceivedSharedWorldResult>(pc.Client,
+                                $"/api/local/friend/{profile.Id}/shared-world/check", new { });
+                            using var response = await owner.GetAsync($"/api/local/profiles/{profile.Id}/shared-world/governance");
+                            if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return false;
+                            response.EnsureSuccessStatusCode();
+                            var roster = await response.Content.ReadFromJsonAsync<SharedWorldRoster>(Json);
+                            return roster?.Members.Any(member => member.DeviceId == pc.Id && !string.IsNullOrWhiteSpace(member.PublicKey)) == true;
+                        }, "SigningEnrollmentNotObserved");
+                    }
+                    LabRequire((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
+                        $"/api/local/devices/{deviceA}/shared-world/{profile.Id}/grants", new(new(Receive: true, EligibleHost: true)))).Ok, "EligibleHostGrantRejected");
+                    var current = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
+                    LabRequire(current.Single(device => device.Id == deviceA).SharedWorldGrants?.GetValueOrDefault(profile.Id)?.EligibleHost == true &&
+                        current.Single(device => device.Id == deviceB).SharedWorldGrants?.GetValueOrDefault(profile.Id)?.EligibleHost != true &&
+                        current.All(device => !device.CanViewPassword), "IndependentGrantScopeLost");
+                    signedRoster = await PairingLabGetAsync<SharedWorldRoster>(owner, $"/api/local/profiles/{profile.Id}/shared-world/governance");
+                    LabRequire(SharedWorldRosterTrust.Verify(signedRoster), "CurrentSignedRosterRequired");
+                    groupKey = new SharedWorldPeerRoot(signedRoster.OwnerPublicKey, profile.Id, signedRoster.GroupId).GroupKey;
+                    return null;
+                });
+
+                await Stage("signed-chat", async () =>
+                {
+                    var sent = await PostAsync<ChatPostRequest, ChatRoomView>(owner,
+                        $"/api/local/profiles/{profile.Id}/chat/messages", new("Synthetic lab host message"));
+                    LabRequire(sent.Ok && sent.Entries.Count == 1, "HostChatRejected");
+                    var a = await PostAsync<object, ChatRoomView>(first, $"/api/local/friend/{profile.Id}/chat/sync", new { });
+                    var b = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{profile.Id}/chat/sync", new { });
+                    LabRequire(a.Ok && b.Ok && a.Entries.Single().Id == b.Entries.Single().Id, "SignedChatCopiesDiffer");
+                    LabRequire((await PostAsync<ChatPostRequest, ChatRoomView>(first,
+                        $"/api/local/friend/{profile.Id}/chat/messages", new("Synthetic lab Friend reply"))).Ok, "FriendChatRejected");
+                    b = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{profile.Id}/chat/sync", new { });
+                    LabRequire(b.Ok && b.Entries.Count == 2, "SecondFriendMissedReply");
+                    LabRequire((await PutAsync<ChatMemberChange, ChatRoomView>(owner,
+                        $"/api/local/profiles/{profile.Id}/chat/members/{deviceA}", new(false))).Ok, "ChatRemovalRejected");
+                    var denied = await PostAsync<object, ChatRoomView>(first, $"/api/local/friend/{profile.Id}/chat/sync", new { });
+                    LabRequire(!denied.Ok && denied.Code == "ChatAccessDenied" && denied.Entries.Count == 0, "ChatRemovalNotEnforced");
+                    LabRequire((await PutAsync<ChatMemberChange, ChatRoomView>(owner,
+                        $"/api/local/profiles/{profile.Id}/chat/members/{deviceA}", new(true))).Ok, "ChatReadmissionRejected");
+                    return null;
+                });
+
+                await Stage("synthetic-stop-copy-receipts", async () =>
+                {
+                    var seed = "Synthetic fixture payload " + runId.ToString("N");
+                    await File.WriteAllTextAsync(Path.Combine(profile.WorldDirectory, "world.dat"), seed);
+                    var start = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
+                    var run = start.Snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+                    if (run.ProcessId is not null) TrackRun(run);
+                    LabRequire(start.Ok, "FixtureStartRejected");
+                    _ = await WaitForRunStateAsync(owner, profile.Id, "Process running");
+                    LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok, "FixturePipeStopRejected");
+                    _ = await WaitForRunStateAsync(owner, profile.Id, "Offline");
+                    var shared = await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world");
+                    LabRequire(shared.Latest is { Number: 1 }, "StoppedSyntheticCopyNotPublished");
+                    foreach (var pc in new[] { (Client: first, Data: friendData, Device: deviceA), (Client: second, Data: observerData, Device: deviceB) })
+                    {
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            _ = await PostAsync<object, FriendView>(pc.Client, "/api/local/friend/poll", new { });
+                            _ = await PostAsync<object, ReceivedSharedWorldResult>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+                            var received = await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world");
+                            return received.ThisPcVersion == 1 && received.ReceiptConfirmed == true;
+                        }, "VerifiedCopyReceiptNotObserved");
+                        var payload = Path.Combine(pc.Data, "received-shared-worlds", pc.Device.ToString("N"), profile.Id.ToString("N"), shared.Latest!.VersionHash, "payload", "world.dat");
+                        LabRequire(await File.ReadAllTextAsync(payload) == seed, "ReceivedSyntheticBytesDiffer");
+                    }
+                    shared = await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world");
+                    LabRequire(shared.ConfirmedCopies == 2, "BothSignedReceiptsNotConfirmed");
+                    return null;
+                });
+
+                await Stage("password-permission-revoke", async () =>
+                {
+                    foreach (var allowed in new[] { true, false })
+                    {
+                        LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(owner,
+                            $"/api/local/devices/{deviceA}/permissions", new(false, false, Scope: "password", CanViewPassword: allowed))).Ok, "PasswordPermissionChangeRejected");
+                        var devices = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
+                        LabRequire(devices.Single(device => device.Id == deviceA).CanViewPassword == allowed &&
+                            !devices.Single(device => device.Id == deviceB).CanViewPassword, "PasswordPermissionScopeLost");
+                    }
+                    return null;
+                });
+                await Stage("unsupported-password-source-denied", async () =>
+                {
+                    var result = await PostAsync<object, GamePasswordResult>(first,
+                        $"/api/local/friend/{profile.Id}/game-password/reveal", new { connectionId = connectionA });
+                    LabRequire(!result.Ok && result.Password is null && result.Code == "GamePasswordUnsupported", "FixturePasswordBoundaryChanged");
+                    return null;
+                });
+
+                await Stage("guided-hosting", async () =>
+                {
                     prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                        new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
-                    LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId == exactLocalProfile &&
-                        prepared.Remedy is not { Kind: "Connection" or "Ports" or "Review" }, "LanHostingPreparationRejected");
-                    preparedBranch = (await PairingLabGetAsync<WorldSeparateCopyBranch[]>(first,
-                        $"/api/local/friend/{profile.Id}/shared-world/recovery/separate")).Single(branch => branch.BranchHash == prepared.BranchHash);
-                    LabRequire(SharedWorldSeparateCopyStore.Verify(preparedBranch) &&
-                        preparedBranch.Offer.Roster.OwnerPublicKey == signedRoster!.OwnerPublicKey &&
-                        preparedBranch.CandidatePublicKey == signedRoster.Members.Single(member => member.DeviceId == deviceA).PublicKey,
-                        "PreparedCandidateBranchNotAuthorized");
-                }
-                var result = await PostAsync<object, JsonElement>(first,
-                    $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
+                        new(true, true, ServerFile: Path.GetFullPath(fixturePath)));
+                    LabRequire(prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
+                        prepared.ReadyForManualStart && !prepared.Running, "SyntheticHostingPreparationRejected");
+                    var exactLocalProfile = prepared.LocalProfileId ?? throw new PairingLabFailure("PreparedProfileMissing");
+                    localProfileId = exactLocalProfile;
+                    var before = await CandidateSnapshotAsync();
+                    LabRequire(before.Runs.All(run => run.ProcessId is null), "PreparationStartedProcess");
+                    if (lanAddress is not null)
                     {
-                        localProfileId = exactLocalProfile, branchHash = prepared.BranchHash,
-                        requestId = (Guid?)null, acceptSplitWarning = true
-                    });
-                var after = await CandidateSnapshotAsync();
-                if (lanAddress is null)
-                {
-                    // Ordinary peer-route rules deliberately refuse loopback.
-                    LabRequire(!result.GetProperty("ok").GetBoolean() && prepared.Remedy?.Kind == "Connection" &&
-                        result.GetProperty("code").GetString() == "LocalHostingActionRequired", "LoopbackHostingConnectionBlockerMissing");
-                    LabRequire(after.Runs.All(run => run.ProcessId is null), "BlockedGuidedStartCreatedProcess");
-                }
-                else
-                {
-                    var run = after.Runs.Single(item => item.ProfileId == exactLocalProfile);
-                    if (run.ProcessId is not null) TrackRun(run);
-                    LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted" &&
-                        run.ProcessId is not null && run.RunOperationId is not null, "GuidedLanStartRejected");
-                    candidateSessionId = run.RunOperationId;
-                    hostedCopy = true;
-                    await PairingLabWaitAsync(async () => (await CandidateSnapshotAsync()).Runs
-                        .Single(item => item.ProfileId == exactLocalProfile).State == "Process running", "GuidedFixtureHealthNotObserved");
-                }
-                return null;
-            });
-
-            await Stage("local-copy-hosting", async () =>
-            {
-                if (lanAddress is not null)
-                {
-                    var candidate = await CandidateSnapshotAsync();
-                    var active = candidate.Runs.Single(item => item.ProfileId == localProfileId);
-                    LabRequire(active.State == "Process running" && active.RunOperationId == candidateSessionId &&
-                        candidate.Runs.Count(item => item.ProcessId is not null) == 1, "GuidedCandidateRunChanged");
-                    var source = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
-                    LabRequire(source.Runs.All(item => item.ProcessId is null), "OriginalHostRestartedDuringCopyHosting");
-                    var restored = candidate.Settings.Profiles.Single(item => item.Id == localProfileId);
-                    LabRequire(AppInstance.ContainsPath(friendData, restored.WorldDirectory) && restored.WorldDirectory != profile.WorldDirectory &&
-                        await File.ReadAllTextAsync(Path.Combine(restored.WorldDirectory, "world.dat")) == "Synthetic fixture payload " + runId.ToString("N"),
-                        "GuidedStartDidNotUseReceivedPayload");
+                        // Save only explicit incoming consent. The exact guided
+                        // preparation registers its signed group before listener
+                        // activation; lifecycle permission remains independent.
+                        LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerModeRejected");
+                        LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
+                            new(CompanionListeningEnabled: true))).Ok, "CandidateListenerRejected");
+                        LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerRestoreRejected");
+                        prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
+                            $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
+                            new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
+                        LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId == exactLocalProfile &&
+                            prepared.Remedy is not { Kind: "Connection" or "Ports" or "Review" }, "LanHostingPreparationRejected");
+                        WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], processes.Single(process => process.Role == "friend-a").Process);
+                        preparedBranch = (await PairingLabGetAsync<WorldSeparateCopyBranch[]>(first,
+                            $"/api/local/friend/{profile.Id}/shared-world/recovery/separate")).Single(branch => branch.BranchHash == prepared.BranchHash);
+                        LabRequire(SharedWorldSeparateCopyStore.Verify(preparedBranch) &&
+                            preparedBranch.Offer.Roster.OwnerPublicKey == signedRoster!.OwnerPublicKey &&
+                            preparedBranch.CandidatePublicKey == signedRoster.Members.Single(member => member.DeviceId == deviceA).PublicKey,
+                            "PreparedCandidateBranchNotAuthorized");
+                    }
+                    var result = await PostAsync<object, JsonElement>(first,
+                        $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
+                        {
+                            localProfileId = exactLocalProfile,
+                            branchHash = prepared.BranchHash,
+                            requestId = (Guid?)null,
+                            acceptSplitWarning = true
+                        });
+                    var after = await CandidateSnapshotAsync();
+                    if (lanAddress is null)
+                    {
+                        // Ordinary peer-route rules deliberately refuse loopback.
+                        LabRequire(!result.GetProperty("ok").GetBoolean() && prepared.Remedy?.Kind == "Connection" &&
+                            result.GetProperty("code").GetString() == "LocalHostingActionRequired", "LoopbackHostingConnectionBlockerMissing");
+                        LabRequire(after.Runs.All(run => run.ProcessId is null), "BlockedGuidedStartCreatedProcess");
+                    }
+                    else
+                    {
+                        var run = after.Runs.Single(item => item.ProfileId == exactLocalProfile);
+                        if (run.ProcessId is not null) TrackRun(run);
+                        LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted" &&
+                            run.ProcessId is not null && run.RunOperationId is not null, "GuidedLanStartRejected");
+                        candidateSessionId = run.RunOperationId;
+                        hostedCopy = true;
+                        await PairingLabWaitAsync(async () => (await CandidateSnapshotAsync()).Runs
+                            .Single(item => item.ProfileId == exactLocalProfile).State == "Process running", "GuidedFixtureHealthNotObserved");
+                    }
                     return null;
-                }
-                LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "LocalCopyHostModeRejected");
-                var started = await PostAsync<object, ActionResult>(first,
-                    $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared!.BranchHash, acceptSplitWarning = true });
-                var run = started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId);
-                if (run.ProcessId is not null) TrackRun(run);
-                LabRequire(started.Ok, "ExplicitLocalCopyStartRejected");
-                _ = await WaitForRunStateAsync(first, localProfileId!.Value, "Process running");
-                hostedCopy = true;
-                LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok, "LocalCopyPipeStopRejected");
-                _ = await WaitForRunStateAsync(first, localProfileId.Value, "Offline");
-                return null;
-            });
-            await Stage("new-host-notice", async () =>
-            {
-                if (lanAddress is null) return "LoopbackPeerRouteCannotProveNewHostAnnouncementOrConnect";
-                // The same fixed projection supplies Other Hosts and the inline
-                // notice. Fixture health remains Preparing, never game Ready.
-                await SyncPeersAsync(owner);
-                await SyncPeersAsync(second);
-                LabRequire((await PutAsync<WorldPeerSharingRequest, WorldPeerActionResult>(second,
-                    $"/api/local/world-peers/{groupKey}/sharing", new(true))).Ok, "ObserverPeerListenerRejected");
-                WindowsListenerOwners.RequireTogetherServerOwner(appPorts[5], processes.Single(process => process.Role == "friend-b").Process);
-                await PairingLabWaitAsync(async () =>
+                });
+
+                await Stage("local-copy-hosting", async () =>
                 {
-                    await SyncPeersAsync(first);
+                    if (lanAddress is not null)
+                    {
+                        var candidate = await CandidateSnapshotAsync();
+                        var active = candidate.Runs.Single(item => item.ProfileId == localProfileId);
+                        LabRequire(active.State == "Process running" && active.RunOperationId == candidateSessionId &&
+                            candidate.Runs.Count(item => item.ProcessId is not null) == 1, "GuidedCandidateRunChanged");
+                        var source = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
+                        LabRequire(source.Runs.All(item => item.ProcessId is null), "OriginalHostRestartedDuringCopyHosting");
+                        var restored = candidate.Settings.Profiles.Single(item => item.Id == localProfileId);
+                        LabRequire(AppInstance.ContainsPath(friendData, restored.WorldDirectory) && restored.WorldDirectory != profile.WorldDirectory &&
+                            await File.ReadAllTextAsync(Path.Combine(restored.WorldDirectory, "world.dat")) == "Synthetic fixture payload " + runId.ToString("N"),
+                            "GuidedStartDidNotUseReceivedPayload");
+                        return null;
+                    }
+                    LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "LocalCopyHostModeRejected");
+                    var started = await PostAsync<object, ActionResult>(first,
+                        $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared!.BranchHash, acceptSplitWarning = true });
+                    var run = started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId);
+                    if (run.ProcessId is not null) TrackRun(run);
+                    LabRequire(started.Ok, "ExplicitLocalCopyStartRejected");
+                    _ = await WaitForRunStateAsync(first, localProfileId!.Value, "Process running");
+                    hostedCopy = true;
+                    LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok, "LocalCopyPipeStopRejected");
+                    _ = await WaitForRunStateAsync(first, localProfileId.Value, "Offline");
+                    return null;
+                });
+                if (lanAddress is not null) await Stage("new-host-notice", async () =>
+                {
+                    // The same fixed projection supplies Other Hosts and the inline
+                    // notice. Fixture health remains Preparing, never game Ready.
                     await SyncPeersAsync(owner);
                     await SyncPeersAsync(second);
-                    var candidate = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
-                    var fingerprint = candidate.GetProperty("fingerprint").GetString();
-                    return await SeesCandidateAsync(owner, fingerprint) && await SeesCandidateAsync(second, fingerprint);
-                }, "SignedCandidateSessionNotDiscovered");
-                discoveredHost = true;
-                return null;
-            });
-            if (lanAddress is not null)
-            {
-                await Stage("new-host-authenticated-connect", async () =>
-                {
-                    var connect = new { deviceId = deviceA, sessionId = candidateSessionId!.Value };
-                    var observedAfter = DateTimeOffset.UtcNow.AddSeconds(-1);
-                    var result = await PostAsync<object, WorldPeerActionResult>(owner, $"/api/local/world-peers/{groupKey}/connect", connect);
-                    LabRequire(result.Ok && result.Code == "PeerSessionConnected", "OriginalOwnerPeerConnectNotVerified");
-                    LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "OriginalOwnerJoinModeRejected");
-                    await RequireCandidateConnectionAsync(owner, observedAfter);
-                    connectedOwner = true;
-                    var candidateDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
-                    LabRequire(candidateDevices.Count == 1, "OriginalOwnerCredentialMissing");
-                    ownerAlias = candidateDevices.Single().Id;
-                    result = await PostAsync<object, WorldPeerActionResult>(second, $"/api/local/world-peers/{groupKey}/connect", connect);
-                    LabRequire(result.Ok && result.Code == "PeerSessionConnected", "ObserverPeerConnectNotVerified");
-                    await RequireCandidateConnectionAsync(second, observedAfter);
-                    connectedObserver = true;
-                    candidateDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
-                    LabRequire(candidateDevices.Count == 2 && candidateDevices.All(device => device.Id != deviceA && device.Id != deviceB &&
-                        device.AssignedProfileIds.SequenceEqual([localProfileId!.Value])), "CandidateCredentialsNotIndependent");
-                    observerAlias = candidateDevices.Single(device => device.Id != ownerAlias).Id;
-                    LabRequire(observerAlias != Guid.Empty && observerAlias != ownerAlias, "DistinctCandidateCredentialsRequired");
-                    LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateChatModeRejected");
-                    var sent = await PostAsync<ChatPostRequest, ChatRoomView>(first, $"/api/local/profiles/{localProfileId}/chat/messages", new("New synthetic Host message"));
-                    LabRequire(sent.Ok && sent.Entries.Count == 1, "CandidateChatRejected");
-                    var ownerRoom = await PostAsync<object, ChatRoomView>(owner, $"/api/local/friend/{localProfileId}/chat/sync", new { });
-                    var observerRoom = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{localProfileId}/chat/sync", new { });
-                    LabRequire(ownerRoom.Ok && observerRoom.Ok && ownerRoom.Entries.Single().Id == sent.Entries.Single().Id &&
-                        observerRoom.Entries.Single().Id == sent.Entries.Single().Id, "NewHostAuthenticatedChatReadFailed");
-                    return null;
-                });
-                await Stage("new-host-permission-isolation", async () =>
-                {
-                    LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(first,
-                        $"/api/local/devices/{ownerAlias}/permissions", new(true, false, Scope: "start"))).Ok, "CandidateOwnerPermissionRejected");
-                    var allowed = await RequireCandidateConnectionAsync(owner, DateTimeOffset.UtcNow.AddSeconds(-1));
-                    var restricted = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
-                    LabRequire(allowed.Profiles.Single().CanStart && !restricted.Profiles.Single().CanStart &&
-                        !restricted.Profiles.Single().CanStop && !restricted.Profiles.Single().CanViewPassword, "CandidatePermissionScopeLost");
-                    var denied = await FriendActionAsync(second, localProfileId!.Value, "start");
-                    LabRequire(!denied.Ok && denied.Code == "PermissionDenied", "ObserverObtainedOwnerLifecyclePermission");
-                    var current = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
-                    LabRequire(current.Runs.Count(run => run.ProcessId is not null) == 1 &&
-                        current.Runs.Single(run => run.ProfileId == localProfileId).RunOperationId == candidateSessionId, "DeniedStartChangedCandidateRun");
-                    LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(first,
-                        $"/api/local/devices/{ownerAlias}/permissions", new(false, false, Scope: "start"))).Ok, "CandidateOwnerPermissionRevokeRejected");
-                    return null;
-                });
-                await Stage("new-host-stop-and-transfer", async () =>
-                {
-                    var snapshot = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
-                    var restored = snapshot.Settings.Profiles.Single(item => item.Id == localProfileId);
-                    LabRequire(AppInstance.ContainsPath(friendData, restored.WorldDirectory), "CandidateWorldBoundaryChanged");
-                    var seed = "Synthetic candidate payload " + runId.ToString("N");
-                    await File.WriteAllTextAsync(Path.Combine(restored.WorldDirectory, "world.dat"), seed);
-                    var managed = snapshot.Runs.Single(run => run.ProfileId == localProfileId);
-                    LabRequire(managed.RunOperationId == candidateSessionId && managed.ProcessId is not null, "CandidateStopIdentityChanged");
-                    LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok, "CandidateOwnerPipeStopRejected");
-                    _ = await WaitForRunStateAsync(first, localProfileId!.Value, "Offline");
-                    LabRequire(processes.Where(process => process.Role == "fixture").All(process => process.HasExitedNow()), "StoppedCandidateProcessStillRunning");
-                    var published = Path.Combine(friendData, "shared-world-separate-published", profile.Id.ToString("N"), prepared!.BranchHash!);
-                    var version = FriendLink.ReadReceivedLatest(published);
-                    LabRequire(version is not null && SharedWorldService.VerifySignature(version) && version.ProfileId == profile.Id &&
-                        version.SigningPublicKey == preparedBranch!.Offer.Proposal.CandidatePublicKey && version.Number > 1,
-                        "CandidateStoppedCopyNotPublished");
-                    receivedBranchVersionHash = version!.VersionHash;
-                    var vault = Path.Combine(observerData, "received-shared-branches", groupKey!, prepared.BranchHash!);
+                    LabRequire((await PutAsync<WorldPeerSharingRequest, WorldPeerActionResult>(second,
+                        $"/api/local/world-peers/{groupKey}/sharing", new(true))).Ok, "ObserverPeerListenerRejected");
+                    WindowsListenerOwners.RequireTogetherServerOwner(appPorts[5], processes.Single(process => process.Role == "friend-b").Process);
                     await PairingLabWaitAsync(async () =>
                     {
                         await SyncPeersAsync(first);
+                        await SyncPeersAsync(owner);
                         await SyncPeersAsync(second);
-                        return FriendLink.ReadReceivedLatest(vault)?.VersionHash == version.VersionHash;
-                    }, "CandidateBranchTransferNotVerified");
-                    var proof = JsonSerializer.Deserialize<WorldSeparateCopyBranch>(await File.ReadAllBytesAsync(Path.Combine(vault, "branch.json")), Json);
-                    LabRequire(SharedWorldSeparateCopyStore.Verify(proof) && proof!.BranchHash == preparedBranch.BranchHash &&
-                        proof.Offer.Roster.OwnerPublicKey == signedRoster!.OwnerPublicKey &&
-                        SharedWorldSeparateCopyStore.VerifySnapshotVersion(proof, version), "ReceivedCandidateBranchProofRejected");
-                    var payload = Path.Combine(vault, version.VersionHash, "payload", "world.dat");
-                    LabRequire(await File.ReadAllTextAsync(payload) == seed, "CandidateTransferredBytesDiffer");
-                    var receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(await File.ReadAllBytesAsync(Path.Combine(vault, version.VersionHash, "receipt.json")), Json);
-                    LabRequire(receipt is not null && receipt.DeviceId == deviceB && receipt.VersionHash == version.VersionHash &&
-                        SharedWorldReceiptTrust.Verify(receipt, signedRoster!.Members.Single(member => member.DeviceId == deviceB).PublicKey), "CandidateCopyReceiptRejected");
-                    transferredCandidateCopy = true;
-                    LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "OriginalOwnerHostModeRestoreRejected");
+                        var candidate = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
+                        var fingerprint = candidate.GetProperty("fingerprint").GetString();
+                        return await SeesCandidateAsync(owner, fingerprint) && await SeesCandidateAsync(second, fingerprint);
+                    }, "SignedCandidateSessionNotDiscovered");
+                    discoveredHost = true;
                     return null;
                 });
-            }
-            await Stage("lost-response-cleanup", async () =>
-            {
-                var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-                LabRequire(started.Ok, "CleanupFaultFixtureStartRejected");
-                var run = started.Snapshot.Runs.Single(item => item.ProfileId == profile.Id);
-                LabRequire(run.ProcessId is not null && run.RunOperationId is not null, "CleanupFaultFixtureIdentityMissing");
-                // Deliberately do not add this child to processes, just as when
-                // Start succeeds but its HTTP response never reaches tracking.
-                using var untracked = Process.GetProcessById(run.ProcessId!.Value);
-                LabRequire(!untracked.HasExited && string.Equals(untracked.MainModule?.FileName,
-                    Path.GetFullPath(fixturePath), StringComparison.OrdinalIgnoreCase), "CleanupFaultFixtureMismatch");
-                runOperations.Add(run.RunOperationId!.Value);
-                var stoppedHost = processes.Single(process => process.Role == "host");
-                await stoppedHost.StopOwnedAsync();
-                LabRequire(!stoppedHost.Alive && !stoppedHost.IdentityReview, "CleanupFaultHostDidNotExit");
-                LabRequire(!untracked.HasExited, "CleanupFaultDidNotLeaveChildForJob");
-                await job.StopAsync();
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await untracked.WaitForExitAsync(deadline.Token);
-                LabRequire(untracked.HasExited && job.ActiveCount() == 0, "UntrackedFixtureSurvivedJobCleanup");
-                return null;
-            });
-            if (lanAddress is not null)
-                await Stage("new-host-receipt-confirmed", () =>
+                if (lanAddress is not null)
                 {
-                    // All app locks are released by the job check above. Read
-                    // only this run's protected received-receipt ledger.
-                    using var candidateData = new LocalData(friendData);
-                    var receipts = candidateData.LoadProtectedJson<List<SharedWorldReceipt>>($"world-peer-receipts-{groupKey}.protected") ?? [];
-                    LabRequire(receipts.Any(receipt => receipt.DeviceId == deviceB && receipt.ProfileId == profile.Id &&
-                        receipt.VersionHash == receivedBranchVersionHash && SharedWorldReceiptTrust.Verify(receipt,
-                            signedRoster!.Members.Single(member => member.DeviceId == deviceB).PublicKey)), "NewHostDidNotRecordVerifiedCopyReceipt");
-                    return Task.FromResult<string?>(null);
+                    await Stage("new-host-authenticated-connect", async () =>
+                    {
+                        var connect = new { deviceId = deviceA, sessionId = candidateSessionId!.Value };
+                        var observedAfter = DateTimeOffset.UtcNow.AddSeconds(-1);
+                        var result = await PostAsync<object, WorldPeerActionResult>(owner, $"/api/local/world-peers/{groupKey}/connect", connect);
+                        LabRequire(result.Ok && result.Code == "PeerSessionConnected", "OriginalOwnerPeerConnectNotVerified");
+                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "OriginalOwnerJoinModeRejected");
+                        await RequireCandidateConnectionAsync(owner, observedAfter);
+                        connectedOwner = true;
+                        var candidateDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        LabRequire(candidateDevices.Count == 1, "OriginalOwnerCredentialMissing");
+                        ownerAlias = candidateDevices.Single().Id;
+                        result = await PostAsync<object, WorldPeerActionResult>(second, $"/api/local/world-peers/{groupKey}/connect", connect);
+                        LabRequire(result.Ok && result.Code == "PeerSessionConnected", "ObserverPeerConnectNotVerified");
+                        await RequireCandidateConnectionAsync(second, observedAfter);
+                        connectedObserver = true;
+                        candidateDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        LabRequire(candidateDevices.Count == 2 && candidateDevices.All(device => device.Id != deviceA && device.Id != deviceB &&
+                            device.AssignedProfileIds.SequenceEqual([localProfileId!.Value])), "CandidateCredentialsNotIndependent");
+                        observerAlias = candidateDevices.Single(device => device.Id != ownerAlias).Id;
+                        LabRequire(observerAlias != Guid.Empty && observerAlias != ownerAlias, "DistinctCandidateCredentialsRequired");
+                        LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateChatModeRejected");
+                        var sent = await PostAsync<ChatPostRequest, ChatRoomView>(first, $"/api/local/profiles/{localProfileId}/chat/messages", new("New synthetic Host message"));
+                        LabRequire(sent.Ok && sent.Entries.Count == 1, "CandidateChatRejected");
+                        var ownerRoom = await PostAsync<object, ChatRoomView>(owner, $"/api/local/friend/{localProfileId}/chat/sync", new { });
+                        var observerRoom = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{localProfileId}/chat/sync", new { });
+                        LabRequire(ownerRoom.Ok && observerRoom.Ok && ownerRoom.Entries.Single().Id == sent.Entries.Single().Id &&
+                            observerRoom.Entries.Single().Id == sent.Entries.Single().Id, "NewHostAuthenticatedChatReadFailed");
+                        return null;
+                    });
+                    await Stage("new-host-permission-isolation", async () =>
+                    {
+                        LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(first,
+                            $"/api/local/devices/{ownerAlias}/permissions", new(true, false, Scope: "start"))).Ok, "CandidateOwnerPermissionRejected");
+                        LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
+                            new(RemoteControlsEnabled: true))).Ok, "CandidateRemoteControlsRejected");
+                        var allowed = await RequireCandidateConnectionAsync(owner, DateTimeOffset.UtcNow.AddSeconds(-1));
+                        var restricted = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
+                        LabRequire(allowed.Profiles.Single().CanStart && !restricted.Profiles.Single().CanStart &&
+                            !restricted.Profiles.Single().CanStop && !restricted.Profiles.Single().CanViewPassword, "CandidatePermissionScopeLost");
+                        var denied = await FriendActionAsync(second, localProfileId!.Value, "start");
+                        LabRequire(!denied.Ok && denied.Code == "PermissionDenied", "ObserverObtainedOwnerLifecyclePermission");
+                        var current = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                        LabRequire(current.Runs.Count(run => run.ProcessId is not null) == 1 &&
+                            current.Runs.Single(run => run.ProfileId == localProfileId).RunOperationId == candidateSessionId, "DeniedStartChangedCandidateRun");
+                        LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(first,
+                            $"/api/local/devices/{ownerAlias}/permissions", new(false, false, Scope: "start"))).Ok, "CandidateOwnerPermissionRevokeRejected");
+                        return null;
+                    });
+                    await Stage("new-host-stop-and-transfer", async () =>
+                    {
+                        var snapshot = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                        var restored = snapshot.Settings.Profiles.Single(item => item.Id == localProfileId);
+                        LabRequire(AppInstance.ContainsPath(friendData, restored.WorldDirectory), "CandidateWorldBoundaryChanged");
+                        var seed = "Synthetic candidate payload " + runId.ToString("N");
+                        await File.WriteAllTextAsync(Path.Combine(restored.WorldDirectory, "world.dat"), seed);
+                        var managed = snapshot.Runs.Single(run => run.ProfileId == localProfileId);
+                        LabRequire(managed.RunOperationId == candidateSessionId && managed.ProcessId is not null, "CandidateStopIdentityChanged");
+                        LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok, "CandidateOwnerPipeStopRejected");
+                        _ = await WaitForRunStateAsync(first, localProfileId!.Value, "Offline");
+                        LabRequire(processes.Where(process => process.Role == "fixture").All(process => process.HasExitedNow()), "StoppedCandidateProcessStillRunning");
+                        var published = Path.Combine(friendData, "shared-world-separate-published", profile.Id.ToString("N"), prepared!.BranchHash!);
+                        var version = FriendLink.ReadReceivedLatest(published);
+                        LabRequire(version is not null && SharedWorldService.VerifySignature(version) && version.ProfileId == profile.Id &&
+                            version.SigningPublicKey == preparedBranch!.Offer.Proposal.CandidatePublicKey && version.Number > 1,
+                            "CandidateStoppedCopyNotPublished");
+                        receivedBranchVersionHash = version!.VersionHash;
+                        var vault = Path.Combine(observerData, "received-shared-branches", groupKey!, prepared.BranchHash!);
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            await SyncPeersAsync(first);
+                            await SyncPeersAsync(second);
+                            return FriendLink.ReadReceivedLatest(vault)?.VersionHash == version.VersionHash;
+                        }, "CandidateBranchTransferNotVerified");
+                        var proof = JsonSerializer.Deserialize<WorldSeparateCopyBranch>(await File.ReadAllBytesAsync(Path.Combine(vault, "branch.json")), Json);
+                        LabRequire(SharedWorldSeparateCopyStore.Verify(proof) && proof!.BranchHash == preparedBranch.BranchHash &&
+                            proof.Offer.Roster.OwnerPublicKey == signedRoster!.OwnerPublicKey &&
+                            SharedWorldSeparateCopyStore.VerifySnapshotVersion(proof, version), "ReceivedCandidateBranchProofRejected");
+                        var payload = Path.Combine(vault, version.VersionHash, "payload", "world.dat");
+                        LabRequire(await File.ReadAllTextAsync(payload) == seed, "CandidateTransferredBytesDiffer");
+                        var receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(await File.ReadAllBytesAsync(Path.Combine(vault, version.VersionHash, "receipt.json")), Json);
+                        LabRequire(receipt is not null && receipt.DeviceId == deviceB && receipt.VersionHash == version.VersionHash &&
+                            SharedWorldReceiptTrust.Verify(receipt, signedRoster!.Members.Single(member => member.DeviceId == deviceB).PublicKey), "CandidateCopyReceiptRejected");
+                        transferredCandidateCopy = true;
+                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "OriginalOwnerHostModeRestoreRejected");
+                        return null;
+                    });
+                    await Stage("new-host-restart-reconnect", async () =>
+                    {
+                        // Only app identities already recorded in our disposable job
+                        // are stopped. The saved branch has already stopped safely.
+                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "RestartOwnerJoinModeRejected");
+                        var savedOwner = await WaitForConnectedAsync(owner, allowDisabled: true);
+                        var savedObserver = await WaitForConnectedAsync(second, allowDisabled: true);
+                        var savedDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        LabRequire(savedDevices.Count == 2 && savedDevices.All(device => device.Paired && !device.Revoked &&
+                            !device.CanStart && !device.CanStop && !device.CanViewPassword), "RestartCredentialBaselineInvalid");
+                        var beforeCompanion = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
+                        var fingerprint = beforeCompanion.GetProperty("fingerprint").GetString();
+                        var oldCandidate = processes.Single(process => process.Role == "friend-a" && process.Alive);
+                        var oldOwner = processes.Single(process => process.Role == "host" && process.Alive);
+                        await oldCandidate.StopOwnedAsync();
+                        await oldOwner.StopOwnedAsync();
+                        LabRequire(oldCandidate.HasExitedNow() && oldOwner.HasExitedNow() &&
+                            !oldCandidate.IdentityReview && !oldOwner.IdentityReview, "RestartOldAppIdentityStillActive");
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            var view = await PostAsync<object, FriendView>(second, "/api/local/friend/poll", new { });
+                            return view.State == "Disconnected/Unknown" && view.ConnectionId == savedObserver.ConnectionId &&
+                                view.Endpoint == savedObserver.Endpoint;
+                        }, "OfflineCandidateWasNotUnknown");
+                        var candidateApp = Track(StartPairingLabApp(appPath, "--host", friendPort, friendData, lanAddress), "friend-a", appPath);
+                        var ownerApp = Track(StartPairingLabApp(appPath, "--friend", hostPort, hostData, lanAddress), "host", appPath);
+                        await Task.WhenAll(WaitLocalAsync(friendPort), WaitLocalAsync(hostPort));
+                        LabRequire(candidateApp.Matches() && ownerApp.Matches() && candidateApp.Id != oldCandidate.Id && ownerApp.Id != oldOwner.Id,
+                            "RestartNewAppIdentitiesMissing");
+                        WindowsListenerOwners.RequireTogetherServerOwner(friendPort, candidateApp.Process);
+                        WindowsListenerOwners.RequireTogetherServerOwner(hostPort, ownerApp.Process);
+                        WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], candidateApp.Process);
+                        var afterCompanion = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
+                        LabRequire(afterCompanion.GetProperty("fingerprint").GetString() == fingerprint, "RestartChangedCandidateTlsIdentity");
+                        var restored = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                        LabRequire(restored.Runs.All(run => run.ProcessId is null && run.RunOperationId is null) &&
+                            restored.Settings.Profiles.Single(item => item.Id == localProfileId).SeparateCopyBranchHash == prepared!.BranchHash,
+                            "AppRestartReplayedHostingStart");
+                        var published = Path.Combine(friendData, "shared-world-separate-published", profile.Id.ToString("N"), prepared!.BranchHash!);
+                        LabRequire(FriendLink.ReadReceivedLatest(published)?.VersionHash == receivedBranchVersionHash,
+                            "RestartLostPublishedBranchCopy");
+                        var persistedDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        LabRequire(persistedDevices.Count == 2 && persistedDevices.All(device => savedDevices.Any(saved => saved.Id == device.Id &&
+                            saved.CredentialExpiresUtc == device.CredentialExpiresUtc && saved.AssignedProfileIds.SequenceEqual(device.AssignedProfileIds)) &&
+                            device.Paired && !device.Revoked && !device.CanStart && !device.CanStop && !device.CanViewPassword),
+                            "RestartChangedCredentialOrPermissions");
+                        // Reconnect before issuing Start: authenticated status and
+                        // repeated polling must leave the prepared game offline.
+                        foreach (var client in new[] { owner, second })
+                        {
+                            var offline = await WaitForConnectedAsync(client, allowDisabled: true);
+                            LabRequire(offline.Endpoint == savedObserver.Endpoint && offline.HostId == savedObserver.HostId &&
+                                offline.Profiles.Count == 1 && offline.Profiles.Single().Id == localProfileId &&
+                                offline.Profiles.Single().State == "Offline" && offline.Profiles.Single().RunOperationId is null,
+                                "RestartReconnectionReplayedGameStart");
+                        }
+                        restored = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                        LabRequire(restored.Runs.All(run => run.ProcessId is null && run.RunOperationId is null), "RestartPollingStartedPreparedGame");
+                        var oldSession = candidateSessionId;
+                        var started = await PostAsync<object, ActionResult>(first,
+                            $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared.BranchHash, acceptSplitWarning = true });
+                        LabRequire(started.Ok, "RestartExplicitCandidateStartRejected");
+                        var run = await WaitForRunStateAsync(first, localProfileId!.Value, "Process running");
+                        TrackRun(run);
+                        LabRequire(run.RunOperationId != oldSession && run.RunOperationId is not null && !run.PlayerCountTrusted && run.OnlinePlayers is null,
+                            "RestartReusedRunIdentityOrClaimedReadiness");
+                        candidateSessionId = run.RunOperationId;
+                        var freshAfter = DateTimeOffset.UtcNow.AddSeconds(-1);
+                        var ownerView = await RequireCandidateConnectionAsync(owner, freshAfter);
+                        var observerView = await RequireCandidateConnectionAsync(second, freshAfter);
+                        LabRequire(ownerView.HostId == savedOwner.HostId && observerView.HostId == savedObserver.HostId &&
+                            ownerView.ConnectionId == savedOwner.ConnectionId && observerView.ConnectionId == savedObserver.ConnectionId &&
+                            !ownerView.Profiles.Single().CanStart && !observerView.Profiles.Single().CanStart &&
+                            !observerView.Profiles.Single().CanViewPassword, "RestartDidNotReusePinnedScopedConnections");
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            await SyncPeersAsync(first); await SyncPeersAsync(owner); await SyncPeersAsync(second);
+                            return await SeesCandidateAsync(owner, fingerprint) && await SeesCandidateAsync(second, fingerprint);
+                        }, "RestartedCandidateSessionNotDiscovered");
+                        var sent = await PostAsync<ChatPostRequest, ChatRoomView>(first, $"/api/local/profiles/{localProfileId}/chat/messages", new("Restarted synthetic Host message"));
+                        var ownerRoom = await PostAsync<object, ChatRoomView>(owner, $"/api/local/friend/{localProfileId}/chat/sync", new { });
+                        var observerRoom = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{localProfileId}/chat/sync", new { });
+                        LabRequire(sent.Ok && ownerRoom.Ok && observerRoom.Ok && sent.Entries.All(entry =>
+                            ownerRoom.Entries.Any(copy => copy.Id == entry.Id) && observerRoom.Entries.Any(copy => copy.Id == entry.Id)),
+                            "RestartedHostAuthenticatedChatFailed");
+                        restartedHostConnections = true;
+                        return null;
+                    });
+                    await Stage("new-host-revocation-isolation", async () =>
+                    {
+                        // Revoke only the candidate's derived owner credential. The
+                        // owner's original world membership and Friend B stay intact.
+                        LabRequire((await PostAsync<object, PairingDecision>(first,
+                            $"/api/local/devices/{ownerAlias}/revoke", new { })).Ok, "CandidateOwnerAliasRevokeRejected");
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            var view = await PostAsync<object, FriendView>(owner, "/api/local/friend/poll", new { });
+                            return view.State == "Revoked" && view.ConnectionCode == "Revoked";
+                        }, "RevokedCandidateAliasStillAuthenticated");
+                        var observer = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
+                        var devices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        LabRequire(devices.Single(device => device.Id == ownerAlias).Revoked &&
+                            devices.Single(device => device.Id == observerAlias) is { Revoked: false, Paired: true } &&
+                            !observer.Profiles.Single().CanStart && !observer.Profiles.Single().CanStop && !observer.Profiles.Single().CanViewPassword,
+                            "CandidateRevocationAffectedOtherCredential");
+                        var denied = await FriendActionAsync(second, localProfileId!.Value, "start");
+                        LabRequire(!denied.Ok && denied.Code == "PermissionDenied", "RestartBroadenedObserverPermission");
+                        var run = (await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot")).Runs.Single(item => item.ProfileId == localProfileId);
+                        LabRequire(run.RunOperationId == candidateSessionId && run.State == "Process running", "AliasRevocationChangedManagedRun");
+                        LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok,
+                            "RestartedCandidateOwnerStopRejected");
+                        _ = await WaitForRunStateAsync(first, localProfileId.Value, "Offline");
+                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
+                            "RestartOwnerHostModeRestoreRejected");
+                        isolatedRevocation = true;
+                        return null;
+                    });
+                }
+                await Stage("lost-response-cleanup", async () =>
+                {
+                    var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
+                    LabRequire(started.Ok, "CleanupFaultFixtureStartRejected");
+                    var run = started.Snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+                    LabRequire(run.ProcessId is not null && run.RunOperationId is not null, "CleanupFaultFixtureIdentityMissing");
+                    // Deliberately do not add this child to processes, just as when
+                    // Start succeeds but its HTTP response never reaches tracking.
+                    using var untracked = Process.GetProcessById(run.ProcessId!.Value);
+                    LabRequire(!untracked.HasExited && string.Equals(untracked.MainModule?.FileName,
+                        Path.GetFullPath(fixturePath), StringComparison.OrdinalIgnoreCase), "CleanupFaultFixtureMismatch");
+                    runOperations.Add(run.RunOperationId!.Value);
+                    var stoppedHost = processes.Single(process => process.Role == "host" && process.Alive);
+                    await stoppedHost.StopOwnedAsync();
+                    LabRequire(!stoppedHost.Alive && !stoppedHost.IdentityReview, "CleanupFaultHostDidNotExit");
+                    LabRequire(!untracked.HasExited, "CleanupFaultDidNotLeaveChildForJob");
+                    await job.StopAsync();
+                    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await untracked.WaitForExitAsync(deadline.Token);
+                    LabRequire(untracked.HasExited && job.ActiveCount() == 0, "UntrackedFixtureSurvivedJobCleanup");
+                    return null;
                 });
+                if (lanAddress is not null)
+                    await Stage("new-host-receipt-confirmed", async () =>
+                    {
+                        // An empty job does not guarantee every terminated process
+                        // has released its file handles. Confirm those exact PIDs,
+                        // then allow only the Windows lock-release race to settle.
+                        await PairingLabWaitAsync(() => Task.FromResult(processes.All(process => process.HasExitedNow())),
+                            "ReceiptReviewProcessesDidNotExit", TimeSpan.FromSeconds(5));
+                        LocalData? candidateData = null;
+                        await PairingLabWaitAsync(() =>
+                        {
+                            try { candidateData = new LocalData(friendData); return Task.FromResult(true); }
+                            catch (IOException error) when ((error.HResult & 0xffff) is 32 or 33) { return Task.FromResult(false); }
+                        }, "ReceiptReviewDataLockNotReleased", TimeSpan.FromSeconds(5));
+                        using var receiptData = candidateData!;
+                        var receipts = receiptData.LoadProtectedJson<List<SharedWorldReceipt>>($"world-peer-receipts-{groupKey}.protected") ?? [];
+                        LabRequire(receipts.Any(receipt => receipt.DeviceId == deviceB && receipt.ProfileId == profile.Id &&
+                            receipt.VersionHash == receivedBranchVersionHash && SharedWorldReceiptTrust.Verify(receipt,
+                                signedRoster!.Members.Single(member => member.DeviceId == deviceB).PublicKey)), "NewHostDidNotRecordVerifiedCopyReceipt");
+                        return null;
+                    });
             }
         }
         catch (Exception error) { failureCode = error is PairingLabFailure assertion ? assertion.Code : error.GetType().Name; }
@@ -656,23 +797,50 @@ internal static partial class CoreRemoteJourney
             var uxPassed = stages.Any(stage => stage.Id == "two-ended-ux" && stage.State == "Passed");
             var report = new
             {
-                schema = 1, runId, root, startedUtc, endedUtc = DateTimeOffset.UtcNow, durationMs = clock.ElapsedMilliseconds,
+                schema = 1,
+                runId,
+                root,
+                startedUtc,
+                endedUtc = DateTimeOffset.UtcNow,
+                durationMs = clock.ElapsedMilliseconds,
                 mode = runUx ? "SamePcLanUx" : lanAddress is null ? "LoopbackBlocker" : "SamePcLanApi",
                 physicalPcCount = 1,
                 outcome = failureCode is null ? stages.Any(stage => stage.State == "Skipped") ? "CompletedWithSkips" : "Passed" : "Failed",
                 failedStage = failureCode is null ? null : failedStage,
-                failureCode, stages, runOperations, syntheticCopyHosted = runUx ? (bool?)null : hostedCopy,
+                failureCode,
+                stages,
+                runOperations,
+                syntheticCopyHosted = runUx ? (bool?)null : hostedCopy,
                 uxStagePassed = uxPassed,
-                apiHostChange = runUx ? null : new { discoveredHost, connectedOwner, connectedObserver, candidateSessionId,
-                    candidateSessionState, transferredCandidateCopy },
+                apiHostChange = runUx ? null : new
+                {
+                    discoveredHost,
+                    connectedOwner,
+                    connectedObserver,
+                    candidateSessionId,
+                    candidateSessionState,
+                    transferredCandidateCopy,
+                    restartedHostConnections,
+                    isolatedRevocation
+                },
                 cleanup = new { jobActiveProcesses = job.ActiveCount(), killRemainingMembersOnHarnessExit = true },
-                resources = new { sampledEveryMs = 250, peakProcessCount, peakWorkingSetBytes = peakWorkingSet,
-                    currentWorkingSetBytes = processes.Sum(process => process.CurrentWorkingSetBytes) },
-                windowObservation = new { sampledEveryMs = 250, samples = windowObservationSamples,
+                resources = new
+                {
+                    sampledEveryMs = 250,
+                    peakProcessCount,
+                    peakWorkingSetBytes = peakWorkingSet,
+                    currentWorkingSetBytes = processes.Sum(process => process.CurrentWorkingSetBytes)
+                },
+                windowObservation = new
+                {
+                    sampledEveryMs = 250,
+                    samples = windowObservationSamples,
                     state = windowObservationFailure != 0 ? "Failed" : windowObservationSamples > 0 ? "Passed" : "NotObserved",
-                    peakVisibleOwnedWindows, observedVisibleWindow = windowObservationFailure == 1,
+                    peakVisibleOwnedWindows,
+                    observedVisibleWindow = windowObservationFailure == 1,
                     observationUnavailable = windowObservationFailure == 2,
-                    scope = "All job-member top-level windows, including app, Node, browser and fixture descendants; sampled observation, no focus or placement calls" },
+                    scope = "All job-member top-level windows, including app, Node, browser and fixture descendants; sampled observation, no focus or placement calls"
+                },
                 ownedProcesses = processes.Select(process => process.Report()).ToArray(),
                 acceptance = new[] { lanAddress is null ? "LoopbackOnly" : "SamePcAssignedLanAddressOnly", "SyntheticSeededPayloadOnly", "NoGameReadinessOrPlayerCountClaim",
                     "ValheimPasswordRevealUnverified", uxPassed ? "HostChangeExercisedByTwoEndedUx" : discoveredHost && connectedOwner && connectedObserver ?
@@ -699,7 +867,7 @@ internal static partial class CoreRemoteJourney
 
         async Task StopLocalLabRunsAsync(HttpClient client, int port, string role)
         {
-            var app = processes.FirstOrDefault(process => process.Role == role);
+            var app = processes.LastOrDefault(process => process.Role == role && process.Alive);
             if (app is null || !app.Alive || !app.Matches()) return;
             try
             {
@@ -720,7 +888,12 @@ internal static partial class CoreRemoteJourney
         async Task SyncPeersAsync(HttpClient client)
         {
             LabRequire(groupKey is not null, "SignedWorldRootMissing");
-            var result = await PostAsync<object, WorldPeerActionResult>(client, $"/api/local/world-peers/{groupKey}/sync", new { });
+            // Peer synchronization has its own reviewed 45-second transport
+            // budget. The ordinary eight-second status client is too short for
+            // a real multi-peer copy plus its signed receipt and queued sync.
+            using var syncClient = LocalClient(client.BaseAddress!.Port);
+            syncClient.Timeout = TimeSpan.FromSeconds(65);
+            var result = await PostAsync<object, WorldPeerActionResult>(syncClient, $"/api/local/world-peers/{groupKey}/sync", new { });
             LabRequire(result.Ok && result.Code == "WorldPeersChecked", "PeerSyncRequestRejected");
         }
 
@@ -762,10 +935,10 @@ internal static partial class CoreRemoteJourney
     private static async Task<T> PairingLabGetAsync<T>(HttpClient client, string path) =>
         await client.GetFromJsonAsync<T>(path, Json) ?? throw new PairingLabFailure("LocalResponseMissing");
 
-    private static async Task PairingLabWaitAsync(Func<Task<bool>> check, string code)
+    private static async Task PairingLabWaitAsync(Func<Task<bool>> check, string code, TimeSpan? timeout = null)
     {
         var timer = Stopwatch.StartNew();
-        while (timer.Elapsed < TimeSpan.FromSeconds(25))
+        while (timer.Elapsed < (timeout ?? TimeSpan.FromSeconds(25)))
         {
             if (await check()) return;
             await Task.Delay(250);
@@ -778,7 +951,10 @@ internal static partial class CoreRemoteJourney
         Directory.CreateDirectory(data);
         var start = new ProcessStartInfo(Path.GetFullPath(path))
         {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         };
         foreach (var argument in new[] { "--staging", "--local-pairing-lab", mode, "--port", port.ToString() }) start.ArgumentList.Add(argument);
         start.Environment["TOGETHERSERVER_STAGING_DATA_DIR"] = data;
@@ -912,9 +1088,19 @@ internal static partial class CoreRemoteJourney
             }
         }
 
-        internal object Report() => new { role = Role, processId = id, startedUtcTicks = startedTicks,
-            alive = Alive, identityReview = IdentityReview, currentWorkingSetBytes = CurrentWorkingSetBytes,
-            peakWorkingSetBytes = peakWorkingSet, observedCpuMs = cpuMs, resourceSampleUnavailable,
-            visibleWindowSamples, peakVisibleWindows };
+        internal object Report() => new
+        {
+            role = Role,
+            processId = id,
+            startedUtcTicks = startedTicks,
+            alive = Alive,
+            identityReview = IdentityReview,
+            currentWorkingSetBytes = CurrentWorkingSetBytes,
+            peakWorkingSetBytes = peakWorkingSet,
+            observedCpuMs = cpuMs,
+            resourceSampleUnavailable,
+            visibleWindowSamples,
+            peakVisibleWindows
+        };
     }
 }

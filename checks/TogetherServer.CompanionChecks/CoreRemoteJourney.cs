@@ -23,6 +23,7 @@ internal static partial class CoreRemoteJourney
         var secondFriendPort = FreeTcpPort(hostPort, companionPort, friendPort);
         var gamePort = FreeUdpPair();
         var endpoint = $"https://127.0.0.1:{companionPort}";
+        var gamePassword = "core-synthetic-" + Guid.NewGuid().ToString("N");
         var profile = new ServerProfile
         {
             Kind = GameKinds.Valheim,
@@ -72,7 +73,7 @@ internal static partial class CoreRemoteJourney
             Require((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
                 "Host settings could not be saved");
             Require((await PostAsync<ValheimPasswordRequest, ActionResult>(owner,
-                $"/api/local/profiles/{profile.Id}/password", new("fixture-pass-123"))).Ok,
+                $"/api/local/profiles/{profile.Id}/password", new(gamePassword))).Ok,
                 "fixture password could not be saved");
 
             var invite = await PostAsync<ServerInviteRequest, JsonElement>(owner,
@@ -241,6 +242,9 @@ internal static partial class CoreRemoteJourney
             _ = await WaitForRunStateAsync(owner, profile.Id, "Offline");
             Console.WriteLine("PASS saved authenticated connection survives Host and Friend restart and still controls lifecycle");
             passes++;
+
+            await RunPinnedPasswordJourneyAsync(owner, friendLocal, secondFriendLocal, profile.Id,
+                firstDevice, gamePassword, stage => { Console.WriteLine("PASS " + stage); passes++; });
 
             Console.WriteLine($"Core remote journey: {passes} groups passed, 0 failed. Disposable data: {root}");
             await RunRehearsalAsync(appPath);

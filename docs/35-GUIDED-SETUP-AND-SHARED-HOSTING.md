@@ -302,3 +302,43 @@ The running production PID/start time/path/hash still match the baseline. No
 production data, app installation, firewall/router rule, tag or GitHub release
 was changed. This new build supersedes the earlier handoff for verification;
 physical-network, real-game and native installer acceptance remain unverified.
+
+## Expanded unattended acceptance, 2026-10-20
+
+The owner requested full automated coverage and then chose to play a game while
+testing continues. Local native UI, installer, keyboard/mouse and real-game
+launches are therefore held. Dedicated hosted Windows runners own those desktop
+checks; the local lab remains windowless, contained and synthetic.
+
+The expanded local UX run `993ef0e6-e936-4a88-beb3-7fcef61f49bc` passed all ten
+stages, with zero failed/skipped stages and zero visible windows in 159 samples.
+It adds actual UI hosting-permission withdrawal and local consent/cancel checks
+to the eight-stage journey above. The latter found a real initial-read race:
+the receiving checkbox is now disabled until this PC's saved consent loads.
+All 48 shared-save UI tests pass, including the new pending-read regression.
+
+The API lab now requires signed new-host discovery, authenticated connections
+from both other apps, Stop/save transfer, process restart/reconnect, isolated
+credential revocation, and a verified final signed receipt. Its first-host
+listener setup respects the production permission gate, long peer sync uses a
+scoped timeout, and post-job receipt review waits for exact process/file-lock
+release rather than assuming an empty job has released every handle. Assigned-
+LAN run `4dd1de6b-b346-4aaa-9401-8ce820719772` passed all 18 stages with zero
+failed/skipped stages and zero visible windows in 277 samples. Loopback run
+`b328e269-e124-4a93-b9ad-d30fcda2aa3b` passed all 11 planned stages with zero
+failed/skipped stages and zero visible windows in 33 samples. These local runs
+precede the CI source commit; the remote lane rebuilds and verifies its exact
+committed candidate separately.
+
+Windows CI now includes the same immutable candidate in loopback, assigned-LAN
+and ten-stage UX lanes. Native acceptance exercises the actual OS first-close
+notification and Explorer tray Quit. Installer UI acceptance drives each real
+Host/Join/Decide-later wizard choice, turns optional tasks on and off, verifies
+the visible installed app and persisted guide intent, then checks uninstall
+preserves synthetic owner data. These checks are required to pass on the
+dedicated runner; source review or compilation does not count as execution.
+
+Hosted execution and the final candidate artifact identity are pending at this
+checkpoint. Record their exact run, source revision, hashes and results below
+after completion. Real game join/load/save/restart and physical-PC/WAN routing
+remain separate from this same-PC synthetic acceptance.

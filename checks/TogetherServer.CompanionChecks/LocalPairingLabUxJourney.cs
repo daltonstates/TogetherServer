@@ -14,8 +14,11 @@ internal static partial class CoreRemoteJourney
         LabRequire(File.Exists(script), "UxScriptMissing");
         var start = new ProcessStartInfo("node")
         {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             WorkingDirectory = Environment.CurrentDirectory
         };
         start.ArgumentList.Add(script);
@@ -31,8 +34,15 @@ internal static partial class CoreRemoteJourney
         runner.BeginErrorReadLine();
         await runner.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
         {
-            root, hostPort, friendPort, observerPort, profileId, fixturePath, lanAddress,
-            runnerPid = runner.Id, parentPid = Environment.ProcessId,
+            root,
+            hostPort,
+            friendPort,
+            observerPort,
+            profileId,
+            fixturePath,
+            lanAddress,
+            runnerPid = runner.Id,
+            parentPid = Environment.ProcessId,
             authorization = "owner-approved-local-windowless-ux"
         }, Json));
         runner.StandardInput.Close();
@@ -48,14 +58,17 @@ internal static partial class CoreRemoteJourney
         LabRequire(File.Exists(reportPath) && new FileInfo(reportPath).Length <= 256 * 1024, "UxReportMissingOrOversized");
         using var report = JsonDocument.Parse(await File.ReadAllBytesAsync(reportPath));
         LabRequire(report.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True &&
-            report.RootElement.TryGetProperty("stages", out var stages) && stages.GetArrayLength() == 8 &&
+            report.RootElement.TryGetProperty("stages", out var stages) && stages.GetArrayLength() == 10 &&
             stages.EnumerateArray().All(stage => stage.TryGetProperty("passed", out var passed) && passed.ValueKind == JsonValueKind.True) &&
             report.RootElement.TryGetProperty("guidedHosting", out var guided) &&
             guided.GetProperty("startRequests").GetInt32() == 1 && guided.GetProperty("successfulStartResponses").GetInt32() == 1 &&
             report.RootElement.TryGetProperty("signedDiscovery", out var discovery) &&
             discovery.GetProperty("exactCandidateSession").ValueKind == JsonValueKind.True &&
             discovery.GetProperty("exactAdvertisedEndpoint").ValueKind == JsonValueKind.True &&
-            discovery.GetProperty("exactConnectSelection").ValueKind == JsonValueKind.True,
+            discovery.GetProperty("exactConnectSelection").ValueKind == JsonValueKind.True &&
+            report.RootElement.TryGetProperty("failurePathCoverage", out var failures) &&
+            failures.GetProperty("hostingGrantWithdrawal").ValueKind == JsonValueKind.True &&
+            failures.GetProperty("localConsentAndCancel").ValueKind == JsonValueKind.True,
             "UxReportDidNotPass");
     }
 }
