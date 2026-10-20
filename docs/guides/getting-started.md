@@ -16,12 +16,12 @@ its .NET runtime and interface; Node and the .NET SDK are only for building
 from source. Published builds are currently unsigned, so Windows may show
 **Unknown Publisher**.
 
-As of October 20, 2026, [stable is 0.3.2](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.2)
-and [0.3.2.2 is a preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.2.2).
-The published 0.3.2 updater cannot discover four-part version tags: download
-and install the preview directly the first time. Guides describe current
-source and preview work; an older release may have different labels or fewer
-features.
+As of October 20, 2026,
+[stable is 0.3.3](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3).
+Stable 0.3.2 and preview 0.3.2.1/0.3.2.2 PCs can update to it. Stop hosted
+servers before choosing **Update and restart**. The release notes describe
+known limits and unresolved native Windows checks; older releases may have
+different labels or fewer features.
 
 ## Finish first-use setup
 

@@ -1,7 +1,7 @@
 # TogetherServer documentation
 
-Start with a task guide below. These describe the current source and preview
-work; use a release's notes to check what is included in that download.
+Start with a task guide below. These cover stable 0.3.3 and current source;
+use a release's notes to check its included features and known limits.
 
 ## Using TogetherServer
 
@@ -101,7 +101,7 @@ use the document title to identify the topic.
 | 0.3.2 | [Release delivery](20-0.3.2-RELEASE.md) |
 | 0.3.2.1 preview | [Prerelease delivery](31-0.3.2.1-PRERELEASE.md) |
 | 0.3.2.2 preview | [Prerelease delivery](36-0.3.2.2-PRERELEASE.md) |
-| 0.3.3 | [Stable release preparation and evidence](38-0.3.3-RELEASE.md) |
+| 0.3.3 | [Stable release delivery and evidence](38-0.3.3-RELEASE.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).

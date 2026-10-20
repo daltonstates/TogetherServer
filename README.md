@@ -43,9 +43,10 @@ need Node, the .NET SDK, Docker, or a separate web server to use the app.
 | Playing together | Game requirements, connection details, explicit Open game actions, server chat, and pinned notices. |
 | Windows app | Tray and sign-in options, notifications, resizable sidebars, and updates you choose when to install. |
 
-These describe the current source and preview work. A stable release may have
-fewer features; check its release notes before downloading. Installation and
-updates are covered in [getting started](docs/guides/getting-started.md).
+These features are included in
+[stable 0.3.3](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3).
+Check its release notes for known limits. Installation and updates are covered
+in [getting started](docs/guides/getting-started.md).
 
 ## Games and current limits
 
