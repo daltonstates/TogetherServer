@@ -3,6 +3,16 @@ using System.Reflection;
 using System.Text.Json;
 using TogetherServer;
 
+LocalPairingLabMode? localLab;
+try { localLab = LocalPairingLabMode.Resolve(args); }
+catch (Exception error) when (error is ArgumentException or IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
+{
+    DiagnosticOutput.WriteError("Pairing lab refused: " + error.Message);
+    Environment.ExitCode = 2;
+    return;
+}
+localLab?.SuppressNativeErrorDialogs();
+
 // Select the inert demo before native helpers, console setup or any real
 // hosting, Friend, discovery, updater or recovery service can be constructed.
 if (AppInstance.RequestsDemo(args))
@@ -36,8 +46,8 @@ var stagingRequested = AppInstance.RequestsStaging(args);
 using var installerMutex = stagingRequested ? null : new Mutex(false, @"Local\TogetherServer.Application");
 if (requestedFriend && requestedHost)
     throw new ArgumentException("Choose either --host or --friend.");
-var openWindow = args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase) || startupLaunch;
-DesktopLaunch.EnsureConsoleForGameStop(openWindow);
+var openWindow = localLab is null && (args.Length == 0 || args.Contains("--desktop", StringComparer.OrdinalIgnoreCase) || startupLaunch);
+if (localLab is null) DesktopLaunch.EnsureConsoleForGameStop(openWindow);
 var portIndex = Array.IndexOf(args, "--port");
 var port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
     ? parsedPort : stagingRequested ? 5128 : 5127;
@@ -49,8 +59,9 @@ try
 {
     instance = AppInstance.Resolve(args);
     instance.PrepareDataRoot();
+    localLab?.PrepareDataRoot();
     data = new LocalData(instance.DataRoot, instance.DefaultCompanionPort);
-    var existingSettings = instance.ValidateSettings(data.LoadSettings());
+    var existingSettings = localLab?.ValidateSettings(data.LoadSettings()) ?? instance.ValidateSettings(data.LoadSettings());
     if (!existingSettings.Ok)
     {
         data.Dispose();
@@ -67,7 +78,7 @@ catch (IOException ex)
     return;
 }
 catch (Exception ex) when (ex is ArgumentException or InvalidDataException or UnauthorizedAccessException or
-                           System.Security.SecurityException)
+                           System.Security.SecurityException or JsonException)
 {
     var message = "TogetherServer could not safely open its local data. No server action was started.\n\n" + ex.Message;
     if (openWindow) DesktopLaunch.ShowError(message);
@@ -80,11 +91,11 @@ var root = instance.DataRoot;
 var desktopPreferences = data.LoadDesktopPreferences();
 var startupRegistration = new WindowsStartup(Environment.ProcessPath ?? "");
 var friendMode = requestedFriend || (!requestedHost && data.LoadPreferredMode() == "Friend");
-var games = new GameServerRegistry(data, includeFixture: instance.IsStaging);
+var games = localLab?.Registry() ?? new GameServerRegistry(data, includeFixture: instance.IsStaging);
 var pairing = new PairingService(data);
 pairing.ReconcileProfiles(data.LoadSettings().Profiles.Select(profile => profile.Id));
-using var hostingPower = new WindowsHostingPowerGuard();
-var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "");
+using IHostingPowerGuard hostingPower = localLab is null ? new WindowsHostingPowerGuard() : new NullHostingPowerGuard();
+var startupRecovery = new StartupRecoveryService(data, data.LoadRuns(), Environment.ProcessPath ?? "", registerWindowsRestart: localLab is null);
 var manager = new HostManager(data, games, TimeProvider.System, hostingPower, startupRecovery, pairing);
 if (instance.IsStaging) manager.EnableStagingLiveFixture();
 await manager.RecoverPendingBedrockResumeAsync();
@@ -125,27 +136,33 @@ var qolDesktop = new QolLocalPreferences(data);
 var updateUi = new UpdateUiPreferences(data);
 var importSelections = new SetupImportSelections(data, instance.FreshWorldsOnly);
 var identity = new HostIdentity(data);
-using var friend = new FriendService(data);
-using var worldPeers = new WorldPeerService(data, manager, friend, pairing);
-using var updateClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+Func<string, IEnumerable<string>, HttpClient>? labClient = localLab is null ? null :
+    (endpoint, pins) => FriendLink.MakeClient(endpoint, pins, loopbackOnly: true);
+using var friend = new FriendService(data, labClient);
+using var worldPeers = new WorldPeerService(data, manager, friend, pairing, labClient);
+using var updateClient = localLab is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(45) } :
+    LocalPairingLabMode.OfflineClient(TimeSpan.FromSeconds(45));
 var appVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0);
 var updater = new AppUpdater(updateClient, root, Environment.ProcessPath ?? "", appVersion,
     enabled: instance.UpdatesAvailable,
     disabledMessage: "Replace or rebuild this development app to update it.",
     uiPreferences: updateUi);
-using var publicIpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+using var publicIpClient = localLab is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(5) } :
+    LocalPairingLabMode.OfflineClient(TimeSpan.FromSeconds(5));
 var publicIpLookup = new PublicIpLookup(publicIpClient);
-using var externalProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+using var externalProbeClient = localLab is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(15) } :
+    LocalPairingLabMode.OfflineClient(TimeSpan.FromSeconds(15));
 var externalPortProbe = new ExternalPortProbe(externalProbeClient);
 ExternalPortProbeResult? latestRouteDiagnostic = null;
-using var minecraftClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+using var minecraftClient = localLab is null ? new HttpClient { Timeout = TimeSpan.FromMinutes(10) } :
+    LocalPairingLabMode.OfflineClient(TimeSpan.FromMinutes(10));
 var minecraftInstaller = new MinecraftInstaller(minecraftClient, data, instance.IsStaging);
 using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
 var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
     () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
-    friend.CurrentRecoveryHostLoss, serverChat: serverChat);
+    friend.CurrentRecoveryHostLoss, serverChat: serverChat, loopbackOnly: localLab is not null);
 companionServer.PeerWorlds = worldPeers;
 manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
@@ -160,6 +177,11 @@ var desktop = openWindow ? new DesktopWindow(new Uri($"http://127.0.0.1:{port}/"
     notifications: notificationPreferences) : null;
 app.Use(async (context, next) =>
 {
+    if (localLab is not null && !LocalPairingLabMode.AllowsRequest(context.Request.Method, context.Request.Path.Value ?? ""))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
     var localGui = context.Connection.LocalPort == port;
     if (localGui && (context.Connection.RemoteIpAddress is not { } remote || !IPAddress.IsLoopback(remote) ||
         !string.Equals(context.Request.Host.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
@@ -752,7 +774,7 @@ app.MapPut("/api/local/settings", async (HostSettings settings) =>
     try
     {
         if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to My server first." });
-        var validation = instance.ValidateSettings(settings);
+        var validation = localLab?.ValidateSettings(settings) ?? instance.ValidateSettings(settings);
         result = validation.Ok
             ? await manager.UpdateSettingsAsync(settings)
             : new ActionResult(false, validation.Code, validation.Message, await manager.SnapshotAsync());

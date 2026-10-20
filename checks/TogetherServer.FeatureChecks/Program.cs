@@ -7,6 +7,7 @@ var root = Path.Combine(Directory.GetCurrentDirectory(), "local-data", "feature-
 Directory.CreateDirectory(root);
 var groups = new (string Name, Func<Task> Run)[]
 {
+    ("Windowless disposable pairing lab boundaries", () => LocalPairingLabChecks.RunAsync(root)),
     ("Isolated native development demo", () => DemoInstanceChecks.RunAsync(root)),
     ("Passive grouped server directory", () => ServerDirectoryChecks.RunAsync(root)),
     ("Calm completed player-count observations", () => { PlayerCountPresentationChecks.Run(); PlayerCountPresentationChecks.RunQuietCountdown(root); return Task.CompletedTask; }),

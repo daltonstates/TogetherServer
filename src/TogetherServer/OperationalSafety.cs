@@ -340,7 +340,7 @@ internal sealed class StartupRecoveryService
     private readonly HashSet<Guid> handledProfiles = [];
 
     public StartupRecoveryService(LocalData data, IReadOnlyList<ManagedRun> currentRuns,
-        string executablePath)
+        string executablePath, bool registerWindowsRestart = true)
     {
         this.data = data;
         previous = ReadPrevious();
@@ -351,7 +351,7 @@ internal sealed class StartupRecoveryService
             ActiveProfileIds = currentRuns.Select(item => item.ProfileId).Distinct().ToList()
         };
         data.SaveState(FileName, current);
-        restartRegistered = WindowsApplicationRestart.TryRegister(executablePath);
+        restartRegistered = registerWindowsRestart && WindowsApplicationRestart.TryRegister(executablePath);
     }
 
     public void UpdateActiveProfiles(IEnumerable<ManagedRun> runs)

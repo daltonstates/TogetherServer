@@ -1201,18 +1201,25 @@ internal sealed partial class FriendLink : IDisposable
         return new("Disconnected", "Could not verify the Host over HTTPS. Check this PC's internet connection and the invite address.");
     }
 
-    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints)
+    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints) => MakeClient(endpoint, fingerprints, false);
+
+    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints, bool loopbackOnly)
     {
+        if (loopbackOnly && !LocalPairingLabMode.IsLoopbackEndpoint(endpoint))
+            throw new HttpRequestException("The disposable pairing lab accepts pinned loopback peers only.");
         var pins = fingerprints.Where(ValidFingerprint).Select(Convert.FromHexString).ToList();
         if (pins.Count == 0) throw new AuthenticationException("No valid Host certificate pin is saved.");
         var handler = new HttpClientHandler
         {
+            AllowAutoRedirect = !loopbackOnly,
+            UseProxy = !loopbackOnly,
             ServerCertificateCustomValidationCallback = (_, certificate, _, _) => certificate is not null &&
                 DateTimeOffset.UtcNow >= certificate.NotBefore.ToUniversalTime() &&
                 DateTimeOffset.UtcNow <= certificate.NotAfter.ToUniversalTime() &&
                 pins.Any(pin => CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin))
         };
-        return new HttpClient(handler) { BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"), Timeout = TimeSpan.FromSeconds(6) };
+        return new HttpClient(loopbackOnly ? LocalPairingLabMode.GuardLoopback(handler) : handler)
+            { BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"), Timeout = TimeSpan.FromSeconds(6) };
     }
 
     private static string HostLabel(string endpoint) =>

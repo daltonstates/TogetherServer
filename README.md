@@ -63,6 +63,10 @@ for artifact retention, shared scrollbar styling and titlebar/taskbar controls.
 
 ## Develop beside the stable app
 
+For a lightweight local Host/Friend rehearsal without VMs, see the
+[windowless pairing lab](docs/LOCAL-PAIRING-LAB.md). It runs three isolated app
+instances with synthetic saves and records measured resources, checks and skips.
+
 Use the explicit staging instance when friends need the stable app to keep working while a candidate is tested. Build and assemble it with:
 
 ```powershell

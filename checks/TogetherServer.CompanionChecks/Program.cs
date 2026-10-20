@@ -15,6 +15,21 @@ var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
 var valheimFixturePath = Path.GetFullPath("src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe");
+if (args.Skip(1).Contains("--local-pairing-lab-journey", StringComparer.OrdinalIgnoreCase))
+{
+    if (!OperatingSystem.IsWindows() || !args.Contains("--allow-windowless-lab", StringComparer.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Use the explicit windowless local lab launcher; other process journeys remain subject to foreground safety.");
+    try
+    {
+        await CoreRemoteJourney.RunLocalPairingLabAsync(appPath, fixturePath, Path.GetFullPath("local-data/local-pairing-lab"));
+        return 0;
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine(error.Message);
+        return 1;
+    }
+}
 if (args.Skip(1).Contains("--mixed-version-journey", StringComparer.OrdinalIgnoreCase))
 {
     var legacyIndex = Array.FindIndex(args, argument => argument.Equals("--legacy-app-path", StringComparison.OrdinalIgnoreCase));
