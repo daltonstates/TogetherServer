@@ -171,7 +171,7 @@ history stay quiet. Audio permission/autoplay failures do not interrupt chat.
 Workers use the configured `gpt-6.1-sol` model. The coordinator owns integration,
 shared builds, packaging, validation, commits, and the remaining acceptance record.
 
-## Production verification build
+## Earlier production verification build
 
 The 2026-10-20 production-mode handoff is version `0.3.2.2`, from clean source
 `55ef8ada4a51d29c1c2a6fd7e35cae16c5f89970`. Both files are unsigned and retained
@@ -275,3 +275,30 @@ rendered/protocol acceptance. Physical-PC/WAN routing, actual game join and
 save/load/restart, real password reveal/change, native window and installer
 acceptance remain separate. The earlier portable ZIP remains an optional manual
 cross-PC handoff, not the current test requirement.
+
+## Updated production verification build
+
+The updated production-mode handoff includes the first-use hosting fixes above.
+It is version `0.3.2.2`, from clean source
+`3f5f53e8301df7546d42044d03fe3d02284e2a91`, retained under
+`local-data/setup-sharing-production-20261020-3f5f53e`:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer.exe` | 66,120,267 | `9d466fe5746e9dddf4f0e7af5457d40a0f6c39dfaf191f4a12a41ed08e004f2b` |
+| `TogetherServer-Setup-win-x64.exe` | 60,584,761 | `633afe36bfc1a94a71d6155f4fd8d9e6aa5839a055688b3c8b6eee8c27122bc3` |
+
+PASS static GUI subsystem 2, exact bundled current assembly, all seven current UI
+assets, self-contained .NET/WindowsDesktop/ASP.NET runtime configuration, and
+bundled WebView loader. Inno Setup compiled the installer from the exact app
+hash above and checked its version. Both artifacts are unsigned and neither was
+launched or installed. `build-info.json`, package/runtime evidence, SHA-256
+sidecars, a short readme and build logs sit beside them. The accepted lab run's
+`verified-inputs.json` retains the tested input/source/report/screenshot hashes;
+its test binaries were built before the source commit and are recorded separately
+from these production artifacts.
+
+The running production PID/start time/path/hash still match the baseline. No
+production data, app installation, firewall/router rule, tag or GitHub release
+was changed. This new build supersedes the earlier handoff for verification;
+physical-network, real-game and native installer acceptance remain unverified.
