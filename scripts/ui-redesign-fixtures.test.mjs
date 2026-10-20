@@ -629,6 +629,11 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.equal(setupPolish.plans.length, 63, 'twenty-one focused surfaces cover desktop, narrow 150 percent text and short desktop');
   assert.equal(new Set(setupPolish.inventory.map(entry => entry.id)).size, 63);
   assert.ok(setupPolish.plans.every(plan => fixtureScenarios.includes(plan.testCase.scenario)));
+  for (const { testCase } of setupPolish.plans.filter(plan => plan.testCase.section?.[0] === 'This Host PC sections')) {
+    const [, id, button] = testCase.section;
+    assert.equal(button, hostPcSections.find(item => item.id === id)?.label,
+      `${testCase.id} clicks the current Host PC sidebar label on desktop`);
+  }
   for (const id of ['notifications-empty', 'notifications-activity', 'permissions-partial', 'permissions-unassigned',
     'settings-profile', 'settings-appearance', 'settings-shortcuts', 'settings-scroll', 'guide-welcome', 'guide-host', 'guide-join',
     'wizard-game-tip', 'wizard-server-tip']) assert.ok(setupPolish.plans.some(plan => plan.testCase.id === `setup-polish-${id}`), id);
@@ -726,6 +731,40 @@ test('hosted workflow pins dependencies and runs source-only checks before rende
   assert.ok(source.includes("startsWith(github.ref_name, 'review/ui-redesign-setup-polish-')"));
   assert.ok(source.includes("$env:SETUP_POLISH_REVIEW -eq 'true'"));
   assert.ok(source.includes("$reviewArguments += '--setup-polish-only'"));
+});
+
+test('settings jump evidence accepts tall sections but waits for pane visibility, focus, location and settled scrolling', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'settledSettingsJump');
+  assert.ok(helper, 'use the renderer actual jump wait without running a browser');
+  const rect = (left, top, width, height) => ({ left, top, right: left + width, bottom: top + height, width, height });
+  let headingTop = 120, moving = false;
+  const root = { className: 'context-content settings-content', parentElement: null, scrollTop: 1400,
+    clientLeft: 0, clientTop: 0, clientWidth: 300, clientHeight: 350,
+    getBoundingClientRect: () => rect(0, 100, 300, 350) };
+  const heading = { getBoundingClientRect: () => rect(20, headingTop, 240, 25) };
+  const target = { parentElement: root, getBoundingClientRect: () => rect(20, headingTop, 260, 800),
+    querySelector: selector => selector === 'h2' ? heading : null };
+  const picker = { value: 'shortcuts' };
+  const document = { activeElement: target, querySelector: selector => selector.startsWith('[data-settings-section=') ? target : picker };
+  const wait = runInNewContext(`${helper.getText(ast)}\n;settledSettingsJump`, {
+    document, innerHeight: 600, innerWidth: 390, getComputedStyle: () => ({ overflowY: 'auto' }),
+    requestAnimationFrame: callback => { if (moving) root.scrollTop += 8; callback(0); }
+  });
+  assert.equal((await wait('shortcuts')).sectionId, 'shortcuts', 'a visible focused heading can lead a section taller than its pane');
+  root.className = 'workspace-scroll'; root.clientHeight = 250;
+  assert.equal((await wait('shortcuts')).scroller, 'workspace-scroll', 'narrow layouts wait on the outer scroll owner');
+  headingTop = 80;
+  assert.equal(await wait('shortcuts'), false, 'a viewport-visible heading clipped above its scroll pane cannot pass');
+  headingTop = 120; document.activeElement = picker;
+  assert.equal(await wait('shortcuts'), false, 'a requested location alone cannot pass before target focus arrives');
+  document.activeElement = target; picker.value = 'profile';
+  assert.equal(await wait('shortcuts'), false, 'passive location must agree with the destination');
+  picker.value = 'shortcuts'; moving = true;
+  assert.equal(await wait('shortcuts'), false, 'a smooth jump still moving cannot be captured');
+  moving = false;
+  assert.equal((await wait('shortcuts')).scrollTop, root.scrollTop, 'the same destination passes once it settles');
 });
 
 test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {

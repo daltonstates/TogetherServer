@@ -1197,16 +1197,19 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const selectFriendConnection = async (id: string) => {
-    if (!await beforeChangingScope()) return false
+  const selectFriendConnection = async (id: string, epoch = ++navigationEpoch.current) => {
+    if (!await beforeChangingScope() || epoch !== navigationEpoch.current) return false
     setPending('select-connection')
     try {
       const result = await change(`/api/local/friend/connections/${id}/select`, 'POST')
+      if (epoch !== navigationEpoch.current) return false
       if (!result.ok) { setNotice({ good: false, text: result.message }); return false }
       else {
+        const next = await readSnapshot()
+        if (epoch !== navigationEpoch.current) return false
         setShowPairing(false)
         setJoinSection('play')
-        applySnapshot(await readSnapshot())
+        applySnapshot(next)
         return true
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }); return false }
@@ -1744,11 +1747,14 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const requestDirectoryAction = async (action: 'new' | 'connect') => {
     if (pending || directorySelectionInFlight.current) return
     directorySelectionInFlight.current = true
+    let epoch = ++navigationEpoch.current
     try {
       const mode = action === 'new' ? 'Host' : 'Friend'
       if (snapshot?.mode !== mode) {
         if (!await switchMode(mode === 'Host' ? 'host' : 'friend')) return
+        epoch = navigationEpoch.current
       } else if (!await beforeChangingScope()) return
+      if (epoch !== navigationEpoch.current) return
       setDirectoryAction(action)
     } finally { directorySelectionInFlight.current = false }
   }
@@ -1757,19 +1763,22 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const selectDirectoryServer = async (target: ServerSelection) => {
     if (pending || directorySelectionInFlight.current) return
     directorySelectionInFlight.current = true
+    let epoch = ++navigationEpoch.current
     try {
       if (target.kind === 'local') {
-        if (snapshot?.mode !== 'Host') { if (!await switchMode('host')) return }
+        if (snapshot?.mode !== 'Host') { if (!await switchMode('host')) return; epoch = navigationEpoch.current }
         else if (!await beforeChangingScope()) return
+        if (epoch !== navigationEpoch.current) return
         setWorkspacePage('host'); setHostScope('server'); setSelectedHostProfileId(target.profileId); setHostServerTab('overview')
         setUiPreferences(current => ({ ...current, selectedServer: target.profileId }))
       } else {
-        if (snapshot?.mode !== 'Friend') { if (!await switchMode('friend')) return }
+        if (snapshot?.mode !== 'Friend') { if (!await switchMode('friend')) return; epoch = navigationEpoch.current }
         const current = await readSnapshot()
-        if (current.mode !== 'Friend') return
+        if (current.mode !== 'Friend' || epoch !== navigationEpoch.current) return
         if (current.connectionId !== target.connectionId) {
-          if (!await selectFriendConnection(target.connectionId)) return
+          if (!await selectFriendConnection(target.connectionId, epoch)) return
         } else if (!await beforeChangingScope()) return
+        if (epoch !== navigationEpoch.current) return
         const chosenHost = directoryWithSnapshot(serverDirectory, snapshot).friendHosts.find(host => host.connectionId === target.connectionId)
         setShowRemovedHosts(chosenHost?.state === 'Revoked' || chosenHost?.connectionCode === 'Revoked')
         setWorkspacePage('join'); setShowPairing(false); setJoinSection('play')

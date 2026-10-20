@@ -13,7 +13,8 @@
 .guide-path .guide-recommended { color: var(--color-accent); }
 .guide-footnote { display: flex; gap: .6rem; align-items: start; color: var(--color-text-muted); font-size: .82rem; }
 .guide-footnote > .icon { flex-shrink: 0; margin-top: .2rem; }
-.guide-coach { position: fixed; z-index: var(--z-popover); isolation: isolate; box-sizing: border-box; max-height: calc(100dvh - 64px); overflow-y: auto; padding: 1rem; border: 1px solid var(--color-accent); border-radius: 16px; background: var(--color-surface-raised); box-shadow: 0 14px 50px #0008; color: var(--color-text); animation: guide-appear .22s ease-out; }
+.guide-coach { position: fixed; display: flex; flex-direction: column; z-index: var(--z-popover); isolation: isolate; box-sizing: border-box; max-height: calc(100dvh - 64px); overflow: hidden; padding: 1rem; border: 1px solid var(--color-accent); border-radius: 16px; background: var(--color-surface-raised); box-shadow: 0 14px 50px #0008; color: var(--color-text); animation: guide-appear .22s ease-out; }
+.guide-coach-top, .guide-step-dots, .guide-coach footer { flex-shrink: 0; }
 .guide-coach-top { display: flex; justify-content: space-between; gap: .75rem; align-items: center; }
 .guide-coach-top > span { display: flex; align-items: center; gap: .5rem; color: var(--color-accent); font-size: .78rem; font-weight: 650; }
 .guide-coach .guide-coach-top button { min-height: 32px; min-width: 32px; padding: .25rem; }
@@ -22,7 +23,7 @@
 .guide-step-dots .visited { background: var(--color-accent); }
 .guide-coach h2 { margin: 0 0 .6rem; font-size: 1.1rem; line-height: 1.4; }
 .guide-coach p { margin: .6rem 0; line-height: 1.6; font-size: .86rem; }
-.guide-step-content { animation: guide-appear .18s ease-out; }
+.guide-step-content { min-block-size: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; animation: guide-appear .18s ease-out; }
 .guide-coach .guide-coach-tip { display: flex; align-items: start; gap: .5rem; padding: .65rem; margin-top: .85rem; border-radius: 8px; background: var(--color-accent-soft); color: var(--color-text-muted); font-size: .79rem; }
 .guide-coach-tip > .icon { flex-shrink: 0; margin-top: .25rem; }
 .guide-coach footer { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; align-items: center; margin-top: 1rem; }

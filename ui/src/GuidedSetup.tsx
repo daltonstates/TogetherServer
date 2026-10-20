@@ -67,7 +67,9 @@ export function GuidedWalkthrough({ kind, steps, stepIndex, suspended, busy, onS
       const margin = 14, gap = 16
       const width = Math.min(360, window.innerWidth - margin * 2)
       const panel = panelRef.current
-      const height = panel ? Math.max(panel.scrollHeight + 2, panel.getBoundingClientRect().height) : 310
+      const content = panel?.querySelector<HTMLElement>('.guide-step-content')
+      const hiddenContent = content ? Math.max(0, content.scrollHeight - content.clientHeight) : 0
+      const height = panel ? Math.max(panel.scrollHeight + hiddenContent + 2, panel.getBoundingClientRect().height) : 310
       const left = Math.max(margin, Math.min(bounds?.left ?? window.innerWidth - width - margin, window.innerWidth - width - margin))
       let top = window.innerHeight - height - 36
       let maxHeight: number | undefined

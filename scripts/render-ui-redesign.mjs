@@ -90,8 +90,8 @@ const setupPolishCases = [
     action: 'manage-sharing', steps: [{ nav: 'Sharing sections', button: 'Save sharing' }], screen: heading('What happens next') },
   { id: 'setup-polish-notifications-empty', scenario: 'host-ready', workspace: 'Host', action: 'notifications-empty', screen: { css: '.notification-empty', text: 'No recent notifications.' } },
   { id: 'setup-polish-notifications-activity', scenario: 'host-attention', workspace: 'Host', action: 'notifications-menu', screen: { css: '.notification-panel', text: 'Recent app and connection activity' } },
-  { id: 'setup-polish-permissions-partial', scenario: 'host-multi', fixture: { permissions: 'partial' }, workspace: 'Host', section: ['This Host PC sections', 'access', 'Friend access'], screen: { css: '.friend-pc-card', text: 'Friend PC' } },
-  { id: 'setup-polish-permissions-unassigned', scenario: 'host-ready', fixture: { permissions: 'unassigned' }, workspace: 'Host', section: ['This Host PC sections', 'access', 'Friend access'], screen: { css: '.friend-pc-card', text: 'No server access.' } },
+  { id: 'setup-polish-permissions-partial', scenario: 'host-multi', fixture: { permissions: 'partial' }, workspace: 'Host', section: ['This Host PC sections', 'access', 'Access'], screen: { css: '.friend-pc-card', text: 'Friend PC' } },
+  { id: 'setup-polish-permissions-unassigned', scenario: 'host-ready', fixture: { permissions: 'unassigned' }, workspace: 'Host', section: ['This Host PC sections', 'access', 'Access'], screen: { css: '.friend-pc-card', text: 'No server access.' } },
   ...[['profile', 'Profile'], ['appearance', 'Appearance'], ['shortcuts', 'Keyboard shortcuts']].map(([id, title]) => ({
     id: `setup-polish-settings-${id}`, scenario: 'host-ready', workspace: 'App Settings', section: ['App settings sections', id, title], screen: heading(title) })),
   { id: 'setup-polish-settings-scroll', scenario: 'host-ready', workspace: 'App Settings', section: ['App settings sections', 'profile', 'Profile'], screen: heading('Profile') },
@@ -378,6 +378,35 @@ async function navigateHeader(page, workspace, record) {
     await visible(navigation.getByRole('button', { name, exact: true }).and(page.locator('[aria-current="page"]')));
   }
 }
+// Runs inside the page. A section may exceed the pane height; its heading must
+// be exposed after focus arrives and the real scroll owner stops moving.
+async function settledSettingsJump(sectionId) {
+  const read = () => {
+    const target = document.querySelector(`[data-settings-section="${sectionId}"]`), heading = target?.querySelector('h2');
+    if (!target || !heading || document.activeElement !== target ||
+        document.querySelector('select[aria-label="App settings sections"]')?.value !== sectionId) return null;
+    let root = target.parentElement;
+    while (root && !/(auto|scroll)/.test(getComputedStyle(root).overflowY)) root = root.parentElement;
+    if (!root) return null;
+    const pane = root.getBoundingClientRect(), bounds = heading.getBoundingClientRect();
+    const visible = { top: Math.max(0, pane.top + root.clientTop), left: Math.max(0, pane.left + root.clientLeft),
+      bottom: Math.min(innerHeight, pane.top + root.clientTop + root.clientHeight),
+      right: Math.min(innerWidth, pane.left + root.clientLeft + root.clientWidth) };
+    if (!bounds.width || !bounds.height || bounds.top < visible.top - 1 || bounds.bottom > visible.bottom + 1 ||
+        bounds.left < visible.left - 1 || bounds.right > visible.right + 1) return null;
+    return { sectionId, scroller: root.className, scrollTop: root.scrollTop,
+      headingTop: bounds.top, headingBottom: bounds.bottom, visible };
+  };
+  let current = read();
+  if (!current) return false;
+  for (let frame = 0; frame < 3; frame++) {
+    await new Promise(done => requestAnimationFrame(done));
+    const next = read();
+    if (!next || Math.abs(next.scrollTop - current.scrollTop) > .5 || Math.abs(next.headingTop - current.headingTop) > .5) return false;
+    current = next;
+  }
+  return current;
+}
 async function section(page, [label, value, button], record) {
   // Both owned and paired servers now use the selected-server sidebar.
   if (label === 'Join sections') label = 'Selected server sections';
@@ -393,6 +422,11 @@ async function section(page, [label, value, button], record) {
   if (await select.isVisible()) {
     await page.waitForFunction(({ label, value }) => [...document.querySelectorAll('select')].some(el => el.getAttribute('aria-label') === label && el.value === value), { label, value });
   } else await visible(page.getByRole('navigation', { name: label, exact: true }).locator(label === 'App settings sections' ? '[aria-current="location"]' : '[aria-current="page"]').filter({ hasText: button }));
+  if (label === 'App settings sections') {
+    const settled = await page.waitForFunction(settledSettingsJump, value);
+    record.assertions.push({ settingsJumpSettled: await settled.jsonValue() });
+    await settled.dispose();
+  }
 }
 async function click(page, name, record, exact = true) {
   record.actions.push({ action: 'click', role: 'button', name: String(name) });
@@ -873,10 +907,6 @@ async function setupPolishEvidence(page, testCase, variant, record) {
       record.assertions.push({ passiveSettingsScroll: { scroller, desiredTop, actualTop, current: 'notifications' } });
       await shot('passive-notifications-location');
       await section(page, ['App settings sections', 'shortcuts', 'Keyboard shortcuts'], record);
-      await page.waitForFunction(() => {
-        const target = document.querySelector('[data-settings-section="shortcuts"]'), bounds = target?.getBoundingClientRect();
-        return target === document.activeElement && bounds && bounds.top >= 0 && bounds.bottom <= innerHeight;
-      });
       await shot('shortcuts-jump-location');
       await section(page, ['App settings sections', 'profile', 'Profile'], record);
       record.assertions.push({ settingsClickJump: { target: 'shortcuts', focusedAndVisible: true,
@@ -900,6 +930,17 @@ async function setupPolishEvidence(page, testCase, variant, record) {
       }
       const target = await handle.jsonValue();
       await handle.dispose();
+      const controls = await page.locator('.guide-coach .guide-coach-top button, .guide-coach footer button').evaluateAll(buttons => buttons.map(button => {
+        const bounds = button.getBoundingClientRect(), coach = button.closest('.guide-coach').getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+        return { text: button.getAttribute('aria-label') || button.textContent.trim(),
+          exposed: bounds.width > 0 && bounds.height > 0 && bounds.top >= Math.max(0, coach.top) &&
+            bounds.bottom <= Math.min(innerHeight, coach.bottom) && bounds.left >= Math.max(0, coach.left) &&
+            bounds.right <= Math.min(innerWidth, coach.right) && button.contains(hit) };
+      }));
+      if (!controls.length || controls.some(control => !control.exposed))
+        throw new Error(`Guide buttons must stay visible without scrolling: ${JSON.stringify(controls)}`);
+      target.controls = controls;
       if (variant.reducedMotion !== 'no-preference' && target.animation !== 'none') throw new Error('Reduced motion did not disable the guide highlight animation');
       return target;
     };
@@ -1271,7 +1312,7 @@ try {
       record.assertions.push({ correctNamedScreen: { ...testCase.screen, name: String(testCase.screen.name ?? '') } });
       const hasDialog = await page.locator('dialog[open]').count() > 0;
       if (hasDialog && !record.dialogInitialFocus) record.dialogInitialFocus = await focusDetails(page);
-      if (!testCase.action?.startsWith('tooltip') && testCase.action !== 'picker') {
+      if (!testCase.action?.startsWith('tooltip') && testCase.action !== 'picker' && !testCase.id.startsWith('setup-polish-settings-')) {
         record.actions.push({ action: 'scroll-asserted-screen-into-view' });
         await screen.scrollIntoViewIfNeeded();
       }

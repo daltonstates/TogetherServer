@@ -1569,6 +1569,41 @@ describe('Friend task structure', () => {
     expectNoServerAction()
   })
 
+  it.each(['mobile picker', 'sidebar button'] as const)(
+    'keeps the latest Chat navigation from the %s when an earlier directory selection finishes late', async control => {
+      const connected = friend()
+      state = connected
+      render(<App />)
+      await screen.findByRole('region', { name: 'Play' })
+      await act(async () => {})
+      const read = transport.read.getMockImplementation()!
+      let finishSelection!: (snapshot: Snapshot) => void
+      const selectedSnapshot = new Promise<Snapshot>(resolve => { finishSelection = resolve })
+      let heldSelection = false
+      transport.read.mockImplementation((path: string, ...args: unknown[]) => {
+        if (path === '/api/local/snapshot' && !heldSelection) {
+          heldSelection = true
+          return selectedSnapshot
+        }
+        return read(path, ...args)
+      })
+      fireEvent.click(directory().getByRole('button', { name: 'Open Synthetic world on Evening Host' }))
+      await waitFor(() => expect(heldSelection).toBe(true))
+      if (control === 'mobile picker') fireEvent.change(screen.getByLabelText('Selected server sections', { selector: 'select' }),
+        { target: { value: 'chat' } })
+      else fireEvent.click(joinSections().getByRole('button', { name: 'Chat' }))
+      const chat = await screen.findByRole('region', { name: 'Server chat' })
+      expect(chat).toHaveAttribute('data-profile-id', id)
+      expect(screen.getByLabelText('Selected server sections', { selector: 'select' })).toHaveValue('chat')
+      await act(async () => { finishSelection(connected) })
+      expect(screen.getByRole('region', { name: 'Server chat' })).toBe(chat)
+      expect(joinSections().getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-current', 'page')
+      expect(screen.getByLabelText('Selected server sections', { selector: 'select' })).toHaveValue('chat')
+      expect(screen.queryByRole('region', { name: 'Play' })).not.toBeInTheDocument()
+      expect(directory().getByRole('button', { name: 'Open Synthetic world on Evening Host' })).toHaveAttribute('aria-current', 'true')
+      expectNoMutation()
+    })
+
   it('flushes the protected chat draft before changing the selected Join server', async () => {
     const connected = friend()
     const secondId = '33333333-3333-4333-8333-333333333333'
