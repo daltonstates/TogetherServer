@@ -57,7 +57,10 @@ Use the gear in the app header to enable **Open at Windows sign-in** and **Close
 
 Build a fresh unsigned production-mode EXE with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1`. Use the development/staging package below when the stable app must remain open at the same time. The repository pins .NET in `global.json` and Node in `.node-version`.
 
-The latest local handoff is `local-data/latest-build-titlebar/TogetherServer.exe`.
+The latest local production verification build is
+`local-data/setup-sharing-production-20261020-55ef8ad/TogetherServer.exe`, with
+`TogetherServer-Setup-win-x64.exe` alongside it. See the
+[setup and shared-hosting build record](docs/35-GUIDED-SETUP-AND-SHARED-HOSTING.md#production-verification-build).
 See [workspace cleanup and window controls](docs/35-WORKSPACE-AND-WINDOW-CHROME.md)
 for artifact retention, shared scrollbar styling and titlebar/taskbar controls.
 

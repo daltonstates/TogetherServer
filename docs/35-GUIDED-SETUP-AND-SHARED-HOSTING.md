@@ -170,3 +170,37 @@ history stay quiet. Audio permission/autoplay failures do not interrupt chat.
 
 Workers use the configured `gpt-6.1-sol` model. The coordinator owns integration,
 shared builds, packaging, validation, commits, and the remaining acceptance record.
+
+## Production verification build
+
+The 2026-10-20 production-mode handoff is version `0.3.2.2`, from clean source
+`55ef8ada4a51d29c1c2a6fd7e35cae16c5f89970`. Both files are unsigned and retained
+under `local-data/setup-sharing-production-20261020-55ef8ad`:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer.exe` | 66,115,586 | `7b048c0c3c7367e3fd6d1ac9633b8fafda3f7edb960a64356e2816d04882aa6c` |
+| `TogetherServer-Setup-win-x64.exe` | 60,582,099 | `a65618f5cebfe5ad1e4659e5471007ed7e8e5539dd470795edab8a0789c628fd` |
+
+The pinned toolchain rebuilt the UI and published the self-contained Windows x64
+single-file app with locked dependencies. Static inspection confirmed Windows
+GUI subsystem 2, the exact current managed assembly, all seven current UI assets,
+the included runtime configuration, and the native WebView loader. The SDK's
+single-file host links its native runtime directly; separate `coreclr.dll` and
+`hostpolicy.dll` bundle entries are not required. See the [runtime host source](https://github.com/dotnet/runtime/blob/main/src/native/corehost/apphost/static/CMakeLists.txt).
+The existing large JavaScript chunk warning remains.
+
+Inno Setup 6 compiled the installer from those exact app bytes and checked its
+version/signature state. The installer was not executed, so an installed-payload
+comparison and native setup journey remain unverified. `build-info.json`,
+`package-evidence.json`, `runtime-evidence.json`, SHA-256 sidecars and build logs
+sit beside the artifacts. Neither artifact was launched or installed; the running
+production app's PID, start time, path and executable hash remained unchanged.
+
+This is ready for owner verification, with the limits above. The windowless lab
+adds 62 source/synthetic groups and 10 passing process stages with two explicit
+skips; see the [local pairing lab](LOCAL-PAIRING-LAB.md). Real Valheim password
+reveal/change, successful guided hosting with new-Host announcement/Connect over
+a valid two-PC route, real game joins and saved restart, and native installer
+acceptance remain pending. Stop hosted servers and quit the existing app before
+opening this production build, so the old running process is not reopened instead.
