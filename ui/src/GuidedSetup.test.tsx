@@ -76,6 +76,23 @@ describe('guided setup', () => {
     } finally { window.removeEventListener('keydown', shortcut) }
   })
 
+  it('keeps the coach below the app header when it must fit above a narrow-screen action', () => {
+    vi.stubGlobal('innerWidth', 390); vi.stubGlobal('innerHeight', 844)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return (this.id === 'real-action'
+        ? { left: 20, right: 370, top: 600, bottom: 644, width: 350, height: 44 }
+        : this.classList.contains('topbar')
+          ? { left: 0, right: 390, top: 0, bottom: 62, width: 390, height: 62 }
+          : { left: 14, right: 374, top: 14, bottom: 614, width: 360, height: 600 }) as DOMRect
+    })
+    render(<div className="app-shell"><header className="topbar">App navigation</header><button id="real-action">Real action</button>
+      <GuidedWalkthrough kind="host" steps={steps} stepIndex={0} suspended={false} busy={false} {...callbacks()} /></div>)
+    const coach = screen.getByRole('complementary')
+    expect(parseFloat(coach.style.top)).toBe(76)
+    expect(parseFloat(coach.style.maxHeight)).toBe(508)
+    expect(parseFloat(coach.style.top) + parseFloat(coach.style.maxHeight)).toBeLessThan(600)
+  })
+
   it('leaves an active guide in place when Escape has already dismissed a header menu', () => {
     const dismissMenu = (event: KeyboardEvent) => event.preventDefault()
     document.addEventListener('keydown', dismissMenu, true)

@@ -65,34 +65,39 @@ export function GuidedWalkthrough({ kind, steps, stepIndex, suspended, busy, onS
       highlighted = usable ? target : null
       highlighted?.setAttribute('data-guide-highlight', 'true')
       const margin = 14, gap = 16
+      const header = document.querySelector<HTMLElement>('.app-shell > .topbar')
+      const topEdge = Math.max(margin, (header?.getBoundingClientRect().bottom ?? 0) + margin)
+      const availableHeight = Math.max(0, window.innerHeight - topEdge - 36)
       const width = Math.min(360, window.innerWidth - margin * 2)
       const panel = panelRef.current
       const content = panel?.querySelector<HTMLElement>('.guide-step-content')
       const hiddenContent = content ? Math.max(0, content.scrollHeight - content.clientHeight) : 0
       const height = panel ? Math.max(panel.scrollHeight + hiddenContent + 2, panel.getBoundingClientRect().height) : 310
       const left = Math.max(margin, Math.min(bounds?.left ?? window.innerWidth - width - margin, window.innerWidth - width - margin))
-      let top = window.innerHeight - height - 36
-      let maxHeight: number | undefined
+      let top = window.innerHeight - Math.min(height, availableHeight) - 36
+      let maxHeight = availableHeight
       if (usable && bounds) {
         if (bounds.bottom + gap + height < window.innerHeight - 28) top = bounds.bottom + gap
-        else if (bounds.top - gap - height > margin) top = bounds.top - gap - height
+        else if (bounds.top - gap - height > topEdge) top = bounds.top - gap - height
         else if (bounds.right + gap + width < window.innerWidth - margin) {
-          setPosition({ left: bounds.right + gap, top: Math.max(margin, Math.min(bounds.top, window.innerHeight - height - 36)), width }); return
+          setPosition({ left: bounds.right + gap, top: Math.max(topEdge, Math.min(bounds.top, window.innerHeight - Math.min(height, availableHeight) - 36)), width, maxHeight }); return
         } else if (bounds.left - gap - width > margin) {
-          setPosition({ left: bounds.left - gap - width, top: Math.max(margin, Math.min(bounds.top, window.innerHeight - height - 36)), width }); return
+          setPosition({ left: bounds.left - gap - width, top: Math.max(topEdge, Math.min(bounds.top, window.innerHeight - Math.min(height, availableHeight) - 36)), width, maxHeight }); return
         } else {
           // A short/narrow viewport may not fit the full coach beside its action.
           // Keep the action exposed and scroll the coach within the available space.
-          const above = bounds.top - gap - margin
+          const above = bounds.top - gap - topEdge
           const below = window.innerHeight - bounds.bottom - gap - 36
-          if (above >= below) { top = margin; maxHeight = Math.max(0, above) }
+          if (above >= below) { top = topEdge; maxHeight = Math.max(0, above) }
           else { top = bounds.bottom + gap; maxHeight = Math.max(0, below) }
         }
       }
-      setPosition({ left, top: Math.max(margin, top), width, ...(maxHeight === undefined ? {} : { maxHeight }) })
+      setPosition({ left, top: Math.max(topEdge, top), width, maxHeight })
     }
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null
     if (panelRef.current) observer?.observe(panelRef.current)
+    const header = document.querySelector<HTMLElement>('.app-shell > .topbar')
+    if (header) observer?.observe(header)
     const target = document.querySelector<HTMLElement>(targetSelector)
     if (target) observer?.observe(target)
     window.addEventListener('resize', update)
