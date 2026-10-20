@@ -787,13 +787,39 @@ internal static partial class SharedWorldJourney
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         Require(roster.Members.Single(member => member.DeviceId == credentials.DeviceId).PublicKey == publicKey,
             "the receiving PC's local key did not match its enrolled identity");
-        var receipt = new SharedWorldReceipt(1, roster.GroupId, profileId, expectedVersion.VersionHash,
-            credentials.DeviceId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
-        receipt = receipt with
+        // A repeated preflight must attest with the same saved receipt. A new
+        // receipt identity at the same roster revision is correctly rejected as
+        // a replay, even when it was signed by this enrolled PC.
+        var receiptPath = Path.Combine(vault, expectedVersion.VersionHash, "receipt.json");
+        SharedWorldReceipt? receipt = null;
+        if (File.Exists(receiptPath))
         {
-            Signature = Convert.ToBase64String(key.SignData(
-            SharedWorldReceiptTrust.Basis(receipt), HashAlgorithmName.SHA256))
-        };
+            Require(new FileInfo(receiptPath).Length <= SharedWorldReceiptTrust.MaximumRequestBytes &&
+                (File.GetAttributes(receiptPath) & FileAttributes.ReparsePoint) == 0,
+                "the recipient's saved preflight receipt was oversized or linked");
+            receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(File.ReadAllBytes(receiptPath), Json) ??
+                throw new InvalidDataException("the recipient's saved preflight receipt was empty");
+            Require(receipt.GroupId == roster.GroupId && receipt.ProfileId == profileId &&
+                receipt.VersionHash == expectedVersion.VersionHash &&
+                receipt.DeviceId == credentials.DeviceId && SharedWorldReceiptTrust.Verify(receipt, publicKey),
+                "the recipient's saved preflight receipt did not match its verified copy and enrolled key");
+            Require(receipt.RosterEpoch < roster.Epoch || receipt.RosterEpoch == roster.Epoch &&
+                receipt.RosterRevision <= roster.Revision,
+                "the current roster would roll back the recipient's signed preflight receipt");
+        }
+        if (receipt is null || receipt.RosterEpoch != roster.Epoch || receipt.RosterRevision != roster.Revision)
+        {
+            var draft = new SharedWorldReceipt(1, roster.GroupId, profileId, expectedVersion.VersionHash,
+                credentials.DeviceId, roster.Epoch, roster.Revision, Guid.NewGuid(), "");
+            receipt = draft with
+            {
+                Signature = Convert.ToBase64String(key.SignData(
+                SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+            };
+            var stage = receiptPath + "." + Guid.NewGuid().ToString("N") + ".new";
+            File.WriteAllBytes(stage, JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
+            File.Move(stage, receiptPath, true);
+        }
         var acknowledged = await CompanionPostAsync<SharedWorldReceipt, SharedWorldReceiptResult>(recipient,
             $"api/companion/servers/{profileId}/shared-world/receipts", receipt);
         Require(acknowledged.Ok, $"the recipient's preflight receipt failed: {acknowledged.Code}");
@@ -820,7 +846,16 @@ internal static partial class SharedWorldJourney
         using var response = await client.PostAsJsonAsync(path, body, Json);
         var result = await response.Content.ReadFromJsonAsync<TResponse>(Json) ??
             throw new Exception($"empty companion response: {(int)response.StatusCode}");
-        Require(response.IsSuccessStatusCode, $"companion protocol request failed: {path}: {(int)response.StatusCode}");
+        var code = result switch
+        {
+            SharedWorldReceiptResult receipt => receipt.Code,
+            PlannedHandoffResult handoff => handoff.Code,
+            _ => null
+        };
+        var safeCode = code is { Length: > 0 and <= 64 } && code.All(char.IsAsciiLetterOrDigit)
+            ? code : "Unavailable";
+        Require(response.IsSuccessStatusCode,
+            $"companion protocol request failed: {path}: {(int)response.StatusCode} {safeCode}");
         return result;
     }
 
