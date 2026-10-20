@@ -5,6 +5,46 @@ installer guidance, simpler shared hosting, separate game-password access, and
 chat presentation/sounds requested together. The running production app and
 owner's active desktop are outside local automated testing.
 
+## Current build and acceptance
+
+Production-mode handoff: `local-data/setup-sharing-production-20261020-1b84e8f/`.
+The app is version `0.3.2.2`, compiled from
+`1b84e8f25943afd71f6ce3041b6159fa519e2ff5`; later commits change only verification
+helpers and delivery records. Neither asset was installed or launched locally.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer.exe` | 66,122,047 | `937dc50d965b5a23fd33bb3611cac15723948c9602bedb833d88fa72c67909f7` |
+| `TogetherServer-Setup-win-x64.exe` | 60,584,270 | `004dcf1cf9431092f85e0a0a2ce34c3e844fd573bfd4b40d61196fd54837269f` |
+
+Both assets are unsigned. Their hash sidecars, static package/runtime inspection,
+acceptance manifest and README accompany the handoff.
+
+| Surface | Actual result for the unchanged asset |
+| --- | --- |
+| Pairing/shared hosting at the assigned private address | All 18 stages pass, including both authenticated recipients, signed discovery, copy transfer, restart, revocation and the new Host's durable receipt; run `39392686691`. |
+| Actual Host/Friend UI | All ten stages pass locally and in hosted run `39398164189`, with automatic grant recovery, one explicit client Start and exact signed Connect selection. |
+| Affected sharing/served checks, source and UI | All five affected packaged/format/served checks, source groups, 1,339 UI tests and actual browser journeys pass in run `39392686691`. Unavailable local symbolic-link cases are explicit skips. |
+| Silent installer | All six checks pass for the exact installer in runs `39392686691` and `39398164189`. |
+| Actual installer wizard | Host, Join and Decide later all pass, including preferences, rendered first launch, uninstall, retained synthetic owner data and exact cleanup; run `39403601187`, verification source `cc94380e0826578f68e15c561f45ad80641f326b`, zero failures/skips, 27 captures. |
+| Native Windows | Twelve required cases pass in run `39400463020`; one notification delivery/click case remains BLOCKED by actual Windows QuietTime. The staging-only startup case is explicitly skipped; it belongs to the separate production startup gate. |
+
+The complete native/package gate remains failed because notification delivery and
+click have not been observed. No blocked case is counted as passed. The peer/UX
+tests use separate actual app instances on one Windows PC with isolated synthetic
+data; physical second-PC/WAN routes and real game join/save/load/restart are not
+established by those tests. The local UX run observed zero visible owned windows
+in 172 samples and left zero job members. Production PID/start/path/hash remained
+unchanged; no production world, installation or network configuration changed.
+
+All eight hosted runs report zero billable runner milliseconds. Their bounded
+evidence and exact assets were hash-verified and archived locally before removing
+the temporary GitHub artifacts, freeing 211,433,450 bytes across this acceptance
+work. Unrelated uploads were untouched. The two finite artifact-dependent repair
+workflows are removed after use; permanent Windows CI still contains the actual
+installer/native checks and full gates. No further hosted retry, release, tag or
+main-branch push was made. Earlier checkpoints below retain their original scope.
+
 ## App navigation and setup
 
 - The notification popover owns its padding and gaps. Tooltips close on activation
@@ -547,3 +587,11 @@ mismatches and incomplete cleanup still fail acceptance. Static compilation
 again passed with zero warnings/errors; a pure PowerShell check confirmed the
 original failure survives a later cleanup error. No native call was executed
 locally. The next run repeats only the actual wizard against unchanged bytes.
+
+Final wizard-only run `39403601187` passed all three actual choices with no
+failures/skips and successful cleanup. Its raw `WIZARD_OUTCOME` is `success`, not
+an inferred continued-step conclusion. The app and installer sentinels are
+unchanged. The overall run remains failed solely because the prior BLOCKED
+notification result is deliberately retained by the full native/package gate.
+All three installed-app captures were visually reviewed. No further runtime
+suite was repeated after the installer pass.
