@@ -453,7 +453,14 @@ internal sealed partial class WorldPeerService
         var local = await LocalSavesAsync(group, cancellationToken);
         var branches = new List<SharedWorldPeerBranch>();
         var sessions = new List<SharedWorldPeerSession>();
-        foreach (var item in local.Where(item => item.ProducedHere))
+        // A newly restored branch still holds its owner's signed base until
+        // its first publication. Its locally signed hosting lane is already
+        // valid metadata; the retained base remains received payload below.
+        foreach (var item in local.Where(item => item.ProducedHere ||
+            item.Descriptor.Branch is { } branch &&
+            branch.Offer.Proposal.ProposerDeviceId == group.DeviceId &&
+            branch.CandidatePublicKey == publicKey &&
+            SharedWorldSeparateCopyStore.Verify(branch)))
         {
             var descriptor = item.Descriptor;
             var hash = SessionBranchHash(group, descriptor);

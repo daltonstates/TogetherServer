@@ -231,12 +231,26 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             if (request.RequirePeerConnection)
             {
                 if (synchronizeListener is not null) await synchronizeListener();
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
                 var route = routeCheck is null ? null : await routeCheck.CurrentAsync(cancellationToken);
-                if (route?.Identity is not { Enabled: true, Active: true, ListenerOwned: true, ListenerState: CompanionListenerStates.Listening } identity ||
-                    !SharedWorldPeerTrust.ValidRoute(new(identity.Endpoint, identity.CertificateFingerprint ?? "")))
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+                // A first listener stays Idle until this PC has a signed
+                // candidate. Require the owner's configured incoming route now;
+                // require the actual owned listener after that candidate exists.
+                if (route?.Identity is not { Enabled: true } identity ||
+                    !SharedWorldRouteTrust.DirectIpAddress(identity.Endpoint) ||
+                    !HostIdentity.TryEndpoint(identity.Endpoint, out var endpoint) || endpoint.Port != identity.ControlPort)
                     return await Result("LocalConnectionSetupRequired", "Open Connection help and allow incoming connections on this PC before preparing the shared Host. No listener or network setting was changed.");
+                using var certificate = new HostIdentity(data).Ensure(identity.Endpoint);
+                if (!SharedWorldPeerTrust.ValidRoute(new(identity.Endpoint, HostIdentity.Fingerprint(certificate))))
+                    return await Result("LocalConnectionSetupRequired", "Review this PC's saved Friend connection address before preparing the shared Host. No listener or network setting was changed.");
             }
-            if (!await manager.EnsureLocalHostingEndpointAsync(cancellationToken))
+            var endpointReady = await manager.EnsureLocalHostingEndpointAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
+            if (!endpointReady)
                 return await Result("LocalConnectionSetupRequired", "Review this PC's Friend connection address before preparing hosting.");
             if (status.BranchHash is null)
             {
@@ -283,12 +297,54 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             }
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
             var finished = await manager.FinishSeparateCopyAsync(profileId, new(branch.BranchHash, setup));
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
             if (!finished.Ok)
             {
                 await manager.InvalidateLocalHostingPreparationAsync(profileId, branch.BranchHash, cancellationToken);
                 return await Result(finished.Code, finished.Message);
             }
-            if (routeCheck is not null) await routeCheck.CheckAsync(cancellationToken);
+            if (request.RequirePeerConnection)
+            {
+                // The explicit guided hosting instruction also permits sharing
+                // this exact signed branch's address with its approved group.
+                // Register it before Sync: the first listener otherwise remains
+                // Idle until Start, while Start requires this listener first.
+                if (announceHosting is not null)
+                {
+                    var announced = await announceHosting(new(branch.Offer.Roster.OwnerPublicKey,
+                        profileId, branch.Offer.Roster.GroupId), cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+                    if (!announced.Ok)
+                    {
+                        await manager.InvalidateLocalHostingPreparationAsync(profileId, branch.BranchHash, cancellationToken);
+                        return await Result(announced.Code, announced.Message);
+                    }
+                }
+                if (synchronizeListener is not null) await synchronizeListener();
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+                if (routeCheck is not null) await routeCheck.CheckAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+                var route = routeCheck is null ? null : await routeCheck.CurrentAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+                if (route?.Identity is not { Enabled: true, Active: true, ListenerOwned: true, ListenerState: CompanionListenerStates.Listening } identity ||
+                    route?.Step.State == "ActionRequired" ||
+                    !SharedWorldPeerTrust.ValidRoute(new(identity.Endpoint, identity.CertificateFingerprint ?? "")) ||
+                    identity.Endpoint.TrimEnd('/') != branch.Offer.Proposal.CandidateAddress.TrimEnd('/') ||
+                    !string.Equals(identity.CertificateFingerprint, branch.Offer.CandidateTlsFingerprint, StringComparison.OrdinalIgnoreCase))
+                {
+                    await manager.InvalidateLocalHostingPreparationAsync(profileId, branch.BranchHash, cancellationToken);
+                    if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+                    return await Result("LocalConnectionSetupRequired", "This PC's incoming Friend connection could not start or match the prepared Host. Open Connection help, fix the reported problem, then retry. The prepared save was kept.");
+                }
+            }
+            else if (routeCheck is not null) await routeCheck.CheckAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
             return await Result("LocalHostingPrepared", "This PC is prepared with a verified save. Choose Start server to host it.", null);
         }
         catch (Exception error) when (ExpectedFailure(error))

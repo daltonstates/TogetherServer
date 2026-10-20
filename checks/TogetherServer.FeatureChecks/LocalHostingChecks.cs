@@ -19,6 +19,8 @@ internal static class LocalHostingChecks
     {
         Inputs();
         await OwnerSwitchAsync(root);
+        await IncomingConsentAsync(root);
+        await FirstIncomingListenerAsync(root);
         using var fixture = new Fixture(root, granted: true);
         var before = await fixture.Service.StatusAsync(fixture.ProfileId);
         Require(before.Allowed && !before.Consented && !before.ReadyForManualStart &&
@@ -116,6 +118,135 @@ internal static class LocalHostingChecks
         Require(!rejected.Ok && !rejected.Allowed && !rejected.Consented &&
             denied.Data.LoadSettings().CompanionEndpoint == "" && denied.Data.LoadSettings().Profiles.Count == 0 &&
             denied.Driver.ProcessAttempts == 0, "an ungranted PC received hosting, local consent, a profile or identity setup");
+    }
+
+    private static async Task IncomingConsentAsync(string root)
+    {
+        using var data = new LocalData(Path.Combine(root, "incoming-consent-" + Guid.NewGuid().ToString("N")));
+        var games = new GameServerRegistry([new FilesOnlyDriver()], PortProbeMode.ObserveOnly);
+        var manager = new HostManager(data, games);
+        var settings = new HostSettings { CompanionEndpoint = "https://192.168.50.9:5131", CompanionBindAddress = "192.168.50.9" };
+        Require((await manager.UpdateSettingsAsync(settings)).Ok, "an off incoming route could not be saved");
+        var unpaired = data.LoadSettings();
+        unpaired.CompanionListeningEnabled = true;
+        Require((await manager.UpdateSettingsAsync(unpaired)).Code == "PairingRequired" && !data.LoadSettings().CompanionListeningEnabled,
+            "a full settings save enabled incoming connections without the explicit control choice");
+        var enabled = await manager.UpdateControlPolicyAsync(new(CompanionListeningEnabled: true));
+        Require(enabled.Ok && data.LoadSettings().CompanionListeningEnabled && !data.LoadSettings().RemoteControlsEnabled &&
+            !data.HasProtected("host-certificate.protected") && data.LoadPairingState().Devices.Count == 0,
+            "the explicit incoming choice required an invite first or manufactured credentials, TLS or remote permission");
+        using var modeGate = new SemaphoreSlim(1, 1);
+        var listener = new CompanionServer(data, manager, new PairingService(data), games,
+            new ServerLogService(data, manager), modeGate, 55320,
+            inMemoryTransport: _ => throw new InvalidOperationException("The file-only consent check must never build a listener."));
+        try
+        {
+            await listener.SyncAsync();
+            Require(!listener.Active && listener.ListenerState == CompanionListenerStates.Idle && listener.InMemoryApp is null,
+                "incoming consent alone opened or attempted to build a listener before pairing/TLS preparation");
+            var next = data.LoadSettings();
+            next.MaxConcurrentServers = 2;
+            Require((await manager.UpdateSettingsAsync(next)).Ok && data.LoadSettings().CompanionListeningEnabled,
+                "saving existing incoming consent still blocked unrelated validated setup");
+            Require((await manager.UpdateControlPolicyAsync(new(RemoteControlsEnabled: true))).Code == "FriendPermissionRequired" &&
+                !data.LoadSettings().RemoteControlsEnabled,
+                "pending incoming consent bypassed the separate remote Start/Stop permission gate");
+            Require((await manager.UpdateControlPolicyAsync(new(CompanionListeningEnabled: false))).Ok,
+                "the owner could not withdraw incoming consent before pairing");
+            await listener.SyncAsync();
+            Require(!listener.Active && listener.ListenerState == CompanionListenerStates.Off,
+                "withdrawn incoming consent did not remain off");
+        }
+        finally { await listener.StopAsync(); }
+    }
+
+    private static async Task FirstIncomingListenerAsync(string root)
+    {
+        foreach (var test in new[] { (Enabled: true, Starts: true, Announces: true), (Enabled: true, Starts: false, Announces: true),
+            (Enabled: true, Starts: true, Announces: false), (Enabled: false, Starts: true, Announces: true) })
+        {
+            using var fixture = new Fixture(root, granted: true);
+            var settings = fixture.Data.LoadSettings();
+            settings.CompanionEndpoint = $"https://192.168.50.9:{fixture.ControlPort}";
+            settings.CompanionBindAddress = "192.168.50.9";
+            settings.CompanionListeningEnabled = false;
+            Require((await fixture.Manager.UpdateSettingsAsync(settings)).Ok, "the configured file-only incoming route was rejected");
+            if (test.Enabled)
+                Require((await fixture.Manager.UpdateControlPolicyAsync(new(CompanionListeningEnabled: true))).Ok,
+                    "the first explicit incoming choice was blocked before a signed candidate could be prepared");
+            var active = false;
+            var sawIdleBeforeBranch = false;
+            var sawFinishedBranch = false;
+            var announceAttempts = 0;
+            var shared = false;
+            var checker = new LocalHostingRouteCheck(async cancellationToken =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var current = (await fixture.Manager.CompanionSnapshotAsync()).Settings;
+                using var certificate = new HostIdentity(fixture.Data).Load();
+                return new(current.CompanionEndpoint, current.CompanionPort, current.CompanionBindAddress,
+                    current.CompanionListeningEnabled, active, active ? CompanionListenerStates.Listening : CompanionListenerStates.Idle,
+                    certificate is null ? null : HostIdentity.Fingerprint(certificate), active);
+            }, (_, _, _) => throw new InvalidOperationException("A private file-only route must not make an outside network request."));
+            async Task Synchronize()
+            {
+                var branches = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId);
+                if (branches.Count == 0) { sawIdleBeforeBranch = true; return; }
+                var branch = branches.Single();
+                var prepared = await fixture.Manager.RecordedLocalHostingStatusAsync(fixture.ProfileId, branch.BranchHash, CancellationToken.None);
+                sawFinishedBranch |= prepared.Restored && prepared.ReadyForManualStart;
+                active = test.Starts && sawFinishedBranch && shared;
+            }
+            async Task<WorldPeerActionResult> Announce(SharedWorldPeerRoot source, CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var branch = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Single();
+                var prepared = await fixture.Manager.RecordedLocalHostingStatusAsync(fixture.ProfileId, branch.BranchHash, cancellationToken);
+                Require(source == new SharedWorldPeerRoot(branch.Offer.Roster.OwnerPublicKey, fixture.ProfileId, branch.Offer.Roster.GroupId) &&
+                    prepared.Restored && prepared.ReadyForManualStart && !active,
+                    "first hosting published an unrelated or unprepared branch before its exact signed save was verified");
+                sawFinishedBranch = true;
+                announceAttempts++;
+                shared = test.Announces;
+                return new(test.Announces, test.Announces ? "HostingAddressPrepared" : "PeerMembershipRequired", "File-only signed-group registration.");
+            }
+            var service = fixture.WithIncomingListener(checker, Synchronize, Announce);
+            var result = await service.PrepareAsync(fixture.ProfileId, new(true, true, RequirePeerConnection: true));
+            var retainedBranches = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId);
+            Require(sawIdleBeforeBranch && fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0 &&
+                fixture.Data.LoadSettings().CompanionListeningEnabled == test.Enabled &&
+                fixture.Data.LoadSettings().CompanionEndpoint == settings.CompanionEndpoint &&
+                fixture.Data.LoadSettings().CompanionBindAddress == settings.CompanionBindAddress,
+                "preparing an incoming listener launched a process or changed the owner's network choices");
+            if (!test.Enabled)
+            {
+                Require(!result.Ok && !result.ReadyForManualStart && result.Code == "LocalConnectionSetupRequired" &&
+                    retainedBranches.Count == 0 && fixture.Data.LoadSettings().Profiles.Count == 0 && announceAttempts == 0,
+                    "an off listener gained a signed branch or incoming permission without the owner's choice");
+                continue;
+            }
+            Require(sawFinishedBranch && retainedBranches.Count == 1 && result.LocalProfileId is not null &&
+                result.BranchHash == retainedBranches.Single().BranchHash,
+                "the configured Idle listener prevented its first exact signed save from being prepared");
+            var restored = fixture.Data.LoadSettings().Profiles.Single(profile => profile.Id == result.LocalProfileId);
+            Require(File.ReadAllText(Path.Combine(restored.WorldDirectory, "world.dat")) == "complete signed source bytes",
+                "incoming-listener preparation did not preserve the exact received source payload");
+            var passive = await service.StatusAsync(fixture.ProfileId);
+            Require(announceAttempts == 1, "guided preparation failed to register its signed group exactly once");
+            if (!test.Announces)
+                Require(!result.Ok && !result.ReadyForManualStart && !passive.ReadyForManualStart &&
+                    result.Code == "PeerMembershipRequired" && !active,
+                    "rejected signed-group registration kept Start readiness or activated the listener");
+            else if (test.Starts)
+                Require(result.Ok && result.ReadyForManualStart && passive.ReadyForManualStart && !result.Running &&
+                    result.Steps.Single(step => step.Key == "connection").State == "Unknown",
+                    "a first owned private listener did not finish preparation or fabricated an outside/game route pass");
+            else
+                Require(!result.Ok && !result.ReadyForManualStart && !passive.ReadyForManualStart &&
+                    result.Code == "LocalConnectionSetupRequired" &&
+                    FriendLocalHostingService.WithRemedy(result).Remedy?.Kind == "Connection",
+                    "a listener that stayed Idle retained Start readiness or lost its actionable connection remedy");
+        }
     }
 
     private static async Task OwnerSwitchAsync(string root)
@@ -237,6 +368,10 @@ internal static class LocalHostingChecks
             head = Version(head.Number + 1, head.VersionHash, bytes);
             WriteCopy(head, bytes);
         }
+        internal FriendLocalHostingService WithIncomingListener(LocalHostingRouteCheck checker, Func<Task> synchronize,
+            Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>> announce) =>
+            new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")],
+                routeCheck: checker, synchronizeListener: synchronize, announceHosting: announce);
         private SharedWorldVersion Version(long number, string? parent, byte[] bytes) => SharedWorldService.SignVersion(new(4,
             GroupId, number, parent, ProfileId, GameKinds.Fixture, "SyntheticLocalHosting", DateTimeOffset.UtcNow,
             SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(ControlPort, false, "Unknown", [], []),

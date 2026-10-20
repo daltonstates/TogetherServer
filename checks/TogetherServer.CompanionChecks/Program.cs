@@ -21,7 +21,14 @@ if (args.Skip(1).Contains("--local-pairing-lab-journey", StringComparer.OrdinalI
         throw new InvalidOperationException("Use the explicit windowless local lab launcher; other process journeys remain subject to foreground safety.");
     try
     {
-        await CoreRemoteJourney.RunLocalPairingLabAsync(appPath, fixturePath, Path.GetFullPath("local-data/local-pairing-lab"));
+        var lanIndex = Array.FindIndex(args, argument => argument.Equals("--lab-lan-address", StringComparison.OrdinalIgnoreCase));
+        if (lanIndex >= 0 && (lanIndex + 1 >= args.Length || args[lanIndex + 1].StartsWith('-') ||
+            args.Count(argument => argument.Equals("--lab-lan-address", StringComparison.OrdinalIgnoreCase)) != 1))
+            throw new ArgumentException("Choose one explicitly assigned private IPv4 address for the automated lab.");
+        var lanAddress = lanIndex < 0 ? null : args[lanIndex + 1];
+        var runUx = args.Contains("--lab-ux", StringComparer.OrdinalIgnoreCase);
+        if (runUx && lanAddress is null) throw new ArgumentException("The UX lab requires its selected private local address.");
+        await CoreRemoteJourney.RunLocalPairingLabAsync(appPath, fixturePath, Path.GetFullPath("local-data/local-pairing-lab"), lanAddress, runUx);
         return 0;
     }
     catch (Exception error)

@@ -437,12 +437,15 @@ public sealed partial class HostManager
                 next.AutoShutdownEnabled = automaticShutdown;
             if (change.KeepAwakeWhileHosting is { } keepAwake)
                 next.KeepAwakeWhileHosting = keepAwake;
-            return UpdateSettingsLocked(next);
+            // Save the owner's explicit consent even before the first invite or
+            // signed hosting candidate exists. CompanionServer remains Idle
+            // until its independent pairing and TLS checks allow a listener.
+            return UpdateSettingsLocked(next, allowPendingPairing: change.CompanionListeningEnabled == true);
         }
         finally { gate.Release(); }
     }
 
-    private ActionResult UpdateSettingsLocked(HostSettings next)
+    private ActionResult UpdateSettingsLocked(HostSettings next, bool allowPendingPairing = false)
     {
         var previous = settings;
         next.ConnectionRoute = ConnectionRoutes.Normalize(next.ConnectionRoute);
@@ -493,7 +496,7 @@ public sealed partial class HostManager
                 (device.ProfileId == Guid.Empty ? [] : [device.ProfileId]);
             return !device.Revoked && assigned.Any(profileIds.Contains);
         }).ToList();
-        if (next.CompanionListeningEnabled &&
+        if (next.CompanionListeningEnabled && !previous.CompanionListeningEnabled && !allowPendingPairing &&
             (!data.HasProtected("host-certificate.protected") ||
              !(serverInvites.Count > 0 || devices.Any(device =>
                 (device.InviteHash is not null || device.CredentialHash is not null)) ||

@@ -39,6 +39,45 @@ internal sealed class LocalPairingLabJob : IDisposable
         return info.ActiveProcesses;
     }
 
+    // Include browser/fixture descendants and nested jobs, not just tracked apps.
+    internal int[] ProcessIds()
+    {
+        var capacity = 64;
+        while (capacity <= 4096)
+        {
+            var length = checked(8 + capacity * IntPtr.Size);
+            var buffer = Marshal.AllocHGlobal(length);
+            try
+            {
+                Marshal.WriteInt32(buffer, 0, 0);
+                Marshal.WriteInt32(buffer, 4, 0);
+                var success = QueryInformationJobObject(handle, 3, buffer, length, out _);
+                var error = success ? 0 : Marshal.GetLastWin32Error();
+                var assigned = Marshal.ReadInt32(buffer, 0);
+                var returned = Marshal.ReadInt32(buffer, 4);
+                if (assigned < 0 || returned < 0 || assigned > 4096 || returned > capacity)
+                    throw new InvalidOperationException("The disposable job process list is invalid.");
+                if (!success && error != 234)
+                    throw new Win32Exception(error, "Could not observe contained lab processes.");
+                if (error == 234 || assigned > returned)
+                {
+                    capacity = Math.Max(assigned, checked(capacity * 2));
+                    continue;
+                }
+                var result = new int[returned];
+                for (var index = 0; index < returned; index++)
+                {
+                    var id = Marshal.ReadIntPtr(buffer, 8 + index * IntPtr.Size).ToInt64();
+                    if (id <= 0 || id > int.MaxValue) throw new InvalidOperationException("Invalid contained process identity.");
+                    result[index] = (int)id;
+                }
+                return result;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        throw new InvalidOperationException("The disposable job process list exceeded its observation bound.");
+    }
+
     internal async Task StopAsync()
     {
         if (ActiveCount() == 0) return;
@@ -91,6 +130,9 @@ internal sealed class LocalPairingLabJob : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool QueryInformationJobObject(SafeFileHandle job, int kind, out Accounting info, int length, out uint returned);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryInformationJobObject(SafeFileHandle job, int kind, IntPtr info, int length, out uint returned);
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);

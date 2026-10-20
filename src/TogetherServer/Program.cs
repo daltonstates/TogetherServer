@@ -137,7 +137,7 @@ var updateUi = new UpdateUiPreferences(data);
 var importSelections = new SetupImportSelections(data, instance.FreshWorldsOnly);
 var identity = new HostIdentity(data);
 Func<string, IEnumerable<string>, HttpClient>? labClient = localLab is null ? null :
-    (endpoint, pins) => FriendLink.MakeClient(endpoint, pins, loopbackOnly: true);
+    (endpoint, pins) => FriendLink.MakeClient(endpoint, pins, localLab);
 using var friend = new FriendService(data, labClient);
 using var worldPeers = new WorldPeerService(data, manager, friend, pairing, labClient);
 using var updateClient = localLab is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(45) } :
@@ -162,7 +162,9 @@ var updatePending = false;
 var shutdownPending = false;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
     () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
-    friend.CurrentRecoveryHostLoss, serverChat: serverChat, loopbackOnly: localLab is not null);
+    friend.CurrentRecoveryHostLoss, serverChat: serverChat, loopbackOnly: localLab is not null,
+    labAllowsBind: localLab is null ? null : localLab.AllowsBind,
+    labAllowsEndpoint: localLab is null ? null : localLab.IsAllowedEndpoint);
 companionServer.PeerWorlds = worldPeers;
 manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
@@ -789,6 +791,8 @@ app.MapPut("/api/local/settings", async (HostSettings settings) =>
 });
 app.MapPut("/api/local/settings/control-policy", async (HostControlPolicyChange change) =>
 {
+    if (localLab is not null && !LocalPairingLabMode.AllowsControlPolicy(change))
+        return Results.BadRequest(new { code = "LabManualControlsOnly", message = "The disposable lab uses manual Stop and does not change Windows power behavior." });
     await modeGate.WaitAsync();
     ActionResult result;
     try

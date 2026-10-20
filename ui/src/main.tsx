@@ -2513,6 +2513,11 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
                 </div>
                 <div className="server-tab-content">
+                {hostServerTab === 'overview' && profile.kind !== 'Custom' && profile.sharedSavesEnabled && <SharedHostNotice
+                  profileId={profile.id} connectionId={null} disabled={!!pending} visible={workspacePage === 'host'}
+                  onConnected={async () => {
+                    if (await switchMode('friend')) { setPeerRecovery(null); setShowPairing(false); setJoinSection('play') }
+                  }} />}
                 {hostServerTab === 'overview' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host
                   worldName={profile.worldId} serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} observedHostAddress={snapshot.settings.companionEndpoint} />}
                 {hostServerTab === 'overview' && inviteProfileId === profile.id && <div className="inline-invite">
@@ -2759,6 +2764,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
           <div className="context-heading-utility"><Button className="secondary icon-button" disabled={!!pending} title="Return to selected server" aria-label="Return to selected server" onClick={() => void closeHostSettings()}><Icon name="server" /></Button></div>
           <div className="settings-content">
             {dirty && <DismissibleNotice as="p" className="warning-text" role="status">Finish or cancel your server setup changes before editing Host settings.</DismissibleNotice>}
+            <ActionFeedback notice={notice} />
             {hostSettingsSection === 'access' && <section className="settings-section">
               <SettingsSectionHeading icon="users" title="Friend access" description="Choose a PC to manage its servers, permissions, and access time." />
               <div className="access-toggles settings-controls"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Connections stay available while this Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>

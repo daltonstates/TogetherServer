@@ -56,7 +56,7 @@ internal sealed partial class FriendLink
                 var challenge = SharedWorldSeparateRoute.SignChallenge(branch, config.DeviceId, key);
                 if (!SharedWorldSeparateRoute.VerifyChallenge(challenge, branch, DateTimeOffset.UtcNow))
                     return Fail("ObserverIdentityChanged", "This PC could not sign the route check.");
-                using var client = MakeClient(branch.Offer.Proposal.CandidateAddress,
+                using var client = makeClient(branch.Offer.Proposal.CandidateAddress,
                     [branch.Offer.CandidateTlsFingerprint]);
                 var route = $"api/companion/servers/{profileId}/shared-world/separate-route/{branch.BranchHash}";
                 using var response = await client.PostAsJsonAsync(route + "/proof", challenge,

@@ -672,6 +672,45 @@ describe('Task-first app and Host PC navigation', () => {
     expectNoServerAction()
   })
 
+  it.each(['rejected', 'unavailable'] as const)('shows a %s connection policy save beside Friend access and permits retry', async failure => {
+    host().settings.companionListeningEnabled = false
+    host().settings.remoteControlsEnabled = false
+    const message = failure === 'rejected'
+      ? 'Choose Invite friends to set up the secure Friend connection.'
+      : 'Could not connect to TogetherServer. Reopen the app and try again.'
+    const change = transport.change.getMockImplementation()!
+    let attempts = 0
+    transport.change.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path !== '/api/local/settings/control-policy') return change(path, ...args)
+      if (++attempts === 1) {
+        if (failure === 'unavailable') throw new Error(message)
+        return { ok: false, code: 'PairingRequired', message, snapshot: state }
+      }
+      state = { ...host(), settings: { ...host().settings, companionListeningEnabled: true } }
+      localDirectorySnapshot = state
+      return { ok: true, code: 'SettingsSaved', message: 'Friend connection choice saved.', snapshot: state }
+    })
+
+    await openAccess()
+    const pc = screen.getByRole('region', { name: 'This Host PC' })
+    const listening = within(pc).getByRole('checkbox', { name: /Allow Friend app connections/ })
+    fireEvent.click(listening)
+
+    const feedback = await within(pc).findByText(message)
+    expect(feedback).toBeVisible()
+    expect(feedback).toHaveAttribute('role', 'status')
+    expect(listening).not.toBeChecked()
+    await waitFor(() => expect(listening).toBeEnabled())
+    expect(transport.change.mock.calls.filter(([path]) => path === '/api/local/settings/control-policy'))
+      .toEqual([['/api/local/settings/control-policy', 'PUT', expect.any(Function), { companionListeningEnabled: true }, undefined]])
+
+    fireEvent.click(listening)
+    await waitFor(() => expect(listening).toBeChecked())
+    expect(within(pc).getByText('Friend connection choice saved.')).toBeVisible()
+    expect(attempts).toBe(2)
+    expectNoServerAction()
+  })
+
   it.each([
     ['access', 'Access'], ['stop', 'Shutdown'], ['network', 'Network'], ['advanced', 'Advanced']
   ])('routes the old native Settings/%s alias to This Host PC', async (section, label) => {

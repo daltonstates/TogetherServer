@@ -27,6 +27,7 @@ type HostChoice = {
   current: boolean
   savedAddress: boolean
   isDefault: boolean
+  preparing: boolean
 }
 type HostGroup = { group: WorldPeerGroup; choices: HostChoice[]; competing: boolean; needsReview: boolean }
 type View = { state: 'checking' | 'ready' | 'unknown'; groups: WorldPeerGroup[]; error?: string }
@@ -48,7 +49,8 @@ function hostingGroups(groups: WorldPeerGroup[], profileId: string, currentHostA
     const selection = group.selection
     const selected = selection && !selection.needsChoice && selection.heads.length === 1
       && selection.heads[0].authorized && selection.heads[0].targetKnown ? selection.heads[0] : null
-    const hosting = group.state.sessions.filter(item => item.authorized && !item.hasConflict && item.session.state === 'Hosting')
+    const hosting = group.state.sessions.filter(item => item.authorized && !item.hasConflict
+      && (item.session.state === 'Hosting' || item.session.state === 'Preparing'))
     const choices = hosting.flatMap(item => {
       if (item.deviceId === group.selfDeviceId) return []
       const peers = group.state.peers.filter(peer => peer.deviceId === item.deviceId && peer.publicKey === item.publicKey)
@@ -59,7 +61,7 @@ function hostingGroups(groups: WorldPeerGroup[], profileId: string, currentHostA
       return [{ key: JSON.stringify([group.groupKey, item.deviceId, item.publicKey, item.session.sessionId, item.session.branchHash]),
         group, deviceId: item.deviceId, sessionId: item.session.sessionId, addresses, announcedUtc: peer.announcedUtc,
         current: !!currentHostSessionId && item.session.sessionId === currentHostSessionId && currentAddress !== null && addresses.includes(currentAddress),
-        savedAddress: currentAddress !== null && addresses.includes(currentAddress),
+        savedAddress: currentAddress !== null && addresses.includes(currentAddress), preparing: item.session.state === 'Preparing',
         isDefault: selected?.deviceId === item.deviceId && selected.publicKey === item.publicKey
           && selected.sessionId === item.session.sessionId && selected.branchHash === item.session.branchHash }]
     })
@@ -67,6 +69,10 @@ function hostingGroups(groups: WorldPeerGroup[], profileId: string, currentHostA
       needsReview: group.state.needsChoice || !!selection?.needsChoice || (selection?.heads.length ?? 0) > 1 }
   }).filter(group => group.choices.length > 0)
 }
+
+const reportTitle = ({ competing, choices }: HostGroup) => competing ? 'Multiple PCs report hosting' :
+  choices[0].preparing ? choices[0].current ? 'Your saved Host is starting' : 'Another PC is starting the server' :
+  choices[0].current ? 'Your saved Host reports hosting' : 'Another PC reports hosting'
 
 /** A saved route identifies the current connection; it does not establish live reachability. */
 export function SharedHostNotice(props: SharedHostNoticeProps) {
@@ -194,8 +200,7 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
 
   if (!visible || !pageVisible) return null
   const shown = hostingGroups(view.groups, profileId, currentHostAddress, currentHostSessionId)
-  const announcement = shown.map(({ group, competing, choices }) => `${group.name}: ${competing ? 'Multiple PCs report hosting. Choose a Host.' :
-    choices[0].current ? 'Your saved Host reports hosting.' : 'Another PC reports hosting.'}`).join(' ')
+  const announcement = shown.map(item => `${item.group.name}: ${reportTitle(item)}.`).join(' ')
   return <><span className="shared-host-announcement" aria-live="polite" aria-atomic="true">{announcement}</span>
     {(shown.length > 0 || view.state === 'unknown') && <section className="shared-host-notice" aria-label="Shared Host updates">
     {view.state === 'unknown' ? <div className="shared-host-unknown" role="status">
@@ -203,19 +208,20 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
         <small>Saved reports cannot confirm who is hosting now.</small></div>
       <Button className="secondary" disabled={disabled || busy !== null} onClick={() => reload.current?.()}>
         <Icon name="refresh" />Retry Host updates</Button>
-    </div> : shown.map(({ group, choices, competing, needsReview }) => <article key={group.groupKey}
+    </div> : shown.map(item => { const { group, choices, competing, needsReview } = item; return <article key={group.groupKey}
       className="shared-host-group" aria-label={`Hosting reports for ${group.name}`}>
       <header><Icon name={competing ? 'warning' : 'bell'} size={21} /><div>
-        <h4>{competing ? 'Multiple PCs report hosting' : choices[0].current ? 'Your saved Host reports hosting' : 'Another PC reports hosting'}</h4>
+        <h4>{reportTitle(item)}</h4>
         <p>{group.name}</p></div></header>
       {competing && <p className="shared-host-caution">Choose the exact Host you want. These servers may have separate progress.</p>}
       {needsReview && <p className="shared-host-caution">The group has different save histories or default choices. A newer report does not choose a Host for you.</p>}
       {group.warning && <p className="shared-host-caution">{group.warning}</p>}
       <ul className="shared-host-options">{choices.map(choice => <li key={choice.key}>
         <div className="shared-host-details"><strong>PC ending {choice.deviceId.slice(-6).toUpperCase()}</strong>
-          <div className="shared-host-badges">{choice.savedAddress && <span>{choice.current ? 'Current saved Host' : 'Saved Host address'}</span>}{choice.isDefault && <span>Group default</span>}</div>
+          <div className="shared-host-badges">{choice.preparing && <span>Starting</span>}{choice.savedAddress && <span>{choice.current ? 'Current saved Host' : 'Saved Host address'}</span>}{choice.isDefault && <span>Group default</span>}</div>
           <div className="shared-host-addresses">{choice.addresses.map(address => <code key={address}>{address}</code>)}</div>
-          <small>Signed hosting report · Updated {sharedSaveAge(choice.announcedUtc)}. Reachability is checked when you connect.</small></div>
+          <small>Signed {choice.preparing ? 'starting' : 'hosting'} report · Updated {sharedSaveAge(choice.announcedUtc)}. Reachability is checked when you connect.</small>
+          {choice.preparing && <small>Game readiness has not been confirmed. Wait for the server to be ready before joining the game.</small>}</div>
         <Button className="secondary" disabled={disabled || busy !== null || choice.current}
           aria-label={choice.current ? `Current saved Host: PC ending ${choice.deviceId.slice(-6).toUpperCase()}` :
             `Connect to PC ending ${choice.deviceId.slice(-6).toUpperCase()}`}
@@ -223,7 +229,7 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
           {busy === choice.key ? 'Checking Host...' : choice.current ? 'Saved Host' : 'Connect to this Host'}</Button>
       </li>)}</ul>
       <p className="shared-host-footnote">Connect saves your selected Host connection. Then use Join in the game. Your game and running servers stay open.</p>
-    </article>)}
+    </article> })}
     {message && <p className="shared-host-result" role={message.error ? 'alert' : 'status'}>{message.text}</p>}
   </section>}</>
 }

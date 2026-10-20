@@ -121,7 +121,7 @@ describe('Shared Host notice', () => {
   })
 
   it.each(['revoked session', 'conflicting session', 'revoked peer', 'conflicting peer', 'wrong key', 'no route',
-    'invalid route', 'Preparing', 'Stopped', 'Interrupted', 'this PC', 'other world'])(
+    'invalid route', 'Stopped', 'Interrupted', 'this PC', 'other world'])(
     'offers no notice or connect action for %s', async reason => {
       const current = group()
       if (reason === 'revoked session') current.state.sessions[0].authorized = false
@@ -131,7 +131,7 @@ describe('Shared Host notice', () => {
       if (reason === 'wrong key') current.state.peers[0].publicKey = 'another-synthetic-key'
       if (reason === 'no route') current.state.peers[0].routes = []
       if (reason === 'invalid route') current.state.peers[0].routes[0].address = 'https://user:password@example.invalid/?token=secret'
-      if (['Preparing', 'Stopped', 'Interrupted'].includes(reason)) current.state.sessions[0].session.state = reason
+      if (['Stopped', 'Interrupted'].includes(reason)) current.state.sessions[0].session.state = reason
       if (reason === 'this PC') current.selfDeviceId = remoteId
       if (reason === 'other world') { current.profileId = otherId; current.state.root.profileId = otherId }
       const fetch = vi.fn(async () => reply([current]))
@@ -142,6 +142,26 @@ describe('Shared Host notice', () => {
       expect(screen.queryByRole('region', { name: 'Shared Host updates' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button')).not.toBeInTheDocument()
     })
+
+  it('announces a starting Host without claiming game readiness and connects only on request', async () => {
+    const current = group()
+    current.state.sessions[0].session.state = 'Preparing'
+    const connected = vi.fn()
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => init?.method
+      ? reply({ ok: true, code: 'PeerSessionConnected', message: 'The selected Host connection was verified and saved.' })
+      : reply([current]))
+    vi.stubGlobal('fetch', fetch)
+    render(<SharedHostNotice {...props} onConnected={connected} />)
+    expect(await screen.findByRole('heading', { name: 'Another PC is starting the server' })).toBeInTheDocument()
+    expect(screen.getByText('Starting')).toBeInTheDocument()
+    expect(screen.getByText(/Game readiness has not been confirmed/)).toBeInTheDocument()
+    expect(connected).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to PC ending 333333' }))
+    await waitFor(() => expect(connected).toHaveBeenCalledOnce())
+    expect(fetch).toHaveBeenCalledWith(`/api/local/world-peers/${groupKey}/connect`, expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ deviceId: remoteId, sessionId }),
+    }))
+  })
 
   it('withdraws cached actions on unknown replies and restores them only after a successful retry', async () => {
     let failed = false

@@ -25,7 +25,8 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
     Func<Guid, CancellationToken, Task<bool>>? recoveryLossProbe = null,
     Func<Guid, bool>? recoveryLossCurrent = null,
     Action<IWebHostBuilder>? inMemoryTransport = null,
-    ServerChat? serverChat = null, bool loopbackOnly = false)
+    ServerChat? serverChat = null, bool loopbackOnly = false,
+    Func<IPAddress, bool>? labAllowsBind = null, Func<string, bool>? labAllowsEndpoint = null)
 {
     private readonly HostIdentity identity = new(data);
     private WebApplication? active;
@@ -100,9 +101,9 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 endpoint.Port != settings.CompanionPort || !IPAddress.TryParse(settings.CompanionBindAddress, out var bind) ||
                 settings.CompanionPort < 1024 || settings.CompanionPort == localPort)
                 throw new InvalidOperationException("The Friend app address, bind address, or TCP port is invalid.");
-            if (loopbackOnly && (!IPAddress.IsLoopback(bind) ||
-                !LocalPairingLabMode.IsLoopbackEndpoint(settings.CompanionEndpoint)))
-                throw new InvalidOperationException("The disposable pairing lab accepts loopback listeners only.");
+            if (loopbackOnly && (!(labAllowsBind?.Invoke(bind) ?? IPAddress.IsLoopback(bind)) ||
+                !(labAllowsEndpoint?.Invoke(settings.CompanionEndpoint) ?? LocalPairingLabMode.IsLoopbackEndpoint(settings.CompanionEndpoint))))
+                throw new InvalidOperationException("The disposable pairing lab refused a listener outside its selected network boundary.");
             if (!pairing.HasInviteOrCredential() &&
                 !recoveryVotes.HasArmedOffer(settings.CompanionEndpoint) &&
                 !manager.HasSuccessorRouteCandidate(settings) && !manager.HasPendingHandoffPreparation(settings) &&

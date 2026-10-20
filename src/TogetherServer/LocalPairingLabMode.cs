@@ -16,17 +16,20 @@ internal sealed class LocalPairingLabMode
     internal string DataRoot { get; }
     internal string FixturePath { get; }
     internal string FixtureSha256 { get; }
+    internal string? SelectedLanAddress => network.SelectedLanAddress;
+    private readonly LocalPairingLabNetwork network;
 
-    private LocalPairingLabMode(string dataRoot, string fixturePath)
+    private LocalPairingLabMode(string dataRoot, string fixturePath, LocalPairingLabNetwork network)
     {
         DataRoot = dataRoot;
         FixturePath = fixturePath;
+        this.network = network;
         RejectLinks(dataRoot);
         FixtureSha256 = HashFixture();
     }
 
     internal static LocalPairingLabMode? Resolve(string[] args, string? repository = null,
-        Func<string, string?>? environment = null)
+        Func<string, string?>? environment = null, Func<IEnumerable<LocalPairingLabInterface>>? interfaces = null)
     {
         if (!args.Contains(Argument, StringComparer.OrdinalIgnoreCase)) return null;
         environment ??= Environment.GetEnvironmentVariable;
@@ -45,7 +48,8 @@ internal sealed class LocalPairingLabMode
             AppInstance.ContainsPath(staging, unusedProduction) || AppInstance.ContainsPath(unusedProduction, staging))
             throw new InvalidDataException("The pairing lab requires separate disposable folders under local-data/local-pairing-lab.");
         return new(Path.GetFullPath(staging), Path.Combine(repository, "src", "TogetherServer.Fixture", "bin",
-            "Release", "net10.0", "TogetherServer.Fixture.exe"));
+            "Release", "net10.0", "TogetherServer.Fixture.exe"),
+            LocalPairingLabNetwork.Resolve(environment(LocalPairingLabNetwork.LanAddressEnvironmentVariable), interfaces));
     }
 
     internal static void ValidateArguments(string[] args)
@@ -67,10 +71,10 @@ internal sealed class LocalPairingLabMode
 
     internal InstanceValidation ValidateSettings(HostSettings settings)
     {
-        if (!IPAddress.TryParse(settings.CompanionBindAddress, out var bind) || !IPAddress.IsLoopback(bind) ||
-            (!string.IsNullOrWhiteSpace(settings.CompanionEndpoint) && !IsLoopbackEndpoint(settings.CompanionEndpoint)) ||
-            settings.AutoShutdownEnabled || settings.KeepAwakeWhileHosting || settings.MaxConcurrentServers > 2)
-            return new(false, "LabSettingsOnly", "The pairing lab uses loopback connections, manual Stop and at most two synthetic runs.");
+        if (!IPAddress.TryParse(settings.CompanionBindAddress, out var bind) || !AllowsBind(bind) ||
+            (!string.IsNullOrWhiteSpace(settings.CompanionEndpoint) && !IsAllowedEndpoint(settings.CompanionEndpoint)) ||
+            settings.AutoShutdownEnabled || settings.KeepAwakeWhileHosting || settings.MaxConcurrentServers > 2 || settings.Profiles is null)
+            return new(false, "LabSettingsOnly", "The pairing lab uses only its permitted local addresses, manual Stop and at most two synthetic runs.");
         foreach (var profile in settings.Profiles)
             if (ValidateProfile(profile) is { } failure)
                 return new(false, failure.Code, failure.Message);
@@ -84,16 +88,16 @@ internal sealed class LocalPairingLabMode
         if (File.Exists(marker))
         {
             var saved = JsonSerializer.Deserialize<LabMarker>(File.ReadAllText(marker));
-            if (saved is not { Schema: 1 } || saved.FixtureSha256 != FixtureSha256)
-                throw new InvalidDataException("The lab marker or fixture changed; begin a fresh lab run.");
+            if (saved is not { Schema: 2 } || saved.FixtureSha256 != FixtureSha256 || saved.LanAddress != SelectedLanAddress)
+                throw new InvalidDataException("The lab marker, fixture or network choice changed; begin a fresh lab run.");
             return;
         }
         if (Directory.EnumerateFileSystemEntries(DataRoot).Any(path => Path.GetFileName(path) != ".togetherserver-instance.json"))
             throw new InvalidDataException("The pairing lab requires a fresh disposable data folder.");
-        File.WriteAllText(marker, JsonSerializer.Serialize(new LabMarker(1, FixtureSha256)));
+        File.WriteAllText(marker, JsonSerializer.Serialize(new LabMarker(2, FixtureSha256, SelectedLanAddress)));
     }
 
-    private sealed record LabMarker(int Schema, string FixtureSha256);
+    private sealed record LabMarker(int Schema, string FixtureSha256, string? LanAddress);
 
     private string HashFixture()
     {
@@ -138,43 +142,47 @@ internal sealed class LocalPairingLabMode
         { return new("LabFixtureUnavailable", "The disposable fixture or save path is unavailable."); }
     }
 
-    internal static bool IsLoopbackEndpoint(string endpoint) =>
-        Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) && uri.Scheme == "https" &&
-        string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment) &&
-        uri.AbsolutePath == "/" && IPAddress.TryParse(uri.Host, out var ip) && IPAddress.IsLoopback(ip);
+    internal bool AllowsBind(IPAddress address) => network.AllowsBind(address);
+    internal static bool AllowsControlPolicy(HostControlPolicyChange change) =>
+        change.AutoShutdownEnabled != true && change.KeepAwakeWhileHosting != true;
+    internal bool IsAllowedEndpoint(string endpoint) => network.IsAllowedEndpoint(endpoint);
+    internal HttpMessageHandler GuardClient(HttpMessageHandler inner) => network.GuardClient(inner);
+    internal static bool IsLoopbackEndpoint(string endpoint) => LocalPairingLabNetwork.Resolve(null).IsAllowedEndpoint(endpoint);
 
     // Keep all shell, discovery, download, native-dialog, update, installer and
     // arbitrary endpoint recovery routes outside this deliberately small lab.
     internal static bool AllowsRequest(string method, string path)
     {
-        if (method == "GET") return path is "/api/local/snapshot" or "/api/local/instance" or
-            "/api/local/companion" or "/api/local/friend" or "/api/local/friend/connections" or "/api/local/servers" ||
-            Regex.IsMatch(path, @"^/api/local/(profiles|friend)/[0-9a-fA-F-]{36}/(shared-world|chat|protection|world-peers)(/[^.]*)?$", RegexOptions.CultureInvariant);
-        if (method == "PUT") return path == "/api/local/settings" ||
+        if (method == "GET") return path is "/" or "/index.html" or "/favicon.svg" or
+            "/api/local/snapshot" or "/api/local/instance" or "/api/local/data-recovery" or "/api/local/window" or
+            "/api/local/companion" or "/api/local/friend" or "/api/local/friend/connections" or "/api/local/servers" or "/api/local/world-peers" or
+            "/api/local/profile" or "/api/local/required-setup" or "/api/local/getting-started" or
+            "/api/local/desktop/notifications" or "/api/local/desktop/preferences" or
+            "/api/local/network/ports" or "/api/local/network/routes" or "/api/local/game-types" or
+            "/api/local/update" or "/api/local/update/preparation" ||
+            Regex.IsMatch(path, @"^/assets/[A-Za-z0-9_-]+\.(js|css)$", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(path, @"^/api/local/friend/connections/[0-9a-fA-F-]{36}/servers/[0-9a-fA-F-]{36}/chat/summary$", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(path, @"^/api/local/(profiles|friend)/[0-9a-fA-F-]{36}/(shared-world|chat|protection|world-peers)(/[^.]*)?$", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(path, @"^/api/local/profiles/[0-9a-fA-F-]{36}/(backups|backup-catalog|live-save-acceptance)$", RegexOptions.CultureInvariant);
+        if (method == "PUT") return path is "/api/local/settings" or "/api/local/settings/control-policy" or "/api/local/profile" or "/api/local/getting-started" or
+            "/api/local/desktop/notifications" or "/api/local/ui-drafts" ||
+            Regex.IsMatch(path, @"^/api/local/world-peers/[0-9a-fA-F]{64}/sharing$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/devices/[0-9a-fA-F-]{36}/(permissions|servers|access-expiry|shared-world/[0-9a-fA-F-]{36}(/grants)?)$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/(profiles|friend)/[0-9a-fA-F-]{36}/(protection|shared-world(/(consent|hosting))?|chat/(notice|members/[0-9a-fA-F-]{36}))$", RegexOptions.CultureInvariant);
         if (method != "POST") return false;
-        return path is "/api/local/friend/pair" or "/api/local/friend/poll" or "/api/local/quit" ||
-            Regex.IsMatch(path, @"^/api/local/(mode/(host|friend)|servers/[0-9a-fA-F-]{36}/invite|devices/[0-9a-fA-F-]{36}/(approve|revoke)|friend/connections/[0-9a-fA-F-]{36}/select)$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase) ||
+        return path is "/api/local/friend/pair" or "/api/local/friend/poll" or "/api/local/quit" or
+            "/api/local/required-setup/profile-name/complete" or "/api/local/ui-drafts/read" or "/api/local/ui-drafts/clear" ||
+            Regex.IsMatch(path, @"^/api/local/(mode/(host|friend)|servers/[0-9a-fA-F-]{36}/invite(/current)?|devices/[0-9a-fA-F-]{36}/(approve|revoke)|friend/connections/[0-9a-fA-F-]{36}/select)$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase) ||
+            Regex.IsMatch(path, @"^/api/local/friend/connections/[0-9a-fA-F-]{36}/servers/[0-9a-fA-F-]{36}/chat/(sync|messages)$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/profiles/[0-9a-fA-F-]{36}/(start|stop|health|chat/messages|backups/manual|shared-world/hosting/start)$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/friend/[0-9a-fA-F-]{36}/(start|stop|chat/(sync|messages)|shared-world/(pull|check|hosting(/(prepare|start))?|recovery/separate(/(restore|finish|start))?)|game-password/reveal)$", RegexOptions.CultureInvariant) ||
-            Regex.IsMatch(path, @"^/api/local/world-peers/[0-9a-fA-F]{64}/(sync|sharing)$", RegexOptions.CultureInvariant);
+            Regex.IsMatch(path, @"^/api/local/world-peers/[0-9a-fA-F]{64}/(sync|connect)$", RegexOptions.CultureInvariant);
     }
 
     internal GameServerRegistry Registry() => new([new LabFixtureDriver(this)], PortProbeMode.LoopbackOnly);
 
     internal static HttpClient OfflineClient(TimeSpan timeout) => new(new OfflineHandler()) { Timeout = timeout };
-    internal static HttpMessageHandler GuardLoopback(HttpMessageHandler inner) => new LoopbackHandler(inner);
-    private sealed class LoopbackHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            if (request.RequestUri is not { IsAbsoluteUri: true } uri || uri.Scheme != "https" ||
-                !string.IsNullOrEmpty(uri.UserInfo) || !IPAddress.TryParse(uri.Host, out var ip) || !IPAddress.IsLoopback(ip))
-                throw new HttpRequestException("The disposable pairing lab cannot contact non-loopback peers.");
-            return base.SendAsync(request, cancellationToken);
-        }
-    }
+    internal static HttpMessageHandler GuardLoopback(HttpMessageHandler inner) => LocalPairingLabNetwork.Resolve(null).GuardClient(inner);
     private sealed class OfflineHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

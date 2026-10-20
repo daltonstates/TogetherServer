@@ -554,7 +554,7 @@ internal sealed partial class FriendLink : IDisposable
             var normalized = parsed.GetLeftPart(UriPartial.Authority);
             try
             {
-                using var recoveryClient = MakeClient(normalized, AcceptedPins());
+                using var recoveryClient = makeClient(normalized, AcceptedPins());
                 recoveryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Credential);
                 recoveryClient.DefaultRequestHeaders.Add("X-Device-Id", config.DeviceId.ToString());
                 recoveryClient.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
@@ -1203,22 +1203,30 @@ internal sealed partial class FriendLink : IDisposable
 
     internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints) => MakeClient(endpoint, fingerprints, false);
 
-    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints, bool loopbackOnly)
+    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints, bool loopbackOnly) =>
+        MakeClientCore(endpoint, fingerprints, loopbackOnly,
+            LocalPairingLabMode.IsLoopbackEndpoint, LocalPairingLabMode.GuardLoopback);
+
+    internal static HttpClient MakeClient(string endpoint, IEnumerable<string> fingerprints, LocalPairingLabMode lab) =>
+        MakeClientCore(endpoint, fingerprints, true, lab.IsAllowedEndpoint, lab.GuardClient);
+
+    private static HttpClient MakeClientCore(string endpoint, IEnumerable<string> fingerprints, bool restricted,
+        Func<string, bool> allowedEndpoint, Func<HttpMessageHandler, HttpMessageHandler> guard)
     {
-        if (loopbackOnly && !LocalPairingLabMode.IsLoopbackEndpoint(endpoint))
-            throw new HttpRequestException("The disposable pairing lab accepts pinned loopback peers only.");
+        if (restricted && !allowedEndpoint(endpoint))
+            throw new HttpRequestException("The disposable pairing lab refused a peer outside its selected network boundary.");
         var pins = fingerprints.Where(ValidFingerprint).Select(Convert.FromHexString).ToList();
         if (pins.Count == 0) throw new AuthenticationException("No valid Host certificate pin is saved.");
         var handler = new HttpClientHandler
         {
-            AllowAutoRedirect = !loopbackOnly,
-            UseProxy = !loopbackOnly,
+            AllowAutoRedirect = !restricted,
+            UseProxy = !restricted,
             ServerCertificateCustomValidationCallback = (_, certificate, _, _) => certificate is not null &&
                 DateTimeOffset.UtcNow >= certificate.NotBefore.ToUniversalTime() &&
                 DateTimeOffset.UtcNow <= certificate.NotAfter.ToUniversalTime() &&
                 pins.Any(pin => CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin))
         };
-        return new HttpClient(loopbackOnly ? LocalPairingLabMode.GuardLoopback(handler) : handler)
+        return new HttpClient(restricted ? guard(handler) : handler)
             { BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"), Timeout = TimeSpan.FromSeconds(6) };
     }
 

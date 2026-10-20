@@ -163,7 +163,7 @@ history stay quiet. Audio permission/autoplay failures do not interrupt chat.
   checks cover all 63 cases; manual inspection is representative, not a claim
   that every one of the 296 images received an independent human review.
 - Implementation commits: `443a30a`, `6412c6b`, `44c57ce`, and `faf0c91`.
-- NOT RUN locally: app/browser/native/process/installer journeys. Installer smoke
+- At the original delivery, NOT RUN locally: app/browser/native/process/installer journeys. Installer smoke
   source expectations are updated but execution requires the approved isolated
   Windows runner/session. Real Friend-PC/network, actual game join,
   recognizable save/load/Stop/restart, and mixed-version acceptance remain external.
@@ -205,10 +205,12 @@ a valid two-PC route, real game joins and saved restart, and native installer
 acceptance remain pending. Stop hosted servers and quit the existing app before
 opening this production build, so the old running process is not reopened instead.
 
-## Two-PC connection acceptance
+## Optional physical two-PC connection acceptance
 
-The owner has another Windows PC on the home network. The next acceptance run
-uses that physical PC, not another loopback simulation. The
+The owner has another Windows PC on the home network, but subsequently chose a
+fully automated local two-interface UX rehearsal with no manual steps. That local
+rehearsal is the current task; physical-PC acceptance remains a separate optional
+check. The
 [two-PC instructions](TWO-PC-CONNECTION-TEST.md) cover the existing pinned-HTTPS,
 signed-chat and verified-transfer rehearsal in both directions, followed by the
 actual guided hosting switch and original-PC discovery/Connect. The connection
@@ -233,3 +235,43 @@ ZIP SHA-256 is `365c71a75facfcce4bc307bac4e3170c4b64532699d088056c2690d2e7d23a73
 and launcher isolation. This is packaging/source evidence, not a passed manual
 launch or cross-PC run. The running app's PID/path/executable hash still match
 the production-build baseline. No app code changed for this handoff.
+
+## Automated local two-ended UX acceptance
+
+The owner chose automation on this PC instead of manual physical-PC testing.
+`scripts/run-local-pairing-lab.ps1 -Run -Ux` now builds and drives two independent
+disposable app instances through their actual bundled UI with a contained,
+audio-muted headless browser. It uses real pinned HTTPS on this PC's explicitly
+selected assigned private address, signed chat and synthetic fixture saves.
+There is no VM, manual clicking, response substitution, production-data access,
+or router/firewall change.
+
+PASS final launcher run `71a9b253-c3f2-41d6-95b7-edf9250b0d65`: all eight UX
+stages, isolated startup and cleanup passed; no failed or skipped stage. It
+covered setup, code pairing/approval, hosting permission and local consent,
+bidirectional chat and both sound choices, safe Stop/verified transfer, a genuine
+connection remedy, one successful guided Start, exact signed new-Host discovery
+and authenticated Connect on the original app, narrow layout and candidate Stop.
+The world root, candidate, branch, run, selected Connect request and endpoint
+must all match. No JavaScript/HTTP failure or native interaction occurred; one
+navigation-canceled GET poll is recorded separately.
+
+The test found and fixed first-use consent/candidate/listener ordering, missing
+first-run signed session metadata and the absent original-Host overview notice.
+Host settings now show save feedback beside their controls. File-only checks
+retain the independent listener material/TLS gates, default-off consent,
+permission revocation, current route binding, preserved saves and manual Start.
+The fixture still reports Preparing with unknown players rather than game-ready.
+
+This run took 41.318 seconds excluding builds and peaked at 1,064.32 MiB summed
+working set for all app/browser/job processes. Shared pages are counted more than
+once; build tools and the harness are excluded. All 125 window samples found zero
+visible owned windows; cleanup left zero job members. The production app retained
+PID `49404`, its original start time, path and executable hash.
+
+See [the local lab record](LOCAL-PAIRING-LAB.md) for exact reports, resource limits,
+source/UI checks, earlier failures, and reproducible commands. This advances local
+rendered/protocol acceptance. Physical-PC/WAN routing, actual game join and
+save/load/restart, real password reveal/change, native window and installer
+acceptance remain separate. The earlier portable ZIP remains an optional manual
+cross-PC handoff, not the current test requirement.
