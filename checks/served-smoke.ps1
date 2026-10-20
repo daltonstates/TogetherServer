@@ -45,6 +45,9 @@ $appProcess = $null
 $fixtureStarted = $false
 $valheimStarted = $false
 $valheimRun = $null
+$customRunActive = $false
+$customRun = $null
+$smokeStage = 'bundled-assets-and-discovery'
 try {
     $appProcess = Start-Process -FilePath $appPath -ArgumentList @('--host', '--port', $port) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $caseRoot 'stdout.txt') -RedirectStandardError (Join-Path $caseRoot 'stderr.txt')
     $ready = $false
@@ -208,6 +211,7 @@ try {
     if (@($gameTypes.kind | Sort-Object) -join ',' -ne 'Custom,Factorio,Fixture,MinecraftBedrock,MinecraftJava,Terraria,Valheim') { throw 'Registered game drivers were not exposed distinctly.' }
     Write-Host 'PASS explicit game-driver catalog exposes the custom script manager and reviewed built-in drivers'
 
+    $smokeStage = 'custom-settings'
     $customId = [guid]::NewGuid().ToString()
     $customDirectory = Join-Path $caseRoot 'custom-game'
     New-Item -ItemType Directory -Path $customDirectory -Force | Out-Null
@@ -222,45 +226,66 @@ try {
     $customSaved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body ($customSettings | ConvertTo-Json -Depth 8)
     if (!$customSaved.ok) { throw "Custom settings rejected: $($customSaved.message)" }
     $startScript = @'
-$stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY 'stop.signal'
-Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+$stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal")
 while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
+Remove-Item -LiteralPath $stop -Force -ErrorAction SilentlyContinue
+exit 0
 '@
     $statusScript = '@{ state = ''Ready''; detail = ''Packaged custom status''; onlinePlayers = 0; maxPlayers = 4; players = @(''Alice'') } | ConvertTo-Json -Compress'
-    $stopScript = '$stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ''stop.signal''; New-Item -ItemType File -Path $stop -Force | Out-Null'
+    $stopScript = '$stop = Join-Path $env:TOGETHERSERVER_WORKING_DIRECTORY ("stop-" + $env:TOGETHERSERVER_OPERATION_ID + ".signal"); New-Item -ItemType File -Path $stop -Force | Out-Null'
     $customScriptsBody = @{ start = $startScript; status = $statusScript; stop = $stopScript } | ConvertTo-Json
+    $smokeStage = 'custom-protected-script-save'
     $customScriptsForbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts" -Method Put -ContentType 'application/json' -Body $customScriptsBody -UseBasicParsing | Out-Null }
     catch { $customScriptsForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     if (!$customScriptsForbidden) { throw 'Custom scripts bypassed the local mutation gate.' }
     $customScriptsSaved = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts" -Method Put -Headers $headers -ContentType 'application/json' -Body $customScriptsBody
     if (!$customScriptsSaved.ok -or (Get-Content (Join-Path $caseRoot 'host.json') -Raw).Contains('Packaged custom status')) { throw 'Custom scripts were rejected or stored in plaintext settings.' }
+    $smokeStage = 'custom-protected-script-reveal'
     $customRevealForbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts/reveal" -Method Post -UseBasicParsing | Out-Null }
     catch { $customRevealForbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
     if (!$customRevealForbidden) { throw 'Custom scripts were revealed without local mutation headers.' }
     $revealedScripts = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/custom-scripts/reveal" -Method Post -Headers $headers
     if (!$revealedScripts.ok -or !$revealedScripts.scripts.status.Contains('Packaged custom status')) { throw 'Host could not reveal its protected custom scripts.' }
+    $smokeStage = 'custom-start'
     $customStarted = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/start" -Method Post -Headers $headers
+    $customRunActive = $customStarted.ok
+    if ($customRunActive) {
+        $customRun = (Get-Content (Join-Path $caseRoot 'runs.json') -Raw | ConvertFrom-Json) | Where-Object profileId -EQ $customId
+    }
     if (!$customStarted.ok -or $customStarted.code -ne 'CustomStarting') { throw "Custom Start failed: $($customStarted.message)" }
+    $smokeStage = 'custom-ready-and-untrusted-players'
     $customReady = $null
-    for ($i = 0; $i -lt 50; $i++) {
-        $customReady = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot").runs | Where-Object profileId -EQ $customId
+    # Background observations run every three seconds and a cold PowerShell
+    # probe may take its full four-second limit. Match the focused Custom checks'
+    # bounded startup budget; Unknown and untrusted lifecycle counts still fail.
+    $customReadyWatch = [Diagnostics.Stopwatch]::StartNew()
+    while ($customReadyWatch.Elapsed.TotalSeconds -lt 30) {
+        $customReady = (Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot" -TimeoutSec 2).runs | Where-Object profileId -EQ $customId
         if ($customReady.state -eq 'Ready') { break }
         Start-Sleep -Milliseconds 100
     }
+    $customReadyWatch.Stop()
+    Write-Host ("Custom observation: state={0}; players={1}; names={2}; trusted={3}; shutdownScheduled={4}; elapsedMs={5}" -f
+        $customReady.state, $customReady.onlinePlayers, @($customReady.playerNames).Count,
+        $customReady.playerCountTrusted, ($null -ne $customReady.autoShutdownAtUtc), $customReadyWatch.ElapsedMilliseconds)
     if ($customReady.state -ne 'Ready' -or $customReady.onlinePlayers -ne 0 -or
         @($customReady.playerNames).Count -ne 1 -or $customReady.playerCountTrusted -ne $false -or
         $null -ne $customReady.autoShutdownAtUtc) { throw 'Packaged uncertified custom status did not remain display-only and fail closed.' }
     if ($customReady.autoShutdownReason -ne 'Automatic shutdown needs an owner-tested Custom setup and a current player count.') {
         throw 'Packaged uncertified custom status did not explain its shutdown blocker.'
     }
+    $smokeStage = 'custom-stop'
     $customStopped = Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/stop" -Method Post -Headers $headers
     if (!$customStopped.ok -or $customStopped.code -ne 'CustomStopped') { throw "Custom Stop failed: $($customStopped.message)" }
+    $customRunActive = $false
+    $smokeStage = 'custom-profile-removal'
     $customRemoved = Invoke-RestMethod -Uri "$baseUrl/api/local/settings" -Method Put -Headers $headers -ContentType 'application/json' -Body (@{ profiles = @() } | ConvertTo-Json)
     if (!$customRemoved.ok -or (Test-Path -LiteralPath (Join-Path $caseRoot ("custom-scripts-" + $customId.Replace('-', '') + '.protected')))) { throw 'Removing a custom profile retained its protected scripts.' }
     Write-Host 'PASS packaged custom Start, status/player list, local Stop, protected storage, and fail-closed safety'
 
+    $smokeStage = 'remaining-packaged-checks'
     $forbidden = $false
     try { Invoke-WebRequest -Uri "$baseUrl/api/local/mode/friend" -Method Post -UseBasicParsing | Out-Null }
     catch { $forbidden = [int]$_.Exception.Response.StatusCode -eq 403 }
@@ -478,7 +503,28 @@ while (-not (Test-Path -LiteralPath $stop)) { Start-Sleep -Milliseconds 100 }
     Write-Host 'PASS local Quit app after managed servers stop'
     Write-Host "Smoke data: $caseRoot"
 }
+catch {
+    # CI's remaining-only wrapper deliberately omits raw exception messages.
+    # Keep the exact harness stage and line without echoing scripts or secrets.
+    Write-Host ("FAIL packaged served smoke: stage={0}; exception={1}; line={2}" -f
+        $smokeStage, $_.Exception.GetType().Name, $_.InvocationInfo.ScriptLineNumber)
+    throw
+}
 finally {
+    if ($customRunActive) {
+        try { Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$customId/stop" -Method Post -Headers $headers -TimeoutSec 20 | Out-Null }
+        catch { Write-Warning 'Synthetic Custom Stop failed; checking its exact recorded wrapper identity for cleanup.' }
+        if ($customRun -and $customRun.processId -and $customRun.startTimeUtcTicks) {
+            $remaining = Get-Process -Id $customRun.processId -ErrorAction SilentlyContinue
+            $customPowerShellPath = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell/v1.0/powershell.exe'
+            if ($remaining -and $remaining.Path -eq $customPowerShellPath -and
+                $customRun.executablePath -eq $customPowerShellPath -and
+                $customRun.worldDirectory -eq $customDirectory -and
+                $remaining.StartTime.ToUniversalTime().Ticks -eq $customRun.startTimeUtcTicks) {
+                Stop-Process -Id $remaining.Id
+            }
+        }
+    }
     if ($valheimStarted) {
         try { Invoke-RestMethod -Uri "$baseUrl/api/local/profiles/$valheimId/stop" -Method Post -Headers $headers -TimeoutSec 5 | Out-Null }
         catch { Write-Warning 'Synthetic Valheim Stop failed; checking exact fixture identity for cleanup.' }

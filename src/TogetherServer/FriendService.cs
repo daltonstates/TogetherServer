@@ -1227,7 +1227,7 @@ internal sealed partial class FriendLink : IDisposable
                 pins.Any(pin => CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin))
         };
         return new HttpClient(restricted ? guard(handler) : handler)
-            { BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"), Timeout = TimeSpan.FromSeconds(6) };
+        { BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"), Timeout = TimeSpan.FromSeconds(6) };
     }
 
     private static string HostLabel(string endpoint) =>

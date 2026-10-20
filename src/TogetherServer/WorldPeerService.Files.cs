@@ -18,6 +18,8 @@ internal sealed partial class WorldPeerService
         bool ProducedHere);
     private readonly WorldPeerChunkInventory peerChunks = new();
     private readonly Dictionary<string, int> liveTestPositions = new(StringComparer.Ordinal);
+    private sealed record ReceiptDelivery(DateTimeOffset AttemptedUtc, bool Confirmed);
+    private readonly Dictionary<(string Group, string Route, string Pin, Guid Receipt), ReceiptDelivery> receiptDeliveries = [];
 
     private static string RetainedHistoryParent(LocalData data, Group group) => Path.Combine(
         data.RootPath, "received-shared-histories", group.Root.GroupKey);
@@ -277,7 +279,11 @@ internal sealed partial class WorldPeerService
             {
                 if (!await ReceiveAllowedAsync(group, cancellationToken)) return;
                 var existing = ReadPeerPointer(vault);
-                if (existing?.VersionHash == version.VersionHash) continue;
+                if (existing?.VersionHash == version.VersionHash)
+                {
+                    await RetryRetainedReceiptAsync(group, route, descriptor, vault, cancellationToken);
+                    continue;
+                }
                 // Missing local parents do not establish a fork. Fetch and
                 // verify bounded manifest pages before deciding whether a
                 // returning receiver can advance its ordinary recovery head.
@@ -294,7 +300,11 @@ internal sealed partial class WorldPeerService
                     try
                     {
                         var kept = ReadPeerPointer(retained);
-                        if (kept?.VersionHash == version.VersionHash) continue;
+                        if (kept?.VersionHash == version.VersionHash)
+                        {
+                            await RetryRetainedReceiptAsync(group, route, descriptor, retained, cancellationToken);
+                            continue;
+                        }
                         await ReceivePeerSaveAsync(group, route, descriptor, retained, kept, cancellationToken);
                     }
                     finally { FriendLink.ReceiveGateFor(retained).Release(); }
@@ -419,9 +429,64 @@ internal sealed partial class WorldPeerService
         if (receipt is null) return;
         var receiptBytes = JsonSerializer.SerializeToUtf8Bytes(receipt, Json);
         File.WriteAllBytes(Path.Combine(destination, "receipt.json"), receiptBytes);
-        if (!await ReceiveAllowedAsync(group, cancellationToken)) return;
-        _ = await SendPeerAsync(group, route, WorldPeerOperations.Receipt, cancellationToken, receiptBytes,
+        await DeliverReceiptAsync(group, route, receipt, receiptBytes, cancellationToken);
+    }
+
+    private bool ReceiptDeliveryDue(Group group, SharedWorldPeerRoute route, SharedWorldReceipt receipt)
+    {
+        var id = (group.Root.GroupKey, route.Address, route.CertificateSha256, receipt.ReceiptId);
+        lock (stateSync)
+            return !receiptDeliveries.TryGetValue(id, out var delivery) ||
+                !delivery.Confirmed && DateTimeOffset.UtcNow - delivery.AttemptedUtc >= TimeSpan.FromSeconds(15);
+    }
+
+    // A completed copy may have arrived through a forwarding peer, or its first
+    // acknowledgement may have been lost. Reuse only its authentic receipt;
+    // an unchanged catalog entry does not authorize inventing a new receipt.
+    private async Task RetryRetainedReceiptAsync(Group group, SharedWorldPeerRoute route,
+        WorldPeerSaveDescriptor descriptor, string vault, CancellationToken cancellationToken)
+    {
+        if (group.DeviceId == Guid.Empty || !await ReceiveAllowedAsync(group, cancellationToken)) return;
+        var destination = SharedWorldService.SafeChild(vault, descriptor.Version.VersionHash);
+        var path = Path.Combine(destination, "receipt.json");
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
+        if (!File.Exists(path)) return;
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if ((File.GetAttributes(input.SafeFileHandle) & FileAttributes.ReparsePoint) != 0) return;
+        var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(input, input.Length, cancellationToken);
+        if (bytes is null) return;
+        var receipt = SharedWorldReceiptTrust.Parse(bytes);
+        var current = Find(group.Root.GroupKey);
+        using var key = current is null ? null : LocalKey(current);
+        if (receipt is null || current is null || key is null || receipt.DeviceId != current.DeviceId ||
+            receipt.GroupId != current.Root.GroupId || receipt.ProfileId != current.Root.ProfileId ||
+            receipt.VersionHash != descriptor.Version.VersionHash || receipt.RosterEpoch != current.Roster.Epoch ||
+            receipt.RosterRevision != current.Roster.Revision ||
+            !SharedWorldReceiptTrust.Verify(receipt, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) ||
+            !ReceiptDeliveryDue(current, route, receipt) || !AuthorizedDescriptor(current, descriptor)) return;
+        var records = new WorldAuthorityStore(data).Read(current.Root.ProfileId);
+        var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(current.Root, descriptor.Version, records);
+        WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
+        using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, destination, descriptor.Version, cancellationToken);
+        await DeliverReceiptAsync(current, route, receipt, bytes, cancellationToken);
+    }
+
+    private async Task DeliverReceiptAsync(Group group, SharedWorldPeerRoute route, SharedWorldReceipt receipt,
+        byte[] bytes, CancellationToken cancellationToken)
+    {
+        if (!ReceiptDeliveryDue(group, route, receipt) || !await ReceiveAllowedAsync(group, cancellationToken)) return;
+        var id = (group.Root.GroupKey, route.Address, route.CertificateSha256, receipt.ReceiptId);
+        lock (stateSync)
+        {
+            if (receiptDeliveries.Count >= 512 && !receiptDeliveries.ContainsKey(id))
+                receiptDeliveries.Remove(receiptDeliveries.MinBy(item => item.Value.AttemptedUtc).Key);
+            receiptDeliveries[id] = new(DateTimeOffset.UtcNow, false);
+        }
+        var reply = await SendPeerAsync(group, route, WorldPeerOperations.Receipt, cancellationToken, bytes,
             versionHash: receipt.VersionHash);
+        var result = JsonSerializer.Deserialize<WorldPeerActionResult>(reply, Json);
+        if (result is { Ok: true, Code: "PeerReceiptStored" or "PeerReceiptKnown" })
+            lock (stateSync) receiptDeliveries[id] = new(DateTimeOffset.UtcNow, true);
     }
 
     private static string SessionBranchHash(Group group, WorldPeerSaveDescriptor descriptor) =>

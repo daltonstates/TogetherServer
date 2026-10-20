@@ -60,7 +60,8 @@ internal static class GettingStartedLocalRoutes
             {
                 if (!changesAllowed()) return Results.Conflict(new
                 {
-                    ok = false, code = "GettingStartedUnavailable",
+                    ok = false,
+                    code = "GettingStartedUnavailable",
                     message = "Finish the current app operation before saving the guide."
                 });
                 return Results.Json(guide.Save(request.Intent, request.Dismissed));
@@ -74,7 +75,8 @@ internal static class GettingStartedLocalRoutes
 
     private static IResult Rejected() => Results.BadRequest(new
     {
-        ok = false, code = "GettingStartedRequestRejected",
+        ok = false,
+        code = "GettingStartedRequestRejected",
         message = "The getting started guide could not be saved. Retry the guide."
     });
 }

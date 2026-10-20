@@ -42,7 +42,12 @@ public static class TogetherServerQolShellCheck {
 }
 '@
 $nativeShellProof = [ordered]@{
-    notification = [ordered]@{ systemAllowsNotifications = $false; freshTitleAndBodyObserved = $false;
+    notification = [ordered]@{ systemAllowsNotifications = $false; systemState = 'Unknown'; systemStatesObserved = @();
+        stateReadinessPolls = 0; stateReadinessElapsedMs = 0; freshTitleAndBodyObserved = $false;
+        systemStateBeforeCaptionClick = $null; systemStateAfterCaptionClick = $null;
+        systemAllowsBeforeCaptionClick = $false; systemAllowsAfterCaptionClick = $false;
+        captionClickSent = $false; captionClickExactOwnedHit = $false; captionClickForegroundVerified = $false;
+        captionClickNormalBoundsPreserved = $false; captionBoundsBefore = @(); captionBoundsAfter = @();
         physicalClickSent = $false; exactAppForeground = $false; nativeDestinationVerified = $false;
         searchPolls = 0; shellRootsObserved = 0; matchingTitlesObserved = 0 }
     trayQuit = [ordered]@{ exactTrayIconObserved = $false; overflowOpened = $false; ownedQuitMenuObserved = $false;
@@ -52,6 +57,92 @@ $nativeShellProof = [ordered]@{
 $qolShellDisplayName = 'TogetherServer DEVELOPMENT'
 $qolBalloonTitle = $qolShellDisplayName + ' is still running'
 $qolBalloonBody = 'Open it from the tray icon. Right-click the icon to quit.'
+
+function Wait-QolNotificationReadiness($InitialState) {
+    # UIA/posted window actions do not establish physical session input. On the
+    # disposable hosted desktop, click the exact native caption once; observe
+    # the unchanged production notification gate rather than overriding it.
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $state = $InitialState
+    $proof = $nativeShellProof.notification
+    $captionStateRecorded = $false
+    do {
+        Assert-AppIdentity
+        $systemState = [string]$state.systemState
+        Require ($systemState -in @('Unknown', 'NotPresent', 'Busy', 'RunningD3DFullScreen', 'PresentationMode',
+            'AcceptsNotifications', 'QuietTime', 'App') -and $state.systemAllowsNotifications -is [bool]) 'The app returned an invalid Windows notification state.'
+        $allows = $state.systemAllowsNotifications -eq $true
+        Require ($allows -eq ($systemState -eq 'AcceptsNotifications')) 'The Windows notification state and capability disagree.'
+        $proof.systemAllowsNotifications = $allows
+        $proof.systemState = $systemState
+        if ($systemState -notin $proof.systemStatesObserved) { $proof.systemStatesObserved += $systemState }
+        $proof.stateReadinessPolls++
+        $proof.stateReadinessElapsedMs = $clock.ElapsedMilliseconds
+        if (!$captionStateRecorded -and $env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_OS -eq 'Windows') {
+            $proof.systemStateBeforeCaptionClick = $systemState
+            $proof.systemAllowsBeforeCaptionClick = $allows
+            Write-Host ('NOTIFICATION_BEFORE_CAPTION_INPUT ' + (@{ systemState = $systemState; systemAllowsNotifications = $allows } | ConvertTo-Json -Compress))
+            Invoke-QolNotificationCaptionClick
+            $state = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/notifications" -Headers $headers -TimeoutSec 2 -NoProxy
+            $captionStateRecorded = $true
+            continue
+        }
+        if ($captionStateRecorded -and $null -eq $proof.systemStateAfterCaptionClick) {
+            $proof.systemStateAfterCaptionClick = $systemState
+            $proof.systemAllowsAfterCaptionClick = $allows
+            Write-Host ('NOTIFICATION_AFTER_CAPTION_INPUT ' + (@{ systemState = $systemState; systemAllowsNotifications = $allows } | ConvertTo-Json -Compress))
+        }
+        if ($allows -or $clock.Elapsed.TotalSeconds -ge 15) {
+            Write-Host ('NOTIFICATION_READINESS ' + (@{ systemState = $systemState; systemStatesObserved = $proof.systemStatesObserved;
+                systemAllowsNotifications = $allows; polls = $proof.stateReadinessPolls; elapsedMs = $proof.stateReadinessElapsedMs } | ConvertTo-Json -Compress))
+            Require $allows "Windows notification readiness stayed $systemState for 15 seconds; real OS delivery cannot pass. No Windows preference was changed."
+            return $state
+        }
+        Start-Sleep -Milliseconds 250
+        $state = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/notifications" -Headers $headers -TimeoutSec 2 -NoProxy
+    } while ($true)
+}
+
+function Invoke-QolNotificationCaptionClick {
+    Require ($AllowInteractiveTests -and $env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_OS -eq 'Windows') 'Caption presence input requires the opted-in disposable hosted Windows desktop.'
+    Assert-OwnedWindow $windowHandle
+    Require ($app.Process.SessionId -eq [Diagnostics.Process]::GetCurrentProcess().SessionId -and
+        [TogetherServerQolWindowCheck]::IsWindowVisible($windowHandle) -and
+        ![TogetherServerQolWindowCheck]::IsZoomed($windowHandle) -and
+        ![TogetherServerQolWindowCheck]::IsIconic($windowHandle)) 'Caption presence input requires the exact visible normal test window in this session.'
+    $before = Read-Rect
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($windowHandle)
+    Require ($root.Current.ProcessId -eq $app.Id -and [IntPtr]$root.Current.NativeWindowHandle -eq $windowHandle) 'The exact native test HWND changed before caption input.'
+    $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $qolShellDisplayName)
+    $captions = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) | Where-Object {
+        $_.Current.ProcessId -eq $app.Id -and $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text -and
+        $_.Current.NativeWindowHandle -ne 0 -and (Test-QolVisibleElement $_) })
+    Require ($captions.Count -eq 1) 'One exact visible native title label is required for neutral caption input.'
+    $caption = $captions[0]
+    Assert-OwnedWindow ([IntPtr]$caption.Current.NativeWindowHandle)
+    $box = $caption.Current.BoundingRectangle
+    $dpi = [TogetherServerQolWindowCheck]::GetDpiForWindow($windowHandle)
+    Require ($dpi -gt 0 -and $box.Left -gt $before.Left -and $box.Right -lt $before.Right -and
+        $box.Top -gt $before.Top -and $box.Bottom -le $before.Top + 42 * $dpi / 96) 'The matched title label escaped the native caption band.'
+    $proof = $nativeShellProof.notification
+    $proof.captionBoundsBefore = @($before.Left, $before.Top, $before.Right, $before.Bottom)
+    # Passing the caption itself as the hit-test root requires its exact UIA
+    # ancestry at the physical point, refusing overlays or any other control.
+    Click-QolShellElement $caption $caption
+    $proof.captionClickSent = $true
+    $proof.captionClickExactOwnedHit = $true
+    Wait-Until {
+        Assert-OwnedWindow $windowHandle
+        return [TogetherServerQolShellCheck]::GetForegroundWindow() -eq $windowHandle
+    } 'The exact caption click did not foreground the owned test HWND.' 5
+    $proof.captionClickForegroundVerified = $true
+    $after = Read-Rect
+    $proof.captionBoundsAfter = @($after.Left, $after.Top, $after.Right, $after.Bottom)
+    Require (![TogetherServerQolWindowCheck]::IsZoomed($windowHandle) -and ![TogetherServerQolWindowCheck]::IsIconic($windowHandle) -and
+        $before.Left -eq $after.Left -and $before.Top -eq $after.Top -and
+        $before.Right -eq $after.Right -and $before.Bottom -eq $after.Bottom) 'The single neutral caption click changed the original normal window geometry.'
+    $proof.captionClickNormalBoundsPreserved = $true
+}
 
 function Get-QolShellRoots {
     $roots = @()

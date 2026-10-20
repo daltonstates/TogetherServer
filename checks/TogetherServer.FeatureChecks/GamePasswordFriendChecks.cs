@@ -139,8 +139,12 @@ internal static class GamePasswordFriendChecks
 
     private static FriendConfiguration Configuration() => new()
     {
-        HostId = Guid.NewGuid(), DeviceId = Guid.NewGuid(), Credential = new string('C', 64),
-        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90), Endpoint = "https://127.0.0.1:5131", Fingerprint = new string('A', 64)
+        HostId = Guid.NewGuid(),
+        DeviceId = Guid.NewGuid(),
+        Credential = new string('C', 64),
+        CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
+        Endpoint = "https://127.0.0.1:5131",
+        Fingerprint = new string('A', 64)
     };
     private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
 

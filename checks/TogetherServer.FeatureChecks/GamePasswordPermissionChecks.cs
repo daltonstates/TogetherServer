@@ -260,9 +260,12 @@ internal static class GamePasswordPermissionChecks
         internal Fixture(string root, string name)
         {
             Data = new(Path.Combine(root, "password-" + name + "-" + Guid.NewGuid().ToString("N")));
-            Data.SaveSettings(new HostSettings { Profiles =
+            Data.SaveSettings(new HostSettings
+            {
+                Profiles =
                 [new() { Id = ProfileId, Name = "Synthetic Valheim", Kind = GameKinds.Valheim },
-                 new() { Id = SiblingId, Name = "Synthetic sibling", Kind = GameKinds.Valheim }] });
+                 new() { Id = SiblingId, Name = "Synthetic sibling", Kind = GameKinds.Valheim }]
+            });
             Data.SaveValheimPassword(ProfileId, Secret);
             Pairing = new(Data, Clock);
             var invitation = Pairing.IssueServer(ProfileId, true, false, "https://127.0.0.1:5131", new string('A', 64), false);

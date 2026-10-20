@@ -67,7 +67,8 @@ internal static class LocalPairingLabChecks
         Require(lanLab.AllowsBind(lanAddress) && !lanLab.AllowsBind(secondLanAddress), "LAN lab admitted an unselected local address");
         var lanSettings = new HostSettings
         {
-            CompanionBindAddress = lanAddress.ToString(), CompanionEndpoint = $"https://{lanAddress}:59102"
+            CompanionBindAddress = lanAddress.ToString(),
+            CompanionEndpoint = $"https://{lanAddress}:59102"
         };
         Require(lanLab.ValidateSettings(lanSettings).Ok && !lab.ValidateSettings(lanSettings).Ok, "selected LAN settings boundary failed");
         lanSettings.CompanionBindAddress = secondLanAddress.ToString();

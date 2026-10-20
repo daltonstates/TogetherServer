@@ -370,3 +370,56 @@ only failed/unrun acceptance and the installer. It verifies run/job/artifact,
 ZIP and app hashes, and rejects any changed product source. Review artifacts
 now expire after one day. Prior failures are retained as failures, not relabeled
 successful. The continuation has not yet executed at this checkpoint.
+
+The continuation `39388659351` subsequently failed. Its actual result reports
+show ten of twelve remaining Existing checks passed, including all fourteen
+Core remote groups (six exercise permission-scoped password reads over pinned
+TLS) and both remote rehearsals. The ten-stage rendered two-ended UX and native
+window-chrome checks also passed. Continued GitHub steps can show a successful
+API conclusion despite a failed underlying outcome; their green step labels
+were initially misread. The aggregate rejected the failures correctly. The raw
+reports, rather than those labels, are the acceptance record.
+
+Remaining failures were solution whitespace, served smoke during Custom setup,
+the Guides button's 40-pixel height, OS notification readiness, and a missing
+durable new-host receipt. The old served wrapper lost the terminating exception;
+its five-second observation budget was undersized, but a hosted rerun is needed
+to establish the fix. The final receipt failure
+exposed a product bug: a copy received through a forwarding PC was acknowledged
+only to that PC; seeing the same catalog entry later skipped delivery to another
+serving peer. Retained copies now retry their original signed receipt only after
+checking current membership/consent, signature, lineage and unchanged payload.
+Acknowledged delivery suppresses repeat sends; failures have bounded backoff.
+Source checks cover lost delivery, restart retry, duplicate suppression, forged
+or missing receipts and subsequently damaged payloads. The final lab receipt
+assertion remains mandatory.
+
+The Guides target is now at least 44 pixels high. Served smoke uses a bounded
+30-second observation budget, operation-specific synthetic Stop signals, exact
+process cleanup and safe stage diagnostics. Native acceptance records the actual
+Windows notification state before and after one physical click on the exact
+owned caption, then waits briefly for readiness; persistent suppression still
+fails. No Windows preference or production notification gate is overridden.
+
+These product fixes require a fresh candidate. The bounded
+`acceptance-repair.yml` run repeats affected sharing/source/UI checks and attempts
+both installer suites even if an independent runtime check fails. Its final
+package requires every actual outcome and report to pass. Unchanged historical
+passes remain tied to their original source; they are not relabeled as tests of
+the repaired executable. All new artifacts expire after one day. The previous
+visual archive was hash-verified and saved locally before its GitHub copy was
+deleted. The three hosted runs so far report zero billable runner time; this
+does not assert anything about unrelated account storage or billing.
+
+The repaired candidate's hosted execution and installer acceptance are pending
+at this checkpoint. No local native input, game launch, installation, production
+process change or network configuration change was performed.
+
+Before dispatch, the repaired solution compiled with zero warnings/errors;
+all source/synthetic feature groups, production UI bundling, solution whitespace,
+edited-script parsing and workflow PowerShell/YAML parsing passed locally.
+The source runner explicitly skipped symbolic-link cases unavailable to this
+test account; those are not recorded as executed. Independent workflow review
+checked all step references, inventories, installer independence and the final
+actual-outcome package gate. The production process still matched its original
+PID, executable path and start time.

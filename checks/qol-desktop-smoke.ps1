@@ -1116,8 +1116,7 @@ try {
     $allowedNotifications = Post-Json '/api/local/desktop/notifications' @{ allowedEvents = @('Lifecycle') } 'PUT'
     Require (@($allowedNotifications.allowedEvents).Count -eq 1 -and $allowedNotifications.allowedEvents[0] -eq 'Lifecycle') 'The disposable notification event choice did not save.'
     $notificationState = Post-Json '/api/local/desktop/notifications' @{ quietMode = $false } 'PUT'
-    $nativeShellProof.notification.systemAllowsNotifications = $notificationState.systemAllowsNotifications -eq $true
-    Require ($notificationState.systemAllowsNotifications -eq $true) 'Windows does not currently accept notifications in this dedicated session; OS delivery acceptance cannot pass. No Windows preference was changed.'
+    $notificationState = Wait-QolNotificationReadiness $notificationState
     Require (@(Find-QolBalloon).Count -eq 0) 'An earlier matching development notification is already visible; fresh delivery cannot be identified.'
     $nodePhase = Start-WebViewPhase 'notification-click'
     Wait-PhaseReady $nodePhase

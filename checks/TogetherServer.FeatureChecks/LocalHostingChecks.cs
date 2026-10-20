@@ -254,10 +254,17 @@ internal static class LocalHostingChecks
         using var data = new LocalData(Path.Combine(root, "owner-hosting-switch-" + Guid.NewGuid().ToString("N")));
         var executable = Path.Combine(data.RootPath, "never-run.synthetic");
         File.WriteAllText(executable, "synthetic file only");
-        var profile = new ServerProfile { Id = Guid.NewGuid(), Kind = GameKinds.Fixture,
-            Name = "Synthetic owner", ServerName = "Synthetic owner", WorldId = "SyntheticOwner",
-            WorldDirectory = Path.Combine(data.RootPath, "world"), ExecutablePath = executable,
-            Backups = new() { Enabled = false, RetentionCount = 13, MinimumFreeSpaceMb = 2048 } };
+        var profile = new ServerProfile
+        {
+            Id = Guid.NewGuid(),
+            Kind = GameKinds.Fixture,
+            Name = "Synthetic owner",
+            ServerName = "Synthetic owner",
+            WorldId = "SyntheticOwner",
+            WorldDirectory = Path.Combine(data.RootPath, "world"),
+            ExecutablePath = executable,
+            Backups = new() { Enabled = false, RetentionCount = 13, MinimumFreeSpaceMb = 2048 }
+        };
         data.SaveSettings(new HostSettings { Profiles = [profile] });
         var driver = new FilesOnlyDriver();
         var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));

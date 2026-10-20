@@ -43,8 +43,13 @@ internal static class SharedHostingActionChecks
         var unavailable = FriendLocalHostingService.Unavailable("PermissionDenied", "Ask the owner to allow hosting.");
         Require(FriendLocalHostingService.WithRemedy(unavailable).Remedy?.Kind == "Permission",
             "a denied host grant did not lead to its owner permission remedy");
-        var baseStatus = unavailable with { Allowed = true, Consented = true, BranchHash = hash,
-            Steps = unavailable.Steps.Select(step => step with { State = "Ready" }).ToArray() };
+        var baseStatus = unavailable with
+        {
+            Allowed = true,
+            Consented = true,
+            BranchHash = hash,
+            Steps = unavailable.Steps.Select(step => step with { State = "Ready" }).ToArray()
+        };
         Require(FriendLocalHostingService.WithRemedy(baseStatus with { NeedsServerFile = true }).Remedy?.Kind == "ChooseServer" &&
             FriendLocalHostingService.WithRemedy(baseStatus with { Code = "MinecraftTermsRequired" }).Remedy?.Kind == "Terms" &&
             FriendLocalHostingService.WithRemedy(baseStatus with { Code = "LocalConnectionSetupRequired" }).Remedy?.Kind == "Connection" &&

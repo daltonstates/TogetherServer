@@ -34,7 +34,7 @@
 .setup-stage-tip { display: flex; gap: .65rem; align-items: start; padding: .8rem 1rem; margin: .65rem 0 1rem; border: 1px solid #a66b3755; border-radius: 10px; background: var(--color-accent-soft); animation: guide-appear .2s ease-out; }
 .setup-stage-tip > .icon { flex-shrink: 0; margin-top: .2rem; color: var(--color-accent); }
 .setup-stage-tip p { margin: 0; line-height: 1.6; font-size: .84rem; }
-.header-tools .header-guides-trigger { min-width: 44px; }
+.header-tools .header-guides-trigger { min-width: 44px; min-height: 44px; }
 @media (max-width: 700px) { .header-guides-trigger > span { display: none; } }
 @media (forced-colors: active) { .guide-coach, .guide-path.guide-path-preferred, [data-guide-highlight="true"] { border-color: Highlight; outline-color: Highlight; } }
 @keyframes guide-appear { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
