@@ -32,6 +32,9 @@ jobs:
             initialRunId=39341878486;initialRunAttempt=2;initialExistingJobId=118367975707;
             candidateArtifactId=12229950779;candidateArtifactDigest='sha256:672fb4c413dd554e9b1ffbc6d7ae1b61e45f6d22a1c661e4b91d3b6cf398c101';
             priorReportArtifactId=12230656191;priorReportArtifactDigest='sha256:c50391e669af5a3b8fd63092912a5eda0f87e79fbc8b11a6534ea33fd4b8622e';
+            priorRuntimeRunId=39345793865;priorRuntimeRunAttempt=1;priorRuntimeJobId=118377944539;
+            priorRuntimeVerificationRevision='ba732afe0bd3aa30d4354738ad9229d173bbf718';
+            priorRuntimeReportArtifactId=12230474795;priorRuntimeReportArtifactDigest='sha256:987e55902a5e59aa3342d278be286cd2111c8aa2ba14a30c4f09d446f4c33f90';
             verificationRevision=$env:GITHUB_SHA;continuationRunId=$env:GITHUB_RUN_ID;continuationRunAttempt=$env:GITHUB_RUN_ATTEMPT;
             boundary='Explicitly opted-in dedicated hosted Windows session, disposable data only; no real-game or WAN acceptance.'} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'continuation-context.json') -Encoding utf8
@@ -73,7 +76,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Verification source must descend from the compiled candidate source.' }
           $changed = @(git diff --no-renames --name-only $revision HEAD)
           if ($LASTEXITCODE -ne 0) { throw 'Could not compare verification source.' }
-          $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/SharedWorldJourney\.cs$|\.github/workflows/release-0322-continuation\.yml$)'
+          $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/SharedWorldJourney\.cs$|checks/staging-smoke\.ps1$|\.github/workflows/release-0322-continuation\.yml$)'
           if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Files outside the approved test, documentation and continuation workflow changed after the candidate.' }
           $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           try {
@@ -150,7 +153,84 @@ jobs:
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'prior-gates.json') -Encoding utf8
           'PASS all nine other gates and 17 completed Existing stages bind to the unchanged candidate. Both failed attempts remain failed.'
 
-      - name: Compile checks with locked dependencies and isolation guards
+      - name: Verify completed runtime acceptance for the same candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtimeRevision = 'ba732afe0bd3aa30d4354738ad9229d173bbf718'
+          git merge-base --is-ancestor $runtimeRevision HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Verification source must descend from the completed runtime checks.' }
+          $changed = @(git diff --no-renames --name-only $runtimeRevision HEAD)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compare completed runtime verification source.' }
+          $allowed = '^(docs/|checks/staging-smoke\.ps1$|\.github/workflows/release-0322-continuation\.yml$)'
+          if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Completed runtime check source changed after its acceptance.' }
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          try {
+            $root = 'https://api.github.com/repos/daltonstates/TogetherServer/actions/runs/39345793865'
+            $previous = Invoke-RestMethod -Uri $root -Headers $headers
+            $jobResponse = Invoke-RestMethod -Uri ($root+'/jobs?filter=all&per_page=100') -Headers $headers
+            $jobs = @($jobResponse.jobs)
+            $artifact = Invoke-RestMethod -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12230474795' -Headers $headers
+            if ($artifact.id -ne 12230474795 -or $artifact.name -ne 'release-0322-continuation-evidence' -or $artifact.expired -ne $false -or
+                $artifact.workflow_run.id -ne 39345793865 -or $artifact.workflow_run.head_sha -ne $runtimeRevision -or
+                $artifact.digest -ne 'sha256:987e55902a5e59aa3342d278be286cd2111c8aa2ba14a30c4f09d446f4c33f90') { throw 'Prior runtime artifact provenance mismatch.' }
+            $reportZip = Join-Path $env:RUNNER_TEMP 'accepted-runtime-gate-0322.zip'
+            Invoke-WebRequest -Uri 'https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/12230474795/zip' -Headers $headers -OutFile $reportZip
+          } finally { $headers.Clear() }
+          if ($previous.id -ne 39345793865 -or $previous.head_sha -ne $runtimeRevision -or $previous.status -ne 'completed' -or
+              $previous.conclusion -ne 'failure' -or $previous.run_attempt -ne 1 -or
+              $previous.path -ne '.github/workflows/release-0322-continuation.yml' -or $previous.workflow_id -ne 389988034 -or
+              $jobResponse.total_count -ne 1 -or $jobs.Count -ne 1 -or $jobs[0].id -ne 118377944539 -or
+              $jobs[0].name -ne 'Remaining acceptance and installer' -or $jobs[0].run_attempt -ne 1 -or
+              $jobs[0].status -ne 'completed' -or $jobs[0].conclusion -ne 'failure') { throw 'Prior runtime run or job identity mismatch.' }
+          foreach ($expected in @(@{name='Verify the exact source boundary and completed gates';outcome='success'},
+              @{name='Compile checks with locked dependencies and isolation guards';outcome='success'},
+              @{name='Complete all remaining acceptance on this dedicated runner';outcome='failure'},
+              @{name='Install the pinned installer compiler';outcome='skipped'},
+              @{name='Package and verify the same candidate';outcome='skipped'},
+              @{name='Preserve continuation evidence';outcome='success'})) {
+            $step = @($jobs[0].steps | Where-Object name -eq $expected.name)
+            if ($step.Count -ne 1 -or $step[0].status -ne 'completed' -or $step[0].conclusion -ne $expected.outcome) { throw "Prior runtime step mismatch: $($expected.name)." }
+          }
+          if ((Get-FileHash -LiteralPath $reportZip -Algorithm SHA256).Hash -ne '987E55902A5E59AA3342D278BE286CD2111C8AA2BA14A30C4F09D446F4C33F90') { throw 'Prior runtime report ZIP digest mismatch.' }
+          Expand-Archive -LiteralPath $reportZip -DestinationPath local-data/previous-runtime-gate-0322
+          $files = @(Get-ChildItem local-data/previous-runtime-gate-0322 -Filter continuation-report.json -File -Recurse)
+          if ($files.Count -ne 1) { throw 'Ambiguous prior runtime evidence.' }
+          $report = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+          if ($report.candidateSourceRevision -ne $env:CANDIDATE_SOURCE_REVISION -or $report.candidateSha256 -ne $env:CANDIDATE_SHA256 -or
+              $report.initialRunId -ne 39341878486 -or $report.initialRunAttempt -ne 2 -or $report.initialExistingJobId -ne 118367975707 -or
+              $report.verificationRevision -ne $runtimeRevision -or $report.checksCompiledFromRevision -ne $runtimeRevision -or
+              $report.continuationRunId -ne 39345793865 -or $report.continuationRunAttempt -ne 1 -or
+              $report.outcome -ne 'failed' -or @($report.checks).Count -ne 7) { throw 'Prior runtime report identity or count mismatch.' }
+          foreach ($name in @('Shared Worlds packaged journey','Staging LiveSave owner action','Shared LiveSave packaged transfer journey',
+              'TogetherServer.CompanionChecks','Solution formatting','Packaged served smoke')) {
+            $check = @($report.checks | Where-Object name -eq $name)
+            if ($check.Count -ne 1 -or $check[0].outcome -ne 'passed') { throw "Prior runtime check did not pass: $name" }
+          }
+          $failed = @($report.checks | Where-Object outcome -eq 'failed')
+          if (@($report.checks | Where-Object outcome -eq 'passed').Count -ne 6 -or $failed.Count -ne 1 -or
+              $failed[0].name -ne 'Production plus staging isolation smoke') { throw 'Unexpected unfinished runtime check.' }
+          foreach ($expected in @(
+              @{log='01.log';summary='^Shared Worlds packaged journey: 11 groups passed, 0 failed, 0 recovery scenarios skipped\.'},
+              @{log='02.log';summary='^Staging live action: 3 groups passed\.'},
+              @{log='03.log';summary='^Shared LiveSave transfer journey: 5 groups passed, 0 failed\.'},
+              @{log='04.log';summary='^Companion checks: 46 groups passed, 0 failed\.'})) {
+            $log = Join-Path $files[0].DirectoryName $expected.log
+            if (@(Select-String -LiteralPath $log -Pattern $expected.summary).Count -ne 1 -or
+                @(Select-String -LiteralPath $log -Pattern '^\s*SKIP\b').Count) { throw "Prior runtime group inventory mismatch: $($expected.log)." }
+          }
+          $evidence = (Resolve-Path local-data/ci-evidence/continuation).Path
+          Copy-Item -LiteralPath $files[0].FullName -Destination (Join-Path $evidence 'prior-runtime-report.json')
+          @{runId=$previous.id;workflowId=$previous.workflow_id;sourceRevision=$runtimeRevision;attempt=$previous.run_attempt;
+            jobId=$jobs[0].id;conclusion=$previous.conclusion;steps=@($jobs[0].steps | Select-Object name,status,conclusion);
+            artifactId=12230474795;artifactDigest=$artifact.digest;allowedSourceChanges=$changed;passedChecks=6;
+            sharedWorldGroups=11;sharedWorldRecoverySkips=0;liveSaveGroups=3;liveTransferGroups=5;companionGroups=46;
+            failedCheck='Production plus staging isolation smoke'} |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'prior-runtime-gates.json') -Encoding utf8
+          'PASS six completed runtime stages and the locked CodeOnly build bind to unchanged compiled/check source. Prior failures remain failed; four remaining stages and installer acceptance must still pass.'
+
+      - name: Verify current whitespace and isolation guards
         run: |
           $ErrorActionPreference = 'Stop'
           git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
@@ -175,12 +255,8 @@ jobs:
           if (!$routes.Count -or @($routes | Where-Object { !$_.Value.Contains('inMemoryTransport: builder => builder.UseTestServer()') }).Count) {
             throw 'Core route checks must use in-memory TestServer.'
           }
-          dotnet restore TogetherServer.slnx --locked-mode 2>&1 | Tee-Object -FilePath local-data/ci-evidence/continuation/restore.log
-          if ($LASTEXITCODE -ne 0) { throw 'Locked restore failed.' }
-          dotnet build TogetherServer.slnx -c Release --no-restore -p:CodeOnlyVerification=true 2>&1 | Tee-Object -FilePath local-data/ci-evidence/continuation/build.log
-          if ($LASTEXITCODE -ne 0) { throw 'Check build failed.' }
           git diff --exit-code
-          if ($LASTEXITCODE -ne 0) { throw 'Compilation changed tracked source.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Verification changed tracked source.' }
 
       - name: Complete all remaining acceptance on this dedicated runner
         run: |
@@ -198,17 +274,11 @@ jobs:
             finally { $checks.Add(@{name=$CheckLabel;outcome=$checkOutcome;elapsedSeconds=$watch.Elapsed.TotalSeconds;log=[IO.Path]::GetFileName($log)}) }
           }
           try {
-            Invoke-Check 'Shared Worlds packaged journey' { dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-build --no-restore -- $candidate --shared-world-journey --allow-interactive-tests }
-            Invoke-Check 'Staging LiveSave owner action' { dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-build --no-restore -- $candidate --live-save-action --allow-interactive-tests }
-            Invoke-Check 'Shared LiveSave packaged transfer journey' { dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-build --no-restore -- $candidate --shared-live-transfer-journey --allow-interactive-tests }
-            Invoke-Check 'TogetherServer.CompanionChecks' { dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-build --no-restore -- $candidate --allow-interactive-tests }
-            Invoke-Check 'Solution formatting' { dotnet format TogetherServer.slnx --verify-no-changes --no-restore }
-            Invoke-Check 'Packaged served smoke' { ./checks/served-smoke.ps1 -AppPath $candidate }
             Invoke-Check 'Production plus staging isolation smoke' { ./checks/staging-smoke.ps1 -AppPath $candidate }
             Invoke-Check 'Packaged hidden desktop smoke' { ./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests }
             Invoke-Check 'Packaged interactive desktop smoke' { ./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests }
             Invoke-Check 'Update handoff smoke' { ./checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests }
-            if ($checks.Count -ne 10 -or @($checks | Where-Object outcome -ne 'passed').Count) { throw 'Remaining acceptance inventory mismatch.' }
+            if ($checks.Count -ne 4 -or @($checks | Where-Object outcome -ne 'passed').Count) { throw 'Remaining acceptance inventory mismatch.' }
             if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $env:CANDIDATE_SHA256) { throw 'Candidate changed during continuation.' }
             git diff --exit-code
             if ($LASTEXITCODE -ne 0) { throw 'Acceptance changed tracked source.' }
@@ -216,7 +286,12 @@ jobs:
           } finally {
             @{candidateSourceRevision=$env:CANDIDATE_SOURCE_REVISION;candidateSha256=$env:CANDIDATE_SHA256;
               initialRunId=39341878486;initialRunAttempt=2;initialExistingJobId=118367975707;
-              verificationRevision=$env:GITHUB_SHA;checksCompiledFromRevision=$env:GITHUB_SHA;
+              priorReportArtifactId=12230656191;priorReportArtifactDigest='sha256:c50391e669af5a3b8fd63092912a5eda0f87e79fbc8b11a6534ea33fd4b8622e';
+              priorRuntimeRunId=39345793865;priorRuntimeRunAttempt=1;priorRuntimeJobId=118377944539;
+              priorRuntimeVerificationRevision='ba732afe0bd3aa30d4354738ad9229d173bbf718';
+              priorRuntimeReportArtifactId=12230474795;priorRuntimeReportArtifactDigest='sha256:987e55902a5e59aa3342d278be286cd2111c8aa2ba14a30c4f09d446f4c33f90';
+              verificationRevision=$env:GITHUB_SHA;checksCompiledFromRevision='ba732afe0bd3aa30d4354738ad9229d173bbf718';
+              priorPassedExistingChecks=17;priorPassedRuntimeChecks=6;currentRequiredChecks=4;priorRuntimeReport='prior-runtime-report.json';
               continuationRunId=$env:GITHUB_RUN_ID;continuationRunAttempt=$env:GITHUB_RUN_ATTEMPT;outcome=$outcome;checks=@($checks.ToArray());
               boundary='Dedicated hosted Windows session, disposable data only; no real-game or WAN acceptance.'} |
               ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'continuation-report.json') -Encoding utf8
@@ -262,9 +337,13 @@ jobs:
               initialRunId=39341878486;initialRunAttempt=2;initialExistingJobId=118367975707;candidateArtifactId=12229950779;
               candidateArtifactDigest='sha256:672fb4c413dd554e9b1ffbc6d7ae1b61e45f6d22a1c661e4b91d3b6cf398c101';
               priorReportArtifactId=12230656191;priorReportArtifactDigest='sha256:c50391e669af5a3b8fd63092912a5eda0f87e79fbc8b11a6534ea33fd4b8622e';
-              verificationRevision=$env:GITHUB_SHA;checksCompiledFromRevision=$env:GITHUB_SHA;verificationRunId=$env:GITHUB_RUN_ID;
+              priorRuntimeRunId=39345793865;priorRuntimeRunAttempt=1;priorRuntimeJobId=118377944539;
+              priorRuntimeVerificationRevision='ba732afe0bd3aa30d4354738ad9229d173bbf718';
+              priorRuntimeReportArtifactId=12230474795;priorRuntimeReportArtifactDigest='sha256:987e55902a5e59aa3342d278be286cd2111c8aa2ba14a30c4f09d446f4c33f90';
+              verificationRevision=$env:GITHUB_SHA;checksCompiledFromRevision='ba732afe0bd3aa30d4354738ad9229d173bbf718';verificationRunId=$env:GITHUB_RUN_ID;
               continuationRunId=$env:GITHUB_RUN_ID;continuationRunAttempt=$env:GITHUB_RUN_ATTEMPT;assets=$assets;
-              acceptance='Digest-pinned nine completed gates and 17 Existing stages plus all ten remaining Existing stages and six installer checks; exact candidate was not rebuilt.'} |
+              acceptanceCounts=@{originalOtherGates=9;originalExistingStages=17;reusedRuntimeStages=6;remainingStages=4;installerChecks=6};
+              acceptance='Nine completed original gates, 17 Existing stages and six unchanged runtime stages bound to exact run/job/report digests, plus four remaining stages and six installer checks; exact candidate was not rebuilt. Prior failed runs remain failed.'} |
               ConvertTo-Json -Depth 6 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
             $outcome = 'passed'
           } finally {

@@ -136,7 +136,9 @@ try {
         throw 'Staging changed or enabled the production Windows sign-in registration.'
     }
     $update = Invoke-RestMethod -Uri "$stagingUrl/api/local/update"
-    if ($update.state -ne 'Unsupported' -or $update.message -notlike '*disabled in staging*') {
+    if ($update.state -ne 'Unsupported' -or $null -ne $update.latestVersion -or
+        $update.publisherTrust -ne 'Development build' -or
+        $update.message -ne 'Replace or rebuild this development app to update it.') {
         throw 'Staging did not disable automatic release updates.'
     }
 
