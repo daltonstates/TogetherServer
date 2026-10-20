@@ -104,14 +104,20 @@ internal static partial class SharedWorldJourney
                 new(new SharedWorldGrants(RecoveryVoter: true)))).Ok,
                 "owner could not appoint a voter without Receive");
             foreach (var friend in new[] { aLocal, bLocal })
+            {
                 Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(friend,
                     $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
                     "receiving Friend could not consent");
+                // Consent saves locally before background enrollment completes.
+                // Finish this signed roster change before the next PC enrolls.
+                await RequireNoPublishedSharedSaveAsync(owner, friend, profile.Id);
+            }
             var firstCReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review", new());
             Require(firstCReview.Code == "GroupReviewRequired" &&
                 firstCReview.GroupId is not null && firstCReview.OwnerPublicKey is not null,
-                "voter-only Friend did not review owner and group before any save");
+                $"voter-only Friend did not review owner and group before any save: {firstCReview.Code}; " +
+                $"group present={firstCReview.GroupId is not null}; owner present={firstCReview.OwnerPublicKey is not null}");
             Require((await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review",
                 new(firstCReview.GroupId, firstCReview.OwnerPublicKey))).Ok,
