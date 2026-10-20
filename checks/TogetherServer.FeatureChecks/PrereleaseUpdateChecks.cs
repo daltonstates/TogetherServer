@@ -150,6 +150,18 @@ internal static class PrereleaseUpdateChecks
         Require(stableOnly.State == "Current" && stableOnly.CurrentVersion == "0.3.2.1" &&
             stableOnly.LatestVersion == "0.3.2" && revisionUpdater.PreparedVersion is null,
             "Opting out of a four-part preview must not offer a stable downgrade");
+        stable = Metadata("0.3.3");
+        listing = "[" + Metadata("0.3.2.2", preview: true) + "," + stable + "]";
+        foreach (var includePreviews in new[] { false, true })
+        {
+            var stableTransition = Updater(root, "stable-transition-" + includePreviews, client,
+                new(new UpdateUiPreferences.State { IncludePrereleases = includePreviews }), new Version(0, 3, 2, 2));
+            var available = await stableTransition.CheckAsync(true);
+            Require(available.State == "Available" && available.CurrentVersion == "0.3.2.2" &&
+                available.LatestVersion == "0.3.3" && !available.LatestIsPrerelease &&
+                available.ReleaseNotesUrl == NotesUrl("0.3.3") && stableTransition.PreparedVersion is null,
+                "Both update channels must offer stable 0.3.3 after preview 0.3.2.2 without preparing an unattended install");
+        }
     }
 
     internal static async Task RunTrustAsync(string root)
@@ -238,7 +250,8 @@ internal static class PrereleaseUpdateChecks
         File.WriteAllText(executable, "Synthetic checkpoint source; never executed");
         var executableHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(executable)));
         var service = new StateCheckpointService(data, TimeProvider.System);
-        foreach (var (current, target) in new[] { ("0.3.2", "0.3.2.1"), ("0.3.2.1", "0.3.2.2") })
+        foreach (var (current, target) in new[] { ("0.3.2", "0.3.2.1"), ("0.3.2.1", "0.3.2.2"),
+            ("0.3.2", "0.3.3"), ("0.3.2.2", "0.3.3") })
         {
             var result = service.Create(current, target, executable);
             Require(result.Ok && result.Checkpoint is not null, "A forward numeric revision must create a recovery checkpoint");

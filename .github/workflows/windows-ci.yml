@@ -59,7 +59,7 @@ jobs:
         suite: [Existing, QolApi, Browser, Desktop, Rehearsal]
     name: Verify ${{ matrix.suite }}
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.suite == 'Desktop' && 80 || 60 }}
     steps:
       - name: Check out the same source revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -104,18 +104,50 @@ jobs:
           } finally { Pop-Location }
           "TOGETHERSERVER_BASELINE_UI=$((Resolve-Path local-data/ui-before/ui/dist).Path)" >> $env:GITHUB_ENV
 
-      - name: Verify the exact candidate on this dedicated runner
-        shell: pwsh
-        run: |
-          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          ./scripts/verify-release.ps1 -AppPath $candidate -Suite ${{ matrix.suite }} -AllowInteractiveTests
-
       - name: Verify current native window controls with the same candidate
         if: matrix.suite == 'Desktop'
         shell: pwsh
         run: |
           # Explicit opt-in: this dedicated hosted runner owns its disposable desktop.
           ./checks/window-chrome-smoke.ps1 -AppPath local-data/release-candidate/TogetherServer.exe -AllowInteractiveTests
+
+      - name: Wait for Windows to permit actual notification testing
+        if: matrix.suite == 'Desktop'
+        shell: pwsh
+        run: |
+          # The fresh hosted profile can have a one-hour Windows QuietTime.
+          # Observe its real state; never change Windows settings or the app gate.
+          $ErrorActionPreference = 'Stop'
+          Add-Type -TypeDefinition @'
+          using System.Runtime.InteropServices;
+          public static class ReleaseNotificationReadiness {
+              [DllImport("shell32.dll")]
+              public static extern int SHQueryUserNotificationState(out int state);
+          }
+          '@
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/notification-readiness -Force
+          $started = [DateTime]::UtcNow
+          $waitClock = [Diagnostics.Stopwatch]::StartNew()
+          $observations = [Collections.Generic.List[object]]::new()
+          $state = 0
+          do {
+            $result = [ReleaseNotificationReadiness]::SHQueryUserNotificationState([ref]$state)
+            $observations.Add(@{utc=[DateTime]::UtcNow.ToString('O');hresult=$result;state=$state})
+            Write-Host "Actual Windows notification state: $state; elapsed $([int]$waitClock.Elapsed.TotalSeconds)s. Required state: 5 (AcceptsNotifications)."
+            if ($result -ne 0) { break }
+            if ($state -eq 5) { break }
+            Start-Sleep -Seconds 30
+          } while ($waitClock.Elapsed.TotalMinutes -lt 65)
+          @{startedUtc=$started.ToString('O');endedUtc=[DateTime]::UtcNow.ToString('O');observations=$observations;
+            accepted=($result -eq 0 -and $state -eq 5);boundary='Real Windows state only; no preference, clock, registry, or application-gate override.'} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'result.json') -Encoding utf8
+          if ($result -ne 0 -or $state -ne 5) { throw 'Actual Windows notification readiness remains blocked after the bounded wait.' }
+
+      - name: Verify the exact candidate on this dedicated runner
+        shell: pwsh
+        run: |
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          ./scripts/verify-release.ps1 -AppPath $candidate -Suite ${{ matrix.suite }} -AllowInteractiveTests
 
       - name: Preserve QoL screenshots and validation summaries
         if: always()
@@ -293,6 +325,8 @@ jobs:
             legacy-sha256: 638B1919D47D2CDCD02FF5A589BEE1207B7BEB8915366E8943EDF1F8EBFD2C5A
           - legacy-version: '0.3.2.1'
             legacy-sha256: FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE
+          - legacy-version: '0.3.2.2'
+            legacy-sha256: 273E97AAF0C402B84CAD4930F3D3C5DE43F8A1A87FE77608F2E3E18B9A81D265
     name: Verify ${{ matrix.legacy-version }} compatibility
     runs-on: windows-latest
     timeout-minutes: 20

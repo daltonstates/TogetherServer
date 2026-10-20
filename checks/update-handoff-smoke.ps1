@@ -22,14 +22,14 @@ if ($candidateVersion -ne (Format-HandoffVersion $projectVersion)) {
 }
 $sourceFileVersion = if ($LegacyAppPath) { Get-HandoffAppVersion $sourceApp } else { $candidateFileVersion }
 $sourceVersion = Format-HandoffVersion $sourceFileVersion
-if ($LegacyAppPath -and $sourceVersion -notin '0.3.0', '0.3.1', '0.3.2', '0.3.2.1') {
-    throw 'Mixed update acceptance requires a published 0.3.0, 0.3.1, 0.3.2 or 0.3.2.1 source EXE.'
+if ($LegacyAppPath -and $sourceVersion -notin '0.3.0', '0.3.1', '0.3.2', '0.3.2.1', '0.3.2.2') {
+    throw 'Mixed update acceptance requires a published 0.3.0, 0.3.1, 0.3.2, 0.3.2.1 or 0.3.2.2 source EXE.'
 }
 if ($LegacyAppPath -and $sourceFileVersion.CompareTo($candidateFileVersion) -ge 0) {
     throw 'Mixed update acceptance requires a source version strictly older than the candidate.'
 }
 $sourceSchemaVersion = if ($LegacyAppPath -and $sourceVersion -eq '0.3.0') { 2 }
-elseif ($LegacyAppPath -and $sourceVersion -eq '0.3.2.1') { 5 }
+elseif ($LegacyAppPath -and $sourceVersion -in '0.3.2.1', '0.3.2.2') { 5 }
 else { 4 }
 $targetSchemaVersion = 5
 $signature = Get-AuthenticodeSignature -LiteralPath $appPath
