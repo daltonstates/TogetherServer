@@ -204,3 +204,32 @@ reveal/change, successful guided hosting with new-Host announcement/Connect over
 a valid two-PC route, real game joins and saved restart, and native installer
 acceptance remain pending. Stop hosted servers and quit the existing app before
 opening this production build, so the old running process is not reopened instead.
+
+## Two-PC connection acceptance
+
+The owner has another Windows PC on the home network. The next acceptance run
+uses that physical PC, not another loopback simulation. The
+[two-PC instructions](TWO-PC-CONNECTION-TEST.md) cover the existing pinned-HTTPS,
+signed-chat and verified-transfer rehearsal in both directions, followed by the
+actual guided hosting switch and original-PC discovery/Connect. The connection
+rehearsal alone does not accept the hosting switch or a game join.
+
+Two opt-in manual launchers open the exact existing portable EXE: the file-only
+rehearsal uses separate staging data and UI port `55318`; actual hosting uses
+separate normal-mode data and UI port `55319`. This keeps the full hosting run
+outside staging's fresh-Valheim-world restriction, which currently refuses a
+restored Valheim profile when reopening. The handoff is
+`local-data/two-pc-connection-test-20261020-55ef8ad.zip`; it contains no pairing
+state, credentials, worlds or logs. It is prepared for the owner to copy and
+open on each PC; neither app was launched. Physical cross-PC execution, private
+firewall consent if needed, and real-game acceptance are still pending. No
+network configuration or production data was changed.
+
+Packaging validation passed: the ZIP contains only the EXE, two manual launchers
+and instructions; every extracted entry matches its source file. The EXE retains
+SHA-256 `7b048c0c3c7367e3fd6d1ac9633b8fafda3f7edb960a64356e2816d04882aa6c`.
+ZIP SHA-256 is `365c71a75facfcce4bc307bac4e3170c4b64532699d088056c2690d2e7d23a73`
+(60,015,224 bytes). Read-only review checked the route labels, acceptance limits,
+and launcher isolation. This is packaging/source evidence, not a passed manual
+launch or cross-PC run. The running app's PID/path/executable hash still match
+the production-build baseline. No app code changed for this handoff.
