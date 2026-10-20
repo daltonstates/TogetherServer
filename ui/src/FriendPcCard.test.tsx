@@ -2,6 +2,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { Device } from './contracts'
 import { FriendPcCard } from './FriendPcCard'
+import friendAccessCss from './friend-access.css?inline'
+import themeCss from './theme.css?inline'
 
 const nowMs = Date.parse('2026-10-10T12:00:00Z')
 const servers = [
@@ -46,12 +48,54 @@ describe('Friend PC overview card', () => {
     expect(within(grants).getByRole('listitem', { name: 'Start: 1 of 2 assigned servers' })).toBeInTheDocument()
     expect(within(grants).getByRole('listitem', { name: 'Stop when empty: 1 of 2 assigned servers' })).toBeInTheDocument()
     expect(within(grants).getByRole('listitem', { name: 'View logs: 1 of 2 assigned servers' })).toBeInTheDocument()
-    expect(within(grants).queryByText('Restart')).not.toBeInTheDocument()
+    expect(within(grants).getAllByRole('listitem')).toHaveLength(6)
+    expect(within(grants).getByRole('listitem', { name: 'Start: 1 of 2 assigned servers' })).toHaveAttribute('data-permission-state', 'granted')
+    expect(within(grants).getByRole('listitem', { name: 'Restart: 0 of 2 assigned servers' })).toHaveAttribute('data-permission-state', 'unassigned')
     expect(container.querySelector('input, select, textarea, table, details')).toBeNull()
     expect(screen.getAllByRole('button')).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
     expect(actions.onManage).toHaveBeenCalledOnce()
     expect(actions.onApprove).not.toHaveBeenCalled()
+  })
+
+  it('shows every permission for status-only and fully granted PCs with distinct readable styles', () => {
+    const statusOnly = { ...device, canStart: false, canStop: false, serverPermissions: [] }
+    const props = { servers, nowMs, busy: false, ...callbacks() }
+    const { rerender } = render(<><style>{themeCss + friendAccessCss}</style><FriendPcCard {...props} device={statusOnly} /></>)
+    const list = screen.getByRole('list', { name: 'Permissions by server' })
+    const unassigned = within(list).getAllByRole('listitem')
+    expect(unassigned).toHaveLength(6)
+    for (const chip of unassigned) {
+      expect(chip).toHaveAttribute('data-permission-state', 'unassigned')
+      expect(chip).toHaveAccessibleName(/0 of 2 assigned servers$/)
+      expect(getComputedStyle(chip).opacity).not.toBe('0')
+    }
+    expect(screen.getByText('Status and connection details only.')).toBeInTheDocument()
+    const mutedColor = getComputedStyle(unassigned[0]).color
+    const mutedBackground = getComputedStyle(unassigned[0]).backgroundColor
+
+    rerender(<><style>{themeCss + friendAccessCss}</style><FriendPcCard {...props} device={{ ...statusOnly,
+      canStart: true, canStop: true, canExtendTimer: true, canViewLogs: true }} /></>)
+    for (const chip of within(screen.getByRole('list', { name: 'Permissions by server' })).getAllByRole('listitem')) {
+      if (chip.getAttribute('aria-label')?.startsWith('Game password:')) {
+        expect(chip).toHaveAttribute('data-permission-state', 'unassigned')
+        continue
+      }
+      expect(chip).toHaveAttribute('data-permission-state', 'granted')
+      expect(chip).toHaveAccessibleName(/2 of 2 assigned servers$/)
+      expect(getComputedStyle(chip).color).not.toBe(mutedColor)
+      expect(getComputedStyle(chip).backgroundColor).not.toBe(mutedBackground)
+    }
+  })
+
+  it('keeps password access separate from helper actions and shows explicit Valheim grants', () => {
+    const input = { ...device, canStart: true, canStop: true, canExtendTimer: true, canViewLogs: true,
+      temporaryHelperActive: true, temporaryHelperUntilUtc: '2026-10-10T13:00:00Z' }
+    const games = servers.map((server, index) => ({ ...server, kind: index === 0 ? 'Valheim' : 'MinecraftJava' }))
+    const view = render(<FriendPcCard device={input} servers={games} nowMs={nowMs} busy={false} {...callbacks()} />)
+    expect(screen.getByRole('listitem', { name: 'Game password: 0 of 2 assigned servers' })).toHaveAttribute('data-permission-state', 'unassigned')
+    view.rerender(<FriendPcCard device={{ ...input, canViewPassword: true }} servers={games} nowMs={nowMs} busy={false} {...callbacks()} />)
+    expect(screen.getByRole('listitem', { name: 'Game password: 1 of 2 assigned servers' })).toHaveAttribute('data-permission-state', 'granted')
   })
 
   it('keeps stale heartbeat Unknown separately from active permission settings', () => {
@@ -97,6 +141,13 @@ describe('Friend PC overview card', () => {
     const { rerender } = render(<FriendPcCard {...input} />)
     expect(screen.queryByRole('group', { name: 'Assigned servers' })).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Configured permissions' })).not.toBeInTheDocument()
+    const removedPermissions = screen.getByRole('list', { name: 'Unavailable permissions' })
+    expect(within(removedPermissions).getAllByRole('listitem')).toHaveLength(6)
+    for (const chip of within(removedPermissions).getAllByRole('listitem')) {
+      expect(chip).toHaveAttribute('data-permission-state', 'unavailable')
+      expect(chip).toHaveAccessibleName(/unavailable, access removed$/)
+      expect(chip).not.toHaveTextContent(/\d\/\d/)
+    }
     expect(screen.queryByText('Recently connected')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Delete PC' }))
@@ -118,6 +169,9 @@ describe('Friend PC overview card', () => {
     expect(screen.getByText(/^Access ended:/)).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Configured permissions' })).toBeInTheDocument()
     expect(screen.getByRole('listitem', { name: 'Start: 1 of 2 assigned servers, configured' })).toBeInTheDocument()
+    expect(screen.getByRole('listitem', { name: 'Start: 1 of 2 assigned servers, configured' })).toHaveAttribute('data-permission-state', 'configured')
+    expect(screen.getByRole('listitem', { name: 'Restart: 0 of 2 assigned servers, configured' })).toHaveAttribute('data-permission-state', 'unassigned')
+    expect(screen.getByRole('article')).not.toContainHTML('data-permission-state="granted"')
     expect(screen.getByText('Actions and logs are currently blocked.')).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Permissions by server' })).not.toBeInTheDocument()
     expect(screen.queryByText('Saved access expired')).not.toBeInTheDocument()
@@ -151,6 +205,12 @@ describe('Friend PC overview card', () => {
     expect(screen.getByText(/Refresh to see saved permissions after temporary access ends/)).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Permissions by server' })).not.toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Saved permissions by server' })).not.toBeInTheDocument()
+    const unknownPermissions = screen.getByRole('list', { name: 'Permissions need refresh' })
+    expect(within(unknownPermissions).getAllByRole('listitem')).toHaveLength(6)
+    for (const chip of within(unknownPermissions).getAllByRole('listitem')) {
+      expect(chip).toHaveAttribute('data-permission-state', 'unknown')
+      expect(chip).not.toHaveTextContent(/\d\/\d/)
+    }
     expect(screen.queryByText('Trusted helper')).not.toBeInTheDocument()
   })
 
@@ -161,6 +221,8 @@ describe('Friend PC overview card', () => {
     expect(screen.getByText(/Temporary access is blocked/)).toBeInTheDocument()
     expect(screen.getByText(/^Access ended; time unavailable/)).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Permissions by server' })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('list', { name: 'Permissions need refresh' })).getAllByRole('listitem')).toHaveLength(6)
+    expect(screen.getByRole('article')).not.toContainHTML('data-permission-state="granted"')
     expect(screen.queryByRole('list', { name: 'Saved permissions by server' })).not.toBeInTheDocument()
   })
 
@@ -169,6 +231,10 @@ describe('Friend PC overview card', () => {
     expect(screen.getByText('Access time unavailable')).toBeInTheDocument()
     expect(screen.getByText('Refresh to check current access.')).toBeInTheDocument()
     expect(screen.queryByRole('list', { name: 'Permissions by server' })).not.toBeInTheDocument()
+    for (const chip of within(screen.getByRole('list', { name: 'Permissions need refresh' })).getAllByRole('listitem')) {
+      expect(chip).toHaveAttribute('data-permission-state', 'unknown')
+      expect(chip).toHaveAccessibleName(/unavailable until access is refreshed$/)
+    }
     expect(screen.getByRole('button', { name: 'Manage access' })).toBeEnabled()
   })
 
@@ -177,7 +243,12 @@ describe('Friend PC overview card', () => {
     expect(screen.getByText('0 assigned servers')).toBeInTheDocument()
     expect(screen.getByText(/No server access. Assign a server in Manage access/)).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Current permissions' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('list', { name: 'Permissions by server' })).not.toBeInTheDocument()
+    const emptyPermissions = within(screen.getByRole('list', { name: 'Permissions by server' })).getAllByRole('listitem')
+    expect(emptyPermissions).toHaveLength(6)
+    for (const chip of emptyPermissions) {
+      expect(chip).toHaveAttribute('data-permission-state', 'unassigned')
+      expect(chip).toHaveAccessibleName(/no assigned servers$/)
+    }
   })
 
   it('bounds server tags while retaining the actual unique assignment count and manage action', () => {

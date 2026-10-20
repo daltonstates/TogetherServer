@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
@@ -398,14 +398,17 @@ function parseHistoryReviewResult(value: unknown): HistoryReviewResult {
     ownerPublicKey: source.ownerPublicKey == null ? null : shortText(source.ownerPublicKey, 'Owner identity', 256) }
 }
 
-export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged, worldName, showWorldHeading, currentSignedHost, onOpenHostControls, serverState, serverStatusFresh, observedHostAddress }:
+export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, currentAddress, onGrantChanged, worldName, showWorldHeading, currentSignedHost, onOpenHostControls, serverState, serverStatusFresh, observedHostAddress,
+  onOpenProtection, onOpenConnectionHelp, renderAdvancedProof }:
   { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; currentAddress?: string;
-    onGrantChanged: () => Promise<void> } & SharedWorkspaceProps) {
+    onGrantChanged: () => Promise<void>; onOpenProtection?: () => void; onOpenConnectionHelp?: () => void;
+    renderAdvancedProof?: () => ReactNode } & SharedWorkspaceProps) {
   const noticeScope = `host/${profileId}`
   const [status, setStatus] = useState<HostStatus | null>(null)
   const open = true
   const [manageOpen, setManageOpen] = useState(false)
   const [managePane, setManagePane] = useState<'people' | 'saves' | 'history'>('people')
+  const [advancedProofOpen, setAdvancedProofOpen] = useState(false)
   const [roster, setRoster] = useState<Roster | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
@@ -480,7 +483,7 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   useEffect(() => {
     let active = true
     const controller = new AbortController()
-    setStatus(null); observeHandoff(null); setRoster(null); setManageOpen(false); setManagePane('people'); setHandoffOpen(false)
+    setStatus(null); observeHandoff(null); setRoster(null); setManageOpen(false); setManagePane('people'); setHandoffOpen(false); setAdvancedProofOpen(false)
     setMoveOperation(null); moveFlight.current = false; moveAttempt.current = ''; ++handoffRequest.current; setBusy(false)
     setSuccessorId(''); setMessage(''); setHandoffMessage('')
     setPendingResolutions([]); setResolutionMessage('')
@@ -603,8 +606,9 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const changeSharing = async (enabled: boolean) => {
     setBusy(true); setMessage('')
     try {
-      const result = await changeJson(`/api/local/profiles/${profileId}/shared-world`, 'PUT', parseBasicResult, { enabled })
+      const result = await changeJson(`/api/local/profiles/${profileId}/shared-world/hosting`, 'PUT', parseBasicResult, { enabled })
       setMessage(result.message)
+      if (result.ok) await onGrantChanged()
       setStatus(await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus))
       setRoster(await getLocalJson(`/api/local/profiles/${profileId}/shared-world/governance`, parseRoster))
     } catch (error) { setMessage(errorMessage(error)) }
@@ -711,6 +715,21 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
   const review = authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
   const latestCopyLabel = status?.latest?.captureKind === 'PostStopBackup' ? 'save copied after Stop' :
     status?.latest?.captureKind === 'LiveSave' ? 'save copied while running' : 'verified save copy'
+  const hostCount = eligible.filter(device => {
+    const member = roster?.members.find(item => item.deviceId === device.id)
+    const grants = member?.grants ?? device.sharedWorldGrants?.[profileId]
+    return grants?.receive && grants.eligibleHost && member?.revoked !== true &&
+      (member?.accessExpiresUtc == null || Date.parse(member.accessExpiresUtc) > Date.now()) &&
+      !device.revoked && !device.accessExpired && !device.approvalPending
+  }).length
+  const sharingSwitch = <section className="host-sharing-master" aria-label="Shared hosting">
+    <label className="host-sharing-master-toggle"><span>Allow shared hosting</span><Input type="checkbox"
+      checked={status?.enabled ?? false} disabled={busy || !status || status.canManageSharing === false || fenced || review}
+      onChange={event => void changeSharing(event.target.checked)} /></label>
+    <p className="host-sharing-hint">Keep backups after a safe Stop and let the friends you choose host the save. Each friend must agree to keep a copy on their PC.</p>
+    {status?.canManageSharing === false && <p className="host-sharing-hint">Change shared hosting on the original owner's PC. This PC keeps its current permissions.</p>}
+    {(fenced || review) && <p className="host-sharing-hint">Review the hosting decision before changing sharing. Existing saves are kept.</p>}
+  </section>
   return <section className="shared-world-workspace" aria-label="Shared saves">
     <SharedWorldHeading worldName={worldName} showWorldHeading={showWorldHeading} currentSignedHost={review ? undefined : currentSignedHost}
       identitySource={status} host serverState={serverState} serverStatusFresh={serverStatusFresh} noticeScope={noticeScope}
@@ -743,13 +762,13 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
           onClick={onOpenHostControls}><Icon name="server" />Open Host controls</Button>}
       </div>
     </section>
-    {!manageOpen && <section className="host-sharing-direct-people" aria-label="Who can host this save">
+    {!manageOpen && <>{sharingSwitch}<section className="host-sharing-direct-people" aria-label="Who can host this save">
       <h3>Who can host this save</h3>
-      <p>Choose who can host. Your friend gets Host on this PC beside Start server, with help preparing the save and checking setup.</p>
+      <p>Choose who can host. Your friend gets Host on this PC beside Start server. The app checks their PC and asks for anything it needs before starting.</p>
       <HostSharingPermissions profileId={profileId} devices={eligible} members={roster?.members ?? []}
         enabled={status !== null} canManage={status?.canManageSharing ?? false} busy={busy} blocked={fenced || review}
         onChange={changeGrant} onResetKey={resetKey} />
-    </section>}
+    </section></>}
     {authority?.state === 'ThisPcHost' && <p className="host-sharing-hint" role="status">This PC is the approved Host.</p>}
     {status?.error && !manageOpen && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.error}</DismissibleNotice>}
     {message && !manageOpen && <DismissibleNotice as="p" scope={noticeScope} role="status">{message}</DismissibleNotice>}
@@ -769,17 +788,11 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       busy={busy} onClose={() => setManageOpen(false)} wide footer={<><span className="host-sharing-hint">Changes save immediately.</span>
         <Button className="secondary" disabled={busy} onClick={() => setManageOpen(false)}>Done</Button></>}>
     <div className="host-sharing-manager">
-      <section className="host-sharing-master" aria-label="Completed save sharing">
-        <label className="host-sharing-master-toggle"><span>Share completed saves from this server</span><Input type="checkbox"
-          checked={status?.enabled ?? false} disabled={busy || !status || !rollingBackupEnabled || status?.canManageSharing === false || fenced || review}
-          onChange={event => void changeSharing(event.target.checked)} /></label>
-        <p className="host-sharing-hint">Share a verified save after a safe Stop. Each receiving PC still needs permission and must allow saves.</p>
-        {status?.canManageSharing === false && <p className="host-sharing-hint">This Host can share with current members. Only the original owner's PC has owner controls. Sharing managers can change permitted settings from Join.</p>}
-        {!rollingBackupEnabled && <p className="host-sharing-hint">Turn on backups after Stop in Protection settings first.</p>}
-        {(fenced || review) && <p className="host-sharing-hint">Sharing changes are blocked until this PC's hosting decision is reviewed.</p>}
+      {sharingSwitch}
+      <div className="host-sharing-feedback">
         {status?.error && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.error}</DismissibleNotice>}
         {message && <DismissibleNotice as="p" scope={noticeScope} role="status">{message}</DismissibleNotice>}
-      </section>
+      </div>
       <nav className="host-sharing-navigation" aria-label="Sharing sections">
         <Button aria-current={managePane === 'people' ? 'page' : undefined} disabled={busy} onClick={() => setManagePane('people')}><Icon name="users" />People</Button>
         <Button aria-current={managePane === 'saves' ? 'page' : undefined} disabled={busy} onClick={() => setManagePane('saves')}><Icon name="archive" />Save sharing</Button>
@@ -808,13 +821,36 @@ export function HostSharedSaves({ profileId, devices, rollingBackupEnabled, curr
       {managePane === 'saves' && <>
         <div className="host-sharing-pane-heading"><div><h3>Save sharing</h3><p>Choose when to make and share a verified save.</p></div></div>
         {!fenced && !review ? <>
-          {status && <LiveSaveControls profileId={profileId} status={status.liveSave} onUpdated={async () => {
+          <section className="host-sharing-readiness" aria-label="Shared hosting readiness"><h4>What happens next</h4>
+            <p>{!status?.enabled ? 'Turn on Allow shared hosting, then choose who can host.' : hostCount === 0 ?
+              'Choose at least one friend who can host. Their PC will ask permission to keep the save and check its setup.' :
+              `${hostCount} ${hostCount === 1 ? 'friend can' : 'friends can'} choose Host on this PC. The app checks the game, save and available ports before starting.`}</p>
+            {hostCount === 0 && <Button className="secondary" disabled={busy} onClick={() => setManagePane('people')}>Choose who can host</Button>}
+            <p>{status?.latest ? 'A completed, verified save copy is available. Changes made after that copy are not included.' :
+              'No completed save copy is available yet. Move hosting can prepare the next PC, stop safely and transfer the final save.'}</p>
+            {status?.enabled && status.canManageSharing && <Button className="secondary" disabled={busy} onClick={() => { setManageOpen(false); setHandoffOpen(true) }}>Move hosting with the final save</Button>}
+            {!rollingBackupEnabled && <p>Backups after Stop are needed. Turning on Allow shared hosting enables them with your current storage limits.
+              {onOpenProtection && <> <Button className="text-button" disabled={busy} onClick={() => { setManageOpen(false); onOpenProtection() }}>Review backup settings</Button></>}</p>}
+            <p>Approved PCs exchange signed Host addresses when they can reach each other. A real game join and a saved restart still need separate testing.</p>
+          </section>
+          {status && (status.liveSave.available || status.liveSave.resumePending) && <LiveSaveControls profileId={profileId} status={status.liveSave} onUpdated={async () => {
             setStatus(await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus))
           }} />}
+          <details className="host-sharing-advanced-proof" open={advancedProofOpen} onToggle={event => setAdvancedProofOpen(event.currentTarget.open)}>
+            <summary>Advanced: game save proof and review</summary>
+            <p>Sharing after a safe Stop works without these live-save tests. Sharing while playing needs a separate test of this exact installation. App file checks cannot confirm a game load, saved change or restart for you.</p>
+            {advancedProofOpen && <>
+              {status && !status.liveSave.available && !status.liveSave.resumePending && <LiveSaveControls profileId={profileId} status={status.liveSave} onUpdated={async () => {
+                setStatus(await getLocalJson(`/api/local/profiles/${profileId}/shared-world`, parseHostSharedWorldStatus))
+              }} />}
+              {renderAdvancedProof?.()}
+            </>}
+          </details>
           {status?.enabled && <section className="host-sharing-info-card" aria-label="Current Host address"><h4><Icon name="link" />Current Host address</h4>
-            <p>Send the saved address privately. Friends check the saved Host identity before changing their connection.</p>
+            <p>Reachable approved PCs learn the current Host's signed address automatically. Copy it only when someone needs connection help; this does not share anyone's access.</p>
             <Button className="secondary" disabled={busy || !shareAddress} onClick={() => void copyAddress()}>Share current address</Button>
-            {!shareAddress && <p>Save an HTTPS IP address in Host connection settings before sharing an address change.</p>}
+            {!shareAddress && <p>Set up this PC's incoming connection so approved friends can find it.
+              {onOpenConnectionHelp && <> <Button className="text-button" disabled={busy} onClick={() => { setManageOpen(false); onOpenConnectionHelp() }}>Connection help</Button></>}</p>}
           </section>}
         </> : <p>Saving and sharing are blocked until the hosting decisions are resolved. Open History &amp; recovery. This PC's copy is kept.</p>}
         {status?.latest && <p className="host-sharing-hint">Completed copy: <time dateTime={status.latest.createdUtc}>{new Date(status.latest.createdUtc).toLocaleString()}</time>. Changes after this copy are not included.</p>}

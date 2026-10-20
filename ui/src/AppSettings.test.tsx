@@ -8,6 +8,7 @@ import { defaultUiPreferences } from './qolPreferences'
 vi.mock('./DesktopPreferencesPanel', () => ({
   DesktopPreferencesPanel: ({ onBusyChange, servers }: { onBusyChange: (busy: boolean) => void; servers?: unknown[] }) => <section aria-label="Notification editor">
     <span>{servers ? 'Server selector supplied' : 'PC defaults only'}</span>
+    <input aria-label="Notification draft" defaultValue="" />
     <button onClick={() => onBusyChange(true)}>Save notification choice</button><button onClick={() => onBusyChange(false)}>Complete notification save</button></section>,
   UpdateDetailsPanel: () => <section aria-label="Update details">Release details</section>
 }))
@@ -29,34 +30,43 @@ function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-describe('App Settings pages', () => {
-  it('opens Appearance directly and applies changes without opening a dialog', () => {
+describe('continuous App Settings', () => {
+  it('shows every settings section together and applies appearance changes without a dialog', () => {
     const input = props()
     render(<AppSettings {...input} />)
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeInTheDocument()
+    for (const title of ['Profile', 'Notifications', 'Windows behavior', 'App updates', 'Keyboard shortcuts'])
+      expect(screen.getByRole('heading', { name: title })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'light' } })
     expect(input.onPreferencesChange).toHaveBeenCalledWith({ ...input.preferences, theme: 'light' })
   })
 
-  it('uses the controlled section without duplicating sidebar navigation or local tabs', () => {
+  it('preserves mounted editor drafts when the controlled visible section changes', () => {
     const input = props()
     const onSectionChange = vi.fn()
     const view = render(<AppSettings {...input} section="windows" onSectionChange={onSectionChange} />)
     expect(screen.getByRole('heading', { name: 'Windows behavior' })).toBeInTheDocument()
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    const draft = screen.getByRole('textbox', { name: 'Notification draft' })
+    fireEvent.change(draft, { target: { value: 'Keep this choice' } })
     view.rerender(<AppSettings {...input} section="shortcuts" onSectionChange={onSectionChange} />)
     expect(screen.getByRole('heading', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /Close to tray/ })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Notification draft' })).toBe(draft)
+    expect(draft).toHaveValue('Keep this choice')
     expect(onSectionChange).not.toHaveBeenCalled()
   })
 
-  it('uses fallback navigation and reports section changes while global notifications receive only PC defaults', () => {
+  it('offers location navigation while global notifications receive only PC defaults', () => {
     const input = props()
     const onSectionChange = vi.fn()
     render(<AppSettings {...input} onSectionChange={onSectionChange} />)
+    expect(screen.getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'location')
+    expect(screen.getByRole('button', { name: 'Notifications' })).toHaveAttribute('aria-controls', 'app-settings-notifications')
     fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
-    expect(onSectionChange).toHaveBeenCalledExactlyOnceWith('notifications')
+    expect(screen.getByRole('region', { name: 'Notifications' })).toHaveFocus()
+    expect(onSectionChange).not.toHaveBeenCalled()
     expect(input.onClearNotice).toHaveBeenCalledOnce()
     expect(screen.getByText('PC defaults only')).toBeInTheDocument()
     expect(screen.queryByText('Server selector supplied')).not.toBeInTheDocument()
@@ -72,6 +82,8 @@ describe('App Settings pages', () => {
     expect(onBusyChange).toHaveBeenLastCalledWith(true)
     expect(screen.getByRole('button', { name: 'Done' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Appearance' })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: 'Theme' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: /Close to tray/ })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Complete notification save' }))

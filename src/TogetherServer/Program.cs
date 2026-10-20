@@ -189,13 +189,17 @@ ServerDirectoryRoutes.Map(app, manager, friend);
 WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
     () => friendMode, () => updatePending || shutdownPending);
 FriendLocalHostingRoutes.Map(app, data, friend, manager, companionServer, externalPortProbe, modeGate,
-    () => friendMode, () => updatePending || shutdownPending);
+    () => friendMode, () => updatePending || shutdownPending, peers: worldPeers);
 ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
     () => !friendMode && !updatePending && !shutdownPending);
 UserProfileLocalRoutes.Map(app, data.UserProfile, modeGate,
     () => !updatePending && !shutdownPending);
 RequiredFeatureSetupLocalRoutes.Map(app, new RequiredFeatureSetupService(data), modeGate,
     () => !updatePending && !shutdownPending);
+GettingStartedLocalRoutes.Map(app, new GettingStartedService(data), modeGate,
+    () => !updatePending && !shutdownPending);
+GamePasswordLocalRoutes.Map(app, friend, modeGate,
+    () => friendMode && !updatePending && !shutdownPending);
 // As with the existing save action, HostManager owns capture serialization.
 // Do not hold modeGate through a long adapter wait: safe Stop and exact-request
 // cancellation must remain able to enter their existing lifecycle paths.
@@ -1010,7 +1014,7 @@ ChatRoomView HostChatRoom(Guid profileId)
     {
         return new(true, "ChatReady", "Messages are copied to connected members.", hostId,
             profileId, serverChat.Read(hostId, profileId), [], members,
-            Notice: serverChat.ReadOwnerNotice(hostId, profileId), NoticeSupported: true);
+            Notice: serverChat.ReadOwnerNotice(hostId, profileId), NoticeSupported: true, SelfAuthorId: Guid.Empty);
     }
     catch (Exception ex) when (ex is IOException or InvalidDataException or
         System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
@@ -2100,7 +2104,7 @@ app.MapPut("/api/local/devices/{id:guid}/permissions", async (Guid id, DevicePer
     {
         return friendMode ? Results.Conflict(new { ok = false, code = "FriendMode" }) :
         Results.Json(pairing.SetPermissions(id, request.CanStart, request.CanStop, request.Scope,
-            request.CanExtendTimer, request.CanViewLogs));
+            request.CanExtendTimer, request.CanViewLogs, request.CanViewPassword));
     }
     finally { modeGate.Release(); }
 });

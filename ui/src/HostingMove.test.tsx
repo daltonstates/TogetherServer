@@ -230,12 +230,10 @@ describe('receiving a hosting request', () => {
     }))
     render(<FriendLocalHosting {...friendProps} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
-    expect(screen.getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Continue and start' })).toBeDisabled()
     fireEvent.click(screen.getByRole('checkbox', { name: /Keep this save on my PC and host my own copy/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Prepare this PC' }))
-    await waitFor(() => expect(writes).toEqual([{ url: `${friendBase}/hosting/prepare`, body: {
-      allowReceiving: true, acceptSplitWarning: true, serverFile: null, gamePassword: null
-    } }]))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
+    await waitFor(() => expect(writes.map(item => item.url)).toEqual([`${friendBase}/hosting/prepare`, `${friendBase}/hosting/start`]))
   })
 
   it('requires separate Minecraft terms consent and an explicit preparation action', async () => {
@@ -257,13 +255,13 @@ describe('receiving a hosting request', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept hosting request' }))
     const terms = await screen.findByRole('checkbox', { name: /I have read and accept the terms/ })
     expect(terms).not.toBeChecked()
-    expect(screen.getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Continue and start' })).toBeDisabled()
     expect(writes).toHaveLength(1)
     fireEvent.click(terms)
     expect(writes).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Prepare this PC' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
     await waitFor(() => expect(writes[1]).toEqual({ url: `${friendBase}/hosting/prepare`, body: {
-      requestId, acceptedTerms: true, allowReceiving: true, acceptSplitWarning: false, serverFile: null, gamePassword: null
+      requestId, acceptedTerms: true, allowReceiving: true, acceptSplitWarning: false, requirePeerConnection: true, serverFile: null, gamePassword: null
     } }))
   })
 
@@ -289,7 +287,7 @@ describe('receiving a hosting request', () => {
     expect(status.consented).toBe(false)
   })
 
-  it('accepts, prepares each exact save and opens the normal manual Start gate without starting a game', async () => {
+  it('accepts and prepares each exact save, then requires an explicit Start instruction', async () => {
     vi.useFakeTimers()
     let status = local
     const writes: { url: string; body: Record<string, unknown> }[] = []
@@ -309,6 +307,7 @@ describe('receiving a hosting request', () => {
               preparedVersionHash: status.handoffRequest?.finalVersion ? finalHash : oldHash } }
           return response(status)
         }
+        if (url.endsWith('/hosting/start')) return response({ ok: true, code: 'Starting', message: 'Start requested.' })
         throw new Error(`Unexpected mutation ${url}`)
       }
       return response(status)
@@ -319,18 +318,20 @@ describe('receiving a hosting request', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept hosting request' }))
     await act(async () => {})
     expect(writes.map(item => item.url)).toEqual([`${friendBase}/handoff/respond`, `${friendBase}/hosting/prepare`])
-    expect(writes[1].body).toEqual({ requestId, acceptedTerms: false, allowReceiving: true, acceptSplitWarning: false, serverFile: null, gamePassword: null })
+    expect(writes[1].body).toEqual({ requestId, acceptedTerms: false, allowReceiving: true, acceptSplitWarning: false, requirePeerConnection: true, serverFile: null, gamePassword: null })
     status = { ...status, handoffRequest: { ...requested, pending: true, finalVersion: 4, recipientState: 'Accepted' } }
     await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     expect(writes.filter(item => item.url.endsWith('/hosting/prepare'))).toHaveLength(2)
     status = { ...status, handoffRequest: { ...status.handoffRequest!, pending: false, recipientState: 'Completed' } }
     await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     expect(writes.filter(item => item.url.endsWith('/hosting/prepare'))).toHaveLength(3)
-    expect(screen.getByRole('button', { name: 'Review Start server' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Continue and start' })).toBeEnabled()
     expect(openHost).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Review Start server' }))
-    expect(openHost).toHaveBeenCalledExactlyOnceWith(profileId)
     expect(writes.some(item => item.url.endsWith('/start'))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
+    await act(async () => {})
+    expect(openHost).toHaveBeenCalledExactlyOnceWith(profileId)
+    expect(writes.filter(item => item.url.endsWith('/start'))).toHaveLength(1)
   })
 
   it('does not apply an acceptance response from a previously selected connection', async () => {
@@ -366,8 +367,7 @@ describe('receiving a hosting request', () => {
     }))
     render(<FriendLocalHosting {...friendProps} />)
     await act(async () => {})
-    fireEvent.click(screen.getByRole('button', { name: 'Continue hosting move' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Prepare this PC' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Host on this PC' }))
     await act(async () => { await vi.advanceTimersByTimeAsync(120001) })
     expect(signal?.aborted).toBe(true)
     expect(screen.getByText(/Preparation did not finish checking in time/)).toBeInTheDocument()

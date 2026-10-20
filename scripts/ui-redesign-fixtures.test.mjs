@@ -78,6 +78,7 @@ const localHosting = pureDecoders('FriendLocalHosting.tsx', ['boundedText', 'par
   hashPattern: /^[0-9a-f]{64}$/i, parsePlannedHandoffStatus
 });
 const requiredSetup = pureDecoders('RequiredFeatureSetup.tsx', ['parseRequiredSetup'], { ContractError: contracts.ContractError });
+const gettingStarted = pureDecoders('useGettingStarted.ts', ['parseGettingStarted'], { ContractError: contracts.ContractError });
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
 const peers = pureDecoders('WorldPeerPanel.tsx', ['object', 'text', 'flag', 'count', 'identity', 'date', 'list',
   'parsePeer', 'parseBranch', 'parseSession', 'parseSelection', 'parseWorldPeerGroups'], {
@@ -579,6 +580,7 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   for (const [argv, env, platform] of [
     [[], hosted, 'win32'], [flags, {}, 'win32'],
     [['--list', '--allow-isolated-browser-tests'], {}, 'win32'], [['--list', 'capture'], {}, 'win32'],
+    [['--list', '--setup-polish-only'], {}, 'win32'], [['--setup-polish-only'], hosted, 'win32'],
     [['--hosted-runner', 'github-actions'], hosted, 'win32'],
     [['github-actions', '--allow-isolated-browser-tests'], hosted, 'win32'],
     [flags, { ...hosted, RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'],
@@ -620,6 +622,18 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     assert.ok(variants.some(plan => plan.variant.density === 'compact'), `${id} exercises compact pane spacing`);
     assert.ok(variants.every(plan => plan.testCase.sidebarReview), `${id} performs real resize checks on the hosted runner`);
   }
+  const setupPolish = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory,coverage:manifest.coverage})',
+    { manifest: {}, worldReviewCases, accessReviewCases, args: ['--setup-polish-only'] });
+  assert.equal(setupPolish.coverage.scope, 'setup-polish');
+  assert.equal(new Set(setupPolish.plans.map(plan => plan.testCase.id)).size, 21);
+  assert.equal(setupPolish.plans.length, 63, 'twenty-one focused surfaces cover desktop, narrow 150 percent text and short desktop');
+  assert.equal(new Set(setupPolish.inventory.map(entry => entry.id)).size, 63);
+  assert.ok(setupPolish.plans.every(plan => fixtureScenarios.includes(plan.testCase.scenario)));
+  for (const id of ['notifications-empty', 'notifications-activity', 'permissions-partial', 'permissions-unassigned',
+    'settings-profile', 'settings-appearance', 'settings-shortcuts', 'settings-scroll', 'guide-welcome', 'guide-host', 'guide-join',
+    'wizard-game-tip', 'wizard-server-tip']) assert.ok(setupPolish.plans.some(plan => plan.testCase.id === `setup-polish-${id}`), id);
+  assert.ok(setupPolish.plans.some(plan => plan.variant.reducedMotion === 'no-preference'));
+  assert.ok(setupPolish.plans.some(plan => plan.variant.scale === 150 && plan.variant.reducedMotion === 'reduce'));
   const captures = new Set(plans.map(plan => plan.testCase.id));
   for (const expected of [
     ...['overview', 'chat', 'players', 'logs', 'sessions', 'backups', 'files', 'setup'].map(id => `host-${id}`),
@@ -709,4 +723,38 @@ test('hosted workflow pins dependencies and runs source-only checks before rende
     assert.ok(source.includes(command), `workflow retains ${command}`);
   assert.ok(source.includes('if: always()'), 'failure evidence is uploaded');
   assert.ok(source.indexOf('node --test') < source.indexOf('node scripts/render-ui-redesign.mjs'), 'Node checks precede renderer');
+  assert.ok(source.includes("startsWith(github.ref_name, 'review/ui-redesign-setup-polish-')"));
+  assert.ok(source.includes("$env:SETUP_POLISH_REVIEW -eq 'true'"));
+  assert.ok(source.includes("$reviewArguments += '--setup-polish-only'"));
+});
+
+test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {
+  const state = createFixtureState('host-ready');
+  const before = JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices });
+  const path = '/api/local/getting-started';
+  const initial = routeFixture(state, { method: 'GET', path });
+  assert.deepEqual(initial.body, { offered: false, intent: 'Choose', dismissed: false });
+  assert.equal(gettingStarted.parseGettingStarted(initial.body).offered, false);
+  const saved = routeFixture(state, { method: 'PUT', path, body: { intent: 'Host', dismissed: true } });
+  assert.deepEqual(saved.body, { offered: true, intent: 'Host', dismissed: true });
+  assert.equal(gettingStarted.parseGettingStarted(saved.body).intent, 'Host');
+  assert.deepEqual(routeFixture(state, { method: 'GET', path }).body, saved.body);
+  assert.equal(JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices }), before);
+  for (const request of [{ method: 'POST', path }, { method: 'GET', path: `${path}?target=arbitrary` },
+    { method: 'GET', path, body: { intent: 'Host' } },
+    { method: 'PUT', path, body: { intent: 'Host', dismissed: true, path: 'arbitrary' } },
+    { method: 'PUT', path, body: { intent: 'Unknown', dismissed: true } }]) assert.equal(routeFixture(state, request), null);
+});
+
+test('focused permission fixtures retain explicit partial grants and zero assignments', () => {
+  const partial = createFixtureState({ id: 'host-multi', permissions: 'partial' });
+  const device = partial.devices[0];
+  assert.deepEqual(device.assignedProfileIds, [fixtureIds.primary, fixtureIds.secondary]);
+  assert.equal(device.canStart, true); assert.equal(device.canStop, false); assert.equal(device.canViewLogs, false);
+  assert.deepEqual(device.serverPermissions, [{ profileId: fixtureIds.secondary, canStart: false, canStop: true, canExtendTimer: true, canViewLogs: true }]);
+  assert.doesNotThrow(() => contracts.parseSnapshot(partial.host));
+  const unassigned = createFixtureState({ id: 'host-ready', permissions: 'unassigned' });
+  assert.deepEqual(unassigned.devices[0].assignedProfileIds, []);
+  assert.deepEqual(unassigned.devices[0].serverPermissions, []);
+  assert.deepEqual(createFixtureState('host-ready').devices[0].assignedProfileIds, [fixtureIds.primary], 'ordinary fixtures remain assigned');
 });

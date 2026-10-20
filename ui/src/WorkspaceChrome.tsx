@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Input } from './Controls'
 import { Icon, type IconName } from './Icon'
+import './workspace-chrome.css'
 
 export type WorkspacePage = 'host' | 'join' | 'attention' | 'settings'
 

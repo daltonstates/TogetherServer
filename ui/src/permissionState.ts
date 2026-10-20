@@ -3,7 +3,7 @@ import type { Device, ServerPermission } from './contracts'
 export type PermissionAction = 'canStart' | 'canStop' | 'canExtendTimer' | 'canViewLogs'
 export type PermissionScope = 'start' | 'stop' | 'extend' | 'logs'
 export type PermissionValues = Pick<ServerPermission,
-  'canStart' | 'canStop' | 'canExtendTimer' | 'canViewLogs'>
+  'canStart' | 'canStop' | 'canExtendTimer' | 'canViewLogs'> & { canViewPassword?: boolean }
 export type PermissionPreset = 'status' | 'start' | 'helper' | 'custom'
 
 export const permissionPresets: Record<Exclude<PermissionPreset, 'custom'>,
@@ -37,6 +37,11 @@ export function devicePermission(device: Device, profileId: string): ServerPermi
     canExtendTimer: device.canExtendTimer,
     canViewLogs: device.canViewLogs
   }
+}
+
+/** Game passwords are a separate owner grant; helper access and presets do not imply it. */
+export function devicePasswordPermission(device: Device, profileId: string): boolean {
+  return device.serverPermissions?.find(permission => permission.profileId === profileId)?.canViewPassword ?? device.canViewPassword ?? false
 }
 
 export function permissionMix(device: Device, action: PermissionAction) {

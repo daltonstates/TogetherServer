@@ -3,7 +3,7 @@ import { Button } from './Controls'
 import { Icon, type IconName } from './Icon'
 import type { Device } from './contracts'
 import { effectiveDeviceAccess, type FriendAccessServer } from './FriendAccessSummary'
-import { matchingPermissionPreset, permissionPresets, type PermissionValues } from './permissionState'
+import { devicePasswordPermission, matchingPermissionPreset, permissionPresets, type PermissionValues } from './permissionState'
 import './friend-access.css'
 
 export type FriendPcCardProps = {
@@ -17,12 +17,13 @@ export type FriendPcCardProps = {
   feedback?: ReactNode
 }
 
-const grants: { label: string; icon: IconName; allowed: (permissions: PermissionValues) => boolean }[] = [
+const grants: { label: string; icon: IconName; password?: boolean; allowed: (permissions: PermissionValues) => boolean }[] = [
   { label: 'Start', icon: 'play', allowed: permissions => permissions.canStart },
   { label: 'Stop when empty', icon: 'stop', allowed: permissions => permissions.canStop },
   { label: 'Restart', icon: 'refresh', allowed: permissions => permissions.canStart && permissions.canStop },
   { label: 'Add time', icon: 'clock', allowed: permissions => permissions.canExtendTimer },
-  { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs }
+  { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs },
+  { label: 'Game password', icon: 'shield', password: true, allowed: () => false }
 ]
 
 function localTime(value: string | null | undefined) {
@@ -51,6 +52,11 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
       <span className="friend-access-badge friend-pc-access-state">Access removed</span>
     </header>
     <p className="friend-pc-quiet">This PC no longer has access. Delete its saved record to remove it from this list.</p>
+    <ul className="friend-grant-chips" aria-label="Unavailable permissions">
+      {grants.map(grant => <li key={grant.label} data-permission-state="unavailable" aria-label={`${grant.label}: unavailable, access removed`}>
+        <Icon name={grant.icon} size={14} />{grant.label}
+      </li>)}
+    </ul>
     {onDelete && <footer className="friend-pc-card-actions"><Button className="danger-outline" disabled={busy} onClick={onDelete}><Icon name="trash" />Delete PC</Button></footer>}
     {feedback && <div className="friend-pc-feedback">{feedback}</div>}
   </article>
@@ -59,10 +65,11 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
   const permissionsKnown = view.state !== 'Unknown' && view.state !== 'RefreshNeeded' && view.helper !== 'RefreshNeeded' &&
     (view.helper !== 'Active' || view.state === 'Available')
   const counts = grants.map(grant => ({ ...grant, count: view.rows.filter(row => {
+    if (grant.password) return servers.find(server => server.id === row.profileId)?.kind === 'Valheim' &&
+      devicePasswordPermission(device, row.profileId) && (configured || view.state === 'Available')
     const permissions = configured ? row.observedPermissions : row.effectivePermissions
     return permissions !== null && grant.allowed(permissions)
   }).length }))
-  const allowed = counts.filter(grant => grant.count > 0)
   const permissionLabel = view.helper === 'Active' ? 'Temporary helper' :
     preset === 'custom' ? 'Custom permissions' : permissionPresets[preset].label
   const hasOwnerDeadline = device.accessExpiresUtc !== null || device.accessExpired
@@ -89,27 +96,32 @@ export function FriendPcCard({ device, servers, nowMs, busy, onManage, onApprove
       </ul> : <p className="friend-pc-quiet">No server access. Assign a server in Manage access.</p>}
     </div>
 
-    {view.rows.length > 0 && <div className="friend-pc-permissions" role="group" aria-label={configured ? 'Configured permissions' : 'Current permissions'}>
+    <div className="friend-pc-permissions" role="group" aria-label={view.rows.length === 0 ? 'Permissions with no assigned servers' : configured ? 'Configured permissions' : 'Current permissions'}>
       <div className="friend-pc-permission-heading"><span className="friend-pc-field-label">{configured ? 'Configured access' : 'Permissions'}</span>
-        {permissionsKnown && <strong>{permissionLabel}</strong>}</div>
+        {permissionsKnown && view.rows.length > 0 && <strong>{permissionLabel}</strong>}</div>
       {permissionsKnown ? <>
-        {allowed.length > 0 ? <ul className="friend-grant-chips" aria-label={configured ? 'Saved permissions by server' : 'Permissions by server'}>
-          {allowed.map(grant => <li key={grant.label} aria-label={`${grant.label}: ${grant.count} of ${view.rows.length} assigned servers${configured ? ', configured' : ''}`}>
+        <ul className="friend-grant-chips" aria-label={configured ? 'Saved permissions by server' : 'Permissions by server'}>
+          {counts.map(grant => <li key={grant.label}
+            data-permission-state={grant.count === 0 ? 'unassigned' : configured ? 'configured' : 'granted'}
+            aria-label={view.rows.length === 0 ? `${grant.label}: no assigned servers` : `${grant.label}: ${grant.count} of ${view.rows.length} assigned servers${configured ? ', configured' : ''}`}>
             <Icon name={grant.icon} size={14} />{grant.label}{grant.count < view.rows.length && <span className="friend-grant-count">{grant.count}/{view.rows.length}</span>}
           </li>)}
-        </ul> : preset !== 'status' && <p className="friend-pc-quiet">Status and connection details only.</p>}
+        </ul>
+        {view.rows.length > 0 && counts.every(grant => grant.count === 0) && <p className="friend-pc-quiet">Status and connection details only.</p>}
         {exceptions > 0 && <small className="friend-pc-quiet">{exceptions} {exceptions === 1 ? 'server has' : 'servers have'} custom permissions.</small>}
-      </> : <p className="friend-pc-refresh-note"><Icon name="refresh" size={15} />
+      </> : <><ul className="friend-grant-chips" aria-label="Permissions need refresh">
+        {grants.map(grant => <li key={grant.label} data-permission-state="unknown" aria-label={`${grant.label}: unavailable until access is refreshed`}>
+          <Icon name={grant.icon} size={14} />{grant.label}
+        </li>)}
+      </ul><p className="friend-pc-refresh-note"><Icon name="refresh" size={15} />
         <span>{view.helper === 'RefreshNeeded' ? 'Refresh to see saved permissions after temporary access ends.' :
-          view.helper === 'Active' ? 'Temporary access is blocked. Saved permissions are hidden until it ends.' : 'Refresh to check current access.'}</span></p>}
+          view.helper === 'Active' ? 'Temporary access is blocked. Saved permissions are hidden until it ends.' : 'Refresh to check current access.'}</span></p></>}
       {configured && <p className="friend-pc-quiet">Actions and logs are currently blocked.</p>}
-    </div>}
+    </div>
 
     {view.helper === 'Active' && <p className="friend-pc-helper"><Icon name="clock" size={15} />
       <span>Temporary helper {view.state === 'Available' ? 'ends' : 'recorded until'} {localTime(device.temporaryHelperUntilUtc)}.
         {view.state === 'Available' && ' Saved permissions are hidden while it is active.'}</span></p>}
-    {view.helper === 'RefreshNeeded' && view.rows.length === 0 && <p className="friend-pc-refresh-note"><Icon name="refresh" size={15} />
-      <span>Refresh to see saved permissions after temporary access ends.</span></p>}
     {hasOwnerDeadline && <p className="friend-pc-deadline"><Icon name="clock" size={15} /><span>{view.accessDeadline}</span></p>}
 
     <footer className="friend-pc-card-actions">

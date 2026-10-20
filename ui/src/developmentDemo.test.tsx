@@ -31,7 +31,7 @@ async function hosting() { return getLocalJson(`${base}/hosting`, parseLocalHost
 async function mode(value: 'host' | 'friend') { await changeJson(`/api/local/mode/${value}`, 'POST', parseBasicResult) }
 async function prepare() {
   return changeJson(`${base}/hosting/prepare`, 'POST', parseLocalHostingStatus, {
-    allowReceiving: true, acceptSplitWarning: true, serverFile: null, gamePassword: null
+    allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null
   })
 }
 afterEach(() => { cleanup(); controller?.uninstall(); controller = undefined; vi.useRealTimers() })
@@ -116,13 +116,19 @@ describe('isolated development demo transport', () => {
 
   it('applies owner hosting permission atomically across Host and Join and refuses stale or partial grants', async () => {
     install()
-    await changeJson(`/api/local/profiles/${primary}/shared-world`, 'PUT', parseBasicResult, { enabled: false })
+    await changeJson(`/api/local/profiles/${primary}/shared-world/hosting`, 'PUT', parseBasicResult, { enabled: false })
     await changeJson(grantsPath, 'PUT', parseBasicResult, { grants: { ...grants, receive: false, eligibleHost: false } })
     await mode('friend')
     expect((await hosting()).allowed).toBe(false)
     expect((await fetch(`${base}/hosting/prepare`, { method: 'POST', body: JSON.stringify({ allowReceiving: true, acceptSplitWarning: true }) })).status).toBe(409)
     await mode('host')
+    expect((await fetch(`/api/local/profiles/${primary}/shared-world/hosting`, {
+      method: 'PUT', body: JSON.stringify({ enabled: true, profileId: local })
+    })).status).toBe(409)
     expect((await fetch(grantsPath, { method: 'PUT', body: JSON.stringify({ grants: { receive: true, eligibleHost: true } }) })).status).toBe(409)
+    await changeJson(`/api/local/profiles/${primary}/shared-world/hosting`, 'PUT', parseBasicResult, { enabled: true })
+    const owner = await snapshot()
+    expect(owner.mode === 'Host' && owner.settings.profiles[0].backups?.enabled).toBe(true)
     await changeJson(grantsPath, 'PUT', parseBasicResult, { grants })
     const shared = await (await fetch(`/api/local/profiles/${primary}/shared-world`)).json()
     expect(shared.enabled).toBe(true)
@@ -156,10 +162,17 @@ describe('isolated development demo transport', () => {
     expect(started.snapshot.runs.find(run => run.profileId === local)?.state).toBe('Ready')
     await changeJson(`/api/local/profiles/${local}/stop`, 'POST', parseActionResult)
     await mode('friend')
-    const accepted = await changeJson(`${base}/recovery/separate/start`, 'POST', parseBasicResult,
-      { branchHash: prepared.branchHash, localProfileId: local, acceptSplitWarning: true })
+    const startBody = { branchHash: prepared.branchHash, requestId: null, localProfileId: local, acceptSplitWarning: true }
+    for (const body of [
+      { branchHash: prepared.branchHash, localProfileId: local, acceptSplitWarning: true },
+      { ...startBody, requestId: primary }, { ...startBody, localProfileId: primary },
+      { ...startBody, branchHash: 'E'.repeat(64) }, { ...startBody, acceptSplitWarning: false },
+      { ...startBody, command: 'unreviewed' }
+    ]) expect((await fetch(`${base}/hosting/start`, { method: 'POST', body: JSON.stringify(body) })).status).toBe(409)
+    const accepted = await changeJson(`${base}/hosting/start`, 'POST', parseBasicResult, startBody)
     expect(accepted.ok).toBe(true)
     expect((await hosting()).running).toBe(true)
+    expect((await fetch(`${base}/hosting/start`, { method: 'POST', body: JSON.stringify(startBody) })).status).toBe(409)
     await mode('host')
     view = await snapshot()
     expect(view.mode === 'Host' && view.runs.find(run => run.profileId === local)?.state).toBe('Ready')
@@ -190,6 +203,23 @@ describe('isolated development demo transport', () => {
     expect(realFetch).not.toHaveBeenCalled()
   })
 
+  it('requires the fake peer connection checks and explicit ordinary Minecraft terms before preparing', async () => {
+    install().reset('friend-minecraft')
+    const input = { allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true,
+      serverFile: null, gamePassword: null }
+    const noConnection = await fetch(`${base}/hosting/prepare`, {
+      method: 'POST', body: JSON.stringify({ ...input, requirePeerConnection: false, acceptedTerms: true })
+    })
+    expect(noConnection.status).toBe(409)
+    expect(await noConnection.json()).toMatchObject({ code: 'PeerDiscoveryRequired' })
+    expect((await fetch(`${base}/hosting/prepare`, { method: 'POST', body: JSON.stringify(input) })).status).toBe(409)
+    expect(await hosting()).toMatchObject({ game: 'MinecraftJava', consented: false, readyForManualStart: false, localProfileId: null })
+    const prepared = await changeJson(`${base}/hosting/prepare`, 'POST', parseLocalHostingStatus, { ...input, acceptedTerms: true })
+    expect(prepared).toMatchObject({ game: 'MinecraftJava', readyForManualStart: true, running: false, localProfileId: local })
+    expect((await fetch('/api/local/minecraft/install', { method: 'POST' })).status).toBe(503)
+    expect(realFetch).not.toHaveBeenCalled()
+  })
+
   it('respects cancellation before changing fake state and rejects malformed bodies', async () => {
     install()
     const abort = new AbortController(); abort.abort()
@@ -202,27 +232,27 @@ describe('isolated development demo transport', () => {
   })
 })
 
-it('runs the actual friend-server preparation and explicit Start controls entirely through fake data', async () => {
+it('prepares and starts once after one consented Continue and start entirely through fake data', async () => {
   install().reset('friend-hosting')
   const openHost = vi.fn()
   render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Meadow · DEMO" available onOpenHost={openHost} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   const dialog = screen.getByRole('dialog', { name: 'Host on this PC' })
-  expect(within(dialog).getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+  expect(within(dialog).getByRole('button', { name: 'Continue and start' })).toBeDisabled()
   fireEvent.click(within(dialog).getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare this PC' }))
-  const start = await within(dialog).findByRole('button', { name: 'Start server on this PC' })
-  expect(await hosting()).toMatchObject({ readyForManualStart: true, running: false })
+  expect(await hosting()).toMatchObject({ readyForManualStart: false, running: false })
   expect(openHost).not.toHaveBeenCalled()
-  fireEvent.click(start)
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Continue and start' }))
   await waitFor(() => expect(openHost).toHaveBeenCalledExactlyOnceWith(local))
+  expect(screen.queryByRole('dialog', { name: 'Host on this PC' })).not.toBeInTheDocument()
   expect((await hosting()).running).toBe(true)
   expect(realFetch).not.toHaveBeenCalled()
 })
 
-it('lets the actual missing-install flow select only a fake server file and prepare without installation', async () => {
+it('lets the missing-install flow select a fake file and continue into hosting without installation', async () => {
   install().reset('friend-missing-server')
-  render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Meadow · DEMO" available onOpenHost={vi.fn()}
+  const openHost = vi.fn()
+  render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Meadow · DEMO" available onOpenHost={openHost}
     onBrowseServerFile={async game => {
       const response = await changeJson('/api/local/shared-worlds/browse-server-file', 'POST', value => value as { path: string }, { game })
       return response.path
@@ -230,13 +260,29 @@ it('lets the actual missing-install flow select only a fake server file and prep
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   const dialog = screen.getByRole('dialog', { name: 'Host on this PC' })
   fireEvent.click(within(dialog).getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  expect(within(dialog).getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+  expect(within(dialog).getByRole('button', { name: 'Continue and start' })).toBeDisabled()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Browse' }))
-  await waitFor(() => expect(within(dialog).getByRole('textbox', { name: 'Installed server file' })).toHaveValue('C:\\TogetherServer-DEMO-FAKE-DATA\\Valheim\\valheim_server.exe'))
+  await waitFor(() => expect(within(dialog).queryByRole('textbox', { name: 'Installed server file' })).not.toBeInTheDocument())
   fireEvent.change(within(dialog).getByLabelText('New game password'), { target: { value: 'demo-only' } })
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare this PC' }))
-  expect(await within(dialog).findByRole('button', { name: 'Start server on this PC' })).toBeEnabled()
-  expect((await hosting()).running).toBe(false)
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Continue and start' }))
+  await waitFor(() => expect(openHost).toHaveBeenCalledExactlyOnceWith(local))
+  expect((await hosting()).running).toBe(true)
+  expect(realFetch).not.toHaveBeenCalled()
+})
+
+it('runs ordinary Minecraft consent and one Continue and start without dispatching an installation', async () => {
+  install().reset('friend-minecraft')
+  const openHost = vi.fn()
+  render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Lantern · DEMO" available onOpenHost={openHost} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
+  const dialog = screen.getByRole('dialog', { name: 'Host on this PC' })
+  fireEvent.click(within(dialog).getByRole('checkbox', { name: /Keep this save on my PC/ }))
+  expect(within(dialog).getByRole('button', { name: 'Continue and start' })).toBeDisabled()
+  fireEvent.click(within(dialog).getByRole('checkbox', { name: /I have read and accept the terms for preparing this Minecraft server/ }))
+  expect(openHost).not.toHaveBeenCalled()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Continue and start' }))
+  await waitFor(() => expect(openHost).toHaveBeenCalledExactlyOnceWith(local))
+  expect((await hosting()).running).toBe(true)
   expect(realFetch).not.toHaveBeenCalled()
 })
 

@@ -80,8 +80,8 @@ var
   InitialMode: String;
 begin
   RolePage := CreateInputOptionPage(wpSelectDir,
-    'Optional app setup', 'Where should TogetherServer open?',
-    'Choose where to start, or decide later. The app will guide you through setup. No game server starts or opens to other PCs yet.',
+    'Get started in TogetherServer', 'What would you like to do first?',
+    'The app will guide you through the checks after installation. You can skip the guide and open it again later. No game server starts or opens to other PCs yet.',
     True, False);
   RolePage.Add('Decide later in TogetherServer');
   RolePage.Add('Host game servers');
@@ -106,12 +106,15 @@ end;
 
 function ShouldConfigure: Boolean;
 begin
-  Result := (RolePage.SelectedValueIndex <> 0) or PreferencePage.Values[0] or PreferencePage.Values[1];
+  { Save the guide request even when Decide later is selected or launch is
+    deferred. Installing again is an explicit request; an ordinary app update
+    never runs this handoff. }
+  Result := True;
 end;
 
 function GetConfigureParameters(Param: String): String;
 begin
-  Result := '--installer-configure';
+  Result := '--installer-configure --guided-setup';
   if RolePage.SelectedValueIndex = 1 then
     Result := Result + ' --mode host'
   else if RolePage.SelectedValueIndex = 2 then

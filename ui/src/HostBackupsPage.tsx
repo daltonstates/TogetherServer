@@ -93,7 +93,7 @@ export function HostBackupsPage({ profile, status, state, busy, editDisabled, ba
   profile: Profile; status?: WorldBackupStatus; state: string; busy: boolean; editDisabled: boolean; backingUp: boolean;
   onBackup: () => void; onRefresh: () => void; onSafeRestart?: () => void;
   onSaveProtection: (expected: ProtectionPolicy, next: ProtectionPolicy) => Promise<boolean>;
-  children: (section: ProtectionSection) => ReactNode
+  children: (section: ProtectionSection, selectSection: (section: ProtectionSection) => void) => ReactNode
 }) {
   const [section, setSection] = useState<ProtectionSection>('backups')
   const [editing, setEditing] = useState(false)
@@ -120,7 +120,7 @@ export function HostBackupsPage({ profile, status, state, busy, editDisabled, ba
     <nav className="protection-navigation" aria-label="World protection sections">{sections.map(item =>
       <Button key={item.id} className="secondary" aria-current={section === item.id ? 'page' : undefined}
         disabled={busy} onClick={() => setSection(item.id)}><Icon name={item.icon} />{item.label}</Button>)}</nav>
-    <div className="protection-content">{children(section)}</div>
+    <div className="protection-content">{children(section, setSection)}</div>
     <div id={`${id}-settings`} hidden={section !== 'settings'} className="protection-settings-panel">
       <div className="protection-section-heading"><div><h3>Protect this world automatically</h3><p>Choose how many backups to keep, reserve free space and set crash recovery.</p></div>
         <Button className="secondary" disabled={editDisabled || busy || state !== 'Offline' || !supported} onClick={() => setEditing(true)}><Icon name="settings" />Change protection settings</Button></div>

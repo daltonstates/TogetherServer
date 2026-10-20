@@ -18,7 +18,7 @@ public sealed record ChatMember(Guid DeviceId, string Name, bool Allowed);
 public sealed record ChatRoomView(bool Ok, string Code, string Message, Guid HostId,
     Guid ProfileId, IReadOnlyList<ChatEntry> Entries, IReadOnlyList<ChatDraft> Pending,
     IReadOnlyList<ChatMember>? Members = null, PinnedServerNotice? Notice = null,
-    bool NoticeCached = false, bool NoticeSupported = false);
+    bool NoticeCached = false, bool NoticeSupported = false, Guid? SelfAuthorId = null);
 public sealed record ChatPostRequest(string? Text);
 public sealed record ChatMemberChange(bool Allowed);
 

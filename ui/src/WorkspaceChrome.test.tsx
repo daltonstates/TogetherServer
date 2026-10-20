@@ -1,8 +1,39 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { CommandPalette, HeaderTools, type WorkspaceCommand } from './WorkspaceChrome'
+import { Button } from './Controls'
+import { DismissibleNotice } from './DismissibleNotice'
+import workspaceChromeCss from './workspace-chrome.css?inline'
+import companionCss from './companion.css?inline'
+import qolCss from './qol.css?inline'
+import redesignCss from './redesign.css?inline'
 
 describe('HeaderTools', () => {
+  it('keeps notification headings, actions and messages inset through the app CSS cascade', () => {
+    render(<><style>{[workspaceChromeCss, companionCss, qolCss, redesignCss].join('\n')}</style>
+      <div className="shell app-shell"><header className="topbar"><HeaderTools>
+        <details open className="notification-menu"><summary>Notifications</summary>
+          <div className="notification-panel">
+            <div className="notification-panel-heading"><div><strong>Notifications</strong><small>Recent app and connection activity</small></div><Button>Clear activity</Button></div>
+            <Button className="secondary notification-center-link">Open Attention Center</Button>
+            <p className="notification-empty">No recent notifications.</p>
+            <DismissibleNotice className="notification-item"><span>!</span><div>Connection issue</div></DismissibleNotice>
+          </div>
+        </details>
+      </HeaderTools></header></div></>)
+    const panel = screen.getByText('No recent notifications.').parentElement!
+    const style = getComputedStyle(panel)
+    expect(style.padding).toBe('14px')
+    expect(style.gap).toBe('12px')
+    expect(style.flexDirection).toBe('column')
+    const heading = getComputedStyle(screen.getByText('Recent app and connection activity').closest('.notification-panel-heading')!)
+    expect(heading.padding).toBe('0px 0px 12px')
+    expect(heading.margin).toBe('0px')
+    expect(getComputedStyle(screen.getByRole('button', { name: 'Open Attention Center' })).margin).toBe('0px')
+    expect(getComputedStyle(screen.getByText('No recent notifications.')).padding).toBe('8px 0px')
+    expect(getComputedStyle(screen.getByText('Connection issue').closest('.notification-item')!).paddingInlineEnd).toBe('3.5rem')
+  })
+
   function openTools() {
     render(<><header><HeaderTools>
       <details><summary>Notifications</summary><button>Review activity</button></details>

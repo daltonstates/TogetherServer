@@ -43,7 +43,8 @@ internal static class PinnedNoticeFriendChecks
         {
             await link.PollAsync();
             var synced = await link.SyncChatAsync(profileId);
-            Require(synced.Ok && synced.Notice == first && synced.NoticeSupported && !synced.NoticeCached,
+            Require(synced.Ok && synced.Notice == first && synced.NoticeSupported && !synced.NoticeCached &&
+                synced.SelfAuthorId == configuration.DeviceId,
                 "an authenticated current notice was not shown as current");
             Require(peerData.LoadProtectedJson<FriendConfiguration>(configFile)?.ChatOwnerKeys[profileId] == key &&
                 !handler.InputHadNotice, "the Friend did not persist the signing pin or sent notice mutation input");

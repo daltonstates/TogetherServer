@@ -40,12 +40,12 @@ internal sealed partial class FriendLink
         {
             return new(false, "NoticeCopyRejected", "The saved pinned notice needs review. Chat copies on this PC are kept.",
                 current.HostId, profileId, chat.Read(current.HostId, profileId),
-                chat.Pending(current.HostId, profileId, current.DeviceId), NoticeSupported: supportsNotice);
+                chat.Pending(current.HostId, profileId, current.DeviceId), NoticeSupported: supportsNotice, SelfAuthorId: current.DeviceId);
         }
         return new(true, code, message, current.HostId, profileId,
             chat.Read(current.HostId, profileId),
             chat.Pending(current.HostId, profileId, current.DeviceId), Notice: notice,
-            NoticeCached: true, NoticeSupported: supportsNotice);
+            NoticeCached: true, NoticeSupported: supportsNotice, SelfAuthorId: current.DeviceId);
     }
 
     public ChatRoomView ChatRoom(Guid profileId) => LocalChat(profileId);

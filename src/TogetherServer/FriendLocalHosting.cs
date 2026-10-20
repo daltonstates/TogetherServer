@@ -4,20 +4,23 @@ using System.Text.Json;
 namespace TogetherServer;
 
 public sealed record LocalHostingStep(string Key, string State, string Message);
+public sealed record LocalHostingRemedy(string Kind, string Title, string Message);
 public sealed record LocalHostingStatus(bool Ok, string Code, string Message,
     bool Allowed, bool Consented, string? Game, string Name, bool NeedsServerFile,
     bool NeedsPassword, string? ServerFile, string? GameVersion, int GamePort, int ControlPort,
     Guid? LocalProfileId, string? BranchHash, bool ReadyForManualStart, bool Running,
-    IReadOnlyList<LocalHostingStep> Steps, PlannedHandoffStatus? HandoffRequest = null);
+    IReadOnlyList<LocalHostingStep> Steps, PlannedHandoffStatus? HandoffRequest = null,
+    LocalHostingRemedy? Remedy = null);
 public sealed record LocalHostingPrepareRequest(bool AllowReceiving, bool AcceptSplitWarning,
     string? ServerFile = null, string? GamePassword = null, Guid? RequestId = null,
-    bool AcceptedTerms = false);
+    bool AcceptedTerms = false, bool RequirePeerConnection = false);
 
-// One local action composes the existing signed-grant, receive, fresh restore
-// and Finish gates. It never starts a process or changes an incoming listener.
+// Preparation composes the existing signed-grant, receive, fresh restore and
+// Finish gates. Only the explicit Start action launches; reads never do.
 internal sealed partial class FriendLocalHostingService(LocalData data, FriendService friend, HostManager manager,
     Func<string, IReadOnlyList<string>>? discoverServers = null, LocalHostingRouteCheck? routeCheck = null,
-    Func<Task>? synchronizeListener = null)
+    Func<Task>? synchronizeListener = null,
+    Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>>? announceHosting = null)
 {
     private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
         JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;
@@ -41,9 +44,9 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var fields = new HashSet<string>(StringComparer.Ordinal);
         foreach (var field in root.EnumerateObject())
         {
-            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword" or "requestId" or "acceptedTerms"))
+            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword" or "requestId" or "acceptedTerms" or "requirePeerConnection"))
                 throw new InvalidDataException("The preparation request contains unexpected fields.");
-            if (field.Name is "allowReceiving" or "acceptSplitWarning" or "acceptedTerms")
+            if (field.Name is "allowReceiving" or "acceptSplitWarning" or "acceptedTerms" or "requirePeerConnection")
             {
                 if (field.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                     throw new InvalidDataException("The preparation choices must be explicit.");
@@ -63,7 +66,8 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         Guid? requestId = requestText is null ? null : Guid.TryParse(requestText, out var parsed) && parsed != Guid.Empty ? parsed :
             throw new InvalidDataException("Choose the exact hosting request.");
         return new(root.GetProperty("allowReceiving").GetBoolean(), root.GetProperty("acceptSplitWarning").GetBoolean(), path, password,
-            requestId, root.TryGetProperty("acceptedTerms", out var terms) && terms.GetBoolean());
+            requestId, root.TryGetProperty("acceptedTerms", out var terms) && terms.GetBoolean(),
+            root.TryGetProperty("requirePeerConnection", out var peerConnection) && peerConnection.GetBoolean());
     }
 
     internal async Task<LocalHostingStatus> StatusAsync(Guid profileId,
@@ -71,6 +75,12 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     {
         using var connection = friend.RetainLocalHostingConnection();
         if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        return await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken, selectedFile);
+    }
+
+    private async Task<LocalHostingStatus> StatusForRetainedConnectionAsync(FriendService.LocalHostingConnection connection,
+        Guid profileId, CancellationToken cancellationToken, string? selectedFile = null)
+    {
         var handoff = await connection.Link.HandoffRequestAsync(profileId, cancellationToken) ??
             await LocalCompletedHandoffAsync(connection, profileId, cancellationToken);
         return handoff?.RequestId is not null && handoff.RecipientState is "Requested" or "Accepted" or "Prepared" or "Completed" ?
@@ -97,8 +107,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var version = branch?.Offer.Version ?? access.Version;
         var game = version?.Game ?? access.Game;
         var gameVersion = version?.PortableSetup.GameVersion;
-        var manualSetup = existing is null && (game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock ||
-            (version?.PortableSetup.AddOns?.Count ?? 0) > 0);
+        var manualSetup = existing is null && (version?.PortableSetup.AddOns?.Count ?? 0) > 0;
         var serverFile = existing is not null ? existing.Kind == GameKinds.MinecraftJava ?
             existing.Minecraft?.ServerJarPath : existing.ExecutablePath :
             version is null || manualSetup ? selectedFile : await Task.Run(() => FindServer(version, snapshot.Settings.Profiles, selectedFile), cancellationToken);
@@ -122,7 +131,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
                 "Hosting can be prepared for this PC. Configure this PC's Friend connection before inviting others; no incoming listener is enabled here." :
                 "This PC has an address configured. A real incoming connection and game join still need checking; preparation changes no network settings.");
         var serverMessage = manualSetup ?
-            "This save needs a matching Minecraft server setup or reviewed add-ons. Open shared-save setup to finish it; installation requires your own terms consent." :
+            "This save needs matching add-ons. Open game setup to install and enable them, then continue the checks." :
             serverFile is null ? "Install or select the matching dedicated server already on this PC. No command-line tool is required for an installed Valheim server." :
             existing is not null ? "The server file passed preparation. Start repeats its current checks." :
             "The matching server file is available on this PC. Start repeats its checks.";
@@ -135,7 +144,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var message = ambiguous ? "More than one local history is available. Choose a history in shared-save setup; every save is preserved." :
             !access.Allowed ? access.Message : hosted?.ReviewRequired == true ? hosted.Message :
             running ? "This shared save is already hosted on this PC. Its local world is preserved." :
-            ready ? "This PC is prepared. Start server remains your explicit next action." :
+            ready ? "This PC is prepared. Current save, game and port checks run again when you choose Host on this PC." :
             manualSetup ? serverMessage : "Prepare this PC to receive a verified save and finish local hosting checks.";
         var result = new LocalHostingStatus(ready || running, code, message, access.Allowed, access.Consented, game,
             access.Name, version is not null && serverFile is null && !manualSetup, false, serverFile, gameVersion,
@@ -215,8 +224,18 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
                 return await Result("SharedSaveRequired", "A complete verified save is not available yet. Keep an approved source reachable and retry.");
             if (status.ServerFile is null && !manualSetup)
                 return await Result("InstalledServerRequired", "Install or select the matching dedicated server, then prepare again.");
+            if (status.LocalProfileId is null && status.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock && !request.AcceptedTerms)
+                return await Result("MinecraftTermsRequired", "Read and accept Minecraft's terms on this PC before preparing its server. No terms were accepted for you.");
             if (!request.AcceptSplitWarning && status.BranchHash is null)
                 return await Result("SplitWarningRequired", "Confirm that this PC will keep a separate history if another Host is running.");
+            if (request.RequirePeerConnection)
+            {
+                if (synchronizeListener is not null) await synchronizeListener();
+                var route = routeCheck is null ? null : await routeCheck.CurrentAsync(cancellationToken);
+                if (route?.Identity is not { Enabled: true, Active: true, ListenerOwned: true, ListenerState: CompanionListenerStates.Listening } identity ||
+                    !SharedWorldPeerTrust.ValidRoute(new(identity.Endpoint, identity.CertificateFingerprint ?? "")))
+                    return await Result("LocalConnectionSetupRequired", "Open Connection help and allow incoming connections on this PC before preparing the shared Host. No listener or network setting was changed.");
+            }
             if (!await manager.EnsureLocalHostingEndpointAsync(cancellationToken))
                 return await Result("LocalConnectionSetupRequired", "Review this PC's Friend connection address before preparing hosting.");
             if (status.BranchHash is null)
@@ -243,10 +262,23 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
                 branch.Offer.Version.PortableSetup.AddOns ?? [], true, ports.ControlPort, ports.GamePort);
             if (existing is null)
             {
+                MinecraftInstallation? minecraft = null;
+                if (branch.Offer.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock)
+                {
+                    var localId = SharedWorldBranchLiveSource.LocalProfileId(branch.BranchHash);
+                    // Reuse the reviewed copy-only runtime preparer in this
+                    // branch's fresh local folder. The original signed version
+                    // remains the sole authority for restore and every check.
+                    var localMetadata = branch.Offer.Version with { ProfileId = localId };
+                    minecraft = await Task.Run(() => PlannedHandoffMinecraftSetup.Prepare(data, localMetadata,
+                        localId, status.ServerFile!, ports.GamePort, snapshot.Settings.Profiles), cancellationToken);
+                    setup = setup with { ServerFile = minecraft.ArtifactPath };
+                }
                 var password = branch.Offer.Version.Game == GameKinds.Valheim ? request.GamePassword ??
                     Convert.ToHexString(RandomNumberGenerator.GetBytes(12)) : null;
                 var restored = await manager.RestoreSeparateCopyAsync(profileId, new(branch.BranchHash, setup,
-                    access.Name, access.Name, password, FactorioRconPort: ports.FactorioRconPort), cancellationToken);
+                    access.Name, access.Name, password, minecraft?.ExecutablePath, minecraft?.ServerDirectory,
+                    ports.FactorioRconPort), cancellationToken);
                 if (!restored.Ok) return await Result(restored.Code, restored.PendingChecks?.FirstOrDefault() ?? restored.Message);
             }
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");

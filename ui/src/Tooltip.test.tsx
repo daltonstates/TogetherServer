@@ -5,6 +5,18 @@ import { Button } from './Controls'
 import { Tooltip } from './Tooltip'
 
 describe('Tooltip', () => {
+  it('dismisses a disclosure tooltip on opening and keeps it hidden while the menu is open', () => {
+    render(<details><Tooltip content="Notifications"><summary>Bell</summary></Tooltip><p>Activity</p></details>)
+    const trigger = screen.getByText('Bell')
+    fireEvent.mouseEnter(trigger)
+    expect(screen.getByRole('tooltip')).toBeInTheDocument()
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    trigger.closest('details')!.open = true
+    fireEvent.mouseEnter(trigger)
+    fireEvent.focus(trigger)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
   it('keeps one active tooltip when pointer and keyboard target different controls', () => {
     render(<><Button title="First help">First</Button><Button title="Second help">Second</Button></>)
     const first = screen.getByRole('button', { name: 'First' })

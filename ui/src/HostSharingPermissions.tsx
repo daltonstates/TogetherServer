@@ -56,13 +56,13 @@ export function HostSharingPermissions({ profileId, devices, members, busy, enab
             canHost ? 'Hosting allowed' : grants.receive ? 'Copies only' : 'Not shared'}</span>
         </header>
         <label className="host-sharing-permission host-sharing-host-permission">
-          <span><strong>Can host this save</strong><small>Let your friend receive saves and host their own copy. They must allow saves on their PC, finish setup and choose Start.</small></span>
+          <span><strong>Can host this save</strong><small>Show Host on this PC beside Start server for this friend. Their PC checks the game, save and connection, and asks for anything it needs before starting.</small></span>
           <Input type="checkbox" aria-label={`Can host this save for ${device.name}`} checked={canHost}
             disabled={disabled} onChange={event => void onChange(device.id, event.target.checked ?
               { receive: true, eligibleHost: true } : { eligibleHost: false })} />
         </label>
         {expired && <p className="host-sharing-hint">Access ended for this PC. Restore access before changing its permissions.</p>}
-        {!device.sharedWorldKeyEnrolled && <p className="host-sharing-hint">Ask your friend to connect to this Host in TogetherServer to finish setup. They must also turn on Allow saves on this PC before receiving any.</p>}
+        {!device.sharedWorldKeyEnrolled && <p className="host-sharing-hint">Ask your friend to connect in TogetherServer once to finish sharing setup. Their PC asks permission before keeping a save.</p>}
         <details className="host-sharing-details"><summary>Advanced permissions for {device.name}</summary>
           <div className="host-sharing-advanced-permissions">{permissions.map(permission)}</div>
           <p className="host-sharing-hint">Turn off Can host this save to keep receiving copies without hosting. Turning off Receive saves also removes hosting permission. Copies already received stay on that PC.</p>

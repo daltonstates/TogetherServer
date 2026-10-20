@@ -104,6 +104,7 @@ let state: Snapshot
 let localDirectorySnapshot: HostSnapshot
 let friendDirectorySnapshot: FriendSnapshot
 let recoveryBlocked: boolean
+let gettingStartedState = { offered: false, intent: 'Choose', dismissed: false }
 const instance = {
   kind: 'Production', displayName: 'TogetherServer', isStaging: false, freshWorldsOnly: false,
   startupAvailable: false, updatesAvailable: false, localPort: 5127, companionPort: 5131,
@@ -122,6 +123,7 @@ beforeEach(() => {
   sessionStorage.clear()
   vi.mocked(readProtectedDraft).mockReset().mockResolvedValue({ ok: true, text: null, revision: 1, message: '' })
   recoveryBlocked = false
+  gettingStartedState = { offered: false, intent: 'Choose', dismissed: false }
   transport.failures.logs = transport.failures.sessions = transport.failures.files = false
   transport.flush.mockReset().mockResolvedValue(true)
   state = parseSnapshot(structuredClone(hostWire))
@@ -138,6 +140,7 @@ beforeEach(() => {
       directoryWithSnapshot(null, state.mode === 'Host' ? state : localDirectorySnapshot),
       state.mode === 'Friend' ? state : friendDirectorySnapshot)
     if (path === '/api/local/profile') return { displayName: 'Alex' }
+    if (path === '/api/local/getting-started') return gettingStartedState
     if (path === '/api/local/required-setup') return { features: [{ id: 'profile-name', revision: 1, title: 'Your name', description: 'Share your name.', completed: true }] }
     if (path === '/api/local/data-recovery') return { lifecycleBlocked: recoveryBlocked, notices: [] }
     if (path === '/api/local/instance') return instance
@@ -147,7 +150,11 @@ beforeEach(() => {
     if (path === '/api/local/desktop/notifications') return structuredClone(notificationPreferences)
     throw new Error('Synthetic leaf data unavailable')
   })
-  transport.change.mockReset().mockImplementation(async (path: string) => {
+  transport.change.mockReset().mockImplementation(async (path: string, _method: string, _decoder: unknown, body: Record<string, unknown>) => {
+    if (path === '/api/local/getting-started') {
+      gettingStartedState = { offered: true, intent: String(body.intent), dismissed: body.dismissed === true }
+      return gettingStartedState
+    }
     if (path === '/api/local/mode/friend') { if (state.mode === 'Host') localDirectorySnapshot = state; state = friendDirectorySnapshot }
     if (path === '/api/local/mode/host') { if (state.mode === 'Friend') friendDirectorySnapshot = state; state = localDirectorySnapshot }
     return { ok: true, code: 'Requested', message: 'Request accepted.', snapshot: state }
@@ -190,6 +197,45 @@ function mutationCalls() {
 function expectNoMutation() {
   expect(mutationCalls()).toHaveLength(0)
 }
+
+describe('installer guide handoff in the real shell', () => {
+  it('offers the selected Host guide after required setup and highlights the real New server action', async () => {
+    gettingStartedState = { offered: true, intent: 'Host', dismissed: false }
+    await openHost()
+    const welcome = await screen.findByRole('dialog', { name: 'Make room for your next game night' })
+    fireEvent.click(within(welcome).getByRole('button', { name: /Host on this PC/ }))
+    expect(await screen.findByRole('heading', { name: 'Make this PC your Host' })).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(gettingStartedState).toEqual({ offered: true, intent: 'Host', dismissed: true })
+    expectNoServerAction()
+    fireEvent.click(screen.getByRole('button', { name: 'New server' }))
+    expect(await screen.findByRole('dialog', { name: 'Add new server' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Make this PC your Host' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Setup tip')).toBeVisible()
+  }, 10_000)
+  it('takes Join through the real code field without installing or starting a game', async () => {
+    gettingStartedState = { offered: true, intent: 'Join', dismissed: false }
+    await openHost()
+    const welcome = await screen.findByRole('dialog', { name: 'Make room for your next game night' })
+    fireEvent.click(within(welcome).getByRole('button', { name: /Join a friend/ }))
+    expect(await screen.findByRole('heading', { name: 'Start with your friend’s server code' })).toBeVisible()
+    expect(screen.getByLabelText('Server code')).toBeVisible()
+    expect(state.mode).toBe('Friend')
+    expect(gettingStartedState).toEqual({ offered: true, intent: 'Join', dismissed: true })
+    expectNoServerAction()
+    expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/mode/friend', '/api/local/getting-started'])
+  })
+  it('keeps guides available for an existing installation and lets setup wait', async () => {
+    await openHost()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Setup guides' }))
+    const welcome = await screen.findByRole('dialog', { name: 'Make room for your next game night' })
+    fireEvent.click(within(welcome).getByRole('button', { name: 'Set up later' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expectNoServerAction()
+    expect(mutationCalls().map(([path]) => path)).toEqual(['/api/local/getting-started'])
+  })
+})
 
 describe('required app setup shell gate', () => {
   const nameFeature = { id: 'profile-name', revision: 1, title: 'Your name', description: 'Share a name your friends recognize.', completed: false }
@@ -521,7 +567,7 @@ describe('Task-first app and Host PC navigation', () => {
     expectNoServerAction()
   }, 10_000)
 
-  it.each(['Host', 'Friend'] as const)('opens Appearance from the header settings gear in %s without changing mode', async mode => {
+  it.each(['Host', 'Friend'] as const)('opens continuous App Settings from the header gear in %s without changing mode', async mode => {
     if (mode === 'Friend') state = friend()
     render(<App />)
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
@@ -534,7 +580,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
       'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
     ])
-    expect(within(sections).getByRole('button', { name: 'Appearance' })).toHaveAttribute('aria-current', 'page')
+    expect(within(sections).getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'location')
     expect(within(settings).getByRole('combobox', { name: 'Theme' })).toBeVisible()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(state.mode).toBe(mode)
@@ -543,7 +589,7 @@ describe('Task-first app and Host PC navigation', () => {
     expectNoServerAction()
   })
 
-  it.each(['Host', 'Friend'] as const)('opens the same full-page Appearance from %s without changing mode', async mode => {
+  it.each(['Host', 'Friend'] as const)('opens the same continuous App Settings from %s without changing mode', async mode => {
     if (mode === 'Friend') state = friend()
     render(<App />)
     await screen.findByRole('region', { name: mode === 'Host' ? 'Contract fixture workspace' : 'Play' })
@@ -556,7 +602,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
       'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
     ])
-    expect(within(sections).getByRole('button', { name: 'Appearance' })).toHaveAttribute('aria-current', 'page')
+    expect(within(sections).getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'location')
     expect(within(settings).getByRole('combobox', { name: 'Theme' })).toHaveValue('dark')
     expect(within(settings).getByRole('combobox', { name: 'Layout' })).toHaveValue('comfortable')
     expect(within(settings).getByRole('combobox', { name: 'Text size' })).toHaveValue('100')
@@ -739,7 +785,7 @@ describe('Task-first app and Host PC navigation', () => {
     }
     await act(async () => { await navigate() })
     expect(workspaces().getByRole('button', { name: 'App Settings' })).toHaveAttribute('aria-current', 'page')
-    expect(within(sections).getByRole('button', { name: 'Notifications' })).toHaveAttribute('aria-current', 'page')
+    expect(within(sections).getByRole('button', { name: 'Notifications' })).toHaveAttribute('aria-current', 'location')
     expect(await within(screen.getByRole('region', { name: 'App Settings' }))
       .findByText('Wait for the change to save before leaving.')).toBeVisible()
     expect(mutationCalls()).toHaveLength(1)
@@ -1246,10 +1292,17 @@ function withPcs(devices: Device[]) {
       device.serverPermissions = request.permissions
     }
     if (device && path.endsWith('/permissions')) {
-      const request = rawBody as { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }
-      device.canStart = request.canStart; device.canStop = request.canStop
-      device.canExtendTimer = request.canExtendTimer; device.canViewLogs = request.canViewLogs
-      device.serverPermissions = []
+      const request = rawBody as { canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean; canViewPassword?: boolean; scope?: string | null }
+      if (request.scope === 'password') {
+        device.canViewPassword = request.canViewPassword
+        device.serverPermissions = device.serverPermissions.map(permission => ({ ...permission, canViewPassword: request.canViewPassword }))
+      } else {
+        device.canStart = request.canStart; device.canStop = request.canStop
+        device.canExtendTimer = request.canExtendTimer; device.canViewLogs = request.canViewLogs
+        device.serverPermissions = device.serverPermissions.map(permission => ({ profileId: permission.profileId,
+          canStart: request.canStart, canStop: request.canStop, canExtendTimer: request.canExtendTimer,
+          canViewLogs: request.canViewLogs, canViewPassword: permission.canViewPassword }))
+      }
     }
     if (device && path.endsWith('/approve')) device.approvalPending = false
     if (device && path.endsWith('/name')) device.name = (rawBody as { name: string }).name
@@ -1275,6 +1328,23 @@ const pcId = '44444444-4444-4444-8444-444444444441'
 const secondPcId = '44444444-4444-4444-8444-444444444442'
 
 describe('Friend PC settings flow', () => {
+  it('saves password sharing through its separate scope and preserves it when changing an action preset', async () => {
+    const pc = testPc(pcId, 'Password friend')
+    withPcs([pc])
+    await openAccess()
+    fireEvent.click(within(screen.getByRole('article', { name: 'Password friend' })).getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Password friend' })
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Share game passwords' }))
+    await waitFor(() => expect(pc.canViewPassword).toBe(true))
+    expect(transport.change).toHaveBeenCalledWith(`/api/local/devices/${pcId}/permissions`, 'PUT', expect.any(Function),
+      expect.objectContaining({ scope: 'password', canViewPassword: true }), undefined)
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Permission preset' }), { target: { value: 'helper' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply preset' }))
+    await waitFor(() => expect(pc.canStop).toBe(true))
+    expect(pc.canViewPassword).toBe(true)
+    const preset = transport.change.mock.calls.filter(([path]) => path.endsWith('/permissions')).at(-1)![3] as Record<string, unknown>
+    expect(preset).not.toHaveProperty('canViewPassword')
+  })
   it('separates PCs into cards and opens only the chosen PC editor', async () => {
     withPcs([testPc(pcId, 'Living room PC'), testPc(secondPcId, 'Laptop')])
     await openAccess()
@@ -1418,11 +1488,9 @@ describe('Friend task structure', () => {
     const play = await screen.findByRole('region', { name: 'Play' })
     const local = await within(play).findByRole('button', { name: 'Host on this PC' })
     expect(local.closest('.friend-primary-actions')).not.toBeNull()
-    fireEvent.click(local)
-    const dialog = await screen.findByRole('dialog', { name: 'Host on this PC' })
-    expect(within(dialog).getByRole('button', { name: 'Start server on this PC' })).toBeDisabled()
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Keep this save on my PC/ }))
-    expect(within(dialog).getByRole('button', { name: 'Start server on this PC' })).toBeEnabled()
+    expect(local).toBeEnabled()
+    expect(local).toHaveAccessibleDescription(/progress on the two servers stays separate/)
+    expect(screen.queryByRole('dialog', { name: 'Host on this PC' })).not.toBeInTheDocument()
     expectNoMutation()
   })
 

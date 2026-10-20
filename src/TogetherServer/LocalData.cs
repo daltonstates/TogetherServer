@@ -170,6 +170,9 @@ public sealed class LocalData : IDisposable
     public string FactorioServersRoot => Path.Combine(root, "factorio-servers");
     public string BackupsRoot => Path.Combine(root, "backups");
     internal string RootPath => root;
+    // Capture before opening the lock or writing a schema marker. An empty
+    // server list alone cannot distinguish a first opening from an upgrade.
+    internal bool IsNewDataDirectory { get; }
     internal string LogsRoot => Path.Combine(root, "logs");
     internal string RestoreRehearsalsRoot => Path.Combine(root, "restore-rehearsals");
     internal string UpdateCheckpointsRoot => Path.Combine(root, "update-checkpoints");
@@ -201,6 +204,8 @@ public sealed class LocalData : IDisposable
         this.defaultCompanionPort = defaultCompanionPort;
         this.supportedStorageSchemaVersion = supportedStorageSchemaVersion;
         Directory.CreateDirectory(this.root);
+        IsNewDataDirectory = !Directory.EnumerateFileSystemEntries(this.root)
+            .Any(path => !Path.GetFileName(path).Equals(".togetherserver-instance.json", StringComparison.Ordinal));
         gate = new FileStream(Path.Combine(this.root, "host.lock"), FileMode.OpenOrCreate,
             FileAccess.ReadWrite, FileShare.None);
         try
@@ -284,6 +289,12 @@ public sealed class LocalData : IDisposable
     {
         var bytes = LoadProtected($"valheim-password-{profileId:N}.protected");
         return bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes);
+    }
+    internal (string? Password, DateTimeOffset? ChangedUtc) ReadValheimPasswordInfo(Guid profileId)
+    {
+        // Keep the value and its nonsecret display hint from the same atomic
+        // file version. SaveProtected commits under this same state lock.
+        lock (stateSync) return (LoadValheimPassword(profileId), GamePasswords.ChangedUtc(this, profileId));
     }
     public string LoadOrCreateFactorioRconPassword(Guid profileId)
     {

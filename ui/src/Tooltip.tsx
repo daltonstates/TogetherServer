@@ -25,6 +25,7 @@ export function Tooltip({ content, children }: { content: string; children: Reac
     hovered.current = focused.current = touched.current = false
     setOpen(false)
   }, [])
+  const mayOpen = () => !(triggerRef.current?.matches('summary') && triggerRef.current.closest('details')?.open)
 
   useLayoutEffect(() => {
     if (!open) return
@@ -80,16 +81,17 @@ export function Tooltip({ content, children }: { content: string; children: Reac
     ref,
     title: undefined,
     'aria-describedby': [props['aria-describedby'], open ? id : undefined].filter(Boolean).join(' ') || undefined,
-    onPointerEnter: event => { props.onPointerEnter?.(event); if (event.pointerType !== 'touch') { hovered.current = true; setOpen(true) } },
+    onPointerEnter: event => { props.onPointerEnter?.(event); if (event.pointerType !== 'touch' && mayOpen()) { hovered.current = true; setOpen(true) } },
     onPointerLeave: event => { props.onPointerLeave?.(event); hovered.current = false; if (!focused.current && !touched.current) setOpen(false) },
-    onMouseEnter: event => { props.onMouseEnter?.(event); hovered.current = true; setOpen(true) },
+    onMouseEnter: event => { props.onMouseEnter?.(event); if (mayOpen()) { hovered.current = true; setOpen(true) } },
     onMouseLeave: event => { props.onMouseLeave?.(event); hovered.current = false; if (!focused.current && !touched.current) setOpen(false) },
-    onFocus: event => { props.onFocus?.(event); focused.current = true; setOpen(true) },
+    onFocus: event => { props.onFocus?.(event); if (mayOpen()) { focused.current = true; setOpen(true) } },
     onBlur: event => { props.onBlur?.(event); focused.current = false; touched.current = false; if (!hovered.current) setOpen(false) },
     onPointerDown: event => {
       props.onPointerDown?.(event)
-      if (event.pointerType === 'touch') { touched.current = !touched.current; setOpen(touched.current) }
-    }
+      if (event.pointerType === 'touch' && mayOpen()) { touched.current = !touched.current; setOpen(touched.current) }
+    },
+    onClick: event => { props.onClick?.(event); dismiss() }
   })
   return <>{trigger}{open && createPortal(<div ref={tipRef} id={id} role="tooltip" className="ui-tooltip"
     data-side={position.side} style={{ left: position.left, top: position.top, '--tooltip-tail': `${position.tail}px` } as CSSProperties}>

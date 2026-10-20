@@ -29,8 +29,9 @@ const routeLabels: Record<Settings['connectionRoute']['mode'], string> = {
 export function HostSettingsTools({ section, snapshot, companion, ports, routeCheck, previousRouteVerdict,
   routeDiscovery, selectedProfileId, busy, dirty, checkingPorts, checkingRoute, detectingAddress, friendAppStatus, addressError,
   isStaging, notice, moveKit, onClearNotice, onDraftStateChange, onSave, onAutoShutdown, onRefresh, onTestRoute, onDetectAddress,
-  onOpenAccess, onOpenDiagnostics, onCertificate, onInspectMoveKit, onNewHost, keepAwake }: {
+  onOpenAccess, onOpenDiagnostics, onCertificate, onInspectMoveKit, onNewHost, keepAwake, guideChecks = false }: {
   section: 'stop' | 'network' | 'advanced'
+  guideChecks?: boolean
   snapshot: HostSnapshot
   companion: CompanionInfo | null
   ports: PortDiagnostics | null
@@ -137,10 +138,10 @@ export function HostSettingsTools({ section, snapshot, companion, ports, routeCh
       </div>
       <div className="next-action"><span>Friend app connections are <strong>{settings.companionListeningEnabled ? 'on' : 'off'}</strong>.</span>
         <Button className="text-button" onClick={onOpenAccess}>Manage access</Button></div>
-      <details className="advanced-block" open={troubleshootingOpen} onToggle={event => setTroubleshootingOpen(event.currentTarget.open)}>
+      <details className="advanced-block" open={troubleshootingOpen || guideChecks} onToggle={event => setTroubleshootingOpen(event.currentTarget.open)}>
         <summary>Troubleshooting</summary>
-        {troubleshootingOpen && <><p className="helper-text">Use these checks if a friend cannot connect. App access and joining the game are checked separately.</p>
-          <div className="actions"><Button className="secondary" disabled={modalBusy} onClick={() => open('doctor')}><Icon name="search" />Troubleshoot connection</Button>
+        {(troubleshootingOpen || guideChecks) && <><p className="helper-text">Use these checks if a friend cannot connect. App access and joining the game are checked separately.</p>
+          <div className="actions"><Button className="secondary" data-guide="host-checks" disabled={modalBusy} onClick={() => open('doctor')}><Icon name="search" />Troubleshoot connection</Button>
             <Button className="text-button" disabled={modalBusy} onClick={() => open('identity')}><Icon name="shield" />Secure Host identity</Button></div>
           {isStaging && <SettingsCard icon="monitor" title="Test with another owned PC" description="Synthetic connection, chat, and save-transfer rehearsal."
             actionLabel="Open rehearsal" onOpen={() => open('rehearsal')} />}</>}

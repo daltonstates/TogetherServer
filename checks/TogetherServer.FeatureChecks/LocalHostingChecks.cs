@@ -18,6 +18,7 @@ internal static class LocalHostingChecks
     internal static async Task RunAsync(string root)
     {
         Inputs();
+        await OwnerSwitchAsync(root);
         using var fixture = new Fixture(root, granted: true);
         var before = await fixture.Service.StatusAsync(fixture.ProfileId);
         Require(before.Allowed && !before.Consented && !before.ReadyForManualStart &&
@@ -32,6 +33,12 @@ internal static class LocalHostingChecks
         Require(!noWarning.Ok && noWarning.Code == "SplitWarningRequired" &&
             new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0,
             "a fresh continuation bypassed its separate-history warning");
+        var needsConnection = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true, RequirePeerConnection: true));
+        Require(!needsConnection.Ok && needsConnection.Code == "LocalConnectionSetupRequired" &&
+            new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0 &&
+            fixture.Data.LoadSettings().CompanionEndpoint == "" && !fixture.Data.LoadSettings().CompanionListeningEnabled &&
+            fixture.Driver.ProcessAttempts == 0,
+            "guided hosting declared a signed branch or enabled a listener before deliberate incoming-connection setup");
         var prepared = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
         Require(prepared.Ok && prepared.ReadyForManualStart && !prepared.Running &&
             prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
@@ -46,6 +53,19 @@ internal static class LocalHostingChecks
             $"ports={prepared.GamePort}/{prepared.ControlPort}/{fixture.ControlPort}, " +
             $"steps={string.Join(',', prepared.Steps.Select(step => step.Key + ':' + step.State))}; {prepared.Message}");
         var passive = await fixture.Service.StatusAsync(fixture.ProfileId);
+        using (var canceled = new CancellationTokenSource())
+        {
+            canceled.Cancel();
+            foreach (var start in new Func<Task<ActionResult>>[] {
+                () => fixture.Manager.StartAsync(prepared.LocalProfileId!.Value, canceled.Token),
+                () => fixture.Manager.StartSeparateCopyAsync(prepared.LocalProfileId!.Value, prepared.BranchHash!, canceled.Token) })
+            {
+                try { await start(); throw new InvalidOperationException("A canceled Start reached lifecycle dispatch."); }
+                catch (OperationCanceledException) { }
+            }
+            Require(fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0,
+                "a canceled local hosting instruction changed a managed run");
+        }
         Require(passive.ReadyForManualStart && !passive.Running && passive.LocalProfileId == prepared.LocalProfileId &&
             passive.Steps.Take(4).All(step => step.State == "Ready") && fixture.Data.LoadRuns().Count == 0 &&
             fixture.Driver.ProcessAttempts == 0, "passive prepared status lost readiness or attempted a process operation");
@@ -96,6 +116,29 @@ internal static class LocalHostingChecks
         Require(!rejected.Ok && !rejected.Allowed && !rejected.Consented &&
             denied.Data.LoadSettings().CompanionEndpoint == "" && denied.Data.LoadSettings().Profiles.Count == 0 &&
             denied.Driver.ProcessAttempts == 0, "an ungranted PC received hosting, local consent, a profile or identity setup");
+    }
+
+    private static async Task OwnerSwitchAsync(string root)
+    {
+        using var data = new LocalData(Path.Combine(root, "owner-hosting-switch-" + Guid.NewGuid().ToString("N")));
+        var executable = Path.Combine(data.RootPath, "never-run.synthetic");
+        File.WriteAllText(executable, "synthetic file only");
+        var profile = new ServerProfile { Id = Guid.NewGuid(), Kind = GameKinds.Fixture,
+            Name = "Synthetic owner", ServerName = "Synthetic owner", WorldId = "SyntheticOwner",
+            WorldDirectory = Path.Combine(data.RootPath, "world"), ExecutablePath = executable,
+            Backups = new() { Enabled = false, RetentionCount = 13, MinimumFreeSpaceMb = 2048 } };
+        data.SaveSettings(new HostSettings { Profiles = [profile] });
+        var driver = new FilesOnlyDriver();
+        var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
+        var enabled = await manager.SetSimpleSharedHostingAsync(profile.Id, true, CancellationToken.None);
+        var saved = data.LoadSettings();
+        Require(enabled.Ok && saved.Profiles.Single().SharedSavesEnabled && saved.Profiles.Single().Backups.Enabled &&
+            saved.Profiles.Single().Backups.RetentionCount == 13 && saved.Profiles.Single().Backups.MinimumFreeSpaceMb == 2048 &&
+            !saved.CompanionListeningEnabled && !saved.RemoteControlsEnabled && driver.ProcessAttempts == 0,
+            $"the owner switch failed to preserve storage/network choices: {enabled.Code}; {enabled.Message}");
+        Require((await manager.SetSimpleSharedHostingAsync(profile.Id, false, CancellationToken.None)).Ok &&
+            !data.LoadSettings().Profiles.Single().SharedSavesEnabled && data.LoadSettings().Profiles.Single().Backups.Enabled &&
+            driver.ProcessAttempts == 0, "turning sharing off also disabled backup protection or attempted a process operation");
     }
 
     private static void Inputs()

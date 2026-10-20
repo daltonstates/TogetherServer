@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HostSharedSaves } from './SharedWorldControls'
 import { HostSharingPermissions } from './HostSharingPermissions'
 import type { Device } from './contracts'
+import type { ReactNode } from 'react'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
 const deviceId = '22222222-2222-4222-8222-222222222222'
@@ -20,9 +21,9 @@ const noHandoff = { pending: false, code: 'NoPendingHandoff', message: 'No hando
   successorDeviceId: null, finalVersion: null, receiptConfirmed: false, canComplete: false, canCancel: false }
 
 function setup({ enabled = true, canManage = true, authority = null, signedGrants = emptyGrants,
-  device = friend, rollingBackupEnabled = true, denyGrantChange = false }:
+  device = friend, rollingBackupEnabled = true, denyGrantChange = false, renderAdvancedProof }:
   { enabled?: boolean; canManage?: boolean; authority?: unknown; signedGrants?: Grants;
-    device?: Device; rollingBackupEnabled?: boolean; denyGrantChange?: boolean } = {}) {
+    device?: Device; rollingBackupEnabled?: boolean; denyGrantChange?: boolean; renderAdvancedProof?: () => ReactNode } = {}) {
   const status = { enabled, canManageSharing: canManage, authority, confirmedCopies: 1, error: null,
     latest: { number: 3, versionHash: 'A'.repeat(64), createdUtc: '2020-01-01T00:00:00Z', captureKind: 'PostStopBackup' },
     liveSave: { available: false, message: 'This installation needs its private save test.', code: 'GameAcceptanceRequired', game: 'Valheim' } }
@@ -40,7 +41,7 @@ function setup({ enabled = true, canManage = true, authority = null, signedGrant
         roster.members[0].grants = (body as { grants: Grants }).grants
         if (roster.members[0].grants.receive && roster.members[0].grants.eligibleHost) status.enabled = true
       }
-      else if (url === base) status.enabled = (body as { enabled: boolean }).enabled
+      else if (url === `${base}/hosting`) status.enabled = (body as { enabled: boolean }).enabled
       else if (url === `${base}/governance`) {
         roster.ownerOverride = (body as { ownerOverride: boolean }).ownerOverride
         return reply(roster)
@@ -58,7 +59,7 @@ function setup({ enabled = true, canManage = true, authority = null, signedGrant
     throw new Error(`Unexpected read ${url}`)
   }))
   render(<HostSharedSaves profileId={profileId} devices={[device]} rollingBackupEnabled={rollingBackupEnabled}
-    currentAddress="https://192.0.2.10:5131" worldName="Alderheim" onGrantChanged={changed} />)
+    currentAddress="https://192.0.2.10:5131" worldName="Alderheim" onGrantChanged={changed} renderAdvancedProof={renderAdvancedProof} />)
   return { status, roster, mutations, reads, changed }
 }
 
@@ -73,6 +74,32 @@ async function openSharing() {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('Host sharing presentation', () => {
+  it('keeps the installation proof unmounted until its named advanced review is opened', async () => {
+    const proof = vi.fn(() => <section aria-label="Exact installation proof">Owner-reported game results</section>)
+    const { mutations } = setup({ renderAdvancedProof: proof })
+    const { dialog } = await openSharing()
+    expect(proof).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save sharing' }))
+    expect(within(dialog).getByRole('region', { name: 'Shared hosting readiness' })).toBeInTheDocument()
+    expect(proof).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByText('Advanced: game save proof and review', { selector: 'summary' }))
+    expect(await within(dialog).findByRole('region', { name: 'Exact installation proof' })).toBeVisible()
+    expect(mutations).toEqual([])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'People' }))
+    expect(within(dialog).queryByRole('region', { name: 'Exact installation proof' })).not.toBeInTheDocument()
+  })
+
+  it('enables shared hosting from one switch while backups are off without granting any friend access', async () => {
+    const { mutations, changed } = setup({ enabled: false, rollingBackupEnabled: false })
+    await screen.findByText('Sharing off')
+    const toggle = screen.getByRole('checkbox', { name: 'Allow shared hosting' })
+    expect(toggle).toBeEnabled()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle).toBeChecked())
+    expect(mutations).toEqual([{ path: `${base}/hosting`, method: 'PUT', body: { enabled: true } }])
+    expect(changed).toHaveBeenCalledOnce()
+    expect(screen.getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
+  })
   it('opens People with one hosting permission per PC and keeps individual grants and identity under Advanced', async () => {
     const { mutations } = setup()
     expect(screen.queryByRole('region', { name: 'Share while running' })).not.toBeInTheDocument()
@@ -80,7 +107,7 @@ describe('Host sharing presentation', () => {
     const navigation = within(dialog).getByRole('navigation', { name: 'Sharing sections' })
     expect(within(navigation).getByRole('button', { name: 'People' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigation).getAllByRole('button')).toHaveLength(3)
-    expect(within(dialog).getByRole('checkbox', { name: 'Share completed saves from this server' })).toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: 'Allow shared hosting' })).toBeChecked()
     const person = within(dialog).getByRole('article', { name: 'Mira PC sharing permissions' })
     expect(within(person).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeEnabled()
     expect(within(person).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
@@ -129,7 +156,7 @@ describe('Host sharing presentation', () => {
     } }])
     expect(changed).toHaveBeenCalledTimes(1)
     expect(within(dialog).getByText('Hosting allowed')).toBeInTheDocument()
-    expect(within(dialog).getByText(/They must allow saves on their PC, finish setup and choose Start/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Their PC checks the game, save and connection/)).toBeInTheDocument()
   })
 
   it('withdraws hosting while preserving receiving, existing advanced rights and already received saves', async () => {
@@ -197,12 +224,12 @@ describe('Host sharing presentation', () => {
     await screen.findByText('Sharing off')
     fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
     const dialog = screen.getByRole('dialog', { name: 'Manage sharing' })
-    const sharing = within(dialog).getByRole('checkbox', { name: 'Share completed saves from this server' })
+    const sharing = within(dialog).getByRole('checkbox', { name: 'Allow shared hosting' })
     expect(sharing).not.toBeChecked()
     expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeEnabled()
     fireEvent.click(sharing)
     await waitFor(() => expect(sharing).toBeChecked())
-    expect(mutations).toEqual([{ path: base, method: 'PUT', body: { enabled: true } }])
+    expect(mutations).toEqual([{ path: `${base}/hosting`, method: 'PUT', body: { enabled: true } }])
     expect(within(dialog).getByRole('checkbox', { name: 'Receive for Mira PC' })).not.toBeChecked()
     expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).not.toBeChecked()
   })
@@ -259,7 +286,7 @@ describe('Host sharing presentation', () => {
       expect(within(dialog).getByRole('checkbox', { name: 'Can host this save for Mira PC' })).toBeDisabled()
       fireEvent.click(within(dialog).getByText('Advanced permissions for Mira PC'))
       expect(within(dialog).getByRole('checkbox', { name: 'Forward verified saves for Mira PC' })).toBeDisabled()
-      if (condition !== 'expired PC') expect(within(dialog).getByRole('checkbox', { name: 'Share completed saves from this server' })).toBeDisabled()
+      if (condition !== 'expired PC') expect(within(dialog).getByRole('checkbox', { name: 'Allow shared hosting' })).toBeDisabled()
       expect(mutations).toEqual([])
     })
 
@@ -268,7 +295,12 @@ describe('Host sharing presentation', () => {
     const { dialog } = await openSharing()
     expect(within(dialog).queryByRole('region', { name: 'Share while running' })).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save sharing' }))
-    expect(within(dialog).getByRole('region', { name: 'Share while running' })).toBeInTheDocument()
+    expect(within(dialog).queryByRole('region', { name: 'Share while running' })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('region', { name: 'Shared hosting readiness' })).toBeInTheDocument()
+    const proof = within(dialog).getByText('Advanced: game save proof and review', { selector: 'summary' })
+    expect(proof.closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(proof)
+    expect(await within(dialog).findByRole('region', { name: 'Share while running' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Share current address' })).toBeEnabled()
     expect(within(dialog).queryByRole('article', { name: 'Mira PC sharing permissions' })).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'History & recovery' }))
@@ -314,8 +346,8 @@ describe('Host sharing presentation', () => {
     expect(within(pendingCard).getByText('Waiting for friend')).toBeInTheDocument()
     expect(within(pendingCard).getByRole('checkbox', { name: 'Receive for Pending PC' })).toBeChecked()
     expect(within(pendingCard).getByRole('checkbox', { name: 'Can host this save for Pending PC' })).toBeChecked()
-    expect(within(pendingCard).getByText(/Ask your friend to connect to this Host in TogetherServer/)).toHaveTextContent('connect to this Host')
-    expect(within(pendingCard).getByText(/They must also turn on Allow saves on this PC/)).toBeInTheDocument()
+    expect(within(pendingCard).getByText(/Ask your friend to connect in TogetherServer once/)).toBeInTheDocument()
+    expect(within(pendingCard).getByText(/Their PC asks permission before keeping a save/)).toBeInTheDocument()
     expect(change).not.toHaveBeenCalled()
   })
 })

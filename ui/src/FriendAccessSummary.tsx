@@ -3,7 +3,7 @@ import { Input, Select } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { Icon, type IconName } from './Icon'
 import type { Device, ServerPermission } from './contracts'
-import { devicePermission, type PermissionValues } from './permissionState'
+import { devicePasswordPermission, devicePermission, type PermissionValues } from './permissionState'
 import './friend-access.css'
 
 export type FriendAccessServer = { id: string; name: string; kind?: string }
@@ -27,10 +27,12 @@ export type FriendAccessView = {
 }
 
 const actions = ['canStart', 'canStop', 'canExtendTimer', 'canViewLogs'] as const
-const noActions: PermissionValues = { canStart: false, canStop: false, canExtendTimer: false, canViewLogs: false }
+const permissions = [...actions, 'canViewPassword'] as const
+const noActions: PermissionValues = { canStart: false, canStop: false, canExtendTimer: false, canViewLogs: false, canViewPassword: false }
 function permissionValues(source: PermissionValues): PermissionValues {
   return { canStart: source.canStart, canStop: source.canStop,
-    canExtendTimer: source.canExtendTimer, canViewLogs: source.canViewLogs }
+    canExtendTimer: source.canExtendTimer, canViewLogs: source.canViewLogs,
+    canViewPassword: source.canViewPassword ?? false }
 }
 function deadlineMs(value: string | null | undefined) {
   return value ? Date.parse(value) : NaN
@@ -43,7 +45,8 @@ function dateLabel(value: string | null | undefined) {
 export function permissionSummary(permissions: PermissionValues): string {
   const allowed = [permissions.canStart && 'Start', permissions.canStop && 'Stop when empty',
     permissions.canStart && permissions.canStop && 'Restart',
-    permissions.canExtendTimer && 'add shutdown time', permissions.canViewLogs && 'view logs'].filter(Boolean)
+    permissions.canExtendTimer && 'add shutdown time', permissions.canViewLogs && 'view logs',
+    permissions.canViewPassword && 'view game password'].filter(Boolean)
   return allowed.length ? allowed.join(' · ') : 'Status and connection details only'
 }
 
@@ -73,13 +76,16 @@ export function effectiveDeviceAccess(device: Device, servers: readonly FriendAc
   }
   const heartbeat = deadlineMs(device.lastHeartbeatUtc)
   const rows = [...new Set(device.assignedProfileIds)].map(profileId => {
-    const observedPermissions = permissionValues(devicePermission(device, profileId))
+    const supportsPassword = servers.find(server => server.id === profileId)?.kind === 'Valheim'
+    const observedPermissions = permissionValues({ ...devicePermission(device, profileId),
+      canViewPassword: supportsPassword && devicePasswordPermission(device, profileId) })
     return {
       profileId, name: servers.find(server => server.id === profileId)?.name ?? 'Unavailable saved server',
       observedPermissions,
       effectivePermissions: state === 'Available' ? observedPermissions :
         state === 'RefreshNeeded' || state === 'Unknown' ? null : { ...noActions },
-      exception: helper === 'Inactive' && actions.some(action => observedPermissions[action] !== device[action])
+      exception: helper === 'Inactive' && actions.some(action => observedPermissions[action] !== device[action]) ||
+        supportsPassword && observedPermissions.canViewPassword !== (device.canViewPassword ?? false)
     }
   })
   return {
@@ -99,8 +105,12 @@ export function FriendAccessSummary({ device, servers, nowMs }: FriendAccessSumm
   const headingId = useId()
   const view = effectiveDeviceAccess(device, servers, nowMs)
   const exceptions = view.rows.filter(row => row.exception).length
+  const passwordServers = view.rows.filter(row => servers.find(server => server.id === row.profileId)?.kind === 'Valheim').length
+  const passwordGrants = passwordServers > 0
+    ? ` · Game password: ${view.rows.filter(row => row.effectivePermissions?.canViewPassword).length}/${passwordServers} Valheim`
+    : ''
   const grants = view.state === 'Available' && view.rows.length > 0
-    ? `Start: ${view.rows.filter(row => row.effectivePermissions?.canStart).length}/${view.rows.length} · Stop when empty: ${view.rows.filter(row => row.effectivePermissions?.canStop).length}/${view.rows.length} · Restart: ${view.rows.filter(row => row.effectivePermissions?.canStart && row.effectivePermissions.canStop).length}/${view.rows.length} · Add time: ${view.rows.filter(row => row.effectivePermissions?.canExtendTimer).length}/${view.rows.length} · Logs: ${view.rows.filter(row => row.effectivePermissions?.canViewLogs).length}/${view.rows.length}`
+    ? `Start: ${view.rows.filter(row => row.effectivePermissions?.canStart).length}/${view.rows.length} · Stop when empty: ${view.rows.filter(row => row.effectivePermissions?.canStop).length}/${view.rows.length} · Restart: ${view.rows.filter(row => row.effectivePermissions?.canStart && row.effectivePermissions.canStop).length}/${view.rows.length} · Add time: ${view.rows.filter(row => row.effectivePermissions?.canExtendTimer).length}/${view.rows.length} · Logs: ${view.rows.filter(row => row.effectivePermissions?.canViewLogs).length}/${view.rows.length}${passwordGrants}`
     : ''
   return <section className="players-workspace friend-access-summary" aria-labelledby={headingId}>
     <div className="players-heading"><div><h3 id={headingId}>{device.name} · Access summary</h3>
@@ -110,18 +120,18 @@ export function FriendAccessSummary({ device, servers, nowMs }: FriendAccessSumm
     {grants && <p className="helper-text">{grants}</p>}
     {view.helper === 'Active' && <p className="helper-text">{view.state === 'Available'
       ? `Temporary helper access is active until ${dateLabel(device.temporaryHelperUntilUtc)} for its shared servers.`
-      : `Temporary helper access is saved until ${dateLabel(device.temporaryHelperUntilUtc)}, but this PC is currently blocked.`} Saved permissions are hidden while temporary access is active.</p>}
+      : `Temporary helper access is saved until ${dateLabel(device.temporaryHelperUntilUtc)}, but this PC is currently blocked.`} Saved Start, Stop, extra time and log permissions are hidden while temporary access is active. Game password access stays separate.</p>}
     {view.helper === 'RefreshNeeded' && <DismissibleNotice as="p" scope={device.id} noticeKey={device.temporaryHelperUntilUtc ?? undefined} className="warning-text">Refresh to see saved permissions after temporary helper access ends.</DismissibleNotice>}
     {view.helper === 'Inactive' && exceptions > 0 && <small>{exceptions} assigned {exceptions === 1 ? 'server has' : 'servers have'} permission exceptions.</small>}
     {view.rows.length === 0 ? <p className="helper-text">No servers are shared with this PC. Choose a server to give it access.</p> :
       <details className="advanced-block"><summary>Permissions by server</summary>
         <ul>{view.rows.map(row => <li key={row.profileId}><strong>{row.name}</strong>
-          <p>{view.state === 'Available' && row.effectivePermissions ? permissionSummary(row.effectivePermissions) : 'Actions and logs unavailable for this PC.'}</p>
+          <p>{view.state === 'Available' && row.effectivePermissions ? permissionSummary(row.effectivePermissions) : 'Permissions unavailable for this PC.'}</p>
           {row.exception && <small>This server has its own permissions.</small>}
           {view.state !== 'Available' && view.helper === 'Inactive' && <small>Saved permissions: {permissionSummary(row.observedPermissions)}.</small>}
         </li>)}</ul>
       </details>}
-    <small className="evidence-boundary">Stop and Restart require an empty server and active remote controls. Log access is separate. Extra time is limited by the Host.</small>
+    <small className="evidence-boundary">Stop and Restart require an empty server and active remote controls. Log and game password access are separate. Extra time is limited by the Host.</small>
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{view.label}. Connection {view.connected ? 'recently connected' : 'Unknown'}. {view.rows.length} servers assigned. {grants}</span>
   </section>
 }
@@ -145,9 +155,14 @@ export type FriendAccessReviewView = {
   helperProjection: boolean
 }
 
+function configurationPassword(configuration: FriendAccessConfiguration, profileId: string): boolean {
+  return configuration.serverPermissions.find(item => item.profileId === profileId)?.canViewPassword ?? configuration.canViewPassword ?? false
+}
+
 function configurationPermission(configuration: FriendAccessConfiguration, profileId: string): PermissionValues | null {
   if (configuration.temporaryHelperActive) return null
-  return permissionValues(configuration.serverPermissions.find(item => item.profileId === profileId) ?? configuration)
+  return permissionValues({ ...(configuration.serverPermissions.find(item => item.profileId === profileId) ?? configuration),
+    canViewPassword: configurationPassword(configuration, profileId) })
 }
 
 export function reviewFriendAccess(before: FriendAccessConfiguration, after: FriendAccessConfiguration,
@@ -159,7 +174,7 @@ export function reviewFriendAccess(before: FriendAccessConfiguration, after: Fri
     const afterPermissions = afterAssigned ? configurationPermission(after, profileId) : null
     const change: FriendAccessReviewRow['change'] = !beforeAssigned ? 'Added' : !afterAssigned ? 'Removed' :
       beforePermissions === null || afterPermissions === null ? 'ReviewNeeded' :
-      actions.some(action => beforePermissions[action] !== afterPermissions[action]) ? 'Changed' : 'Unchanged'
+      permissions.some(permission => beforePermissions[permission] !== afterPermissions[permission]) ? 'Changed' : 'Unchanged'
     return { profileId, name: servers.find(server => server.id === profileId)?.name ?? 'Unavailable saved server',
       beforeAssigned, afterAssigned, beforePermissions, afterPermissions, change }
   })
@@ -181,7 +196,8 @@ const reviewActions: { label: string; icon: IconName; allowed: (permissions: Per
   { label: 'Stop when empty', icon: 'stop', allowed: permissions => permissions.canStop },
   { label: 'Restart', icon: 'refresh', allowed: permissions => permissions.canStart && permissions.canStop },
   { label: 'Add time', icon: 'clock', allowed: permissions => permissions.canExtendTimer },
-  { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs }
+  { label: 'View logs', icon: 'logs', allowed: permissions => permissions.canViewLogs },
+  { label: 'Game password', icon: 'shield', allowed: permissions => permissions.canViewPassword ?? false }
 ]
 
 function ReviewPermissionChips({ permissions }: { permissions: PermissionValues }) {
@@ -241,7 +257,13 @@ function ReviewServerChange({ row }: { row: FriendAccessReviewRow }) {
 
 export function FriendAccessReview({ before, after, servers, clearsExceptions = false }: FriendAccessReviewProps) {
   const headingId = useId()
-  const review = reviewFriendAccess(before, after, servers)
+  // Action presets clear their four action exceptions. The backend preserves
+  // the independent secret grant, including per-server password exceptions.
+  const reviewedAfter = clearsExceptions ? { ...after, canViewPassword: before.canViewPassword ?? false,
+    serverPermissions: after.assignedProfileIds.map(profileId => ({ profileId,
+      ...permissionValues(after.serverPermissions.find(item => item.profileId === profileId) ?? after),
+      canViewPassword: configurationPassword(before, profileId) })) } : after
+  const review = reviewFriendAccess(before, reviewedAfter, servers)
   const changed = review.rows.filter(row => row.change !== 'Unchanged')
   const unchanged = review.rows.filter(row => row.change === 'Unchanged')
   return <section className="players-workspace friend-access-review" aria-labelledby={headingId}>
@@ -259,7 +281,7 @@ export function FriendAccessReview({ before, after, servers, clearsExceptions = 
     {review.helperProjection && <DismissibleNotice as="p" scope={before.id} className="warning-text friend-review-note"><Icon name="warning" />
       <span>End temporary helper access, then refresh to edit saved permissions.</span></DismissibleNotice>}
     {clearsExceptions && <DismissibleNotice as="p" scope={before.id} className="friend-review-note"><Icon name="refresh" />
-      <span>This preset replaces all four permissions for every shared server, including any server-specific choices.</span></DismissibleNotice>}
+      <span>This preset replaces all four action permissions for every shared server, including any server-specific choices for those actions. Game password access stays separate.</span></DismissibleNotice>}
     {changed.length > 0 && <ul className="friend-access-change-list" aria-label="Server access before and after">
       {changed.map(row => <ReviewServerChange key={row.profileId} row={row} />)}
     </ul>}
@@ -271,7 +293,7 @@ export function FriendAccessReview({ before, after, servers, clearsExceptions = 
       </li>)}</ul>
     </details>}
     {review.rows.length === 0 && <p className="friend-review-quiet">No servers are shared with this PC. Permissions alone do not give server access.</p>}
-    <small className="friend-review-boundary">Restart needs Start and Stop permission. Logs and extra time are separate. Access time limits stay the same.</small>
+    <small className="friend-review-boundary">Restart needs Start and Stop permission. Logs, extra time and game password access are separate. Access time limits stay the same.</small>
   </section>
 }
 

@@ -245,6 +245,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
     private void MapRoutes(WebApplication app)
     {
         MapHandoffRequestRoutes(app, Authenticate, AuthenticationStatus);
+        GamePasswordCompanionRoutes.Map(app, data, pairing, Authenticate, AuthenticationStatus);
         static int AuthenticationStatus(PairingDecision decision) =>
             decision.Code == "RateLimited" ? StatusCodes.Status429TooManyRequests :
             decision.Code is "Revoked" or "ApprovalPending" or "AccessExpired"
@@ -344,6 +345,8 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 var canStop = permission?.CanStop ?? own?.CanStop == true;
                 var canExtendTimer = permission?.CanExtendTimer ?? own?.CanExtendTimer == true;
                 var canViewLogs = permission?.CanViewLogs ?? own?.CanViewLogs == true;
+                var canViewPassword = profile.Kind == GameKinds.Valheim &&
+                    (permission?.CanViewPassword ?? own?.CanViewPassword == true);
                 var canAddShutdownTime = canExtendTimer && snapshot.Settings.AutoShutdownEnabled &&
                     run.State == "Ready" && run.PlayerCountTrusted && run.OnlinePlayers is not null;
                 using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games, recordedRuns);
@@ -368,7 +371,9 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     PlayerCountFailureCount: run.PlayerCountFailureCount,
                     PlayerCountTrusted: run.PlayerCountTrusted,
                     PlayerObservationSource: run.PlayerObservationSource,
-                    PlayerCountObservedUtc: run.PlayerCountObservedUtc);
+                    PlayerCountObservedUtc: run.PlayerCountObservedUtc,
+                    CanViewPassword: canViewPassword,
+                    GamePasswordChangedUtc: canViewPassword ? GamePasswords.ChangedUtc(data, profile.Id) : null);
             }).ToList();
             var protocol = CompanionProtocol.Describe(own?.ProtocolVersion);
             var assigned = own?.AssignedProfileIds.ToHashSet() ?? [];

@@ -5,11 +5,18 @@ import { parseChatRoomSummary, parseManagedChatRoom, PinnedNoticePreview, Server
   ServerChatCardSummary, unreadMessageCount, type ChatDraftState } from './ServerChat'
 import { parseChatRoomView } from './contracts'
 import { parseChatRoomWithNotice, type PinnedServerNotice } from './pinnedNoticeContracts'
+import chatCss from './ServerChat.css?inline'
+import companionCss from './companion.css?inline'
+import redesignCss from './redesign.css?inline'
 
 const protectedDrafts = vi.hoisted(() => ({
   readProtectedDraft: vi.fn(), saveProtectedDraft: vi.fn(), clearProtectedDraft: vi.fn()
 }))
 vi.mock('./protectedUiDrafts', () => protectedDrafts)
+const chatAudio = vi.hoisted(() => ({ unlock: vi.fn(async () => undefined), play: vi.fn(), dispose: vi.fn() }))
+vi.mock('./chatSound', async importOriginal => ({
+  ...await importOriginal<typeof import('./chatSound')>(), createChatSoundPlayer: () => chatAudio
+}))
 
 const profileId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const deviceId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
@@ -62,6 +69,7 @@ function expectNoChatMutation(fetch: ReturnType<typeof vi.fn<typeof globalThis.f
 
 beforeEach(() => {
   localStorage.clear()
+  chatAudio.unlock.mockClear(); chatAudio.play.mockClear(); chatAudio.dispose.mockClear()
   protectedDrafts.readProtectedDraft.mockReset().mockResolvedValue({ ok: true, text: null, revision: 0, message: '' })
   protectedDrafts.saveProtectedDraft.mockReset().mockImplementation(async (_identity, text, revision) =>
     ({ ok: true, text, revision: revision + 1, message: '' }))
@@ -69,6 +77,138 @@ beforeEach(() => {
     ({ ok: true, text: null, revision: revision + 1, message: '' }))
 })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+describe('chat presentation and optional room sounds', () => {
+  it('groups nearby messages by their signed author and aligns this PC’s messages separately', async () => {
+    const own = { ...entry, id: '11111111-1111-1111-1111-111111111111', authorId: '00000000-0000-0000-0000-000000000000', author: 'Same display name', text: 'My message' }
+    const followup = { ...entry, id: '22222222-2222-2222-2222-222222222222', text: 'One more thought', sentUtc: '2026-10-04T09:01:00Z' }
+    const tomorrow = { ...entry, id: '33333333-3333-3333-3333-333333333333', text: 'Tomorrow’s plan', sentUtc: '2026-10-05T09:01:00Z' }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(room(true, [entry, followup, own, tomorrow]))))
+    const { container } = render(<><style>{[chatCss, companionCss, redesignCss].join('\n')}</style><ServerChat profileId={profileId} host visible /></>)
+    await screen.findByText(tomorrow.text)
+    expect(screen.getByText(followup.text).closest('.server-chat-row')).toHaveAttribute('data-grouped', 'true')
+    expect(screen.getByText(entry.text).closest('.server-chat-row')).toHaveAttribute('data-own', 'false')
+    expect(screen.getByText(own.text).closest('.server-chat-row')).toHaveAttribute('data-own', 'true')
+    expect(getComputedStyle(screen.getByText(own.text).closest('.server-chat-row')!).flexDirection).toBe('row-reverse')
+    expect(getComputedStyle(screen.getByRole('log')).display).toBe('flex')
+    expect(getComputedStyle(screen.getByRole('region', { name: 'Server chat' })).borderRadius).toBe('16px')
+    expect(container.querySelectorAll('.server-chat-day')).toHaveLength(2)
+    expect(container.querySelector('[data-arriving="true"]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Unmute chat sounds' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('sounds only for fresh verified incoming messages and mutes quiet, repeated, own and reconnect history', async () => {
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const first = { ...entry, sentUtc: new Date(now - 1000).toISOString() }
+    const later = { ...entry, id: '11111111-1111-1111-1111-111111111111', text: 'New incoming message', sentUtc: new Date(now).toISOString() }
+    const own = { ...entry, id: '22222222-2222-2222-2222-222222222222', authorId: '00000000-0000-0000-0000-000000000000', text: 'My accepted reply', sentUtc: new Date(now + 1).toISOString() }
+    let current = room(true, [first])
+    let failed = false
+    vi.stubGlobal('fetch', vi.fn(async () => { if (failed) throw new Error('Offline'); return Response.json(current) }))
+    const view = render(<ServerChat profileId={profileId} host visible />)
+    await screen.findByText(first.text)
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute chat sounds' }))
+    expect(chatAudio.unlock).toHaveBeenCalledOnce()
+    expect(chatAudio.play).not.toHaveBeenCalled()
+    current = room(true, [first, later])
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText(later.text)
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+    expect(screen.getByText(later.text).closest('.server-chat-message')).toHaveAttribute('data-arriving', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled())
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+    current = room(true, [first, later, own])
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText(own.text)
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+    view.rerender(<ServerChat profileId={profileId} host visible quietMode />)
+    const quiet = { ...later, id: '33333333-3333-3333-3333-333333333333', text: 'Quiet update', sentUtc: new Date(now + 2).toISOString() }
+    current = room(true, [first, later, own, quiet])
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText(quiet.text)
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+    expect(screen.getByText('Sound paused')).toBeInTheDocument()
+    view.rerender(<ServerChat profileId={profileId} host visible />)
+    failed = true
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText(/Sync failed/)
+    failed = false
+    const reconnected = { ...later, id: '44444444-4444-4444-4444-444444444444', text: 'Reconnect history', sentUtc: new Date(now + 3).toISOString() }
+    current = room(true, [reconnected])
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText(reconnected.text)
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Mute chat sounds' }))
+    expect(screen.getByRole('button', { name: 'Unmute chat sounds' })).toHaveAttribute('aria-pressed', 'false')
+    expect(localStorage.getItem(`together-server.chat.sound.host:${profileId}`)).toBe('off')
+  })
+
+  it('keeps sound preferences scoped and needs the Friend’s trusted author identity', async () => {
+    let current = { ...room(), code: 'ChatSynced' }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(current)))
+    const view = render(<ServerChat profileId={profileId} host={false} visible connectionId={connectionId} />)
+    await screen.findByText(entry.text)
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute chat sounds' }))
+    current = { ...room(true, [entry, { ...entry, id: queuedId, text: 'Identity unavailable', sentUtc: new Date().toISOString() }]), code: 'ChatSynced' }
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText('Identity unavailable')
+    expect(chatAudio.play).not.toHaveBeenCalled()
+    view.unmount()
+    const next = render(<ServerChat profileId={profileId} host={false} visible connectionId={connectionId} />)
+    expect(screen.getByRole('button', { name: 'Mute chat sounds' })).toHaveAttribute('aria-pressed', 'true')
+    next.rerender(<ServerChat profileId={profileId} host visible />)
+    expect(screen.getByRole('button', { name: 'Unmute chat sounds' })).toHaveAttribute('aria-pressed', 'false')
+    expect(() => parseManagedChatRoom({ ...room(), selfAuthorId: 'not-a-device' })).toThrow(/local author/)
+  })
+
+  it('uses the Friend’s local author ID, excludes its own queue replay, and baselines a hidden room', async () => {
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const initial = { ...entry, sentUtc: new Date(now - 1000).toISOString() }
+    const owner = { ...entry, authorId: '00000000-0000-0000-0000-000000000000', author: 'Host', id: queuedId, text: 'Host replied', sentUtc: new Date(now).toISOString() }
+    const replay = { ...entry, id: '22222222-2222-2222-2222-222222222222', text: 'My queued message returned', sentUtc: new Date(now + 1).toISOString() }
+    let current = { ...room(true, [initial]), code: 'ChatSynced', selfAuthorId: deviceId }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(current)))
+    const props = { profileId, host: false, visible: true, connectionId }
+    const view = render(<ServerChat {...props} />)
+    await screen.findByText(initial.text)
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute chat sounds' }))
+    current = { ...current, entries: [initial, owner, replay] }
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await screen.findByText(replay.text)
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+    expect(screen.getByText(replay.text).closest('.server-chat-row')).toHaveAttribute('data-own', 'true')
+    expect(screen.getByText(owner.text).closest('.server-chat-row')).toHaveAttribute('data-own', 'false')
+    view.rerender(<ServerChat {...props} visible={false} />)
+    current = { ...current, entries: [owner, replay, { ...owner, id: '33333333-3333-3333-3333-333333333333', text: 'Arrived while away', sentUtc: new Date(now + 2).toISOString() }] }
+    view.rerender(<ServerChat {...props} />)
+    await screen.findByText('Arrived while away')
+    expect(chatAudio.play).toHaveBeenCalledOnce()
+  })
+
+  it('keeps send responses quiet even when they include other accepted messages', async () => {
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    let current = room(true, [{ ...entry, sentUtc: new Date(now - 1000).toISOString() }])
+    const remote = { ...entry, id: queuedId, text: 'Another accepted message', sentUtc: new Date(now).toISOString() }
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      if (path.endsWith('/messages')) current = room(true, [entry, remote])
+      return Response.json(current)
+    }))
+    render(<ServerChat profileId={profileId} host visible />)
+    await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Unmute chat sounds' }))
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'An explicit reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByText(remote.text)
+    expect(chatAudio.play).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sync now' })).toBeEnabled())
+    expect(chatAudio.play).not.toHaveBeenCalled()
+  })
+})
 
 describe('ServerChat', () => {
   it.each(editKinds)('denies navigation before %s discard review if the composer save fails', async kind => {

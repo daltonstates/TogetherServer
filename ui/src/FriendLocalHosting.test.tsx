@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FriendLocalHosting, parseLocalHostingStatus, type LocalHostingStatus } from './FriendLocalHosting'
+import { FriendLocalHosting, localHostingAttention, parseLocalHostingStatus, type LocalHostingStatus } from './FriendLocalHosting'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
 const localProfileId = '22222222-2222-4222-8222-222222222222'
@@ -26,7 +26,7 @@ const prepared: LocalHostingStatus = {
 }
 const response = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
 const props = { profileId, connectionId: 'first', worldName: 'Shared world', available: true, onOpenHost: vi.fn() }
-afterEach(() => vi.useRealTimers())
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('local hosting response trust', () => {
   it('accepts verified local preparation while incoming connectivity remains unverified', () => {
@@ -43,38 +43,46 @@ describe('local hosting response trust', () => {
   })
 })
 
-it('checks read-only, prepares with local consent, and starts only on the separate explicit action', async () => {
-  const requests: { url: string; init?: RequestInit }[] = []
+it('checks read-only and uses one consented click for preparation and Start', async () => {
+  const calls: { url: string; body?: Record<string, unknown> }[] = []
   const open = vi.fn()
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    requests.push({ url, init })
-    if (url.endsWith('/hosting/prepare')) return response(prepared)
-    if (url.endsWith('/start')) return response({ ok: true, code: 'Starting', message: 'Local Start requested.' })
-    return response(initial)
+    calls.push({ url, ...(init?.method ? { body: JSON.parse(String(init.body)) } : {}) })
+    return response(url.endsWith('/prepare') ? prepared : url.endsWith('/start') ?
+      { ok: true, code: 'Starting', message: 'Start requested.' } : initial)
   }))
   render(<FriendLocalHosting {...props} onOpenHost={open} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
-  const dialog = screen.getByRole('dialog', { name: 'Host on this PC' })
-  expect(requests).toHaveLength(1)
-  expect(requests[0].init?.method).toBeUndefined()
-  expect(requests[0].init?.headers).toMatchObject({ 'X-TogetherServer-Local': '1' })
-  expect(within(dialog).getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+  const dialog = screen.getByRole('dialog')
+  expect(within(dialog).getByRole('heading', { name: 'Review before hosting your own copy' })).toBeInTheDocument()
+  const proceed = within(dialog).getByRole('button', { name: 'Continue and start' })
+  expect(proceed).toBeDisabled()
   fireEvent.click(within(dialog).getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare this PC' }))
-  const start = await within(dialog).findByRole('button', { name: 'Start server on this PC' })
-  expect(requests.map(item => item.url)).toEqual([`${base}/hosting`, `${base}/hosting/prepare`])
-  expect(JSON.parse(requests[1].init!.body as string)).toEqual({
-    allowReceiving: true, acceptSplitWarning: true, serverFile: null, gamePassword: null
-  })
-  expect(within(dialog).getByText(/Incoming Friend access is unverified/)).toBeInTheDocument()
-  expect(open).not.toHaveBeenCalled()
-  fireEvent.click(start)
+  expect(calls).toEqual([{ url: `${base}/hosting` }])
+  fireEvent.click(proceed)
   await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId))
-  expect(requests[2].url).toBe(`${base}/recovery/separate/start`)
-  expect(JSON.parse(requests[2].init!.body as string)).toEqual({ branchHash, localProfileId, acceptSplitWarning: true })
+  expect(calls).toEqual([{ url: `${base}/hosting` }, { url: `${base}/hosting/prepare`, body: {
+    allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null
+  } }, { url: `${base}/hosting/start`, body: { localProfileId, branchHash, requestId: null, acceptSplitWarning: true } }])
 })
 
-it('does not show the hosting action for a denied grant or explicit removed access', async () => {
+it('starts an already prepared copy directly from the overview without a wizard', async () => {
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); return response({ ok: true, code: 'Starting', message: 'Start requested.' }) }
+    return response(prepared)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  const hostButton = await screen.findByRole('button', { name: 'Host on this PC' })
+  expect(hostButton).toHaveAccessibleDescription('Starts your own copy. The other Host can keep running; progress on the two servers stays separate.')
+  fireEvent.click(hostButton)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId))
+  expect(writes).toEqual([`${base}/hosting/start`])
+})
+
+it('hides the action when permission is denied and does not read explicitly blocked access', async () => {
   const fetcher = vi.fn(async () => response({ ...initial, allowed: false }))
   vi.stubGlobal('fetch', fetcher)
   const view = render(<FriendLocalHosting {...props} />)
@@ -82,100 +90,205 @@ it('does not show the hosting action for a denied grant or explicit removed acce
   expect(screen.queryByRole('button', { name: 'Host on this PC' })).not.toBeInTheDocument()
   view.rerender(<FriendLocalHosting {...props} accessBlocked />)
   expect(fetcher).toHaveBeenCalledOnce()
-  expect(screen.queryByRole('button', { name: 'Host on this PC' })).not.toBeInTheDocument()
 })
 
-it('uses cached signed permission while the remote Host is offline and does not require remote Start', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => response(prepared)))
-  render(<FriendLocalHosting {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
-  expect(screen.getByRole('button', { name: 'Start server on this PC' })).toBeDisabled()
-  fireEvent.click(screen.getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  expect(screen.getByRole('button', { name: 'Start server on this PC' })).toBeEnabled()
-})
-
-it('retains a missing-install fix in the same flow and never starts after a failed preparation', async () => {
-  const missing = { ...initial, ok: false, needsServerFile: true, serverFile: null,
-    steps: initial.steps.map(step => step.key === 'server' ? { ...step, state: 'ActionRequired', message: 'Install Valheim Dedicated Server.' } : step) }
-  const requests: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => { requests.push(url); return response(missing) }))
-  const browse = vi.fn(async () => 'C:\\Selected\\valheim_server.exe')
+it('opens at the missing game step and never starts after a failed preparation', async () => {
+  const missing: LocalHostingStatus = { ...initial, ok: false, code: 'InstalledServerRequired', needsServerFile: true, serverFile: null }
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(missing) }))
+  const browse = vi.fn(async () => 'C:/Selected/valheim_server.exe')
   render(<FriendLocalHosting {...props} onBrowseServerFile={browse} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
+  expect(screen.getByRole('heading', { name: 'Install or find the game server' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'Install Valheim Dedicated Server in Steam' })).toHaveAttribute('href', 'steam://install/896660')
   fireEvent.click(screen.getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  expect(screen.getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Continue and start' })).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Installed server file' })).toHaveValue('C:\\Selected\\valheim_server.exe'))
-  fireEvent.click(screen.getByRole('button', { name: 'Prepare this PC' }))
-  await waitFor(() => expect(requests).toContain(`${base}/hosting/prepare`))
-  expect(screen.queryByRole('button', { name: 'Start server on this PC' })).not.toBeInTheDocument()
-  expect(requests.some(url => url.endsWith('/start'))).toBe(false)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Continue and start' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
+  await waitFor(() => expect(writes).toEqual([`${base}/hosting/prepare`]))
 })
 
-it('blocks an already open dialog when another operation disables actions', async () => {
-  const fetcher = vi.fn(async () => response(prepared))
-  vi.stubGlobal('fetch', fetcher)
-  const view = render(<FriendLocalHosting {...props} />)
+it('requires local Minecraft terms consent and a new click before preparing', async () => {
+  const writes: { url: string; body: Record<string, unknown> }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
+    return response({ ...initial, game: 'MinecraftJava' })
+  }))
+  render(<FriendLocalHosting {...props} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
+  const terms = screen.getByRole('checkbox', { name: /I have read and accept the terms/ })
+  expect(terms).not.toBeChecked()
+  fireEvent.click(terms)
   fireEvent.click(screen.getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  view.rerender(<FriendLocalHosting {...props} disabled />)
-  const start = screen.getByRole('button', { name: 'Start server on this PC' })
-  expect(start).toBeDisabled()
-  fireEvent.click(start)
-  expect(fetcher).toHaveBeenCalledOnce()
+  expect(writes).toEqual([])
+  fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
+  await waitFor(() => expect(writes).toEqual([{ url: `${base}/hosting/prepare`, body: {
+    allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null, acceptedTerms: true
+  } }]))
 })
 
-it('opens the prepared local server’s connection fix without starting it', async () => {
-  const fetcher = vi.fn(async () => response(prepared))
+it('opens connection help before a local profile exists without a preparation or network mutation', async () => {
+  const help = vi.fn()
+  const fetcher = vi.fn(async () => response({ ...initial, consented: true, branchHash,
+    remedy: { kind: 'Connection', title: 'Let friends connect to this PC', message: 'Turn on Friend connections in Connection help.' } }))
   vi.stubGlobal('fetch', fetcher)
-  const connectionHelp = vi.fn()
-  render(<FriendLocalHosting {...props} onOpenConnectionHelp={connectionHelp} />)
+  render(<FriendLocalHosting {...props} onOpenConnectionHelp={help} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   fireEvent.click(screen.getByRole('button', { name: 'Connection help' }))
-  expect(connectionHelp).toHaveBeenCalledExactlyOnceWith(localProfileId)
-  expect(screen.queryByRole('dialog', { name: 'Host on this PC' })).not.toBeInTheDocument()
+  expect(help).toHaveBeenCalledExactlyOnceWith(profileId)
+  expect(fetcher).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+
+it.each([true, false])('offers working setup for busy ports only when a local profile exists (%s)', async hasProfile => {
+  const setup = vi.fn()
+  const fetcher = vi.fn(async () => response({ ...initial, consented: true, branchHash, localProfileId: hasProfile ? localProfileId : null,
+    steps: initial.steps.map(step => step.key === 'ports' ? { ...step, state: 'ActionRequired' } : step) }))
+  vi.stubGlobal('fetch', fetcher)
+  render(<FriendLocalHosting {...props} onOpenGameSetup={setup} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
+  if (hasProfile) {
+    fireEvent.click(screen.getByRole('button', { name: 'Open game setup' }))
+    expect(setup).toHaveBeenCalledExactlyOnceWith('Valheim', localProfileId)
+  } else {
+    expect(screen.queryByRole('button', { name: 'Open game setup' })).not.toBeInTheDocument()
+    expect(setup).not.toHaveBeenCalled()
+  }
   expect(fetcher).toHaveBeenCalledOnce()
 })
 
-it('discards an old prepare completion after switching away and back to the same saved connection', async () => {
+it.each(['connection changed', 'actions disabled'] as const)('cancels a pending Start instruction when %s', async reason => {
   let release!: (value: Response) => void
-  let prepareSignal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const open = vi.fn()
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/hosting/prepare')) {
-      prepareSignal = init?.signal
-      return new Promise<Response>(resolve => { release = resolve })
-    }
+    if (init?.method) { writes.push(url); return new Promise<Response>(resolve => { release = resolve }) }
     return response(initial)
   }))
-  const view = render(<FriendLocalHosting {...props} />)
+  const view = render(<FriendLocalHosting {...props} onOpenHost={open} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   fireEvent.click(screen.getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  fireEvent.click(screen.getByRole('button', { name: 'Prepare this PC' }))
-  await waitFor(() => expect(prepareSignal).toBeDefined())
-  view.rerender(<FriendLocalHosting {...props} connectionId="other" />)
-  await screen.findByRole('button', { name: 'Host on this PC' })
-  view.rerender(<FriendLocalHosting {...props} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
+  if (reason === 'connection changed') {
+    view.rerender(<FriendLocalHosting {...props} connectionId="second" onOpenHost={open} />)
+    await screen.findByRole('button', { name: 'Host on this PC' })
+    view.rerender(<FriendLocalHosting {...props} onOpenHost={open} />)
+  } else view.rerender(<FriendLocalHosting {...props} onOpenHost={open} disabled />)
   await act(async () => { release(response(prepared)) })
-  expect(prepareSignal?.aborted).toBe(true)
-  expect(screen.queryByRole('button', { name: 'Start server on this PC' })).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+  expect(writes).toEqual([`${base}/hosting/prepare`])
+  expect(open).not.toHaveBeenCalled()
 })
 
-it('withdraws stale ready controls if a read stalls, and ignores its late response', async () => {
+it('never starts or accepts or installs anything from polling', async () => {
   vi.useFakeTimers()
-  let reads = 0
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(prepared) }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(40000) })
+  expect(writes).toEqual([])
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+
+it('shows the Start failure remedy and never retries it from a later ready poll', async () => {
+  vi.useFakeTimers()
+  const writes: string[] = []
+  const setup = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); return response({ ok: false, code: 'PortInUse', message: 'A game port is busy. Open Setup and choose another port.' }) }
+    return response(prepared)
+  }))
+  render(<FriendLocalHosting {...props} onOpenGameSetup={setup} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host on this PC' }))
+  await act(async () => {})
+  expect(screen.getByRole('heading', { name: 'Free the game ports on this PC' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Open game setup' })).toBeEnabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  expect(writes).toEqual([`${base}/hosting/start`])
+  expect(setup).not.toHaveBeenCalled()
+})
+
+it('ignores a timed out preparation result without retrying Start', async () => {
+  vi.useFakeTimers()
   let release!: (value: Response) => void
-  vi.stubGlobal('fetch', vi.fn(async () => ++reads === 1 ? response(prepared)
-    : new Promise<Response>(resolve => { release = resolve })))
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { release = resolve }) }
+    return response(initial)
+  }))
   render(<FriendLocalHosting {...props} />)
   await act(async () => {})
   fireEvent.click(screen.getByRole('button', { name: 'Host on this PC' }))
   fireEvent.click(screen.getByRole('checkbox', { name: /Keep this save on my PC/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Continue and start' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(120001) })
+  expect(signal?.aborted).toBe(true)
+  expect(screen.getByRole('button', { name: 'Retry automatic checks' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Close Host on this PC' })).toBeEnabled()
+  await act(async () => { release(response(prepared)); await vi.advanceTimersByTimeAsync(10000) })
+  expect(writes).toEqual([`${base}/hosting/prepare`])
+})
+
+it('withdraws stale controls if a status read stalls and ignores its late response', async () => {
+  vi.useFakeTimers()
+  let reads = 0
+  let release!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(async () => ++reads === 1 ? response(initial) : new Promise<Response>(resolve => { release = resolve })))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host on this PC' }))
   await act(async () => { await vi.advanceTimersByTimeAsync(25001) })
-  expect(screen.queryByRole('button', { name: 'Start server on this PC' })).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Prepare this PC' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Continue and start' })).toBeDisabled()
   await act(async () => { release(response(prepared)) })
-  expect(screen.queryByRole('button', { name: 'Start server on this PC' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Continue and start' })).toBeDisabled()
+})
+
+it('keeps automatic results secondary and refuses unknown action destinations', async () => {
+  expect(() => parseLocalHostingStatus({ ...prepared, remedy: { kind: 'https://untrusted', title: 'Click', message: 'Click' } })).toThrow()
+  expect(localHostingAttention(initial)?.kind).toBe('ConfirmCopy')
+  expect(localHostingAttention(prepared)).toBeNull()
+  vi.stubGlobal('fetch', vi.fn(async () => response(initial)))
+  render(<FriendLocalHosting {...props} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
+  const summary = screen.getByText('Automatically checked results', { selector: 'summary' })
+  expect(summary.closest('details')).not.toHaveAttribute('open')
+  fireEvent.click(summary)
+  expect(screen.getByText(/Incoming Friend access is unverified/)).toBeVisible()
+  expect(screen.getByText(/Loading and saving in the real game and a friend joining from another network require separate testing/)).toBeVisible()
+})
+
+it.each([false, true])('carries only the explicit bounded Start instruction through a move (closed: %s)', async close => {
+  vi.useFakeTimers()
+  const requestId = '33333333-3333-4333-8333-333333333333'
+  const move = { pending: false, code: 'RecipientPrepared', message: 'Waiting for the current Host.',
+    successorDeviceId: localProfileId, requestId, recipientState: 'Prepared' as const,
+    preparedVersionHash: branchHash, finalVersion: null, receiptConfirmed: false, canComplete: false, canCancel: false }
+  let current: LocalHostingStatus = { ...initial, consented: true, handoffRequest: move }
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (!init?.method) return response(current)
+    writes.push(url)
+    if (url.endsWith('/prepare')) {
+      current = { ...prepared, localProfileId: profileId, branchHash: null,
+        handoffRequest: { ...move, recipientState: 'Completed', receiptConfirmed: true } }
+      return response(current)
+    }
+    return response({ ok: true, code: 'Starting', message: 'Start requested.' })
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host on this PC' }))
+  expect(writes).toEqual([])
+  expect(screen.getByText(/Start is requested for this move only/)).toBeInTheDocument()
+  if (close) fireEvent.click(screen.getByRole('button', { name: 'Close Host on this PC' }))
+  current = { ...current, handoffRequest: { ...move, recipientState: 'Completed', receiptConfirmed: true } }
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  if (close) { expect(writes).toEqual([]); expect(open).not.toHaveBeenCalled() }
+  else {
+    expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+    expect(open).toHaveBeenCalledExactlyOnceWith(profileId)
+  }
 })

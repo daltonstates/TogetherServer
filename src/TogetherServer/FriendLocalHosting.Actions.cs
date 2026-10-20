@@ -1,0 +1,122 @@
+using System.Text.Json;
+
+namespace TogetherServer;
+
+internal sealed record LocalHostingStartRequest(Guid LocalProfileId, string? BranchHash,
+    Guid? RequestId, bool AcceptSplitWarning);
+internal sealed record LocalHostingActionResult(bool Ok, string Code, string Message);
+
+internal sealed partial class FriendLocalHostingService
+{
+    // A remedy is a fixed local destination, never a route, URL, path or command
+    // supplied by a peer. Polling projects it without starting any work.
+    internal static LocalHostingStatus WithRemedy(LocalHostingStatus status)
+    {
+        LocalHostingRemedy? remedy = status switch
+        {
+            { Allowed: false } => new("Permission", "Ask the owner to allow hosting", status.Message),
+            { HandoffRequest.RecipientState: "Requested" } => new("Respond", "Review the hosting request", "Accept or decline the move before preparing this PC."),
+            { Code: "HostingHistoryChoiceRequired" or "WorldHistoryReviewRequired" } => new("ChooseHistory", "Choose which save to host", "More than one save history needs review. Keep every copy and choose the one you want to use."),
+            { Code: "MinecraftTermsRequired" } => new("Terms", "Review Minecraft's terms", status.Message),
+            { Code: "SharedSaveRequired" or "WaitingForSuccessorCopy" } => new("GetSave", "Get a completed save", "Keep an approved Host reachable. If no save has been shared, ask the current Host to move hosting with the final save or stop safely and share a completed copy. Then retry."),
+            { NeedsServerFile: true } => new("ChooseServer", "Find the game server on this PC", "Install the matching dedicated server or choose its installed file, then continue. Existing worlds stay intact."),
+            { Code: "LocalServerSetupRequired" } => new("GameSetup", "Finish this PC's game setup", status.Message),
+            { Code: "LocalPortsRequired" or "GamePortInUse" or "PortInUse" or "PortConflict" } => new("Ports", "Free this PC's game ports", "Another app may be using a needed game port. Open local servers, stop the app using it if it is yours, or change this server's port in Setup. Then retry."),
+            { Code: "LocalConnectionSetupRequired" or "RecipientConnectionRequired" or "PeerDiscoveryRequired" } => new("Connection", "Set up connections to this PC", status.Message),
+            { Code: "LocalHostingReviewRequired" or "SharingReviewRequired" or "HandoffReviewRequired" } => new("Review", "Review the saved setup", status.Message),
+            { Running: false, Consented: false } => new("ConfirmCopy", "Allow a save on this PC", "This PC needs your permission to keep the shared save before hosting."),
+            { Running: false, BranchHash: null, HandoffRequest: null } => new("ConfirmCopy", "Review before making your own copy", "Another Host may still be running. Changes made on each PC stay separate; starting here does not move or replace the other Host."),
+            _ => null
+        };
+        if (remedy is null && !status.Running && status.Steps.FirstOrDefault(step => step.Key == "ports")?.State == "ActionRequired")
+            remedy = new("Ports", "Free this PC's game ports", "Open local servers to check what is using the game ports, or change the port in Setup. Then retry the automatic checks.");
+        if (remedy is null && !status.Running && status.Steps.FirstOrDefault(step => step.Key == "connection") is { State: "ActionRequired" } connection)
+            remedy = new("Connection", "Let friends connect to this PC", connection.Message);
+        return status with { Remedy = remedy };
+    }
+
+    internal static LocalHostingStartRequest ParseHostingStart(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length is 0 or > 1024) throw new InvalidDataException("Use the exact prepared local server.");
+        using var document = JsonDocument.Parse(bytes.ToArray(), new() { MaxDepth = 2 });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Use the fixed local Start action.");
+        var fields = root.EnumerateObject().ToArray();
+        if (fields.Length != 4 || fields.Select(field => field.Name).Distinct(StringComparer.Ordinal).Count() != 4 ||
+            fields.Any(field => field.Name is not ("localProfileId" or "branchHash" or "requestId" or "acceptSplitWarning")) ||
+            !root.TryGetProperty("localProfileId", out var profile) || profile.ValueKind != JsonValueKind.String ||
+            !Guid.TryParse(profile.GetString(), out var localId) || localId == Guid.Empty ||
+            !root.TryGetProperty("acceptSplitWarning", out var split) || split.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw new InvalidDataException("The exact prepared server and warning choice are required.");
+        var branch = root.GetProperty("branchHash");
+        var request = root.GetProperty("requestId");
+        var branchHash = branch.ValueKind == JsonValueKind.Null ? null : branch.ValueKind == JsonValueKind.String &&
+            SharedWorldPeerTrust.ValidHash(branch.GetString()) ? branch.GetString() : throw new InvalidDataException("The signed save history is invalid.");
+        Guid? requestId = request.ValueKind == JsonValueKind.Null ? null : request.ValueKind == JsonValueKind.String &&
+            Guid.TryParse(request.GetString(), out var id) && id != Guid.Empty ? id : throw new InvalidDataException("The hosting request is invalid.");
+        if ((branchHash is null) == (requestId is null)) throw new InvalidDataException("Choose one exact prepared hosting operation.");
+        return new(localId, branchHash, requestId, split.GetBoolean());
+    }
+
+    // Only the local POST calls this method. It carries no durable start intent:
+    // a late status response, app restart or background poll cannot retry Start.
+    internal async Task<LocalHostingActionResult> StartPreparedAsync(Guid profileId, LocalHostingStartRequest input,
+        CancellationToken cancellationToken)
+    {
+        using var connection = friend.RetainLocalHostingConnection();
+        LocalHostingActionResult Refused(string code, string message) => new(false, code, message);
+        static LocalHostingActionResult Basic(ActionResult result) => new(result.Ok, result.Code, result.Message);
+        if (connection is null) return Refused("NotPaired", "Choose the saved Host connection first.");
+        var access = await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken);
+        if (!access.Allowed || !access.Consented || !friend.CurrentLocalHostingConnection(connection))
+            return Refused("HostingPermissionChanged", "Hosting permission or the selected connection changed. Review this server again.");
+        var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken));
+        if (!status.ReadyForManualStart || status.Running || status.LocalProfileId != input.LocalProfileId ||
+            !friend.CurrentLocalHostingConnection(connection))
+            return Refused("LocalHostingPreparationRequired", "Repeat this PC's automatic hosting checks before starting.");
+        if (status.Remedy is { Kind: "Connection" or "Ports" or "Review" })
+            return Refused("LocalHostingActionRequired", status.Remedy.Message);
+        if (input.RequestId is { } exactRequest)
+        {
+            if (status.HandoffRequest is not { RecipientState: "Completed" } exactHandoff || exactHandoff.RequestId != exactRequest ||
+                status.BranchHash is not null || input.LocalProfileId != profileId)
+                return Refused("HostingRequestChanged", "The exact final hosting move needs review before starting.");
+        }
+        else if (!input.AcceptSplitWarning || status.BranchHash != input.BranchHash ||
+            !connection.Link.SeparateCopyBranches(profileId).Any(branch => branch.BranchHash == input.BranchHash))
+            return Refused("SplitWarningRequired", "Review the exact local save. Another Host may still be running and progress stays separate.");
+        SharedWorldPeerRoot? root;
+        if (input.RequestId is not null)
+        {
+            var record = new WorldAuthorityStore(data).LocalAuthorizedHead(profileId);
+            root = record is null ? null : new(record.Roster.OwnerPublicKey, profileId, record.Proposal.GroupId);
+        }
+        else
+        {
+            var branch = connection.Link.SeparateCopyBranches(profileId).SingleOrDefault(item => item.BranchHash == input.BranchHash);
+            root = branch is null ? null : new(branch.Offer.Roster.OwnerPublicKey, profileId, branch.Offer.Roster.GroupId);
+        }
+        if (root is null || announceHosting is null)
+            return Refused("PeerDiscoveryRequired", "This PC's signed Host address could not be shared. Recheck shared-hosting setup before starting.");
+        // The local Host instruction permits publishing this PC's signed
+        // address to current members, using its already enabled listener.
+        var announced = await announceHosting(root, cancellationToken);
+        if (!announced.Ok) return Refused(announced.Code, announced.Message);
+        if (!friend.CurrentLocalHostingConnection(connection))
+            return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
+        cancellationToken.ThrowIfCancellationRequested();
+        if (input.RequestId is { } requestId)
+        {
+            if (status.HandoffRequest is not { RecipientState: "Completed" } handoff || handoff.RequestId != requestId ||
+                status.BranchHash is not null || input.LocalProfileId != profileId)
+                return Refused("HostingRequestChanged", "The exact final hosting move needs review before starting.");
+            // StartUnderGate repeats signed authority, final-save/setup, route,
+            // source fencing, process identity and all declared port checks.
+            return Basic(await manager.StartAsync(input.LocalProfileId, cancellationToken));
+        }
+        if (!input.AcceptSplitWarning || status.BranchHash != input.BranchHash ||
+            !connection.Link.SeparateCopyBranches(profileId).Any(branch => branch.BranchHash == input.BranchHash))
+            return Refused("SplitWarningRequired", "Review the exact local save. Another Host may still be running and progress stays separate.");
+        return Basic(await manager.StartSeparateCopyAsync(input.LocalProfileId, input.BranchHash!, cancellationToken));
+    }
+}

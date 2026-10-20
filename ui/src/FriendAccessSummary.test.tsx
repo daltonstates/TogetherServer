@@ -88,7 +88,7 @@ describe('Friend access summary and review', () => {
     const review = reviewFriendAccess(device, after, servers)
     expect(review.rows.map(row => [row.profileId, row.change])).toEqual([['one', 'Removed'], ['two', 'Changed'], ['three', 'Added']])
     expect(review.rows[0].afterAssigned).toBe(false)
-    expect(review.rows[1].afterPermissions).toEqual({ canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false })
+    expect(review.rows[1].afterPermissions).toEqual({ canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false, canViewPassword: false })
     expect(device).toEqual(before)
     render(<FriendAccessReview before={device} after={after} servers={servers} clearsExceptions />)
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
@@ -119,6 +119,77 @@ describe('Friend access summary and review', () => {
     expect(screen.getByText('2 unchanged servers')).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Server access before and after' }).children).toHaveLength(1)
     expect(screen.queryByRole('group', { name: 'Valheim evening access change' })).not.toBeInTheDocument()
+  })
+
+  it('shows explicit password access separately and limits usable grants to Valheim', () => {
+    const savedServers = [{ id: 'one', name: 'Valheim evening', kind: 'Valheim' },
+      { id: 'two', name: 'Minecraft weekend', kind: 'MinecraftJava' }]
+    const shared = { ...device, canViewPassword: false,
+      serverPermissions: [
+        { profileId: 'one', canStart: true, canStop: false, canExtendTimer: false, canViewLogs: false, canViewPassword: true },
+        { profileId: 'two', canStart: false, canStop: false, canExtendTimer: false, canViewLogs: false, canViewPassword: true }
+      ] }
+    const view = effectiveDeviceAccess(shared, savedServers, nowMs)
+    expect(view.rows.map(row => row.effectivePermissions?.canViewPassword)).toEqual([true, false])
+    expect(view.rows[0].exception).toBe(true)
+    render(<FriendAccessSummary device={shared} servers={savedServers} nowMs={nowMs} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Game password: 1/1 Valheim')
+    expect(screen.getByText('Start · view game password')).toBeInTheDocument()
+  })
+
+  it('keeps helper access from inventing a password grant', () => {
+    const helper = { ...device, canStart: true, canStop: true, canExtendTimer: true, canViewLogs: true,
+      serverPermissions: [], temporaryHelperActive: true, temporaryHelperUntilUtc: '2026-10-08T13:00:00Z' }
+    const savedServers = [{ id: 'one', name: 'Valheim evening', kind: 'Valheim' },
+      { id: 'two', name: 'Valheim weekend', kind: 'Valheim' }]
+    expect(effectiveDeviceAccess(helper, savedServers, nowMs).rows.every(row => row.effectivePermissions?.canViewPassword === false)).toBe(true)
+    render(<FriendAccessSummary device={helper} servers={savedServers} nowMs={nowMs} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Game password: 0/2 Valheim')
+    expect(screen.getByText(/Game password access stays separate/)).toBeInTheDocument()
+  })
+
+  it('marks a password-only server edit Changed and shows its before/after grant', () => {
+    const before = { ...device, serverPermissions: [], canViewPassword: false }
+    const after = { ...before, serverPermissions: [{ profileId: 'one', canStart: true, canStop: false,
+      canExtendTimer: false, canViewLogs: false, canViewPassword: true }] }
+    const original = structuredClone(before)
+    const review = reviewFriendAccess(before, after, servers)
+    expect(review.rows.map(row => [row.profileId, row.change])).toEqual([['one', 'Changed'], ['two', 'Unchanged']])
+    expect(review.changedCount).toBe(1)
+    expect(before).toEqual(original)
+    render(<FriendAccessReview before={before} after={after} servers={servers} />)
+    const changed = screen.getByRole('group', { name: 'Valheim evening access change' })
+    expect(within(changed).getByText('Changed')).toBeInTheDocument()
+    const password = within(changed).getByRole('listitem', { name: 'Game password permission change' })
+    expect(within(password).getByLabelText('Before: Off')).toBeInTheDocument()
+    expect(within(password).getByLabelText('After: Allowed')).toBeInTheDocument()
+    expect(within(changed).queryByText('Unchanged')).not.toBeInTheDocument()
+  })
+
+  it('reviews default password access and normalizes omitted legacy flags to off', () => {
+    const before = { ...device, serverPermissions: [] }
+    const unchanged = reviewFriendAccess(before, { ...before, canViewPassword: false }, servers)
+    expect(unchanged.changedCount).toBe(0)
+    expect(unchanged.beforeDefaults?.canViewPassword).toBe(false)
+    const after = { ...before, canViewPassword: true }
+    render(<FriendAccessReview before={before} after={after} servers={servers} />)
+    const defaults = screen.getByRole('group', { name: 'PC permissions' })
+    const password = within(defaults).getByRole('listitem', { name: 'Game password permission change' })
+    expect(within(password).getByLabelText('Before: Off')).toBeInTheDocument()
+    expect(within(password).getByLabelText('After: Allowed')).toBeInTheDocument()
+    expect(reviewFriendAccess(before, after, servers).changedCount).toBe(2)
+  })
+
+  it('preserves independent password exceptions in preset before/after previews', () => {
+    const before = { ...device, canStart: false, canViewPassword: false,
+      serverPermissions: [{ profileId: 'one', canStart: false, canStop: false,
+        canExtendTimer: false, canViewLogs: false, canViewPassword: true }] }
+    const after = { ...before, ...permissionPresetRequest('status'), serverPermissions: [] }
+    render(<FriendAccessReview before={before} after={after} servers={servers} clearsExceptions />)
+    expect(screen.queryByRole('listitem', { name: 'Game password permission change' })).not.toBeInTheDocument()
+    const unchanged = screen.getByRole('list', { name: 'Unchanged server access' })
+    expect(within(unchanged).getByText('Game password')).toBeInTheDocument()
+    expect(screen.getByText(/Game password access stays separate/)).toBeInTheDocument()
   })
 
   it('derives Restart changes from Start and Stop while keeping log and timer permissions independent', () => {

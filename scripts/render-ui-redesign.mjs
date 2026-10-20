@@ -70,11 +70,40 @@ const joinSections = [
   ['pairing', 'Add a Host', heading('Add another Host')],
 ];
 const appSections = [
+  ['profile', 'Profile', 'Profile'],
   ['appearance', 'Appearance', 'Appearance'], ['notifications', 'Notifications', 'Notifications'],
   ['windows', 'Windows behavior', 'Windows behavior'], ['updates', 'Updates', 'App updates'],
   ['shortcuts', 'Keyboard shortcuts', 'Keyboard shortcuts'],
 ];
+const setupPolishCases = [
+  { id: 'setup-polish-hosting-notice', scenario: 'friend-peers', workspace: 'Join', section: ['Join sections', 'play', 'Play'], screen: { css: '.shared-host-notice', text: 'reports hosting' } },
+  ...['missing-server', 'connection'].map(remedy => ({ id: `setup-polish-hosting-${remedy}`, scenario: 'friend-connected',
+    fixture: { hostingRemedy: remedy }, workspace: 'Join', section: ['Join sections', 'play', 'Play'],
+    steps: [{ button: 'Host on this PC' }], screen: { role: 'dialog', name: 'Host on this PC' } })),
+  { id: 'setup-polish-chat-host', scenario: 'host-ready', workspace: 'Host', section: ['Selected server sections', 'chat', 'Chat'], screen: heading('Server chat') },
+  { id: 'setup-polish-chat-friend', scenario: 'friend-connected', workspace: 'Join', section: ['Join sections', 'chat', 'Chat'], screen: heading('Server chat') },
+  { id: 'setup-polish-password', scenario: 'friend-connected', fixture: { password: true }, workspace: 'Join', section: ['Join sections', 'play', 'Play'],
+    steps: [{ button: 'Show password', within: '.shared-game-password' }], screen: { css: '.shared-game-password', text: 'SYNTHETIC-ONLY' } },
+  { id: 'setup-polish-sharing-owner', scenario: 'host-shared', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
+    action: 'manage-sharing', screen: { role: 'dialog', name: 'Manage sharing' } },
+  { id: 'setup-polish-sharing-next-step', scenario: 'host-shared', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
+    action: 'manage-sharing', steps: [{ nav: 'Sharing sections', button: 'Save sharing' }], screen: heading('What happens next') },
+  { id: 'setup-polish-notifications-empty', scenario: 'host-ready', workspace: 'Host', action: 'notifications-empty', screen: { css: '.notification-empty', text: 'No recent notifications.' } },
+  { id: 'setup-polish-notifications-activity', scenario: 'host-attention', workspace: 'Host', action: 'notifications-menu', screen: { css: '.notification-panel', text: 'Recent app and connection activity' } },
+  { id: 'setup-polish-permissions-partial', scenario: 'host-multi', fixture: { permissions: 'partial' }, workspace: 'Host', section: ['This Host PC sections', 'access', 'Friend access'], screen: { css: '.friend-pc-card', text: 'Friend PC' } },
+  { id: 'setup-polish-permissions-unassigned', scenario: 'host-ready', fixture: { permissions: 'unassigned' }, workspace: 'Host', section: ['This Host PC sections', 'access', 'Friend access'], screen: { css: '.friend-pc-card', text: 'No server access.' } },
+  ...[['profile', 'Profile'], ['appearance', 'Appearance'], ['shortcuts', 'Keyboard shortcuts']].map(([id, title]) => ({
+    id: `setup-polish-settings-${id}`, scenario: 'host-ready', workspace: 'App Settings', section: ['App settings sections', id, title], screen: heading(title) })),
+  { id: 'setup-polish-settings-scroll', scenario: 'host-ready', workspace: 'App Settings', section: ['App settings sections', 'profile', 'Profile'], screen: heading('Profile') },
+  { id: 'setup-polish-guide-welcome', scenario: 'host-ready', workspace: 'Host', action: 'guide-welcome', screen: { role: 'dialog', name: 'Make room for your next game night' } },
+  { id: 'setup-polish-guide-host', scenario: 'host-ready', workspace: 'Host', action: 'guide-host', screen: { css: '.guide-coach', text: 'Make this PC your Host' } },
+  { id: 'setup-polish-guide-join', scenario: 'friend-pairing', workspace: 'Join', action: 'guide-join', screen: { css: '.guide-coach', text: 'Start with your friend’s server code' } },
+  { id: 'setup-polish-wizard-game-tip', scenario: 'host-first-use', workspace: 'Host', action: 'setup', screen: heading('Choose a game') },
+  { id: 'setup-polish-wizard-server-tip', scenario: 'host-setup-access-review', workspace: 'Host', action: 'setup-game', game: 'Valheim',
+    steps: [{ fill: /^World name/, value: 'Synthetic meadow' }, { fill: /^Game password/, value: 'synthetic-only' }, { button: 'Continue' }], screen: heading('Server app') }
+];
 const cases = [
+  ...setupPolishCases,
   ...extraReviewCases.filter(testCase => !isDialogReview(testCase)),
   { id: 'sidebar-host-long-names', scenario: 'host-ready', workspace: 'Host', sidebarReview: true, screen: { css: '.server-directory' } },
   { id: 'sidebar-join-long-names', scenario: 'friend-connected', workspace: 'Join', sidebarReview: true, screen: { css: '.server-directory' } },
@@ -180,9 +209,9 @@ const cases = [
     id: `host-game-settings-${game}-${page.toLowerCase()}`, scenario: `host-${game}-maintenance`, workspace: 'Host', section: ['Selected server sections', 'files', 'Settings & files'],
     steps: [{ nav: 'Game settings sections', button: page }], screen: page === 'Players' ? { role: 'combobox', name: 'Player list' } : heading('Game settings') }))),
   { id: 'host-live-save-acceptance', scenario: 'host-live-save', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Test sharing while playing' }, { summary: /Automatic recovery copies/ }], screen: region('Live-save installation test') },
+    action: 'manage-sharing', steps: [{ nav: 'Sharing sections', button: 'Save sharing' }, { summary: 'Advanced: game save proof and review' }, { summary: /Automatic recovery copies/ }], screen: region('Live-save installation test') },
   { id: 'host-live-interrupted', scenario: 'host-live-interrupted', workspace: 'Host', section: ['Selected server sections', 'backups', 'Backups'],
-    steps: [{ nav: 'World protection sections', button: 'Sharing & hosting' }, { summary: 'Test sharing while playing' }, { summary: /Automatic recovery copies/ }, { summary: /Private test history/ }], screen: region('Live-save installation test') },
+    action: 'manage-sharing', steps: [{ nav: 'Sharing sections', button: 'Save sharing' }, { summary: 'Advanced: game save proof and review' }, { summary: /Automatic recovery copies/ }, { summary: /Private test history/ }], screen: region('Live-save installation test') },
 ];
 const dialogs = [
   ...extraReviewCases.filter(isDialogReview),
@@ -293,12 +322,18 @@ const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups',
   'tooltip-hover', 'tooltip-keyboard', 'host-server-file-editor', 'host-server-file-review', 'host-server-files-checkpoints',
   'dialog-protection', 'dialog-access-access-time', 'host-live-save-acceptance', 'join-peers-conflict',
   ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation|^move-hosting-/.test(testCase.id)).map(testCase => testCase.id)]);
-const reviewCases = args.includes('--move-hosting-only')
+const setupPolishOnly = args.includes('--setup-polish-only');
+const setupPolishVariants = [
+  { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100, reducedMotion: 'no-preference' },
+  { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150, reducedMotion: 'reduce' },
+  { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100, reducedMotion: 'reduce' }
+];
+const reviewCases = setupPolishOnly ? setupPolishCases : args.includes('--move-hosting-only')
   ? [...cases, ...dialogs].filter(testCase => testCase.id.startsWith('move-hosting-'))
   : args.includes('--sidebar-only') ? [...cases, ...dialogs].filter(testCase => testCase.sidebarReview ||
     ['host-files', 'host-logs', 'host-sessions', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates', 'dialog-protection'].includes(testCase.id))
   : [...cases, ...dialogs];
-const plans = reviewCases.flatMap(testCase => [
+const plans = setupPolishOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) || testCase.sidebarReview ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
   ...(testCase.sidebarReview ? [
@@ -308,9 +343,9 @@ const plans = reviewCases.flatMap(testCase => [
   ] : []),
   ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') || testCase.sidebarReview ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
-manifest.coverage = { scope: args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
+manifest.coverage = { scope: setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
   mainPages: reviewCases.filter(testCase => !isDialogReview(testCase)).length,
-  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: variants.map(item => item.id),
+  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (setupPolishOnly ? setupPolishVariants : variants).map(item => item.id),
   text150Pages: reviewCases.filter(testCase => largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
 manifest.acceptanceBoundaries = [
   'Finite source inventory of pages, reachable dialogs, disclosures and representative states; not every combinatorial data value.',
@@ -357,7 +392,7 @@ async function section(page, [label, value, button], record) {
   // Assert the selected navigation state, separately from the screen heading.
   if (await select.isVisible()) {
     await page.waitForFunction(({ label, value }) => [...document.querySelectorAll('select')].some(el => el.getAttribute('aria-label') === label && el.value === value), { label, value });
-  } else await visible(page.getByRole('navigation', { name: label, exact: true }).locator('[aria-current="page"]').filter({ hasText: button }));
+  } else await visible(page.getByRole('navigation', { name: label, exact: true }).locator(label === 'App settings sections' ? '[aria-current="location"]' : '[aria-current="page"]').filter({ hasText: button }));
 }
 async function click(page, name, record, exact = true) {
   record.actions.push({ action: 'click', role: 'button', name: String(name) });
@@ -423,8 +458,14 @@ async function performActions(page, testCase, record) {
       await page.locator('.context-picker > summary').click();
       await visible(page.locator('.context-picker[open] .context-picker-popover'));
       break;
-    case 'notifications-menu':
+    case 'notifications-menu': case 'notifications-empty':
       await page.locator('.notification-menu > summary[aria-label]').click();
+      if (testCase.action === 'notifications-empty') await click(page, 'Clear activity', record);
+      break;
+    case 'guide-welcome': case 'guide-host': case 'guide-join':
+      await click(page, 'Setup guides', record);
+      await visible(page.getByRole('dialog', { name: 'Make room for your next game night', exact: true }));
+      if (testCase.action !== 'guide-welcome') await click(page, testCase.action === 'guide-host' ? /^Host on this PC/ : /^Join a friend/, record, false);
       break;
     case 'consent': {
       const consent = await visible(page.getByRole('checkbox', { name: 'Allow saves on this PC', exact: true }));
@@ -724,6 +765,170 @@ async function workspaceChromeEvidence(page, record) {
   record.layoutFindings.push(...evidence.findings);
 }
 
+// Runs inside the page. A bounding box alone can hide clipping by a nested pane
+// or an overlapping coach. The normal result is truthy only for an exposed target.
+function guideTargetExposure(requireExposed = true) {
+  const target = document.querySelector('[data-guide-highlight="true"]');
+  if (!target) return requireExposed ? false : { exposed: false, reason: 'No highlighted guide target' };
+  const box = element => {
+    const value = element.getBoundingClientRect();
+    return { top: value.top, right: value.right, bottom: value.bottom, left: value.left, width: value.width, height: value.height };
+  };
+  const bounds = box(target), targetStyle = getComputedStyle(target);
+  const clipped = { top: 0, left: 0, right: innerWidth, bottom: innerHeight };
+  const clippingAncestors = [];
+  for (let ancestor = target.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = getComputedStyle(ancestor), value = box(ancestor);
+    const clipX = /^(auto|scroll|hidden|clip)$/.test(style.overflowX);
+    const clipY = /^(auto|scroll|hidden|clip)$/.test(style.overflowY);
+    if (!clipX && !clipY) continue;
+    const client = { left: value.left + ancestor.clientLeft, top: value.top + ancestor.clientTop };
+    client.right = client.left + ancestor.clientWidth; client.bottom = client.top + ancestor.clientHeight;
+    if (clipX) { clipped.left = Math.max(clipped.left, client.left); clipped.right = Math.min(clipped.right, client.right); }
+    if (clipY) { clipped.top = Math.max(clipped.top, client.top); clipped.bottom = Math.min(clipped.bottom, client.bottom); }
+    clippingAncestors.push({ name: ancestor.getAttribute('aria-label') || ancestor.className || ancestor.tagName, clipX, clipY, client });
+  }
+  const fullyInside = bounds.width > 0 && bounds.height > 0 && bounds.left >= clipped.left - 1 && bounds.right <= clipped.right + 1 &&
+    bounds.top >= clipped.top - 1 && bounds.bottom <= clipped.bottom + 1;
+  const coach = document.querySelector('.guide-coach'), coachBounds = coach ? box(coach) : null;
+  const coachOverlap = coachBounds ? {
+    width: Math.max(0, Math.min(bounds.right, coachBounds.right) - Math.max(bounds.left, coachBounds.left)),
+    height: Math.max(0, Math.min(bounds.bottom, coachBounds.bottom) - Math.max(bounds.top, coachBounds.top))
+  } : { width: 0, height: 0 };
+  const hits = [];
+  if (bounds.width > 0 && bounds.height > 0) {
+    const insetX = Math.min(4, bounds.width / 4), insetY = Math.min(4, bounds.height / 4);
+    for (const x of [bounds.left + insetX, (bounds.left + bounds.right) / 2, bounds.right - insetX])
+      for (const y of [bounds.top + insetY, (bounds.top + bounds.bottom) / 2, bounds.bottom - insetY]) {
+        const hit = document.elementFromPoint(x, y);
+        hits.push({ x, y, target: !!hit && target.contains(hit), hit: hit ? hit.getAttribute('aria-label') || hit.className?.baseVal || hit.className || hit.tagName : null });
+      }
+  }
+  const exposed = fullyInside && targetStyle.visibility !== 'hidden' && targetStyle.display !== 'none' &&
+    !target.closest('[hidden], [inert]') && !(coachOverlap.width > 1 && coachOverlap.height > 1) && hits.length === 9 && hits.every(hit => hit.target);
+  const evidence = { exposed, tag: target.tagName, text: target.textContent.trim(), bounds, clipped, clippingAncestors,
+    coachBounds, coachOverlap, hits, animation: targetStyle.animationName };
+  return requireExposed ? exposed ? evidence : false : evidence;
+}
+
+async function setupPolishEvidence(page, testCase, variant, record) {
+  if (!testCase.id.startsWith('setup-polish-')) return;
+  const paint = () => page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+  const shot = async name => {
+    const file = `${record.id}--${name}.png`;
+    await page.screenshot({ path: resolve(output, file), animations: 'disabled' });
+    record.screenshots.push({ file, kind: name });
+  };
+  const sidebarHeadings = await page.locator('.context-sidebar :is(h2,h3)').allTextContents();
+  const names = sidebarHeadings.map(value => value.trim()).filter(Boolean);
+  if (new Set(names).size !== names.length) throw new Error('The page sidebar repeats a heading');
+  record.assertions.push({ distinctSidebarHeadings: names });
+  if (testCase.id.includes('-notifications-')) {
+    const spacing = await page.locator('.notification-panel').evaluate(panel => {
+      const style = getComputedStyle(panel), heading = panel.querySelector('.notification-panel-heading').getBoundingClientRect();
+      const action = panel.querySelector('.notification-center-link').getBoundingClientRect();
+      return { padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].map(parseFloat),
+        actionGap: action.top - heading.bottom, itemCount: panel.querySelectorAll('.notification-item').length,
+        emptyCount: panel.querySelectorAll('.notification-empty').length };
+    });
+    if (spacing.padding.some(value => value < 12) || spacing.actionGap < 10)
+      throw new Error(`Notification content has cramped padding or action spacing: ${JSON.stringify(spacing)}`);
+    if (testCase.action === 'notifications-empty' ? spacing.emptyCount !== 1 || spacing.itemCount !== 0 : spacing.itemCount < 1)
+      throw new Error('Notification contents do not match the empty/activity case');
+    record.assertions.push({ notificationSpacing: spacing });
+  }
+  if (testCase.fixture?.permissions) {
+    const chips = await page.locator('.friend-pc-card').first().locator('.friend-grant-chips > li').evaluateAll(elements =>
+      elements.map(el => ({ label: el.getAttribute('aria-label'), state: el.dataset.permissionState,
+        displayed: getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0 })));
+    const labels = ['Start', 'Stop when empty', 'Restart', 'Add time', 'View logs', 'Game password'];
+    const expectedCounts = [1, 1, 0, 2, 1, 0], partial = testCase.fixture.permissions === 'partial';
+    if (chips.length !== labels.length || chips.some((chip, index) => !chip.displayed ||
+        chip.label !== (partial ? `${labels[index]}: ${expectedCounts[index]} of 2 assigned servers` : `${labels[index]}: no assigned servers`) ||
+        chip.state !== (partial && expectedCounts[index] > 0 ? 'granted' : 'unassigned')))
+      throw new Error(`All permission states must remain visible and exact: ${JSON.stringify(chips)}`);
+    record.assertions.push({ renderedPermissionChips: chips });
+  }
+  if (testCase.workspace === 'App Settings') {
+    const titles = await page.locator('.app-settings-block h2').allTextContents();
+    const expected = ['Profile', 'Appearance', 'Notifications', 'Windows behavior', 'App updates', 'Keyboard shortcuts'];
+    if (JSON.stringify(titles) !== JSON.stringify(expected)) throw new Error('App Settings does not retain all six continuous sections');
+    record.assertions.push({ continuousSettingsSections: titles });
+    if (testCase.id.endsWith('-scroll')) {
+      const scroller = await page.locator('.app-settings-page').evaluate(page => {
+        for (let parent = page.parentElement; parent; parent = parent.parentElement)
+          if (/(auto|scroll)/.test(getComputedStyle(parent).overflowY)) return parent.matches('.context-content') ? '.app-settings-workspace > .context-content' : '.workspace-scroll';
+        throw new Error('No actual settings scroll container found');
+      });
+      const desiredTop = await page.locator(scroller).evaluate(root => {
+        const target = root.querySelector('[data-settings-section="notifications"]');
+        const top = root.scrollTop + target.getBoundingClientRect().top - root.getBoundingClientRect().top - root.clientTop - 16;
+        root.scrollTop = top;
+        return root.scrollTop;
+      });
+      await page.waitForFunction(() => document.querySelector('.context-sidebar [aria-current="location"]')?.textContent.trim() === 'Notifications');
+      await paint();
+      const actualTop = await page.locator(scroller).evaluate(root => root.scrollTop);
+      if (Math.abs(actualTop - desiredTop) > 1) throw new Error('Passive settings section tracking moved the viewport');
+      record.assertions.push({ passiveSettingsScroll: { scroller, desiredTop, actualTop, current: 'notifications' } });
+      await shot('passive-notifications-location');
+      await section(page, ['App settings sections', 'shortcuts', 'Keyboard shortcuts'], record);
+      await page.waitForFunction(() => {
+        const target = document.querySelector('[data-settings-section="shortcuts"]'), bounds = target?.getBoundingClientRect();
+        return target === document.activeElement && bounds && bounds.top >= 0 && bounds.bottom <= innerHeight;
+      });
+      await shot('shortcuts-jump-location');
+      await section(page, ['App settings sections', 'profile', 'Profile'], record);
+      record.assertions.push({ settingsClickJump: { target: 'shortcuts', focusedAndVisible: true,
+        reducedMotion: await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches) } });
+    }
+  }
+  if (testCase.action === 'guide-welcome') {
+    const dialog = page.getByRole('dialog', { name: 'Make room for your next game night', exact: true });
+    await visible(dialog.getByRole('button', { name: /^Host on this PC/ }));
+    await visible(dialog.getByRole('button', { name: /^Join a friend/ }));
+    record.assertions.push({ guideWelcomeOpenedFromHeader: true });
+  }
+  if (['guide-host', 'guide-join'].includes(testCase.action)) {
+    const targetEvidence = async () => {
+      let handle;
+      try { handle = await page.waitForFunction(guideTargetExposure); }
+      catch {
+        const failure = await page.evaluate(guideTargetExposure, false);
+        record.assertions.push({ guideTargetNotExposed: failure });
+        throw new Error(`Guide target is clipped or covered: ${JSON.stringify(failure)}`);
+      }
+      const target = await handle.jsonValue();
+      await handle.dispose();
+      if (variant.reducedMotion !== 'no-preference' && target.animation !== 'none') throw new Error('Reduced motion did not disable the guide highlight animation');
+      return target;
+    };
+    const initial = await targetEvidence();
+    await page.locator('.guide-coach').getByRole('button', { name: 'Show me', exact: true }).click();
+    const located = await targetEvidence();
+    if (testCase.action === 'guide-host') {
+      await page.locator('.guide-coach').getByRole('button', { name: 'Next tip', exact: true }).click();
+      await visible(page.locator('.guide-coach').getByRole('heading', { name: 'Start when you’re ready', exact: true }));
+      const next = await targetEvidence();
+      await shot('host-guide-next-tip');
+      await page.locator('.guide-coach').getByRole('button', { name: 'Back', exact: true }).click();
+      await visible(page.locator('.guide-coach').getByRole('heading', { name: 'Make this PC your Host', exact: true }));
+      await targetEvidence();
+      record.assertions.push({ hostGuideNextBack: { next, noServerActionRequested: true } });
+    }
+    record.assertions.push({ guideTarget: { initial, located, reducedMotion: variant.reducedMotion ?? 'reduce' } });
+  }
+  if (testCase.id.includes('-wizard-')) {
+    const tip = await visible(page.getByRole('complementary', { name: 'Setup tip', exact: true }));
+    const text = await tip.textContent();
+    if (testCase.id.endsWith('-game-tip') ? !text.includes('Java and Bedrock are separate editions') :
+        !text.includes('SteamCMD is an optional way to install it')) throw new Error('The wizard tip does not match the active stage');
+    record.assertions.push({ wizardStageTip: text.trim() });
+  }
+  if (record.apiRequests.some(request => /\/(start|stop|restart|install|invite)(?:\/|$)/.test(request.path)))
+    throw new Error('Setup-polish presentation checks unexpectedly dispatched a server or installation action');
+}
+
 function scrollCaptureOffsets(height, contentHeight) {
   if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(contentHeight) || contentHeight < 0)
     throw new Error('Scroll capture requires finite positive pane height and nonnegative content height');
@@ -974,12 +1179,12 @@ try {
     manifest.cases.push(record);
     let context;
     try {
-      const state = createFixtureState(testCase.scenario);
+      const state = createFixtureState({ id: testCase.scenario, ...testCase.fixture });
       if (testCase.sidebarReview) {
         for (const profile of state.host.settings.profiles) profile.name = `${profile.name} · Our weekend adventure with a very long server name`;
         for (const profile of state.friend.profiles) profile.name = `${profile.name} · Our friends' shared adventure with a very long server name`;
       }
-      context = await browser.newContext({ viewport: variant.viewport, colorScheme: variant.theme, deviceScaleFactor: 1, serviceWorkers: 'block', acceptDownloads: false, locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
+      context = await browser.newContext({ viewport: variant.viewport, colorScheme: variant.theme, deviceScaleFactor: 1, serviceWorkers: 'block', acceptDownloads: false, locale: 'en-US', timezoneId: 'UTC', reducedMotion: variant.reducedMotion ?? 'reduce' });
       const pending = new Set(), deliberatelyFailedURLs = new Set(), deliberatelyPendingURLs = new Set();
       await context.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
@@ -1095,7 +1300,7 @@ try {
       await visible(screen);
       // Workspace navigation can retain a focus tooltip even after hover exits.
       // Escape dismisses it through the UI; never send Escape into an open dialog.
-      if (!hasDialog && !testCase.action?.startsWith('tooltip') && testCase.action !== 'picker') {
+      if (!hasDialog && !testCase.action?.startsWith('tooltip') && !testCase.action?.startsWith('guide-') && testCase.action !== 'picker') {
         await page.mouse.move(0, 0);
         if (await page.getByRole('tooltip').count()) {
           const headerMenu = page.locator('.header-tools > details[open]');
@@ -1114,6 +1319,7 @@ try {
           await page.getByRole('tooltip').waitFor({ state: 'hidden', timeout: 8000 });
         }
       }
+      await setupPolishEvidence(page, testCase, variant, record);
       record.screenBounds = await screen.boundingBox();
       if (!record.screenBounds || record.screenBounds.y >= variant.viewport.height || record.screenBounds.y + record.screenBounds.height <= 0) {
         throw new Error('The named screen is outside the capture viewport');

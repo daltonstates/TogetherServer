@@ -29,17 +29,18 @@ internal static class FriendLocalHostingRoutes
 
     internal static void Map(WebApplication app, LocalData data, FriendService friend,
         HostManager manager, CompanionServer companion, ExternalPortProbe externalProbe,
-        SemaphoreSlim modeGate, Func<bool> friendMode, Func<bool> unavailable)
+        SemaphoreSlim modeGate, Func<bool> friendMode, Func<bool> unavailable, WorldPeerService? peers = null)
     {
         var service = new FriendLocalHostingService(data, friend, manager,
             routeCheck: LocalHostingRouteCheck.Create(data, manager, companion, externalProbe),
-            synchronizeListener: companion.SyncAsync);
+            synchronizeListener: companion.SyncAsync,
+            announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
         app.MapGet(route, async (HttpContext context, Guid profileId) =>
         {
             if (!Fixed(context, true)) return Results.StatusCode(403);
             if (!friendMode()) return Results.Conflict(FriendLocalHostingService.Unavailable("HostMode", "Open Join to prepare a shared server on this PC."));
-            try { return Results.Json(await service.StatusAsync(profileId, context.RequestAborted)); }
+            try { return Results.Json(FriendLocalHostingService.WithRemedy(await service.StatusAsync(profileId, context.RequestAborted))); }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
             { return Results.Json(FriendLocalHostingService.Unavailable("LocalHostingReviewRequired", "This PC's shared-save setup needs review. Existing saves were kept.")); }
@@ -55,11 +56,48 @@ internal static class FriendLocalHostingRoutes
                 var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
                     context.Request.ContentLength, 8192, context.RequestAborted);
                 var request = FriendLocalHostingService.ParseRequest(bytes ?? []);
-                return Results.Json(await service.PrepareAsync(profileId, request, context.RequestAborted));
+                return Results.Json(FriendLocalHostingService.WithRemedy(await service.PrepareAsync(profileId, request, context.RequestAborted)));
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
             { return Results.BadRequest(FriendLocalHostingService.Unavailable("LocalHostingRequestRejected", "Use the fixed local hosting preparation action.")); }
+            finally { modeGate.Release(); }
+        });
+        app.MapPost(route + "/start", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Fixed(context)) return Results.StatusCode(403);
+            await modeGate.WaitAsync(context.RequestAborted);
+            try
+            {
+                if (!friendMode()) return Results.Conflict(new LocalHostingActionResult(false, "HostMode", "Open Join to host this shared server."));
+                if (unavailable()) return Results.Conflict(new LocalHostingActionResult(false, "AppBusy", "Wait for the current app operation."));
+                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 1024, context.RequestAborted);
+                var input = FriendLocalHostingService.ParseHostingStart(bytes ?? []);
+                return Results.Json(await service.StartPreparedAsync(profileId, input, context.RequestAborted));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+            { return Results.BadRequest(new LocalHostingActionResult(false, "LocalHostingRequestRejected", "Repeat the automatic checks for the exact local save before starting.")); }
+            finally { modeGate.Release(); }
+        });
+        app.MapPut("/api/local/profiles/{localProfileId:guid}/shared-world/hosting", async (HttpContext context, Guid localProfileId) =>
+        {
+            if (!Fixed(context)) return Results.StatusCode(403);
+            await modeGate.WaitAsync(context.RequestAborted);
+            try
+            {
+                if (friendMode()) return Results.Conflict(new LocalHostingActionResult(false, "FriendMode", "The owner changes shared hosting on the Host PC."));
+                if (unavailable()) return Results.Conflict(new LocalHostingActionResult(false, "AppBusy", "Wait for the current app operation."));
+                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 64, context.RequestAborted);
+                using var document = JsonDocument.Parse(bytes ?? []);
+                var fields = document.RootElement.ValueKind == JsonValueKind.Object ? document.RootElement.EnumerateObject().ToArray() : [];
+                if (fields.Length != 1 || fields[0].Name != "enabled" || fields[0].Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    return Results.BadRequest(new LocalHostingActionResult(false, "InvalidSharingChoice", "Choose whether to allow shared hosting."));
+                return Results.Json(await manager.SetSimpleSharedHostingAsync(localProfileId, fields[0].Value.GetBoolean(), context.RequestAborted));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+            { return Results.BadRequest(new LocalHostingActionResult(false, "SharedHostingReviewRequired", "Shared hosting could not be confirmed. Retry the automatic checks.")); }
             finally { modeGate.Release(); }
         });
         app.MapPost("/api/local/friend/{profileId:guid}/shared-world/handoff/respond", async (HttpContext context, Guid profileId) =>
@@ -100,7 +138,7 @@ internal static class FriendLocalHostingRoutes
                     code = "SplitWarningRequired",
                     message = "Confirm that another Host may still be running and both histories remain separate."
                 });
-                return Results.Json(await manager.StartSeparateCopyAsync(localProfileId, request.BranchHash));
+                return Results.Json(await manager.StartSeparateCopyAsync(localProfileId, request.BranchHash, context.RequestAborted));
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ArgumentException)
             { return Results.BadRequest(new { ok = false, code = "LocalHostingRequestRejected", message = "Use the fixed local Start action." }); }

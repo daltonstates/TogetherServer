@@ -123,8 +123,14 @@ try
         'Default install did not create its Start-menu shortcut.'
     Require (@(UninstallEntries $defaultInstallRoot).Count -eq 1) `
         'Default install did not create its uninstall registration.'
-    Require (!(Test-Path -LiteralPath $defaultDataRoot)) `
-        'Skipping optional installer setup unexpectedly created app settings.'
+    $defaultGuide = Get-Content -LiteralPath (Join-Path $defaultDataRoot 'getting-started.json') -Raw | ConvertFrom-Json
+    Require ($defaultGuide.schemaVersion -eq 1 -and $defaultGuide.offered -eq $true -and
+        $defaultGuide.intent -eq 'Choose' -and $defaultGuide.dismissed -eq $false) `
+        'Decide later did not retain the in-app guide for a deferred first opening.'
+    foreach ($preferenceFile in @('mode.json', 'desktop.json', 'host.json', 'runs.json')) {
+        Require (!(Test-Path -LiteralPath (Join-Path $defaultDataRoot $preferenceFile))) `
+            "Decide later unexpectedly created $preferenceFile."
+    }
     Require (!(Get-ItemProperty -Path $runKey -Name TogetherServer -ErrorAction SilentlyContinue)) `
         'Skipping optional installer setup unexpectedly enabled Windows startup.'
     Run-Uninstaller $defaultInstallRoot $defaultUninstallLog $true
@@ -133,7 +139,9 @@ try
     Require (!(Test-Path -LiteralPath $defaultShortcut)) 'Default uninstall left its Start-menu shortcut.'
     Require (@(UninstallEntries $defaultInstallRoot).Count -eq 0) `
         'Default uninstall left its registration.'
-    Pass 'every optional setup choice can be skipped without blocking installation'
+    Require (Test-Path -LiteralPath (Join-Path $defaultDataRoot 'getting-started.json') -PathType Leaf) `
+        'Default uninstall deleted the deferred in-app guide state.'
+    Pass 'Decide later retains only in-app guidance and uninstall preserves it'
 
     New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
     $env:TOGETHERSERVER_DATA_DIR = $dataRoot
@@ -151,11 +159,15 @@ try
 
     $mode = Get-Content -LiteralPath (Join-Path $dataRoot 'mode.json') -Raw | ConvertFrom-Json
     $desktop = Get-Content -LiteralPath (Join-Path $dataRoot 'desktop.json') -Raw | ConvertFrom-Json
+    $guide = Get-Content -LiteralPath (Join-Path $dataRoot 'getting-started.json') -Raw | ConvertFrom-Json
     $startup = (Get-ItemProperty -Path $runKey -Name TogetherServer -ErrorAction Stop).TogetherServer
     Require ($mode -eq 'Friend') 'Optional installer role did not persist Friend mode.'
+    Require ($guide.schemaVersion -eq 1 -and $guide.offered -eq $true -and
+        $guide.intent -eq 'Join' -and $guide.dismissed -eq $false) `
+        'Join installer choice did not retain the in-app guide.'
     Require ($desktop.closeToTray -eq $true) 'Optional installer preference did not enable close to tray.'
     Require ($startup -eq "`"$installedApp`" --startup") 'Optional installer preference registered the wrong startup command.'
-    Pass 'optional installer choices persist mode, tray, and exact per-user startup command'
+    Pass 'installer choices persist Join guidance, mode, tray, and exact per-user startup command'
 
     Require (Test-Path -LiteralPath $shortcut -PathType Leaf) 'Start-menu shortcut was not created.'
     $shell = New-Object -ComObject WScript.Shell
@@ -179,10 +191,13 @@ try
     Require ($snapshot.mode -eq 'Friend') 'Installed app did not open in the optional Friend starting mode.'
     $instance = Invoke-RestMethod -Uri "$baseUrl/api/local/instance" -TimeoutSec 5
     $preferences = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/preferences" -TimeoutSec 5
+    $appGuide = Invoke-RestMethod -Uri "$baseUrl/api/local/getting-started" -Headers $headers -TimeoutSec 5
     Require ([IO.Path]::GetFullPath($instance.dataRoot).Equals([IO.Path]::GetFullPath($dataRoot),
         [StringComparison]::OrdinalIgnoreCase)) 'Installed app escaped the isolated smoke-test data root.'
     Require ($preferences.closeToTray -eq $true -and $preferences.launchAtLogin -eq $true) `
         'Installed app did not recognize its installer preferences.'
+    Require ($appGuide.offered -eq $true -and $appGuide.intent -eq 'Join' -and $appGuide.dismissed -eq $false) `
+        'Installed app did not recognize its installer guide handoff.'
     Pass 'installed app launches with the selected non-blocking preferences'
     Stop-TestApp
     Require ((TestProcesses).Count -eq 0) 'Installed app did not quit cleanly before uninstall.'
@@ -195,7 +210,8 @@ try
     $remainingStartup = (Get-ItemProperty -Path $runKey -Name TogetherServer -ErrorAction SilentlyContinue).TogetherServer
     Require (!$remainingStartup) 'Uninstall left its Windows startup registration.'
     Require ((Test-Path -LiteralPath (Join-Path $dataRoot 'mode.json')) -and
-        (Test-Path -LiteralPath (Join-Path $dataRoot 'desktop.json'))) `
+        (Test-Path -LiteralPath (Join-Path $dataRoot 'desktop.json')) -and
+        (Test-Path -LiteralPath (Join-Path $dataRoot 'getting-started.json'))) `
         'Uninstall deleted the user data that should be preserved.'
     Pass 'uninstall removes app integration but preserves settings and data'
 

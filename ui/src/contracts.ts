@@ -228,6 +228,8 @@ export type PublicProfile = {
   timerExtensionMinutes: number
   timerExtensionRemainingMinutes: number
   canViewLogs: boolean
+  canViewPassword?: boolean
+  gamePasswordChangedUtc?: string | null
   playerCountRefreshing?: boolean
   playerCountFailureCount?: number
   playerCountTrusted?: boolean | null
@@ -235,7 +237,7 @@ export type PublicProfile = {
   playerCountObservedUtc?: string | null
 }
 
-export type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean }
+export type ServerPermission = { profileId: string; canStart: boolean; canStop: boolean; canExtendTimer: boolean; canViewLogs: boolean; canViewPassword?: boolean }
 
 export type Device = {
   id: string
@@ -247,6 +249,7 @@ export type Device = {
   canStop: boolean
   canExtendTimer: boolean
   canViewLogs: boolean
+  canViewPassword?: boolean
   saveReceiveProfileIds?: string[]
   sharedWorldGrants?: Record<string, { receive: boolean; eligibleHost: boolean; recoveryVoter: boolean; manageSharing: boolean }>
   sharedWorldKeyEnrolled?: boolean
@@ -833,6 +836,8 @@ const parsePublicProfile: Decoder<PublicProfile> = (value, context = 'public pro
     timerExtensionMinutes: numeric(source.timerExtensionMinutes, `${context}.timerExtensionMinutes`),
     timerExtensionRemainingMinutes: numeric(source.timerExtensionRemainingMinutes, `${context}.timerExtensionRemainingMinutes`),
     canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
+    canViewPassword: source.canViewPassword === undefined ? false : flag(source.canViewPassword, `${context}.canViewPassword`),
+    gamePasswordChangedUtc: source.gamePasswordChangedUtc === undefined ? null : nullableUtcTimestamp(source.gamePasswordChangedUtc, `${context}.gamePasswordChangedUtc`),
     playerCountRefreshing: source.playerCountRefreshing === undefined ? false : flag(source.playerCountRefreshing, `${context}.playerCountRefreshing`),
     playerCountFailureCount: parsePlayerCountFailures(source.playerCountFailureCount, `${context}.playerCountFailureCount`),
     playerCountTrusted: source.playerCountTrusted === undefined || source.playerCountTrusted === null ? null : flag(source.playerCountTrusted, `${context}.playerCountTrusted`),
@@ -1275,7 +1280,8 @@ const parseServerPermission: Decoder<ServerPermission> = (value, context = 'serv
   const source = object(value, context)
   return { profileId: text(source.profileId, `${context}.profileId`), canStart: flag(source.canStart, `${context}.canStart`),
     canStop: flag(source.canStop, `${context}.canStop`), canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`),
-    canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`) }
+    canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
+    canViewPassword: source.canViewPassword === undefined ? false : flag(source.canViewPassword, `${context}.canViewPassword`) }
 }
 
 const parseDevice: Decoder<Device> = (value, context = 'device') => {
@@ -1295,6 +1301,7 @@ const parseDevice: Decoder<Device> = (value, context = 'device') => {
     assignedProfileIds: textList(source.assignedProfileIds, `${context}.assignedProfileIds`), name: text(source.name, `${context}.name`),
     canStart: flag(source.canStart, `${context}.canStart`), canStop: flag(source.canStop, `${context}.canStop`),
     canExtendTimer: flag(source.canExtendTimer, `${context}.canExtendTimer`), canViewLogs: flag(source.canViewLogs, `${context}.canViewLogs`),
+    canViewPassword: source.canViewPassword === undefined ? false : flag(source.canViewPassword, `${context}.canViewPassword`),
     saveReceiveProfileIds: source.saveReceiveProfileIds === undefined || source.saveReceiveProfileIds === null ? [] :
       textList(source.saveReceiveProfileIds, `${context}.saveReceiveProfileIds`),
     sharedWorldGrants: source.sharedWorldGrants === undefined || source.sharedWorldGrants === null ? {} :

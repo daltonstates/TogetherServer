@@ -1030,10 +1030,12 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    public async Task<ActionResult> StartAsync(Guid profileId)
+    public Task<ActionResult> StartAsync(Guid profileId) => StartAsync(profileId, CancellationToken.None);
+
+    public async Task<ActionResult> StartAsync(Guid profileId, CancellationToken cancellationToken)
     {
-        await gate.WaitAsync();
-        try { return StartUnderGate(profileId, false); }
+        await gate.WaitAsync(cancellationToken);
+        try { cancellationToken.ThrowIfCancellationRequested(); return StartUnderGate(profileId, false, cancellationToken: cancellationToken); }
         finally { gate.Release(); }
     }
 
@@ -1095,18 +1097,22 @@ public sealed partial class HostManager
     }
 
     private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt,
-        string? separateBranchHash = null, bool worldLoadTrial = false)
+        string? separateBranchHash = null, bool worldLoadTrial = false, CancellationToken cancellationToken = default)
     {
         // Pairing revocation does not take the lifecycle semaphore. Hold its
         // shared gate through the managed launch so a completed revoke cannot
         // be followed by a Start authorized with an older roster.
         lock (SharedWorldMutationGate.For(data.RootPath))
-            return StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash, worldLoadTrial);
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash, worldLoadTrial, cancellationToken);
+        }
     }
 
     private ActionResult StartWithMembershipGate(Guid profileId, bool crashRecoveryAttempt,
-        string? separateBranchHash, bool worldLoadTrial)
+        string? separateBranchHash, bool worldLoadTrial, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (data.Recovery.LifecycleBlocked)
             return Result(false, "DataRecoveryRequired",
                 "Review and acknowledge the recovered local data before starting a server.");
@@ -1208,16 +1214,19 @@ public sealed partial class HostManager
             ServerArtifactPath = profile.Minecraft?.ServerJarPath ?? "",
             StopPipeName = "TogetherServer.Fixture." + Guid.NewGuid().ToString("N")
         };
+        cancellationToken.ThrowIfCancellationRequested();
         shutdownDeadlines.Remove(profileId);
         addedShutdownMinutes.Remove(profileId);
         friendAddedMinutes.Remove(profileId);
         observations.Remove(profileId);
         driver.PrepareStart(profile, run);
+        cancellationToken.ThrowIfCancellationRequested();
         runs.Add(run);
         SaveRunsState(); // An interrupted launch stays Unknown, blocking a second writer.
         try
         {
             BeforeManagedLaunchForChecks?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
             var launch = driver.Start(profile, run);
             run.ProcessId = launch.ProcessId;
             using (var started = Process.GetProcessById(run.ProcessId.Value))

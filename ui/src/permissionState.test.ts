@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Device } from './contracts'
 import {
-  devicePermission, globalPermissionRequest, matchingPermissionPreset,
+  devicePasswordPermission, devicePermission, globalPermissionRequest, matchingPermissionPreset,
   permissionMix, permissionPresetRequest
 } from './permissionState'
 
@@ -55,5 +55,18 @@ describe('Friend permission wiring', () => {
   it('labels mixed per-server grants as Custom', () => {
     expect(matchingPermissionPreset(device)).toBe('custom')
     expect(matchingPermissionPreset({ ...device, canExtendTimer: false, serverPermissions: [] })).toBe('start')
+  })
+
+  it('normalizes legacy password flags and keeps explicit grants separate from action presets', () => {
+    expect(devicePasswordPermission(device, 'one')).toBe(false)
+    const shared = { ...device, canViewPassword: true,
+      serverPermissions: [{ profileId: 'one', canStart: true, canStop: false,
+        canExtendTimer: true, canViewLogs: false, canViewPassword: false }] }
+    expect(devicePasswordPermission(shared, 'one')).toBe(false)
+    expect(devicePasswordPermission(shared, 'two')).toBe(true)
+    for (const preset of ['status', 'start', 'helper'] as const)
+      expect(permissionPresetRequest(preset)).not.toHaveProperty('canViewPassword')
+    for (const action of ['canStart', 'canStop', 'canExtendTimer', 'canViewLogs'] as const)
+      expect(globalPermissionRequest(shared, action, true)).not.toHaveProperty('canViewPassword')
   })
 })

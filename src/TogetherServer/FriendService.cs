@@ -68,7 +68,8 @@ public sealed record PublicProfile(Guid Id, string Name, string State, string? J
     int TimerExtensionRemainingMinutes = 0, bool CanViewLogs = false, string? GameKind = null,
     Guid? RunOperationId = null, bool PlayerCountRefreshing = false,
     int PlayerCountFailureCount = 0, bool? PlayerCountTrusted = null,
-    string? PlayerObservationSource = null, DateTimeOffset? PlayerCountObservedUtc = null);
+    string? PlayerObservationSource = null, DateTimeOffset? PlayerCountObservedUtc = null,
+    bool CanViewPassword = false, DateTimeOffset? GamePasswordChangedUtc = null);
 public sealed record CompanionStatus(bool RemoteControlsEnabled, string? Notice, IReadOnlyList<PublicProfile> Profiles,
     bool CanStart, bool CanStop, DateTimeOffset ReceivedUtc, CompanionProtocolInfo? Protocol = null,
     HostCertificateState? Certificates = null, ConnectionRoute? Route = null,

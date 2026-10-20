@@ -204,10 +204,16 @@ export function createFixtureState(scenario = 'host-ready') {
     sharingEnabled: /shared|sharing/.test(preset), manageSharing: /managed-sharing|friend-shared/.test(preset),
     drafts: {}, chatEntries: {}, desktopPreferences: { available: true, launchAtLogin: false, closeToTray: false, startupAvailable: true },
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
+    gettingStarted: { offered: false, intent: 'Choose', dismissed: false }, hostingRemedy: options.hostingRemedy ?? null,
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
       releaseNotes: '', releaseNotesUrl: null, snoozedUntilUtc: null, promptSnoozed: false, versionSkipped: false },
     requests: [] };
   if (/no-devices/.test(preset)) state.devices = [];
+  if (options.permissions === 'unassigned') Object.assign(state.devices[0], { assignedProfileIds: [], serverPermissions: [] });
+  if (options.permissions === 'partial') Object.assign(state.devices[0], {
+    assignedProfileIds: [ids.primary, ids.secondary], canStart: true, canStop: false, canExtendTimer: true, canViewLogs: false,
+    serverPermissions: [{ profileId: ids.secondary, canStart: false, canStop: true, canExtendTimer: true, canViewLogs: true }]
+  });
   if (/removed-devices/.test(preset)) state.devices[1].revoked = true;
   if (/expired-devices/.test(preset)) Object.assign(state.devices[1], { accessExpired: true, accessExpiresUtc: '2026-10-09T16:00:00Z' });
   if (/pending-devices/.test(preset)) Object.assign(state.devices[1], { approvalPending: true, paired: false });
@@ -252,13 +258,18 @@ export function createFixtureState(scenario = 'host-ready') {
         totalBytes: stage === 'Downloading' ? 4194304 : null, blocker: stage === 'Downloading' ? null : 'Synthetic update preparation needs review. No EXE is replaced.' } });
   }
   state.worldPeers = peerGroups(state);
+  if (options.password) {
+    if (!friend.hostCapabilities.includes('server-game-password-v1')) friend.hostCapabilities.push('server-game-password-v1');
+    for (const item of friend.profiles) if (item.kind === 'Valheim') Object.assign(item, { canViewPassword: true, gamePasswordChangedUtc: fixtureNow });
+  }
   worldReview.configure(state, reviewHelpers);
   accessReview.configure(state, reviewHelpers);
   return state;
 }
 
 function chat(state, id, host) {
-  return result({ hostId: ids.host, profileId: id, entries: state.chatEntries[id] ?? (/chat-empty/.test(state.scenario) ? [] : [
+  return result({ hostId: ids.host, profileId: id, selfAuthorId: host ? '00000000-0000-0000-0000-000000000000' : ids.device,
+    entries: state.chatEntries[id] ?? (/chat-empty/.test(state.scenario) ? [] : [
     { id: ids.session, hostId: ids.host, profileId: id, authorId: ids.device, author: 'Friend PC',
       sentUtc: '2026-10-10T15:55:00Z', text: 'Ready for the next session?', signature: 'synthetic-signature' } ]),
     pending: [], members: host ? state.devices.map(d => ({ deviceId: d.id, name: d.name, allowed: true })) : null,
@@ -323,6 +334,16 @@ export function routeFixture(state, request) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return { status: 400, body: { code: 'SyntheticInvalidJson', message: 'Invalid synthetic request body.' } }; } }
   state.requests.push({ method, path });
   if (path === '/api/local/profile' && method === 'GET') return reply({ displayName: 'Synthetic owner' });
+  if (path === '/api/local/getting-started' && (method === 'GET' || method === 'PUT')) {
+    if (url.search || method === 'GET' && Object.keys(body).length) return null;
+    if (method === 'PUT') {
+      if (!body || typeof body !== 'object' || Array.isArray(body) ||
+          Object.keys(body).sort().join(',') !== 'dismissed,intent' || typeof body.dismissed !== 'boolean' ||
+          !['Choose', 'Host', 'Join'].includes(body.intent)) return null;
+      state.gettingStarted = { offered: true, intent: body.intent, dismissed: body.dismissed };
+    }
+    return reply(state.gettingStarted);
+  }
   if (path === '/api/local/required-setup' && method === 'GET') return reply({ features: [{
     id: 'profile-name', revision: 1, title: 'Your name', description: 'Share your name with paired PCs.', completed: true
   }] });
@@ -469,6 +490,16 @@ export function routeFixture(state, request) {
     if (suffix === 'live-save-acceptance' && method === 'GET') return reply(liveAcceptance(state));
     if (suffix.startsWith('live-save-acceptance/') && method === 'POST') return unavailable('Installed game acceptance or capture');
     if (suffix.startsWith('custom-scripts')) return unavailable('Custom script reveal or writes');
+    if (suffix === 'shared-world/hosting' && !host && method === 'GET' && state.hostingRemedy) return reply({
+      ok: false, code: state.hostingRemedy === 'missing-server' ? 'InstalledServerRequired' : 'LocalConnectionSetupRequired',
+      message: state.hostingRemedy === 'missing-server' ? 'Install the matching game server, then choose its file.' : 'Allow incoming connections on this PC before preparing hosting.',
+      allowed: true, consented: false, game: 'Valheim', name: 'Weekend Valheim', needsServerFile: state.hostingRemedy === 'missing-server',
+      needsPassword: false, serverFile: state.hostingRemedy === 'missing-server' ? null : `${root}\\valheim_server.exe`, gameVersion: 'Synthetic', gamePort: 2456, controlPort: 5131,
+      localProfileId: null, branchHash: null, readyForManualStart: false, running: false,
+      remedy: state.hostingRemedy === 'connection' ? { kind: 'Connection', title: 'Let friends connect to this PC', message: 'Allow incoming connections on this PC before preparing hosting.' } : null,
+      steps: ['permission', 'server', 'save', 'ports', 'connection'].map(key => ({ key,
+        state: key === 'permission' || key === 'ports' || key === 'server' && state.hostingRemedy !== 'missing-server' ? 'Ready' : 'ActionRequired', message: boundary }))
+    });
     if (suffix === 'shared-world/hosting' && !host && method === 'GET') return reply({
       ok: false, code: 'SharedWorldUnavailable', message: 'No shared hosting grant in this synthetic fixture.',
       allowed: false, consented: false, game: null, name: 'Shared server', needsServerFile: false,
@@ -477,7 +508,7 @@ export function routeFixture(state, request) {
       steps: ['permission', 'server', 'save', 'ports', 'connection'].map(key => ({ key,
         state: key === 'permission' ? 'ActionRequired' : 'Unknown', message: boundary }))
     });
-    if (suffix === 'game-password/reveal' && method === 'POST') return reply(result({ password: 'SYNTHETIC-ONLY' }));
+    if (suffix === 'game-password/reveal' && method === 'POST') return reply(result({ profileId: id, password: 'SYNTHETIC-ONLY', gamePasswordChangedUtc: fixtureNow }));
     if ((suffix === 'requirements' || suffix === 'compatibility') && method === 'GET') return unavailableState('Game compatibility inventory', result({ ok: false, requirements: null,
       ...(suffix === 'compatibility' ? { clientVersion: null, clientVersionSource: 'Unknown', versionComparison: 'Unknown', addOnComparison: 'Unknown' } : {}) }));
     if (suffix === 'shared-world' && host && method === 'GET') return reply({ enabled: state.sharingEnabled, latest: null,

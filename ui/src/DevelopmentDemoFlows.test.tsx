@@ -35,7 +35,7 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); controller?.uninstall(); controller = null })
 
-it('shows one grouped server workspace and keeps guest hosting recognizable after preparation and explicit Start', async () => {
+it('shows one grouped workspace and hosts a consented guest copy with one Continue and start', async () => {
   render(<DemoApp />)
   expect(await screen.findByRole('heading', { name: 'Meadow friends · DEMO' })).toBeInTheDocument()
   expect(screen.getByRole('complementary', { name: 'Demo controls' })).toHaveTextContent('FAKE DATA')
@@ -54,8 +54,7 @@ it('shows one grouped server workspace and keeps guest hosting recognizable afte
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   const dialog = await screen.findByRole('dialog', { name: 'Host on this PC' })
   fireEvent.click(within(dialog).getByRole('checkbox', { name: /Keep this save on my PC/ }))
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare this PC' }))
-  const start = await within(dialog).findByRole('button', { name: 'Start server on this PC' })
+  const start = within(dialog).getByRole('button', { name: 'Continue and start' })
   expect(start).toBeEnabled()
   fireEvent.click(start)
   expect(await screen.findByRole('heading', { name: 'Morgan’s Meadow · local DEMO copy' })).toBeInTheDocument()
@@ -81,8 +80,8 @@ it('switches to a missing-server scene and resets open dialogs without using a n
   fireEvent.click(await screen.findByRole('button', { name: 'Host on this PC' }))
   const dialog = await screen.findByRole('dialog', { name: 'Host on this PC' })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Browse' }))
-  await waitFor(() => expect(within(dialog).getByRole('textbox', { name: 'Installed server file' })).toHaveValue(
-    'C:\\TogetherServer-DEMO-FAKE-DATA\\Valheim\\valheim_server.exe'))
+  await waitFor(() => expect(within(dialog).queryByRole('textbox', { name: 'Installed server file' })).not.toBeInTheDocument())
+  expect(within(dialog).getByRole('heading', { name: 'Review before hosting your own copy' })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Reset fake data' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Host on this PC' })).not.toBeInTheDocument())
   expect(screen.getByRole('combobox', { name: 'Demo scene' })).toHaveValue('friend-missing-server')

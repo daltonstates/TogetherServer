@@ -10,12 +10,15 @@ import { clearProtectedDraft, readProtectedDraft, saveProtectedDraft, type Draft
 import { Icon } from './Icon'
 import { successFeedbackMs } from './actionFeedback'
 import { useConfirmation } from './Confirmation'
+import { chatAuthorId, createChatSoundPlayer, createIncomingChatTracker,
+  readChatSoundPreference, saveChatSoundPreference } from './chatSound'
+import './ServerChat.css'
 
 const messageLimit = 500
 const messageIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const readEvent = 'togetherserver:chat-read'
 type QueuedDraft = ChatDraft & { submitted: boolean }
-export type ManagedChatRoom = Omit<ChatRoomWithNotice, 'pending'> & { pending: QueuedDraft[] }
+export type ManagedChatRoom = Omit<ChatRoomWithNotice, 'pending'> & { pending: QueuedDraft[]; selfAuthorId?: string | null }
 export type ChatRoomSummary = PinnedNoticeFields & {
   ok: boolean; code: string; message: string; hostId: string; profileId: string; messageIds: string[]
 }
@@ -25,8 +28,11 @@ export type ChatDraftState = {
 
 export function parseManagedChatRoom(value: unknown, context?: string): ManagedChatRoom {
   const room = parseChatRoomWithNotice(value, context)
-  const source = value as { pending: Array<{ submitted?: unknown }> }
-  return { ...room, pending: room.pending.map((draft, index) => {
+  const source = value as { pending: Array<{ submitted?: unknown }>; selfAuthorId?: unknown }
+  if (source.selfAuthorId !== undefined && source.selfAuthorId !== null &&
+      (typeof source.selfAuthorId !== 'string' || !messageIdPattern.test(source.selfAuthorId)))
+    throw new ContractError('The chat room returned an invalid local author.')
+  return { ...room, selfAuthorId: source.selfAuthorId as string | null | undefined, pending: room.pending.map((draft, index) => {
     const submitted = source.pending[index].submitted
     if (submitted !== undefined && submitted !== null && typeof submitted !== 'boolean')
       throw new ContractError('The chat queue returned an invalid delivery state.')
@@ -253,6 +259,7 @@ function useProtectedChatDraft(identity: DraftIdentity, enabled: boolean) {
 
 type ServerChatProps = {
   profileId: string; host: boolean; visible: boolean; supported?: boolean
+  quietMode?: boolean
   connectionId?: string | null; hostId?: string | null
   onUnreadChange?: (count: number) => void
   onRoomChange?: (room: ManagedChatRoom) => void
@@ -263,10 +270,21 @@ export function ServerChat(props: ServerChatProps) {
   return <ServerChatRoom key={roomScope(props.profileId, props.host, props.connectionId)} {...props} />
 }
 
-function ServerChatRoom({ profileId, host, visible, supported = true, connectionId, hostId,
+function ServerChatRoom({ profileId, host, visible, supported = true, quietMode = false, connectionId, hostId,
   onUnreadChange, onRoomChange, onDraftStateChange }: ServerChatProps) {
   const base = chatBase(profileId, host, connectionId)
   const scope = roomScope(profileId, host, connectionId)
+  const [soundEnabled, setSoundEnabled] = useState(() => readChatSoundPreference(scope))
+  const [soundPlayer] = useState(createChatSoundPlayer)
+  const [incomingTracker] = useState(() => createIncomingChatTracker(host))
+  const [arrivingMessages, setArrivingMessages] = useState<string[]>([])
+  const soundOptions = useRef({ enabled: soundEnabled, quiet: quietMode, visible, supported })
+  useLayoutEffect(() => { soundOptions.current = { enabled: soundEnabled, quiet: quietMode, visible, supported } })
+  useEffect(() => {
+    if (!visible || !supported) incomingTracker.reset()
+    if (!soundEnabled || quietMode) soundPlayer.dispose()
+  }, [incomingTracker, soundPlayer, visible, supported, soundEnabled, quietMode])
+  useEffect(() => () => soundPlayer.dispose(), [soundPlayer])
   const [roomState, setRoomState] = useState<{ base: string; room: ManagedChatRoom } | null>(null)
   const room = roomState?.base === base ? roomState.room : null
   const draftIdentity = useMemo<DraftIdentity>(() => ({ purpose: 'chat', profileId,
@@ -360,16 +378,20 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       throw new ContractError('Chat returned a different Host identity.')
     return decoded
   }, [profileId, hostId])
-  const keepRoom = useCallback((next: ManagedChatRoom) => {
+  const keepRoom = useCallback((next: ManagedChatRoom, notify = false) => {
     if (lifetime.current.signal.aborted) return
+    const arriving = incomingTracker.observe(next, Date.now())
+    const options = soundOptions.current
+    setArrivingMessages(notify && options.visible ? arriving : [])
+    if (notify && arriving.length && options.enabled && !options.quiet && options.visible && options.supported) soundPlayer.play()
     setRoomState({ base, room: next }); onRoomChange?.(next)
-  }, [base, lifetime, onRoomChange])
+  }, [base, lifetime, incomingTracker, onRoomChange, soundPlayer])
   const readRoom = useCallback((signal: AbortSignal) => host ? getLocalJson(base, decodeRoom, signal) :
     changeJson(`${base}/sync`, 'POST', decodeRoom, undefined, signal), [base, host, decodeRoom])
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const next = await readRoom(signal ?? lifetime.current.signal)
     if (signal?.aborted || lifetime.current.signal.aborted) return
-    keepRoom(next)
+    keepRoom(next, true)
     setError('')
   }, [readRoom, keepRoom, lifetime])
   const markNoticeCached = useCallback(() => {
@@ -378,9 +400,10 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   }, [base, host])
   const refreshFailure = useCallback((failure: unknown) => {
     if (lifetime.current.signal.aborted) return
+    incomingTracker.reset()
     setError(errorMessage(failure))
     markNoticeCached()
-  }, [lifetime, markNoticeCached])
+  }, [lifetime, markNoticeCached, incomingTracker])
   useSingleFlightPolling(refresh, 5000, refreshFailure,
     visible && supported, base)
   useLayoutEffect(() => () => {
@@ -433,7 +456,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
     try {
       const next = await readRoom(request.signal)
       if (request.signal.aborted || lifetime.current.signal.aborted || syncRequest.current !== request) return
-      keepRoom(next)
+      keepRoom(next, true)
       setError('')
       // An offline Friend copy can be ok for reading without a completed Host
       // exchange. Only ChatSynced confirms that this request actually synced.
@@ -443,6 +466,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
           next.message || 'Chat could not be synced. Try again.' })
     } catch (failure) {
       if (request.signal.aborted || lifetime.current.signal.aborted || syncRequest.current !== request) return
+      incomingTracker.reset()
       markNoticeCached()
       setSyncState({ scope: syncScope, status: 'error', message: `Sync failed. ${errorMessage(failure)}` })
     } finally {
@@ -524,11 +548,23 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
   }
 
   if (!supported) return <>{confirmationDialog}<p className="helper-text">Update the Host app to use server chat.</p></>
-  return <section className="server-chat" aria-label="Server chat">
+  const selfAuthorId = room ? chatAuthorId(room, host) : null
+  const unlockSound = () => { if (soundEnabled && !quietMode) void soundPlayer.unlock() }
+  const toggleSound = () => {
+    const enabled = !soundEnabled
+    setSoundEnabled(enabled); saveChatSoundPreference(scope, enabled)
+    if (enabled && !quietMode) void soundPlayer.unlock()
+    else soundPlayer.dispose()
+  }
+  return <section className="server-chat" aria-label="Server chat" onPointerDownCapture={unlockSound} onKeyDownCapture={unlockSound}>
     {confirmationDialog}
-    <div className="server-chat-heading"><div><h3>Server chat</h3>
-      <p>Chat with the people who have access to this server's room.</p></div>
+    <div className="server-chat-heading"><div className="server-chat-room-title"><span className="server-chat-room-icon"><Icon name="chat" size={22} /></span><div><h3>Server chat</h3>
+      <p>Your room for plans, questions, and the next game.</p></div></div>
       <div className="server-chat-sync">
+        <Button className="secondary server-chat-sound" aria-pressed={soundEnabled}
+          aria-label={soundEnabled ? 'Mute chat sounds' : 'Unmute chat sounds'}
+          title={quietMode ? 'Quiet mode pauses chat sounds.' : 'Play a soft sound for new messages in this room.'} onClick={toggleSound}>
+          <Icon name="bell" />{soundEnabled ? quietMode ? 'Sound paused' : 'Sound on' : 'Sound off'}</Button>
         <Button className="secondary" disabled={busy || syncing || !visible} aria-busy={syncing} aria-label={syncing ? 'Syncing\u2026' : 'Sync now'}
           aria-describedby={syncFeedbackId} onClick={() => void syncNow()}>
           <Icon name={syncing ? 'loader' : 'refresh'} />{syncing ? 'Syncing\u2026' : 'Sync'}</Button>
@@ -569,12 +605,29 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
     </section>}
     <div ref={messages} className="server-chat-messages" role="log" aria-live={following ? 'polite' : 'off'}
       aria-label="Messages" tabIndex={0} onScroll={onScroll}>
-      {!room?.entries.length && <p className="helper-text">No messages yet.</p>}
-      {room?.entries.map(entry => <div className="server-chat-message" key={entry.id}>
-        <div><strong>{entry.author}</strong><time dateTime={entry.sentUtc}>{new Date(entry.sentUtc).toLocaleString()}</time></div>
-        <p>{entry.text}</p>
-      </div>)}
-      {room?.pending.map((queued, index) => <div className="server-chat-message pending" key={queued.id}>
+      {!room && !error && <div className="server-chat-empty" role="status"><Icon name="loader" size={25} /><strong>Opening your chat…</strong><p>Checking this room and its saved messages.</p></div>}
+      {room?.ok && !room.entries.length && !room.pending.length && <div className="server-chat-empty"><Icon name="chat" size={30} /><strong>No messages yet.</strong><p>Plan a session, ask a question, or say hello.</p></div>}
+      {room?.entries.map((entry, index, entries) => {
+        const previous = entries[index - 1]
+        const date = new Date(entry.sentUtc)
+        const previousDate = previous ? new Date(previous.sentUtc) : null
+        const sameDay = previousDate?.toDateString() === date.toDateString()
+        const grouped = sameDay && previous?.authorId.toLowerCase() === entry.authorId.toLowerCase() &&
+          date.getTime() - previousDate!.getTime() >= 0 && date.getTime() - previousDate!.getTime() < 300_000
+        const own = selfAuthorId === entry.authorId.toLowerCase()
+        return <div className="server-chat-entry" key={entry.id}>
+          {!sameDay && <div className="server-chat-day"><span>{date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span></div>}
+          <div className="server-chat-row" data-own={own} data-grouped={grouped}>
+            <span className="server-chat-avatar" aria-hidden="true">{own ? 'Y' : Array.from(entry.author.trim())[0]?.toLocaleUpperCase() || '?'}</span>
+            <div className="server-chat-message" data-own={own} data-arriving={arrivingMessages.includes(entry.id)}>
+              <div className="server-chat-message-meta"><strong className={grouped ? 'sr-only' : undefined}>{own ? 'You' : entry.author}</strong>
+                <time dateTime={entry.sentUtc} title={date.toLocaleString()}>{date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time></div>
+              <p>{entry.text}</p>
+            </div>
+          </div>
+        </div>
+      })}
+      {room?.pending.map((queued, index) => <div className="server-chat-message pending" data-own="true" key={queued.id}>
         <div><strong>You</strong><small>{queued.submitted ? 'Sending; waiting for Host confirmation' : 'Not sent; waiting to connect'}</small></div><p>{queued.text}</p>
         {!host && room.ok && !queued.submitted && <div>
           <Button className="secondary" disabled={busy} aria-label={`Edit queued message ${index + 1}`}
@@ -612,7 +665,7 @@ function ServerChatRoom({ profileId, host, visible, supported = true, connection
       <TextArea id={`chat-${profileId}`} value={text} maxLength={500} rows={3}
         placeholder="Ask about an issue or share an update" disabled={busy || !draft.ready}
         onChange={event => draft.change(event.target.value)} />
-      <div><small>{text.length}/500</small><Button type="submit" disabled={busy || !draft.ready || !text.trim() || text.length > messageLimit}><Icon name={busy ? 'loader' : 'chat'} />Send</Button></div>
+      <div className="server-chat-compose-footer"><small>{text.length}/500<span className="server-chat-compose-help"> · For this server’s room.</span></small><Button type="submit" disabled={busy || !draft.ready || !text.trim() || text.length > messageLimit}><Icon name={busy ? 'loader' : 'chat'} />Send</Button></div>
       {!draft.ready && !draft.recovering && !draft.feedback && <small role="status">Checking for a saved draft…</small>}
       {(draft.dirty || draft.feedback) && (draft.dirty && !draft.failed ? <small role="status">Saving draft…</small> :
         <DismissibleNotice as="small" scope={scope} role={draft.failed ? 'alert' : 'status'}>{draft.feedback}</DismissibleNotice>)}

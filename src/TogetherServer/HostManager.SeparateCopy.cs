@@ -592,18 +592,22 @@ public sealed partial class HostManager
         return SeparateCopyPreStartIssue(state, branch, profile, setup);
     }
 
+    public Task<ActionResult> StartSeparateCopyAsync(Guid localProfileId, string branchHash) =>
+        StartSeparateCopyAsync(localProfileId, branchHash, CancellationToken.None);
+
     public async Task<ActionResult> StartSeparateCopyAsync(Guid localProfileId,
-        string branchHash)
+        string branchHash, CancellationToken cancellationToken)
     {
-        await gate.WaitAsync();
+        await gate.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == localProfileId);
             if (profile?.SeparateCopySourceProfileId is null ||
                 profile.SeparateCopyBranchHash != branchHash)
                 return Result(false, "SeparateCopyMissing",
                     "Choose a restored signed separate copy on this PC.");
-            var started = StartUnderGate(localProfileId, false, branchHash);
+            var started = StartUnderGate(localProfileId, false, branchHash, cancellationToken: cancellationToken);
             if (!started.Ok) return started;
             try
             {

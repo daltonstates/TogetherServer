@@ -10,6 +10,7 @@ import './developmentDemo.css'
 export const developmentDemoScenes = {
   'host-sharing': 'Your servers · sharing permissions',
   'friend-hosting': 'Friend servers · host this save',
+  'friend-minecraft': 'Friend servers · Minecraft terms and hosting',
   'friend-missing-server': 'Friend servers · missing server app',
   'friend-offline': 'Friend servers · owner offline, verified copy',
   'friend-players-online': 'Friend servers · players online',
@@ -31,6 +32,7 @@ type FixtureResponse = { status: number; body: unknown; pending?: boolean }
 type DemoSession = {
   scene: DevelopmentDemoScene; state: FixtureState; clockOffset: number; revision: number
   rosterRevision: number; prepared: boolean; running: boolean; serverInstalled: boolean
+  game: 'Valheim' | 'MinecraftJava'
   instance: AppInstanceView; displayName: string
 }
 const ids = fixtureIds as Record<'primary' | 'secondary' | 'third' | 'device' | 'otherDevice' | 'session', string>
@@ -64,6 +66,7 @@ export function DevelopmentDemoControls() {
 
 function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): DemoSession {
   const state = createFixtureState('host-shared') as FixtureState
+  const game = scene === 'friend-minecraft' ? 'MinecraftJava' : 'Valheim'
   const profile = state.host.settings.profiles[0]
   Object.assign(profile, { name: 'Meadow friends · DEMO', serverName: 'Meadow friends · DEMO', worldId: 'demo-meadow',
     executablePath: `${demoRoot}\\Valheim\\valheim_server.exe`, worldDirectory: `${demoRoot}\\worlds\\meadow`,
@@ -86,6 +89,8 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
   state.host.passwordConfigured[ids.secondary] = false
   if (state.host.backups?.[ids.primary]) state.host.backups[ids.secondary] = { ...state.host.backups[ids.primary], profileId: ids.secondary }
   Object.assign(state.friend.profiles[0], { name: 'Morgan’s Meadow · DEMO', state: 'Ready', joinAddress: `192.0.2.10:${instance.valheimPort}` })
+  if (game === 'MinecraftJava') Object.assign(state.friend.profiles[0], { name: 'Morgan’s Lantern · DEMO', kind: game,
+    gameKind: game, joinAddress: `192.0.2.10:${instance.minecraftJavaPort}` })
   Object.assign(state.friend, { connectionName: 'Morgan’s Host · DEMO', detail: demoBoundary, hostProfileName: 'Morgan' })
   state.devices.forEach((device, index) => {
     device.name = index === 0 ? 'Riley’s desktop · DEMO' : 'Mira’s laptop · DEMO'
@@ -123,7 +128,7 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
   }]
   if (state.host.hostingPower) Object.assign(state.host.hostingPower, { managedServerRunning: false, message: demoBoundary })
   return { scene, state, clockOffset: Date.now() - FIXED_NOW, revision: ++nextRevision, rosterRevision: 1,
-    prepared: false, running: false, serverInstalled: scene !== 'friend-missing-server', instance: structuredClone(instance),
+    prepared: false, running: false, serverInstalled: scene !== 'friend-missing-server', game, instance: structuredClone(instance),
     displayName: 'Riley Demo' }
 }
 
@@ -138,12 +143,13 @@ function hostingStatus(session: DemoSession): LocalHostingStatus {
     prepared ? 'LocalHostingPrepared' : 'NeedsPreparation',
   message: !allowed ? 'DEMO: turn on Can host this save for Riley’s desktop in the server’s sharing settings.' :
     session.running ? 'DEMO: this local server is simulated; no game process is running.' : prepared ?
-      'DEMO: the fake copy is prepared. Start server is a separate simulated action.' :
-      'DEMO: approve a local copy and prepare this PC. Nothing is installed or copied.',
-  allowed, consented: session.state.consented, game: 'Valheim', name: 'Morgan’s Meadow · DEMO',
-  needsServerFile: !session.serverInstalled, needsPassword: !session.serverInstalled,
-  serverFile: session.serverInstalled ? `${demoRoot}\\Valheim\\valheim_server.exe` : null, gameVersion: 'Demo version',
-  gamePort: session.instance.valheimPort + 2, controlPort: session.instance.companionPort,
+      'DEMO: the fake copy is prepared. Starting uses the current hosting consent and checks.' :
+      'DEMO: review the consent, then Continue and start checks this PC and starts the fake copy. Nothing is installed or copied.',
+  allowed, consented: session.state.consented, game: session.game, name: session.state.friend.profiles[0].name,
+  needsServerFile: !session.serverInstalled, needsPassword: session.game === 'Valheim' && !session.serverInstalled,
+  serverFile: session.serverInstalled ? session.game === 'MinecraftJava' ? `${demoRoot}\\Java\\server.jar` : `${demoRoot}\\Valheim\\valheim_server.exe` : null,
+  gameVersion: 'Demo version',
+  gamePort: (session.game === 'MinecraftJava' ? session.instance.minecraftJavaPort : session.instance.valheimPort) + 2, controlPort: session.instance.companionPort,
   localProfileId: session.prepared ? ids.third : null, branchHash: session.prepared ? branchHash : null,
   readyForManualStart: prepared && !session.running, running: session.running,
   steps: [
@@ -151,7 +157,9 @@ function hostingStatus(session: DemoSession): LocalHostingStatus {
     { key: 'server', state: session.serverInstalled ? 'Ready' : 'ActionRequired', message: session.serverInstalled ? 'DEMO: a fake installed server app is available.' : 'DEMO: choose the fake server app with Browse; no real file picker opens.' },
     { key: 'save', state: prepared || session.running ? 'Ready' : 'ActionRequired', message: prepared || session.running ? 'DEMO: complete fake copy and hashes.' : 'DEMO: allow receiving and prepare the fake copy.' },
     { key: 'ports', state: prepared || session.running ? 'Ready' : 'Unknown', message: prepared || session.running ? 'DEMO: fake local ports are available.' : 'DEMO: local ports are checked during simulated preparation.' },
-    { key: 'connection', state: 'Unknown', message: 'Incoming Friend access is unverified. This demo never opens a public listener.' }
+    { key: 'connection', state: prepared || session.running ? 'Ready' : 'Unknown', message: prepared || session.running
+      ? 'DEMO: the fake Friend connection is prepared. Real reachability remains unverified; no public listener is opened.'
+      : 'Incoming Friend access is unverified. This demo never opens a public listener.' }
   ] }
 }
 
@@ -210,6 +218,14 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     return reply(result({ message: 'DEMO: fake hosting permission saved. Select Morgan’s server to try hosting on this PC.' }))
   }
   const hostShared = `/api/local/profiles/${ids.primary}/shared-world`
+  if (path === `${hostShared}/hosting` && method === 'PUT') {
+    if (state.mode !== 'Host' || Object.keys(body).length !== 1 || typeof body.enabled !== 'boolean')
+      return denied('DEMO: choose only whether the owner allows shared hosting.', 'InvalidSharingChoice')
+    state.sharingEnabled = body.enabled; state.host.settings.profiles[0].sharedSavesEnabled = body.enabled
+    if (body.enabled) state.host.settings.profiles[0].backups = {
+      retentionCount: 5, minimumFreeSpaceMb: 1024, ...state.host.settings.profiles[0].backups, enabled: true }
+    return reply(result({ message: 'DEMO: shared hosting and safe-Stop backups were updated in fake data only.' }))
+  }
   if (path === `${hostShared}/governance` && method === 'GET') return reply({ revision: session.rosterRevision, ownerOverride: true,
     members: state.devices.map(item => ({ deviceId: item.id, grants: item.sharedWorldGrants[ids.primary], revoked: item.revoked, accessExpiresUtc: item.accessExpiresUtc })) })
   if (path === hostShared && method === 'PUT') {
@@ -226,7 +242,13 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
   if (path === `${friendBase}/hosting` && method === 'GET') return reply(hostingStatus(session))
   if (path === `${friendBase}/hosting/prepare` && method === 'POST') {
     if (!hostingStatus(session).allowed) return denied('DEMO: the owner must allow hosting first.', 'PermissionDenied')
+    if (state.mode !== 'Friend' || Object.keys(body).some(key => !['allowReceiving', 'acceptSplitWarning', 'requirePeerConnection',
+      'serverFile', 'gamePassword', 'requestId', 'acceptedTerms'].includes(key)) || body.requestId != null)
+      return denied('DEMO: prepare only the selected shared copy in Join.', 'LocalHostingRequestRejected')
     if (body.allowReceiving !== true || body.acceptSplitWarning !== true) return denied('DEMO: approve receiving and the separate-history notice first.')
+    if (body.requirePeerConnection !== true) return denied('DEMO: include this PC’s fake Friend connection checks before hosting.', 'PeerDiscoveryRequired')
+    if (session.game === 'MinecraftJava' && body.acceptedTerms !== true)
+      return denied('DEMO: review Minecraft’s terms in this fake scene before continuing. No real terms are accepted or software downloaded.', 'TermsRequired')
     if (!session.serverInstalled) {
       if (body.serverFile !== `${demoRoot}\\Valheim\\valheim_server.exe` || typeof body.gamePassword !== 'string' || body.gamePassword.length < 5)
         return denied('DEMO: Browse selects a fake server path. Enter any demo password of at least five characters; it stays only in this request.')
@@ -237,18 +259,27 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
       const copy = { ...structuredClone(state.host.settings.profiles[0]), id: ids.third, name: 'Morgan’s Meadow · local DEMO copy',
         serverName: 'Morgan’s Meadow · local DEMO copy', worldId: 'demo-meadow-separate', worldDirectory: `${demoRoot}\\worlds\\separate`,
         gamePort: session.instance.valheimPort + 2, separateCopySourceProfileId: ids.primary, separateCopyBranchHash: branchHash }
+      if (session.game === 'MinecraftJava') Object.assign(copy, { kind: session.game, name: 'Morgan’s Lantern · local DEMO copy',
+        serverName: 'Morgan’s Lantern · local DEMO copy', worldId: 'demo-lantern-separate',
+        gamePort: session.instance.minecraftJavaPort + 2, executablePath: `${demoRoot}\\Java\\java.exe`,
+        minecraft: { serverJarPath: `${demoRoot}\\Java\\server.jar` } })
       state.host.settings.profiles.push(copy)
       state.host.runs.push({ ...structuredClone(state.host.runs[0]), profileId: ids.third })
       changeRun(session, ids.third, false)
-      state.host.passwordConfigured[ids.third] = true
+      state.host.passwordConfigured[ids.third] = session.game === 'Valheim'
     }
     return reply(hostingStatus(session))
   }
-  const friendStart = path === `${friendBase}/recovery/separate/start`
+  const friendStart = path === `${friendBase}/hosting/start`
+  const legacyFriendStart = path === `${friendBase}/recovery/separate/start`
   const ownerStart = path === `/api/local/profiles/${ids.third}/shared-world/hosting/start`
-  if ((friendStart || ownerStart) && method === 'POST') {
-    if (!session.prepared || !hostingStatus(session).allowed || !state.consented || body.branchHash !== branchHash || body.acceptSplitWarning !== true
-      || friendStart && body.localProfileId !== ids.third || ownerStart && state.mode !== 'Host')
+  if ((friendStart || legacyFriendStart || ownerStart) && method === 'POST') {
+    const fields = friendStart ? ['localProfileId', 'branchHash', 'requestId', 'acceptSplitWarning'] :
+      legacyFriendStart ? ['localProfileId', 'branchHash', 'acceptSplitWarning'] : ['branchHash', 'acceptSplitWarning']
+    if (!session.prepared || session.running || !hostingStatus(session).allowed || !state.consented || body.branchHash !== branchHash || body.acceptSplitWarning !== true
+      || Object.keys(body).length !== fields.length || Object.keys(body).some(key => !fields.includes(key))
+      || friendStart && body.requestId !== null || (friendStart || legacyFriendStart) && (body.localProfileId !== ids.third || state.mode !== 'Friend')
+      || ownerStart && state.mode !== 'Host')
       return denied('DEMO: current hosting permission, prepared copy and explicit separate-history consent are required.', 'HostingChecksRequired')
     session.running = true; changeRun(session, ids.third, true)
     return reply(result({ message: 'DEMO: local server started in fake data only. No game was launched.', ...(ownerStart ? { snapshot: state.host } : {}) }))

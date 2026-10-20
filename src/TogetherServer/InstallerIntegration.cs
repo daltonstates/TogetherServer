@@ -27,7 +27,7 @@ internal static class InstallerIntegration
             }
         }
 
-        if (!TryParse(arguments, out var mode, out var closeToTray, out var launchAtLogin)) return 2;
+        if (!TryParse(arguments, out var mode, out var closeToTray, out var launchAtLogin, out var guidedSetup)) return 2;
         try
         {
             var instance = AppInstance.Resolve([], environment, localApplicationData, executablePath);
@@ -36,6 +36,8 @@ internal static class InstallerIntegration
             instance.PrepareDataRoot();
             using var data = new LocalData(instance.DataRoot, instance.DefaultCompanionPort);
             if (mode is not null) data.SavePreferredMode(mode);
+            if (guidedSetup)
+                new GettingStartedService(data).Save(mode is "Friend" ? "Join" : mode is "Host" ? "Host" : "Choose", false);
             if (closeToTray)
             {
                 var preferences = data.LoadDesktopPreferences();
@@ -53,11 +55,12 @@ internal static class InstallerIntegration
     }
 
     private static bool TryParse(string[] arguments, out string? mode, out bool closeToTray,
-        out bool launchAtLogin)
+        out bool launchAtLogin, out bool guidedSetup)
     {
         mode = null;
         closeToTray = false;
         launchAtLogin = false;
+        guidedSetup = false;
         if (arguments.Length < 1 || arguments[0] != ConfigureCommand) return false;
         var sawMode = false;
         for (var index = 1; index < arguments.Length; index++)
@@ -77,11 +80,14 @@ internal static class InstallerIntegration
                 case "--launch-at-login" when !launchAtLogin:
                     launchAtLogin = true;
                     break;
+                case "--guided-setup" when !guidedSetup:
+                    guidedSetup = true;
+                    break;
                 default:
                     return false;
             }
         }
-        return mode is not null || closeToTray || launchAtLogin;
+        return mode is not null || closeToTray || launchAtLogin || guidedSetup;
     }
 
     private static WindowsStartup Startup(string executablePath, string? keyPath) =>

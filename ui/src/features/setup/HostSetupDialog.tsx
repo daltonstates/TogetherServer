@@ -5,6 +5,7 @@ import type { CustomScriptBundle, Discovery, HostSnapshot, Settings } from '../.
 import type { CustomPort, Profile } from '../../GameProfile'
 import { profileGameLabel } from '../../GameProfile'
 import { Icon } from '../../Icon'
+import { SetupStageTip } from '../../GuidedSetup'
 import { HostStartConnectionNotice } from '../../StartConnectionNotice'
 import {
   MinecraftServerSetup,
@@ -259,6 +260,7 @@ export function HostSetupDialog({ dialogRef, snapshot, draft, savedProfiles, edi
     {importReview && onConfirmImport && onCancelImport && <SetupImportReviewPanel review={importReview} busy={!!pending}
       onConfirm={onConfirmImport} onCancel={onCancelImport} />}
     <ol className="setup-progress" aria-label="Setup progress">{setupSteps.map((step, index) => <li aria-current={setupStep === step ? 'step' : undefined} className={setupStep === step ? 'current' : index < setupStepIndex ? 'complete' : ''} key={step}><span className="setup-step-number">{index + 1}</span><span className="setup-step-label">{step === 'game' ? 'Game' : step === 'world' ? 'World' : step === 'server' ? 'Server app' : 'Review'}</span></li>)}</ol>
+    {editedProfile && <SetupStageTip kind={editedProfile.kind} stage={setupStep} />}
     {!editedProfile && <div className="empty"><p>Start with one game server.</p><div className="actions"><Button onClick={onAddProfile}>Set up a server</Button></div></div>}
     {draft.profiles.filter(profile => profile.id === editedProfile?.id).map(profile => <div className="profile-form" key={profile.id}>
       {profile.kind !== 'Valheim' && <DismissibleNotice as="p" scope={profile.id} className="warning-text" role="status">{setupSupport(profile.kind).label}. {setupSupport(profile.kind).actions}</DismissibleNotice>}

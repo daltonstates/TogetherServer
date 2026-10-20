@@ -151,7 +151,7 @@ export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, 
   return <section className="server-directory" aria-label="Servers">
     <div className="server-directory-heading"><h2>Servers</h2><Button className="text-button icon-button" aria-label="Refresh server list" disabled={busy} onClick={onRetry}><Icon name="refresh" size={16} /></Button></div>
     <label className="server-directory-search"><span className="sr-only">Find a server or friend</span><Input type="search" placeholder="Find a server or friend" value={search} onChange={event => setSearch(event.target.value)} /></label>
-    <div className="server-directory-actions"><Button className="secondary" disabled={busy} onClick={onAddLocal}><Icon name="plus" size={15} />New server</Button>
+    <div className="server-directory-actions"><Button className="secondary" data-guide="host-create" disabled={busy} onClick={onAddLocal}><Icon name="plus" size={15} />New server</Button>
       <Button className="secondary" disabled={busy} onClick={onConnect}><Icon name="link" size={15} />Connect</Button></div>
     {error && <p className="helper-text" role="status">The full server list is unavailable. <Button className="text-button" onClick={onRetry}>Retry</Button></p>}
     <div className="server-directory-group"><h3>Your servers</h3>{local.filter(server => !server.separateCopySourceProfileId).map(server => row(server, { kind: 'local', profileId: server.id }))}

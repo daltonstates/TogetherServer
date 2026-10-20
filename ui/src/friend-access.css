@@ -103,6 +103,25 @@
 .friend-server-tags > .friend-more-servers { color: var(--color-text-muted); }
 .friend-grant-chips > li > .icon { flex: none; }
 .friend-grant-count { color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+.friend-pc-card .friend-grant-chips > li {
+  color: var(--color-text-muted);
+  background-color: var(--color-surface);
+  border-color: var(--color-border);
+}
+.friend-pc-card .friend-grant-chips > li[data-permission-state="granted"] {
+  color: var(--color-accent-text);
+  background-color: var(--color-accent-soft);
+  border-color: var(--color-accent-border);
+  font-weight: 650;
+}
+.friend-pc-card .friend-grant-chips > li[data-permission-state="configured"] {
+  color: var(--color-text-secondary);
+  background-color: var(--color-surface-soft);
+  border-color: var(--color-border-strong);
+}
+.friend-pc-card .friend-grant-chips > li[data-permission-state="unknown"],
+.friend-pc-card .friend-grant-chips > li[data-permission-state="unavailable"] { border-style: dashed; }
+.friend-pc-card .friend-grant-count { color: inherit; }
 .friend-pc-permission-heading { justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
 .friend-pc-permission-heading > strong { font-size: calc(12px * var(--qol-text-scale, 1)); font-weight: 650; }
 .friend-pc-quiet { margin: 7px 0 0; line-height: 1.5; }
@@ -203,4 +222,14 @@ section.friend-access-review {
 @media (forced-colors: active) {
   .friend-pc-card, .friend-access-badge, .friend-default-review, .friend-access-review-row,
   .friend-server-tags > li, .friend-grant-chips > li { border-color: CanvasText; }
+  .friend-pc-card .friend-grant-chips > li {
+    color: CanvasText;
+    background-color: Canvas;
+    border-color: CanvasText;
+  }
+  .friend-pc-card .friend-grant-chips > li[data-permission-state="granted"] {
+    color: HighlightText;
+    background-color: Highlight;
+    border-color: Highlight;
+  }
 }

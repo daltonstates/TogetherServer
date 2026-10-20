@@ -99,6 +99,13 @@ long server names easier to read, or focus the divider and use Left/Right
 one remembered width; App Settings remembers its own. Narrow windows stack the
 sidebar above the content. See [sidebar layout delivery](docs/32-SIDEBAR-LAYOUT.md).
 
+**Guides** in the top bar walks through hosting or joining using the actual app
+controls. Installer choices open the matching guide after required profile setup;
+you can defer it and return later. App Settings is one continuous page with a
+sidebar that follows your scroll position. Game-password access is a separate
+permission, with explicit Show and Copy actions for authorized Friends. See the
+[guided setup and sharing delivery record](docs/35-GUIDED-SETUP-AND-SHARED-HOSTING.md).
+
 The **Saved servers** list opens each server's focused workspace and keeps warning cues visible. Active servers appear before inactive servers, with favorites and saved order preserved within each group. With multiple servers, **Compare all N servers** opens the **All servers** comparison above it. The comparison puts active servers first and sorts attention within each group without changing the selected server. It shows canonical state, fresh server-reported counts or Unknown, observation source/age, the current empty-server deadline and the latest completed backup. Missing status, no backup, stale counts and a failed backup attempt have distinct labels. Its actions open the existing server workspace or Connection Doctor; the comparison does not authorize a lifecycle action.
 
 1. On first use, choose **Host a server** or **Join a server**. Hosting starts a four-step guide: Game, World, Server app, and Review. For Valheim, choose **Create new** and name the world, or **Use existing** and select a world found on this PC. Review the source, destination, and available file sizes and dates before **Confirm copy**. Missing file facts are labeled unavailable. An existing world is copied to a separate app-managed save folder; the source is never moved or overwritten.

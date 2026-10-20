@@ -1,0 +1,37 @@
+/* The popover owns its inset so its heading, actions and empty state agree. */
+.header-tools .notification-menu > .notification-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+
+.header-tools .notification-panel > .notification-panel-heading {
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 12px;
+  align-items: flex-start;
+}
+
+.header-tools .notification-panel > .notification-center-link.ui-button {
+  align-self: flex-start;
+  max-width: 100%;
+  margin: 0;
+  white-space: normal;
+  text-align: start;
+}
+
+.header-tools .notification-panel > .notification-empty {
+  margin: 0;
+  padding: 8px 0;
+}
+
+.header-tools .notification-panel > .notification-item {
+  flex: none;
+  margin: 0;
+  padding: 12px 0;
+}
+
+.header-tools .notification-panel > .notification-item.dismissible-notice {
+  padding-inline-end: 3.5rem;
+}
