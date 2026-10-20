@@ -9,14 +9,38 @@ using System.Runtime.InteropServices;
 using System.Text;
 public static class TogetherServerQolShellCheck {
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
     private delegate bool EnumWindow(IntPtr window, IntPtr value);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindow callback, IntPtr value);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder text, int length);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    public static string WindowClass(IntPtr window) {
+        var name = new StringBuilder(128);
+        GetClassName(window, name, name.Capacity);
+        return name.ToString();
+    }
+    public static int[] WindowBounds(IntPtr window) {
+        return GetWindowRect(window, out var rect)
+            ? new[] { rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top }
+            : Array.Empty<int>();
+    }
+    public static IntPtr[] VisibleTopLevelWindows() {
+        var values = new List<IntPtr>();
+        var count = 0;
+        var exceeded = false;
+        EnumWindows((window, _) => {
+            if (++count > 512) { exceeded = true; return false; }
+            if (IsWindowVisible(window)) values.Add(window);
+            return true;
+        }, IntPtr.Zero);
+        if (exceeded) throw new InvalidOperationException("The dedicated desktop window count exceeded its bound.");
+        return values.ToArray();
+    }
     public static IntPtr[] ShellWindows() {
         var values = new List<IntPtr>();
         var count = 0;
@@ -53,7 +77,10 @@ $nativeShellProof = [ordered]@{
             binaryVerified = $false; ownedProcessVerified = $false; ownedWindowVerified = $false;
             controls = @(); failureCode = $null; cleanupCompleted = $true; appRestored = $false };
         physicalClickSent = $false; exactAppForeground = $false; nativeDestinationVerified = $false;
-        searchPolls = 0; shellRootsObserved = 0; matchingTitlesObserved = 0 }
+        searchPolls = 0; shellRootsObserved = 0; matchingTitlesObserved = 0;
+        shellObservations = @(); shellObservationsTruncated = $false; lastShellObservation = $null;
+        shellWindowMetadata = @(); shellWindowMetadataTruncated = $false; shellWindowMetadataReadFailures = 0;
+        postTriggerStates = @(); postTriggerStatesTruncated = $false; failureStateReadFailed = $false }
     trayQuit = [ordered]@{ exactTrayIconObserved = $false; overflowOpened = $false; ownedQuitMenuObserved = $false;
         menuInvoked = $false; nativeFlushObserved = $false; exactProcessExited = $false;
         searchPolls = 0; shellRootsObserved = 0; iconCandidates = 0; overflowCandidates = 0 }
@@ -61,6 +88,10 @@ $nativeShellProof = [ordered]@{
 $qolShellDisplayName = 'TogetherServer DEVELOPMENT'
 $qolBalloonTitle = $qolShellDisplayName + ' is still running'
 $qolBalloonBody = 'Open it from the tray icon. Right-click the icon to quit.'
+$qolShellRootContexts = @{}
+$qolShellDiagnosticKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$qolShellWindowDiagnosticKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$qolDeliveryWaitActive = $false
 
 function Wait-QolNotificationReadiness($InitialState) {
     # UIA/posted window actions do not establish physical session input. On the
@@ -151,6 +182,7 @@ function Invoke-QolNotificationCaptionClick {
 
 function Get-QolShellRoots {
     $roots = @()
+    $script:qolShellRootContexts = @{}
     foreach ($handle in [TogetherServerQolShellCheck]::ShellWindows()) {
         [uint32]$ownerId = 0
         [TogetherServerQolShellCheck]::GetWindowThreadProcessId($handle, [ref]$ownerId) | Out-Null
@@ -163,7 +195,14 @@ function Get-QolShellRoots {
                 !$shellPath.StartsWith($windowsRoot, [StringComparison]::OrdinalIgnoreCase) -or
                 [IO.Path]::GetFileName($shellPath) -notin @('explorer.exe', 'ShellExperienceHost.exe', 'ShellHost.exe', 'StartMenuExperienceHost.exe')) { continue }
             $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
-            if ($root.Current.ProcessId -eq [int]$ownerId) { $roots += $root }
+            if ($root.Current.ProcessId -eq [int]$ownerId) {
+                $script:qolShellRootContexts[(Get-QolRuntimeId $root)] = [ordered]@{
+                    windowClass = [TogetherServerQolShellCheck]::WindowClass($handle)
+                    approvedProcess = [IO.Path]::GetFileName($shellPath)
+                    sameSession = $true; windowsPathVerified = $true; rootOwnerVerified = $true
+                }
+                $roots += $root
+            }
         } catch [System.Windows.Automation.ElementNotAvailableException] { }
         finally { if ($process) { $process.Dispose() } }
     }
@@ -179,7 +218,128 @@ function Test-QolVisibleElement($Element) {
     $box = $current.BoundingRectangle
     return !$current.IsOffscreen -and $current.IsEnabled -and !$box.IsEmpty -and $box.Width -gt 0 -and $box.Height -gt 0
 }
+function Test-QolReadableElement($Element) {
+    # Static shell text need not be enabled. Input still requires the stricter
+    # visible/enabled predicate and the existing exact owner and hit tests.
+    $current = $Element.Current
+    $box = $current.BoundingRectangle
+    return !$current.IsOffscreen -and !$box.IsEmpty -and $box.Width -gt 0 -and $box.Height -gt 0
+}
 function Get-QolRuntimeId($Element) { return [string]::Join(',', [string[]]$Element.GetRuntimeId()) }
+function Add-QolShellWindowMetadata([ValidateSet('Poll','Failure')][string]$Phase) {
+    # Unlike action discovery, this reads only Win32 class/rectangle metadata.
+    # Rejected classes never gain UIA traversal, screenshots or click authority.
+    $proof = $nativeShellProof.notification
+    try { $handles = [TogetherServerQolShellCheck]::VisibleTopLevelWindows() }
+    catch { $proof.shellWindowMetadataReadFailures++; return }
+    $approvedClasses = @('Shell_TrayWnd','Shell_SecondaryTrayWnd','NotifyIconOverflowWindow',
+        'TopLevelWindowForOverflowXamlIsland','tooltips_class32','Windows.UI.Core.CoreWindow',
+        'Xaml_WindowedPopupClass','XamlExplorerHostIslandWindow','DesktopWindowXamlSource',
+        'Windows.UI.Composition.DesktopWindowContentBridge')
+    foreach ($handle in $handles) {
+        [uint32]$ownerId = 0
+        [TogetherServerQolShellCheck]::GetWindowThreadProcessId($handle, [ref]$ownerId) | Out-Null
+        $process = $null
+        try {
+            $process = [Diagnostics.Process]::GetProcessById([int]$ownerId)
+            $shellPath = [IO.Path]::GetFullPath($process.MainModule.FileName)
+            $windowsRoot = [IO.Path]::GetFullPath($env:WINDIR).TrimEnd('\') + '\'
+            $processName = [IO.Path]::GetFileName($shellPath)
+            if ($process.HasExited -or $process.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId -or
+                !$shellPath.StartsWith($windowsRoot, [StringComparison]::OrdinalIgnoreCase) -or
+                $processName -notin @('explorer.exe','ShellExperienceHost.exe','ShellHost.exe','StartMenuExperienceHost.exe')) { continue }
+            $class = [TogetherServerQolShellCheck]::WindowClass($handle)
+            $geometry = @([TogetherServerQolShellCheck]::WindowBounds($handle))
+            if ($geometry.Count -ne 4 -or $geometry[2] -le 0 -or $geometry[3] -le 0 -or
+                @($geometry | Where-Object { [Math]::Abs([long]$_) -gt 262144 }).Count) { continue }
+            $record = [ordered]@{
+                windowClass = $(if ($class -cmatch '^[A-Za-z0-9_.#-]{1,127}$') { $class } else { 'Other' })
+                approvedProcess = $processName; geometry = $geometry; admittedClass = $class -cin $approvedClasses
+            }
+            $key = $record | ConvertTo-Json -Depth 3 -Compress
+            if (!$qolShellWindowDiagnosticKeys.Contains($key)) {
+                if ($proof.shellWindowMetadata.Count -lt 32) {
+                    [void]$qolShellWindowDiagnosticKeys.Add($key)
+                    $record['firstObservedDuring'] = $Phase
+                    $proof.shellWindowMetadata += $record
+                } else { $proof.shellWindowMetadataTruncated = $true }
+            }
+        } catch { $proof.shellWindowMetadataReadFailures++ }
+        finally { if ($process) { $process.Dispose() } }
+    }
+}
+function Add-QolShellObservation($Root, $Items) {
+    $runtimeId = Get-QolRuntimeId $Root
+    $context = $script:qolShellRootContexts[$runtimeId]
+    if (!$context) { return }
+    $box = $Root.Current.BoundingRectangle
+    $geometry = @($box.Left, $box.Top, $box.Width, $box.Height)
+    $boundedGeometry = !$box.IsEmpty -and @($geometry | Where-Object {
+        [double]::IsNaN($_) -or [double]::IsInfinity($_) -or [Math]::Abs($_) -gt 262144
+    }).Count -eq 0
+    $titles = @($Items | Where-Object {
+        (Test-QolReadableElement $_) -and $_.Current.Name.Contains($qolBalloonTitle, [StringComparison]::Ordinal)
+    })
+    $bodies = @($Items | Where-Object {
+        (Test-QolReadableElement $_) -and $_.Current.Name.Contains($qolBalloonBody, [StringComparison]::Ordinal)
+    })
+    # Only fixed class/process labels, geometry and synthetic-text booleans are
+    # exported. Never retain UIA names, process paths, IDs or arbitrary text.
+    $observation = [ordered]@{
+        windowClass = $context.windowClass; approvedProcess = $context.approvedProcess
+        sameSession = $context.sameSession; windowsPathVerified = $context.windowsPathVerified
+        rootOwnerVerified = $context.rootOwnerVerified; duringDeliveryWait = $script:qolDeliveryWaitActive
+        geometryAvailable = $boundedGeometry
+        geometry = $(if ($boundedGeometry) { @($geometry | ForEach-Object { [Math]::Round($_, 1) }) } else { @() })
+        fixedTitlePresent = $titles.Count -gt 0; fixedBodyPresent = $bodies.Count -gt 0
+        fixedTitleEnabled = @($titles | Where-Object { $_.Current.IsEnabled }).Count -gt 0
+        fixedBodyEnabled = @($bodies | Where-Object { $_.Current.IsEnabled }).Count -gt 0
+    }
+    $proof = $nativeShellProof.notification
+    $proof.lastShellObservation = $observation
+    $key = $runtimeId + '|' + ($observation | ConvertTo-Json -Depth 3 -Compress)
+    if (!$qolShellDiagnosticKeys.Contains($key)) {
+        if ($proof.shellObservations.Count -lt 32) {
+            [void]$qolShellDiagnosticKeys.Add($key)
+            $proof.shellObservations += $observation
+        } else { $proof.shellObservationsTruncated = $true }
+    }
+}
+function Add-QolPostTriggerNotificationState([ValidateSet('Poll','Failure')][string]$Phase, [long]$ElapsedMs) {
+    Assert-AppIdentity
+    $sample = [ordered]@{
+        phase = $Phase; elapsedMs = $ElapsedMs; outcome = 'Unavailable'
+        systemState = 'Unknown'; systemAllowsNotifications = $null; quietMode = $null
+        globalLifecycleAllowed = $null; allowedEvents = @(); serverPreferenceCount = $null
+    }
+    $view = $null
+    try {
+        $view = Invoke-RestMethod -Method Get -Uri "$baseUrl/api/local/desktop/notifications" -Headers $headers -TimeoutSec 1 -NoProxy
+    } catch { }
+    Assert-AppIdentity
+    if ($null -ne $view) {
+        $events = @('Lifecycle','Backup','Access','Connections','Network','Recovery','Countdown','Players',
+            'Maintenance','Configuration','AddOns','Remote','Update')
+        $sample.outcome = 'Rejected'
+        if ($view.systemState -in @('Unknown','NotPresent','Busy','RunningD3DFullScreen','PresentationMode',
+                'AcceptsNotifications','QuietTime','App') -and $view.systemAllowsNotifications -is [bool] -and
+            $view.quietMode -is [bool] -and $null -ne $view.allowedEvents -and $null -ne $view.servers -and
+            @($view.allowedEvents).Count -le $events.Count -and @($view.servers).Count -le 128 -and
+            @($view.allowedEvents | Where-Object { $_ -isnot [string] -or $_ -notin $events }).Count -eq 0) {
+            $sample.outcome = 'Read'
+            $sample.systemState = [string]$view.systemState
+            $sample.systemAllowsNotifications = $view.systemAllowsNotifications
+            $sample.quietMode = $view.quietMode
+            $sample.allowedEvents = @($events | Where-Object { $_ -in $view.allowedEvents })
+            $sample.globalLifecycleAllowed = 'Lifecycle' -in $view.allowedEvents
+            $sample.serverPreferenceCount = @($view.servers).Count
+        }
+    }
+    $proof = $nativeShellProof.notification
+    if ($Phase -eq 'Failure' -and $sample.outcome -ne 'Read') { $proof.failureStateReadFailed = $true }
+    if ($proof.postTriggerStates.Count -lt 16) { $proof.postTriggerStates += $sample }
+    else { $proof.postTriggerStatesTruncated = $true }
+}
 function Click-QolShellElement($Element, $Root, [switch]$Right, [switch]$Double) {
     Assert-AppIdentity
     Require (!($Right -and $Double)) 'A shell action cannot combine right-click and double-click.'
@@ -227,15 +387,18 @@ function Find-QolBalloon {
     foreach ($root in $roots) {
         try {
             $items = @(Get-QolShellDescendants $root)
-            foreach ($title in @($items | Where-Object { (Test-QolVisibleElement $_) -and $_.Current.Name.Contains($qolBalloonTitle, [StringComparison]::Ordinal) })) {
+            Add-QolShellObservation $root $items
+            foreach ($title in @($items | Where-Object { (Test-QolReadableElement $_) -and $_.Current.Name.Contains($qolBalloonTitle, [StringComparison]::Ordinal) })) {
                 $nativeShellProof.notification.matchingTitlesObserved++
                 $candidate = $title
                 for ($depth = 0; $candidate -and $depth -lt 12; $depth++) {
                     if ($candidate.Current.ProcessId -ne $root.Current.ProcessId) { break }
                     $box = $candidate.Current.BoundingRectangle
                     if ($box.Width -gt 1000 -or $box.Height -gt 800) { break }
-                    $texts = @(Get-QolShellDescendants $candidate | ForEach-Object { $_.Current.Name })
-                    if (@($texts | Where-Object { $_.Contains($qolBalloonBody, [StringComparison]::Ordinal) }).Count -gt 0 -and
+                    $bodies = @(Get-QolShellDescendants $candidate | Where-Object {
+                        (Test-QolReadableElement $_) -and $_.Current.Name.Contains($qolBalloonBody, [StringComparison]::Ordinal)
+                    })
+                    if ($bodies.Count -gt 0 -and
                         (Test-QolVisibleElement $candidate)) {
                         $matches += [pscustomobject]@{ Element = $candidate; Root = $root }; break
                     }
@@ -248,15 +411,32 @@ function Find-QolBalloon {
     return @($matches | Group-Object { Get-QolRuntimeId $_.Element } | ForEach-Object { $_.Group[0] })
 }
 function Wait-QolBalloon {
-    $state = @{ Match = $null }
-    Wait-Until {
-        Assert-AppIdentity
-        $matches = @(Find-QolBalloon)
-        Require ($matches.Count -le 1) 'The fixed development notification is ambiguous; no OS surface was clicked.'
-        if ($matches.Count -eq 1) { $state.Match = $matches[0]; return $true }
-        return $false
-    } 'Windows did not expose the freshly triggered development balloon/toast title and fixed body; delivery acceptance failed.' 12
-    return $state.Match
+    $state = @{ Match = $null; Clock = [Diagnostics.Stopwatch]::StartNew(); LastStateMs = -1000 }
+    $script:qolDeliveryWaitActive = $true
+    try {
+        Wait-Until {
+            Assert-AppIdentity
+            if ($state.Clock.ElapsedMilliseconds - $state.LastStateMs -ge 1000) {
+                Add-QolShellWindowMetadata 'Poll'
+                Add-QolPostTriggerNotificationState 'Poll' $state.Clock.ElapsedMilliseconds
+                $state.LastStateMs = $state.Clock.ElapsedMilliseconds
+            }
+            $matches = @(Find-QolBalloon)
+            Require ($matches.Count -le 1) 'The fixed development notification is ambiguous; no OS surface was clicked.'
+            if ($matches.Count -eq 1) { $state.Match = $matches[0]; return $true }
+            return $false
+        } 'Windows did not expose the freshly triggered development balloon/toast title and fixed body; delivery acceptance failed.' 12
+        return $state.Match
+    } catch {
+        $originalFailure = $_
+        try {
+            Add-QolShellWindowMetadata 'Failure'
+            Add-QolPostTriggerNotificationState 'Failure' $state.Clock.ElapsedMilliseconds
+        }
+        catch { $nativeShellProof.notification.failureStateReadFailed = $true }
+        Write-Host ('NOTIFICATION_DELIVERY_DIAGNOSTICS ' + ($nativeShellProof.notification | ConvertTo-Json -Depth 5 -Compress))
+        throw $originalFailure
+    } finally { $script:qolDeliveryWaitActive = $false }
 }
 function Test-QolTrayName([string]$Name) {
     if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 256) { return $false }

@@ -1,0 +1,477 @@
+name: Bounded 0.3.3 native attempt and review package
+
+on:
+  push:
+    branches: ['review/release-033-native']
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-033-native-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CANDIDATE_SOURCE: a6323e99288f3f73b92a32772c0fb847ebd8b2cb
+  CANDIDATE_SHA256: c09a4d086145475ff94def32ca7aa95aa1ad260d8edf074e3eb83d36e03280cb
+  CANDIDATE_ZIP_SHA256: 0e8da457ef17bb45e8135e90a2e11bf1c432fcadc4824515e19ffd3f92d87ba7
+  RUNTIME_SOURCE: a646a7ea52102edfcb4d72d06f3fb81ab3be4181
+
+jobs:
+  validate-original:
+    name: Validate exact original and completed runtime evidence
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      proof-id: ${{ steps.proof.outputs.artifact-id }}
+      proof-digest: sha256:${{ steps.proof.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Verify the frozen source, jobs, archives and exact measured inventories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/native-033-provenance -Force
+          $api = 'https://api.github.com/repos/daltonstates/TogetherServer'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          function Require([bool]$Condition, [string]$Message) { if (!$Condition) { throw $Message } }
+          function One-Json([string]$Root, [string]$Name) {
+            $files = @(Get-ChildItem -LiteralPath $Root -File -Recurse -Filter $Name)
+            Require ($files.Count -eq 1 -and $files[0].Length -le 8MB) "One bounded $Name is required."
+            return Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+          }
+          function Check-Source([string]$Before, [string]$After, [string[]]$Allowed) {
+            git merge-base --is-ancestor $Before $After
+            Require ($LASTEXITCODE -eq 0) 'The verification source must descend from its pinned baseline.'
+            $changed = @(git diff --no-renames --name-only $Before $After)
+            Require ($LASTEXITCODE -eq 0 -and @($changed | Where-Object { $_ -notin $Allowed }).Count -eq 0) 'Unapproved source changed after accepted evidence.'
+            return $changed
+          }
+          $priorChanges = @(Check-Source $env:CANDIDATE_SOURCE $env:RUNTIME_SOURCE @(
+            'docs/38-0.3.3-RELEASE.md','checks/TogetherServer.CompanionChecks/SharedWorldResolutionJourney.cs','.github/workflows/release-033-continuation.yml'))
+          $currentChanges = @(Check-Source $env:RUNTIME_SOURCE HEAD @(
+            'docs/38-0.3.3-RELEASE.md','checks/qol-native-shell-helper.ps1','.github/workflows/release-033-native.yml'))
+          git diff --check 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD
+          Require ($LASTEXITCODE -eq 0) 'Tracked whitespace check failed.'
+          $pins = @(
+            @{id=12277888264;name='windows-candidate';sha='0e8da457ef17bb45e8135e90a2e11bf1c432fcadc4824515e19ffd3f92d87ba7'},
+            @{id=12280180592;name='qol-windows-evidence-Existing';sha='6490228096028efeb660043f1916b1d912f2991c1fde4620fdcb2cb263c9557c'},
+            @{id=12277709069;name='qol-windows-evidence-Browser';sha='12aa2d2747812eb0f6828d9970bc9b0b89496d11282f6280db93b471ddf27e74'},
+            @{id=12277844025;name='qol-windows-evidence-QolApi';sha='3c38d9cf9468646a7d97006e6120fece42d557c07babf8be84b18d0a504c06cf'},
+            @{id=12279551987;name='qol-windows-evidence-Rehearsal';sha='001bcda73eccdc682b01140de57c15627a10681f8289f2b7ffd4260a8019b678'},
+            @{id=12277684504;name='local-pairing-evidence';sha='7d18add7d6e8611faf3df0f35a05267ed74d7150a592a3a2da4f970fa4aa1e04'},
+            @{id=12277803880;name='mixed-version-evidence-0.3.0';sha='6baf9e34fd978dadb49639d075be3498d677e5da71fa6d2989d32f60b1784666'},
+            @{id=12279601973;name='mixed-version-evidence-0.3.1';sha='5a0749f73a972581520cc89f710b22a791d5e7d59ded34bc55902acaba601e9b'},
+            @{id=12279625661;name='mixed-version-evidence-0.3.2';sha='4b77e129379ae2ae43ad9c11dca118b5aff657d8bcd53910600ef857a977c207'},
+            @{id=12278538108;name='mixed-version-evidence-0.3.2.1';sha='e169b8c77fe8397d6c9ad3353ef7564df1fcb0f8a089acca0e1371a8e00064fc'},
+            @{id=12278443305;name='mixed-version-evidence-0.3.2.2';sha='4604aaa0f11ea9ba91e25f79f6c2d953585a70330e3ae11e0378e1d2fba88b64'},
+            @{id=12282896446;name='qol-windows-evidence-Desktop';sha='7aeafb04c86994bd54414467225898fe2bc72a3ec42ef8bedf8b40921f2eb6ee'},
+            @{id=12282775005;name='release-033-continuation-evidence';sha='013f299af143c3f8019b2f650c1026bfe29d4150e0801e3e7e606693e825c056';runtime=$true}
+          )
+          $archives = [Collections.Generic.List[object]]::new()
+          $roots = @{}
+          try {
+            foreach ($pin in $pins) {
+              $runId = if ($pin.runtime) { 39456992592 } else { 39451718957 }
+              $source = if ($pin.runtime) { $env:RUNTIME_SOURCE } else { $env:CANDIDATE_SOURCE }
+              $artifact = Invoke-RestMethod -Uri "$api/actions/artifacts/$($pin.id)" -Headers $headers -TimeoutSec 30
+              Require ($artifact.id -eq $pin.id -and $artifact.name -eq $pin.name -and $artifact.expired -eq $false -and
+                $artifact.workflow_run.id -eq $runId -and $artifact.workflow_run.head_sha -eq $source -and
+                $artifact.digest -eq "sha256:$($pin.sha)" -and $artifact.size_in_bytes -le 200MB) "Pinned artifact changed: $($pin.name)."
+              $zip = Join-Path $env:RUNNER_TEMP ("native-033-$($pin.id).zip")
+              Invoke-WebRequest -Uri "$api/actions/artifacts/$($pin.id)/zip" -Headers $headers -OutFile $zip -TimeoutSec 120
+              Require ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -eq $pin.sha) "Pinned ZIP changed: $($pin.name)."
+              $destination = Join-Path (Get-Location) "local-data/native-033-original/$($pin.id)"
+              Expand-Archive -LiteralPath $zip -DestinationPath $destination
+              $roots[$pin.name] = $destination
+              $archives.Add(@{id=$pin.id;name=$pin.name;digest=$artifact.digest;runId=$runId;sourceRevision=$source})
+            }
+            $original = Invoke-RestMethod -Uri "$api/actions/runs/39451718957" -Headers $headers -TimeoutSec 30
+            $response = Invoke-RestMethod -Uri "$api/actions/runs/39451718957/jobs?filter=all&per_page=100" -Headers $headers -TimeoutSec 30
+            $jobs = @($response.jobs)
+            Require ($original.id -eq 39451718957 -and $original.head_sha -eq $env:CANDIDATE_SOURCE -and $original.run_attempt -eq 1 -and
+              $original.status -eq 'completed' -and $original.conclusion -eq 'failure' -and $original.workflow_id -eq 367811679 -and
+              $original.path -eq '.github/workflows/windows-ci.yml' -and $response.total_count -eq 13 -and $jobs.Count -eq 13) 'Original failed run identity changed.'
+            $completed = @(
+              @{id=118727977239;name='candidate'},@{id=118729013559;name='Verify Browser'},
+              @{id=118729013206;name='Verify QolApi'},@{id=118729013233;name='Verify Rehearsal'},
+              @{id=118729013780;name='Verify local pairing and both-ended UX'},@{id=118729013489;name='Verify 0.3.0 compatibility'},
+              @{id=118729013303;name='Verify 0.3.1 compatibility'},@{id=118729013104;name='Verify 0.3.2 compatibility'},
+              @{id=118729013190;name='Verify 0.3.2.1 compatibility'},@{id=118729013538;name='Verify 0.3.2.2 compatibility'})
+            $expected = $completed + @(@{id=118729013138;name='Verify Existing';outcome='failure'},
+              @{id=118729014068;name='Verify Desktop';outcome='failure'})
+            foreach ($item in $expected) {
+              $job = @($jobs | Where-Object id -eq $item.id)
+              $outcome = if ($item.outcome) { $item.outcome } else { 'success' }
+              Require ($job.Count -eq 1 -and $job[0].name -eq $item.name -and $job[0].status -eq 'completed' -and
+                $job[0].conclusion -eq $outcome -and $job[0].run_attempt -eq 1 -and $job[0].run_id -eq 39451718957 -and
+                $job[0].head_sha -eq $env:CANDIDATE_SOURCE) "Original job changed: $($item.name)."
+            }
+            $skippedPackage = @($jobs | Where-Object name -eq 'Package verified release')
+            Require ($skippedPackage.Count -eq 1 -and $skippedPackage[0].status -eq 'completed' -and $skippedPackage[0].conclusion -eq 'skipped' -and
+              $skippedPackage[0].run_attempt -eq 1 -and $skippedPackage[0].head_sha -eq $env:CANDIDATE_SOURCE) 'Original package must remain skipped.'
+            $desktopJob = @($jobs | Where-Object id -eq 118729014068)[0]
+            foreach ($item in @(@{name='Verify current native window controls with the same candidate';outcome='success'},
+              @{name='Wait for Windows to permit actual notification testing';outcome='success'},
+              @{name='Verify the exact candidate on this dedicated runner';outcome='failure'},
+              @{name='Preserve QoL screenshots and validation summaries';outcome='success'})) {
+              $step = @($desktopJob.steps | Where-Object name -eq $item.name)
+              Require ($step.Count -eq 1 -and $step[0].status -eq 'completed' -and $step[0].conclusion -eq $item.outcome) 'Original Desktop step outcome changed.'
+            }
+            $partial = One-Json $roots['qol-windows-evidence-Existing'] 'release-gate-report.json'
+            $names = @('Git whitespace check','Desktop diagnostic isolation','Check runner listener identity','UI lint','UI unit tests',
+              'Locked application restore','TogetherServer.Checks','TogetherServer.ValheimChecks','TogetherServer.FactorioChecks','TogetherServer.TerrariaChecks',
+              'TogetherServer.MinecraftChecks','TogetherServer.MinecraftSetupChecks','TogetherServer.CustomChecks','TogetherServer.SharedHistoryChecks',
+              'TogetherServer.UpdateChecks','Core remote journey','World-load packaged rehearsal','Shared Worlds packaged journey')
+            Require ($partial.suite -eq 'Existing' -and $partial.candidate.sourceRevision -eq $env:CANDIDATE_SOURCE -and
+              $partial.candidate.sha256 -eq $env:CANDIDATE_SHA256 -and $partial.candidate.productVersion -eq "0.3.3+$env:CANDIDATE_SOURCE" -and
+              $partial.candidate.authenticode -eq 'NotSigned' -and @($partial.checks).Count -eq 18 -and
+              (@($partial.checks.name) -join '|') -eq ($names -join '|') -and @($partial.checks | Where-Object outcome -eq 'passed').Count -eq 17 -and
+              $partial.checks[-1].outcome -eq 'failed') 'The original 17 passes and failed Shared Worlds stage changed.'
+            $runtimeRun = Invoke-RestMethod -Uri "$api/actions/runs/39456992592" -Headers $headers -TimeoutSec 30
+            $runtimeJobs = Invoke-RestMethod -Uri "$api/actions/runs/39456992592/jobs?filter=all&per_page=100" -Headers $headers -TimeoutSec 30
+            $runtimeJob = @($runtimeJobs.jobs | Where-Object id -eq 118746348285)
+            Require ($runtimeRun.id -eq 39456992592 -and $runtimeRun.run_attempt -eq 1 -and $runtimeRun.head_sha -eq $env:RUNTIME_SOURCE -and
+              $runtimeRun.path -eq '.github/workflows/release-033-continuation.yml' -and $runtimeRun.status -eq 'completed' -and
+              $runtimeRun.conclusion -eq 'failure' -and $runtimeJobs.total_count -eq 3 -and @($runtimeJobs.jobs).Count -eq 3 -and
+              $runtimeJob.Count -eq 1 -and $runtimeJob[0].name -eq 'Complete remaining Existing acceptance' -and
+              $runtimeJob[0].status -eq 'completed' -and $runtimeJob[0].conclusion -eq 'success' -and
+              $runtimeJob[0].run_attempt -eq 1 -and $runtimeJob[0].head_sha -eq $env:RUNTIME_SOURCE) 'Completed runtime job identity changed.'
+            foreach ($retained in @(
+              @{id=118746348881;name='Verify original Desktop completion without rerunning it';conclusion='failure'},
+              @{id=118759591103;name='Package accepted 0.3.3';conclusion='skipped'})) {
+              $job = @($runtimeJobs.jobs | Where-Object id -eq $retained.id)
+              Require ($job.Count -eq 1 -and $job[0].name -eq $retained.name -and $job[0].status -eq 'completed' -and
+                $job[0].conclusion -eq $retained.conclusion -and $job[0].run_attempt -eq 1 -and
+                $job[0].head_sha -eq $env:RUNTIME_SOURCE) 'The prior continuation failure and skipped package must remain unchanged.'
+            }
+            $runtime = One-Json $roots['release-033-continuation-evidence'] 'continuation-report.json'
+            $priorProof = One-Json $roots['release-033-continuation-evidence'] 'original-gates.json'
+            $remaining = @('Shared Worlds packaged journey','Staging LiveSave owner action','Shared LiveSave packaged transfer journey',
+              'TogetherServer.CompanionChecks','Solution formatting','Packaged served smoke','Production plus staging isolation smoke',
+              'Packaged hidden desktop smoke','Packaged interactive desktop smoke','Update handoff smoke')
+            Require ($runtime.outcome -eq 'passed' -and $runtime.candidateSourceRevision -eq $env:CANDIDATE_SOURCE -and
+              $runtime.candidateSha256 -eq $env:CANDIDATE_SHA256 -and $runtime.finalCandidateSha256 -eq $env:CANDIDATE_SHA256 -and
+              $runtime.originalRunId -eq 39451718957 -and $runtime.originalRunAttempt -eq 1 -and $runtime.originalExistingJobId -eq 118729013138 -and
+              $runtime.originalExistingPassedStages -eq 17 -and $runtime.verificationRevision -eq $env:RUNTIME_SOURCE -and
+              $runtime.checksCompiledFromRevision -eq $env:RUNTIME_SOURCE -and $runtime.continuationRunId -eq '39456992592' -and
+              $runtime.continuationRunAttempt -eq '1' -and $runtime.continuationJobId -eq 118746348285 -and $runtime.requiredRemainingStages -eq 10 -and
+              @($runtime.checks).Count -eq 10 -and (@($runtime.checks.name) -join '|') -eq ($remaining -join '|') -and
+              @($runtime.checks | Where-Object outcome -ne 'passed').Count -eq 0) 'All ten completed runtime stages must remain passed.'
+            Require ($priorProof.completedOtherJobCount -eq 10 -and @($priorProof.completedOtherJobs).Count -eq 10 -and
+              @($priorProof.originalArtifacts).Count -eq 11 -and $priorProof.verificationRevision -eq $env:RUNTIME_SOURCE -and
+              $priorProof.continuationJobId -eq 118746348285) 'Prior completed-original proof changed.'
+            foreach ($pin in @($pins | Where-Object { !$_.runtime -and $_.id -ne 12282896446 })) {
+              $record = @($priorProof.originalArtifacts | Where-Object id -eq $pin.id)
+              Require ($record.Count -eq 1 -and $record[0].name -eq $pin.name -and $record[0].digest -eq "sha256:$($pin.sha)" -and
+                $record[0].runId -eq 39451718957 -and $record[0].sourceRevision -eq $env:CANDIDATE_SOURCE) 'Prior artifact proof no longer matches its exact independently verified archive.'
+            }
+            $desktopRoot = $roots['qol-windows-evidence-Desktop']
+            $native = One-Json (Join-Path $desktopRoot 'qol-desktop') 'summary.json'
+            $chrome = One-Json (Join-Path $desktopRoot 'window-chrome') 'result.json'
+            $desktopGate = One-Json (Join-Path $desktopRoot 'release-gate') 'release-gate-report.json'
+            Require ($native.result -eq 'FAIL' -and $native.success -eq $false -and $native.requiredCaseCount -eq 13 -and
+              $native.requiredCasesPassed -eq 4 -and $native.requiredCasesBlocked -eq 0 -and $native.cleanupCompleted -eq $true -and
+              $native.screenshotExportCompleted -eq $true -and @($native.cases).Count -eq 14 -and
+              @($native.cases | Where-Object status -eq 'PASS').Count -eq 4 -and @($native.cases | Where-Object status -eq 'FAIL').Count -eq 2 -and
+              @($native.cases | Where-Object status -eq 'SKIP').Count -eq 8 -and
+              (@($native.cases | Where-Object status -eq 'FAIL' | ForEach-Object name | Sort-Object) -join '|') -eq
+                'Close to tray and reopen|OS balloon delivery, physical click and native navigation' -and
+              $native.nativeShell.notification.systemState -eq 'AcceptsNotifications' -and
+              $native.nativeShell.notification.freshTitleAndBodyObserved -eq $false -and $native.nativeShell.notification.physicalClickSent -eq $false) 'The original native failure must be preserved exactly.'
+            Require ($chrome.candidateSha256 -eq $env:CANDIDATE_SHA256 -and $chrome.passed -eq $true -and $chrome.requiredScopeCompleted -eq $true -and
+              $chrome.skipped -eq 0 -and @($chrome.results).Count -eq 14 -and @($chrome.results | Where-Object status -ne 'PASS').Count -eq 0) 'The fourteen original chrome passes changed.'
+            Require ($desktopGate.suite -eq 'Desktop' -and $desktopGate.candidate.sourceRevision -eq $env:CANDIDATE_SOURCE -and
+              $desktopGate.candidate.sha256 -eq $env:CANDIDATE_SHA256 -and $desktopGate.candidate.productVersion -eq "0.3.3+$env:CANDIDATE_SOURCE" -and
+              @($desktopGate.checks).Count -eq 4 -and @($desktopGate.checks | Where-Object outcome -eq 'passed').Count -eq 3 -and
+              $desktopGate.checks[-1].name -eq 'QoL native desktop smoke' -and $desktopGate.checks[-1].outcome -eq 'failed') 'Original Desktop report binding changed.'
+            $candidate = Join-Path $roots['windows-candidate'] 'local-data/release-candidate/TogetherServer.exe'
+            Require ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -eq $env:CANDIDATE_SHA256 -and
+              (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -eq "0.3.3+$env:CANDIDATE_SOURCE" -and
+              (Get-AuthenticodeSignature -LiteralPath $candidate).Status -eq 'NotSigned') 'Frozen EXE identity changed.'
+            $fixtureHash = (Get-FileHash -LiteralPath 'checks/TogetherServer.CompanionChecks/SharedWorldResolutionJourney.cs' -Algorithm SHA256).Hash.ToLowerInvariant()
+            $oldWorkflowHash = (Get-FileHash -LiteralPath '.github/workflows/release-033-continuation.yml' -Algorithm SHA256).Hash.ToLowerInvariant()
+            Require ($fixtureHash -eq '04b847facf4ba19d014288e3a373d0b71dcecd23b96745c738b5b2b67bec31b9' -and
+              $runtime.resolutionFixtureSha256 -eq $fixtureHash -and $priorProof.resolutionFixtureSha256 -eq $fixtureHash -and
+              $oldWorkflowHash -eq 'f39b6c819aa6a7738e040884cd17ce17e174d01c416eabda34966227de3bdbcf' -and
+              $runtime.workflowSha256 -eq $oldWorkflowHash) 'Accepted runtime fixture or workflow bytes changed.'
+            @{schema=1;reviewOnly=$true;fullyAccepted=$false;candidateSource=$env:CANDIDATE_SOURCE;candidateSha256=$env:CANDIDATE_SHA256;
+              originalRunId=39451718957;originalRunAttempt=1;originalRunConclusion='failure';originalExistingJobId=118729013138;
+              originalExistingPassedStages=17;originalExistingFailedStage='Shared Worlds packaged journey';completedOriginalJobs=$completed;
+              originalDesktopJobId=118729014068;originalDesktopResult='FAIL';originalNativeCounts=@{passed=4;failed=2;skipped=8};originalChromePassed=14;
+              runtimeRunId=39456992592;runtimeRunAttempt=1;runtimeRunConclusion='failure';runtimeJobId=118746348285;runtimeSource=$env:RUNTIME_SOURCE;
+              runtimeFailedWaitJobId=118746348881;runtimeSkippedPackageJobId=118759591103;
+              runtimeReport=$runtime;originalNativeReport=$native;archives=@($archives.ToArray());priorSourceChanges=$priorChanges;currentSourceChanges=$currentChanges;
+              resolutionFixtureSha256=$fixtureHash;acceptedRuntimeWorkflowSha256=$oldWorkflowHash;
+              helperSha256=(Get-FileHash -LiteralPath 'checks/qol-native-shell-helper.ps1' -Algorithm SHA256).Hash.ToLowerInvariant();
+              smokeSha256=(Get-FileHash -LiteralPath 'checks/qol-desktop-smoke.ps1' -Algorithm SHA256).Hash.ToLowerInvariant();
+              workflowSha256=(Get-FileHash -LiteralPath '.github/workflows/release-033-native.yml' -Algorithm SHA256).Hash.ToLowerInvariant();
+              verificationSource=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;
+              boundary='Source and archived evidence only. Original failures remain failed. Native acceptance and release approval remain pending.'} |
+              ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'provenance.json') -Encoding utf8
+            Write-Host 'PASS frozen candidate, ten original jobs, 17 original Existing passes and ten completed runtime stages; retain the actual failed native result and fourteen chrome passes.'
+          } finally { $headers.Clear() }
+
+      - name: Preserve exact provenance without duplicate screenshots
+        id: proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-033-native-provenance
+          path: local-data/ci-evidence/native-033-provenance/
+          if-no-files-found: error
+          retention-days: 1
+
+  native:
+    name: Attempt strict native acceptance once
+    needs: validate-original
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Retrieve exact validated inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROOF_ID: ${{ needs.validate-original.outputs.proof-id }}
+          PROOF_DIGEST: ${{ needs.validate-original.outputs.proof-digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $api = 'https://api.github.com/repos/daltonstates/TogetherServer'
+          try {
+            foreach ($pin in @(@{id='12277888264';name='windows-candidate';digest="sha256:$env:CANDIDATE_ZIP_SHA256";run='39451718957';source=$env:CANDIDATE_SOURCE;destination='.'},
+              @{id=$env:PROOF_ID;name='release-033-native-provenance';digest=$env:PROOF_DIGEST;run=$env:GITHUB_RUN_ID;source=$env:GITHUB_SHA;destination='local-data/native-033-proof'})) {
+              if ($pin.id -notmatch '^[1-9][0-9]+$' -or $pin.digest -notmatch '^sha256:[0-9a-f]{64}$') { throw 'Missing exact input pin.' }
+              $metadata = Invoke-RestMethod -Uri "$api/actions/artifacts/$($pin.id)" -Headers $headers -TimeoutSec 30
+              if ($metadata.id.ToString() -ne $pin.id -or $metadata.name -ne $pin.name -or $metadata.expired -ne $false -or
+                $metadata.digest -ne $pin.digest -or $metadata.workflow_run.id.ToString() -ne $pin.run -or
+                $metadata.workflow_run.head_sha -ne $pin.source -or $metadata.size_in_bytes -gt 200MB) { throw 'Validated input metadata changed.' }
+              $zip = Join-Path $env:RUNNER_TEMP ("input-$($pin.id).zip")
+              Invoke-WebRequest -Uri "$api/actions/artifacts/$($pin.id)/zip" -Headers $headers -OutFile $zip -TimeoutSec 120
+              if ("sha256:$((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant())" -ne $pin.digest) { throw 'Validated input ZIP changed.' }
+              Expand-Archive -LiteralPath $zip -DestinationPath $pin.destination
+            }
+          } finally { $headers.Clear() }
+          $proof = Get-Content local-data/native-033-proof/provenance.json -Raw | ConvertFrom-Json
+          if ($proof.verificationSource -ne $env:GITHUB_SHA -or $proof.runId -ne $env:GITHUB_RUN_ID -or
+            $proof.runAttempt -ne $env:GITHUB_RUN_ATTEMPT -or $proof.candidateSource -ne $env:CANDIDATE_SOURCE -or
+            $proof.candidateSha256 -ne $env:CANDIDATE_SHA256 -or
+            (Get-FileHash checks/qol-native-shell-helper.ps1 -Algorithm SHA256).Hash -ne $proof.helperSha256 -or
+            (Get-FileHash checks/qol-desktop-smoke.ps1 -Algorithm SHA256).Hash -ne $proof.smokeSha256 -or
+            (Get-FileHash .github/workflows/release-033-native.yml -Algorithm SHA256).Hash -ne $proof.workflowSha256 -or
+            (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash -ne $env:CANDIDATE_SHA256 -or
+            (Get-Item local-data/release-candidate/TogetherServer.exe).VersionInfo.ProductVersion -ne "0.3.3+$env:CANDIDATE_SOURCE") { throw 'Native input or helper identity mismatch.' }
+          $identityRoot = New-Item -ItemType Directory -Path local-data/ci-evidence/native-033-attempt -Force
+          @{candidateSource=$env:CANDIDATE_SOURCE;candidateSha256=$env:CANDIDATE_SHA256;verificationSource=$env:GITHUB_SHA;
+            runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;job=$env:GITHUB_JOB;inputsVerified=$true;
+            helperSha256=$proof.helperSha256;smokeSha256=$proof.smokeSha256;workflowSha256=$proof.workflowSha256;
+            boundary='Verified native inputs only; strict native execution has not yet completed.'} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $identityRoot.FullName 'input-identity.json') -Encoding utf8
+      - name: Install only locked native test dependencies
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked native dependency install failed.' }
+          node -e 'if (process.version.slice(1) !== require("fs").readFileSync("../.node-version","utf8").trim().replace(/^v/,"") || require("./node_modules/playwright/package.json").version !== "1.64.0") throw new Error("Pinned native tool mismatch");'
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned native tools changed.' }
+      - name: Run the strict native suite once without a long readiness wait
+        run: |
+          # This dedicated runner owns all input and windows. Never run on the active owner desktop.
+          # No state, clock, registry, Windows preference or application-gate override; no retry.
+          $ErrorActionPreference = 'Stop'
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/native-033-attempt -Force
+          $proof = Get-Content local-data/native-033-proof/provenance.json -Raw | ConvertFrom-Json
+          $outcome = 'failed'
+          $started = [DateTime]::UtcNow
+          try {
+            $global:LASTEXITCODE = 0
+            ./checks/qol-desktop-smoke.ps1 -AppPath local-data/release-candidate/TogetherServer.exe -AllowInteractiveTests *>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'native.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Strict native smoke returned failure.' }
+            $reports = @(Get-ChildItem local-data/ci-evidence/qol-desktop -Recurse -File -Filter summary.json)
+            if ($reports.Count -ne 1) { throw 'One exact raw native report is required.' }
+            $report = Get-Content -LiteralPath $reports[0].FullName -Raw | ConvertFrom-Json
+            if ($report.success -ne $true -or $report.result -ne 'PASS' -or $report.requiredCaseCount -ne 13 -or
+              $report.requiredCasesPassed -ne 13 -or $report.requiredCasesBlocked -ne 0 -or $report.cleanupCompleted -ne $true -or
+              $report.screenshotExportCompleted -ne $true -or @($report.cases).Count -ne 14 -or
+              @($report.cases | Where-Object status -eq 'PASS').Count -ne 13 -or
+              @($report.cases | Where-Object { $_.name -eq 'Windows startup unavailable in development staging' -and $_.status -eq 'SKIP' }).Count -ne 1) {
+              throw 'Every required native case must pass; BLOCKED and required skips remain failures.'
+            }
+            $outcome = 'passed'
+          } finally {
+            $finalHash = (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            @{schema=1;candidateSource=$env:CANDIDATE_SOURCE;candidateSha256=$env:CANDIDATE_SHA256;finalCandidateSha256=$finalHash;
+              verificationSource=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;job=$env:GITHUB_JOB;
+              runnerImage='windows-2022';startedUtc=$started.ToString('O');endedUtc=[DateTime]::UtcNow.ToString('O');outcome=$outcome;
+              helperSha256=$proof.helperSha256;smokeSha256=$proof.smokeSha256;workflowSha256=$proof.workflowSha256;
+              boundary='One strict native attempt. No hour wait or notification override. Review assets remain review-only pending separate acceptance review.'} |
+              ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'attempt.json') -Encoding utf8
+            if ($finalHash -ne $env:CANDIDATE_SHA256 -or
+              (Get-FileHash checks/qol-native-shell-helper.ps1 -Algorithm SHA256).Hash -ne $proof.helperSha256) { throw 'Native input bytes changed.' }
+            git diff --exit-code HEAD --
+            if ($LASTEXITCODE -ne 0) { throw 'Native acceptance changed tracked source.' }
+          }
+      - name: Always preserve raw native results, screenshots and diagnostic identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-033-native-raw
+          path: |
+            local-data/ci-evidence/native-033-attempt/
+            local-data/ci-evidence/qol-desktop/
+          if-no-files-found: error
+          retention-days: 1
+
+  package-review:
+    name: Build REVIEW ONLY installer and assets
+    needs: validate-original
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Retrieve exact review inputs independently of native acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROOF_ID: ${{ needs.validate-original.outputs.proof-id }}
+          PROOF_DIGEST: ${{ needs.validate-original.outputs.proof-digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $api = 'https://api.github.com/repos/daltonstates/TogetherServer'
+          try {
+            foreach ($pin in @(@{id='12277888264';name='windows-candidate';digest="sha256:$env:CANDIDATE_ZIP_SHA256";run='39451718957';source=$env:CANDIDATE_SOURCE;destination='.'},
+              @{id=$env:PROOF_ID;name='release-033-native-provenance';digest=$env:PROOF_DIGEST;run=$env:GITHUB_RUN_ID;source=$env:GITHUB_SHA;destination='local-data/native-033-proof'})) {
+              if ($pin.id -notmatch '^[1-9][0-9]+$' -or $pin.digest -notmatch '^sha256:[0-9a-f]{64}$') { throw 'Missing exact input pin.' }
+              $metadata = Invoke-RestMethod -Uri "$api/actions/artifacts/$($pin.id)" -Headers $headers -TimeoutSec 30
+              if ($metadata.id.ToString() -ne $pin.id -or $metadata.name -ne $pin.name -or $metadata.expired -ne $false -or
+                $metadata.digest -ne $pin.digest -or $metadata.workflow_run.id.ToString() -ne $pin.run -or
+                $metadata.workflow_run.head_sha -ne $pin.source -or $metadata.size_in_bytes -gt 200MB) { throw 'Review input metadata changed.' }
+              $zip = Join-Path $env:RUNNER_TEMP ("review-$($pin.id).zip")
+              Invoke-WebRequest -Uri "$api/actions/artifacts/$($pin.id)/zip" -Headers $headers -OutFile $zip -TimeoutSec 120
+              if ("sha256:$((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant())" -ne $pin.digest) { throw 'Review input ZIP changed.' }
+              Expand-Archive -LiteralPath $zip -DestinationPath $pin.destination
+            }
+          } finally { $headers.Clear() }
+          $proof = Get-Content local-data/native-033-proof/provenance.json -Raw | ConvertFrom-Json
+          if ($proof.verificationSource -ne $env:GITHUB_SHA -or $proof.runId -ne $env:GITHUB_RUN_ID -or
+            $proof.runAttempt -ne $env:GITHUB_RUN_ATTEMPT -or $proof.reviewOnly -ne $true -or $proof.fullyAccepted -ne $false -or
+            $proof.candidateSource -ne $env:CANDIDATE_SOURCE -or $proof.candidateSha256 -ne $env:CANDIDATE_SHA256 -or
+            (Get-FileHash .github/workflows/release-033-native.yml -Algorithm SHA256).Hash -ne $proof.workflowSha256 -or
+            (Get-FileHash checks/qol-native-shell-helper.ps1 -Algorithm SHA256).Hash -ne $proof.helperSha256 -or
+            (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash -ne $env:CANDIDATE_SHA256 -or
+            (Get-Item local-data/release-candidate/TogetherServer.exe).VersionInfo.ProductVersion -ne "0.3.3+$env:CANDIDATE_SOURCE") { throw 'Review candidate or provenance mismatch.' }
+      - name: Install pinned Inno Setup on this disposable runner
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setupPath = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $setupPath
+          if ((Get-FileHash $setupPath -Algorithm SHA256).Hash -ne '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732') { throw 'Compiler digest mismatch.' }
+          $signature = Get-AuthenticodeSignature $setupPath
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw 'Compiler publisher mismatch.' }
+          $compilerRoot = Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6'
+          $arguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/CURRENTUSER',('/DIR="{0}"' -f $compilerRoot))
+          $setup = Start-Process -FilePath $setupPath -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0 -or !(Test-Path (Join-Path $compilerRoot 'ISCC.exe'))) { throw 'Compiler installation failed.' }
+      - name: Require silent and actual wizard acceptance before exporting REVIEW ONLY assets
+        run: |
+          # Explicit opt-in: installation and actual UI use this dedicated hosted desktop only.
+          # This package is independent of native success and is never publication acceptance.
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/native-033-review-package -Force
+          $proof = Get-Content local-data/native-033-proof/provenance.json -Raw | ConvertFrom-Json
+          $outcome = 'failed'
+          try {
+            if ((Get-FileHash $candidate -Algorithm SHA256).Hash -ne $env:CANDIDATE_SHA256) { throw 'Candidate changed before review packaging.' }
+            $global:LASTEXITCODE = 0
+            ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/review-assets-033 -CompilerPath (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe') *>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'installer-build.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Review installer compilation failed.' }
+            $installer = (Resolve-Path local-data/review-assets-033/TogetherServer-Setup-win-x64.exe).Path
+            $installerHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            $global:LASTEXITCODE = 0
+            ./checks/installer-smoke.ps1 -InstallerPath $installer -ExpectedAppPath $candidate -AllowInteractiveTests *>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'installer-smoke.log')
+            if ($LASTEXITCODE -ne 0 -or @(Select-String -LiteralPath (Join-Path $evidence.FullName 'installer-smoke.log') -Pattern '^Installer checks: 6 passed, 0 failed\.').Count -ne 1) { throw 'All six silent installer checks must pass.' }
+            $global:LASTEXITCODE = 0
+            ./checks/installer-ui-smoke.ps1 -InstallerPath $installer -ExpectedAppPath $candidate -AllowInteractiveTests *>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'installer-ui.log')
+            if ($LASTEXITCODE -ne 0 -or @(Select-String -LiteralPath (Join-Path $evidence.FullName 'installer-ui.log') -Pattern '^Installer UI checks: 3 actual wizard choices passed, 0 failed, 0 skipped\.').Count -ne 1) { throw 'All three actual wizard choices must pass.' }
+            $files = @(Get-ChildItem local-data/ci-evidence/installer-ui -Recurse -File -Filter summary.json)
+            if ($files.Count -ne 1) { throw 'Actual wizard report is ambiguous.' }
+            $wizard = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+            if ($wizard.passed -ne $true -or $wizard.sourceRevision -ne $env:GITHUB_SHA -or $wizard.candidateSha256 -ne $env:CANDIDATE_SHA256 -or
+              $wizard.installerSha256 -ne $installerHash -or $wizard.candidateAndInstallerUnchanged -ne $true -or $wizard.cleanupCompleted -ne $true -or
+              $wizard.skipped -ne 0 -or @($wizard.cases).Count -ne 3 -or (@($wizard.cases.choice) -join '|') -ne 'Host|Friend|DecideLater' -or
+              @($wizard.cases | Where-Object state -ne 'Passed').Count -ne 0) { throw 'Actual wizard report did not pass every required choice and cleanup.' }
+            if ((Get-FileHash $candidate -Algorithm SHA256).Hash -ne $env:CANDIDATE_SHA256 -or
+              (Get-FileHash $installer -Algorithm SHA256).Hash -ne $installerHash) { throw 'Review app or installer bytes changed.' }
+            Copy-Item -LiteralPath $candidate -Destination local-data/review-assets-033/TogetherServer-win-x64.exe
+            $assets = @()
+            foreach ($name in @('TogetherServer-win-x64.exe','TogetherServer-Setup-win-x64.exe')) {
+              $file = Get-Item -LiteralPath (Join-Path 'local-data/review-assets-033' $name)
+              $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+              if ($signature.Status -ne 'NotSigned' -or $file.VersionInfo.FileMajorPart -ne 0 -or $file.VersionInfo.FileMinorPart -ne 3 -or
+                $file.VersionInfo.FileBuildPart -ne 3 -or $file.VersionInfo.FilePrivatePart -ne 0) { throw 'Review asset version or unsigned classification changed.' }
+              Set-Content -LiteralPath ($file.FullName + '.sha256') -Value "$hash  $name" -Encoding ascii
+              $assets += @{name=$name;bytes=$file.Length;sha256=$hash;authenticode=[string]$signature.Status}
+            }
+            @{schema=1;classification='REVIEW ONLY';reviewOnly=$true;fullyAccepted=$false;publicationAuthorizedByThisManifest=$false;
+              nativeAcceptance='PENDING separate review of raw native results; this package never declares native success.';
+              version='0.3.3';sourceRevision=$env:CANDIDATE_SOURCE;candidateSha256=$env:CANDIDATE_SHA256;
+              candidateArtifactId=12277888264;candidateArtifactDigest="sha256:$env:CANDIDATE_ZIP_SHA256";
+              verificationSource=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;job=$env:GITHUB_JOB;
+              helperSha256=$proof.helperSha256;smokeSha256=$proof.smokeSha256;workflowSha256=$proof.workflowSha256;
+              originalRunId=39451718957;originalRunConclusion='failure';originalExistingJobId=118729013138;originalDesktopJobId=118729014068;
+              originalNativeCounts=$proof.originalNativeCounts;originalChromePassed=14;runtimeRunId=39456992592;runtimeJobId=118746348285;runtimeSource=$env:RUNTIME_SOURCE;
+              sourceAndArchiveProvenance=$proof;silentInstallerChecks=6;actualWizardChoices=3;installerCleanupCompleted=$true;
+              installerUiReportSha256=(Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant();assets=$assets;
+              boundary='Reviewable exact app and tested installer only. No tag, release, upload to a public release, app rebuild, native gate override, or full acceptance claim.'} |
+              ConvertTo-Json -Depth 15 | Set-Content local-data/review-assets-033/release-manifest.json -Encoding utf8
+            git diff --exit-code HEAD --
+            if ($LASTEXITCODE -ne 0) { throw 'Review packaging changed tracked source.' }
+            $outcome = 'passed-review-only'
+          } finally {
+            @{classification='REVIEW ONLY';outcome=$outcome;fullyAccepted=$false;candidateSha256=$env:CANDIDATE_SHA256;
+              finalCandidateSha256=(Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant();verificationSource=$env:GITHUB_SHA;
+              runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;requiredSilentChecks=6;requiredActualWizardChoices=3} |
+              ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'package-report.json') -Encoding utf8
+          }
+      - name: Always preserve review installer evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-033-review-package-evidence
+          path: |
+            local-data/ci-evidence/native-033-review-package/
+            local-data/ci-evidence/installer-ui/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Export four files and manifest explicitly for REVIEW ONLY
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: REVIEW-ONLY-0.3.3-assets
+          path: local-data/review-assets-033/
+          if-no-files-found: error
+          retention-days: 1
