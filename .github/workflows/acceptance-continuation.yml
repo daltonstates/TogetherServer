@@ -1,4 +1,4 @@
-name: Finish the remaining UX and native acceptance
+name: Finish only native and actual installer acceptance
 
 on:
   push:
@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   remaining:
-    name: Finish UX, native and actual wizard acceptance
+    name: Finish native and actual wizard acceptance
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     defaults:
       run:
         shell: pwsh
@@ -29,6 +29,13 @@ jobs:
       ORIGINAL_RUN_ID: '39392686691'
       PRIOR_REPAIR_ARTIFACT_ID: '12251517740'
       PRIOR_REPAIR_ARTIFACT_SHA256: 4a9cd813f98aacdf1d0a20178442a2f1bcacb63ed3b8b9bea746a8c8a2a84441
+      COMPLETED_RUN_ID: '39398164189'
+      COMPLETED_REVISION: 9b33cb28a471ec2377cdf729d7c5de7280d1f584
+      COMPLETED_ARTIFACT_ID: '12253955875'
+      COMPLETED_ARTIFACT_SHA256: c669b7c11c3d81c5508df09d369c45a54c02729d88a3b4c1a1ea92b2244cba56
+      INSTALLER_ARTIFACT_ID: '12253661098'
+      INSTALLER_ARTIFACT_SHA256: f78021d781452c31bae91c297af6d3bd3f583d678dd4bdde0c5f8eca06795e10
+      INSTALLER_SHA256: 004dcf1cf9431092f85e0a0a2ce34c3e844fd573bfd4b40d61196fd54837269f
     steps:
       - name: Check out the verification source and its ancestry
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -60,7 +67,7 @@ jobs:
             originalRunId=$env:ORIGINAL_RUN_ID; candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;
             candidateArtifactDigest=('sha256:'+$env:CANDIDATE_ARTIFACT_SHA256); candidateSha256=$env:CANDIDATE_SHA256;
             continuationRunId=$env:GITHUB_RUN_ID; continuationAttempt=$env:GITHUB_RUN_ATTEMPT;
-            boundary='One dedicated hosted Windows runner; only incomplete synthetic/loopback/native/installer acceptance. No real game, WAN or publication.' } |
+            boundary='One dedicated hosted Windows runner; only incomplete native/installer acceptance. Reuses pinned passing Host/Friend proof. No real game, WAN or publication.' } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'context.json') -Encoding utf8
 
       - name: Retrieve and verify the original candidate artifact without rebuilding it
@@ -147,6 +154,102 @@ jobs:
             sharingChecks=$expected; actualBrowserPassed=$true; assignedLanStages=18; durableNewHostReceiptPassed=$true } |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/ci-evidence/acceptance-continuation/prior-proof.json -Encoding utf8
 
+      - name: Verify completed UX and exact-installer silent checks without repeating them
+        id: completed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
+          try {
+            $api = 'https://api.github.com/repos/daltonstates/TogetherServer/actions'
+            $run = Invoke-RestMethod -Uri "$api/runs/$env:COMPLETED_RUN_ID" -Headers $headers
+            if ($run.head_sha -ne $env:COMPLETED_REVISION -or $run.status -ne 'completed' -or $run.conclusion -ne 'failure' -or $run.run_attempt -ne 1) { throw 'Completed UX run identity mismatch.' }
+            $uri = "$api/artifacts/$env:COMPLETED_ARTIFACT_ID"
+            $artifact = Invoke-RestMethod -Uri $uri -Headers $headers
+            if ($artifact.name -ne 'acceptance-continuation-evidence' -or $artifact.workflow_run.head_sha -ne $env:COMPLETED_REVISION -or
+                [string]$artifact.workflow_run.id -ne $env:COMPLETED_RUN_ID -or $artifact.expired -ne $false -or
+                $artifact.digest -ne ('sha256:'+$env:COMPLETED_ARTIFACT_SHA256) -or $artifact.size_in_bytes -gt 4MB) { throw 'Completed UX artifact identity mismatch.' }
+            $archive = Join-Path $env:RUNNER_TEMP 'completed-ux-and-installer.zip'
+            Invoke-WebRequest -Uri ($uri+'/zip') -Headers $headers -OutFile $archive -MaximumRetryCount 2 -RetryIntervalSec 2
+          } finally { $headers.Clear() }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:COMPLETED_ARTIFACT_SHA256 -or
+              (Get-Item -LiteralPath $archive).Length -ne $artifact.size_in_bytes) { throw 'Completed proof ZIP identity mismatch.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath local-data/previous-completion
+          function Read-One([string]$directory,[string]$name) {
+            $files = @(Get-ChildItem -LiteralPath $directory -Filter $name -Recurse -File)
+            if ($files.Count -ne 1 -or $files[0].Length -gt 4MB) { throw 'Require one bounded completed report.' }
+            return Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+          }
+          $final = Read-One local-data/previous-completion/acceptance-continuation final-candidate.json
+          if ($final.unchanged -ne $true -or $final.compiledSourceRevision -ne $env:CANDIDATE_SOURCE_REVISION -or
+              $final.verificationRevision -ne $env:COMPLETED_REVISION -or $final.finalCandidateSha256 -ne $env:CANDIDATE_SHA256) { throw 'Completed candidate sentinel mismatch.' }
+          $pairing = Read-One local-data/previous-completion/acceptance-continuation remaining-pairing.json
+          if ($pairing.candidateSha256 -ne $env:CANDIDATE_SHA256 -or $pairing.verificationRevision -ne $env:COMPLETED_REVISION -or
+              @($pairing.checks).Count -ne 1 -or @($pairing.checks | Where-Object { $_.mode -ne 'ux' -or $_.outcome -ne 'passed' }).Count) { throw 'Actual UX outcome did not pass.' }
+          $lab = Read-One local-data/previous-completion/local-pairing/ux report.json
+          $expected = @('isolated-apps','two-ended-ux','cleanup')
+          if ($lab.outcome -ne 'Passed' -or @($lab.stages).Count -ne 3 -or @($lab.stages.id | Select-Object -Unique).Count -ne 3 -or
+              @($lab.stages | Where-Object { $_.state -ne 'Passed' -or $_.id -notin $expected }).Count -or $lab.cleanup.jobActiveProcesses -ne 0 -or
+              $lab.windowObservation.state -ne 'Passed' -or $lab.windowObservation.samples -lt 1 -or $lab.windowObservation.peakVisibleOwnedWindows -ne 0) { throw 'Actual UX isolation, stages or cleanup is incomplete.' }
+          $ux = Read-One local-data/previous-completion/local-pairing/ux ux-report.json
+          if ($ux.ok -ne $true -or @($ux.stages).Count -ne 10 -or @($ux.stages.name | Select-Object -Unique).Count -ne 10 -or
+              @($ux.stages | Where-Object passed -ne $true).Count -or @($ux.errors).Count -or @($ux.failedRequests).Count -or
+              $ux.failurePathCoverage.hostingGrantWithdrawal -ne $true -or $ux.failurePathCoverage.localConsentAndCancel -ne $true -or
+              $ux.failurePathCoverage.authenticatedRecovery -ne $true -or $ux.failurePathCoverage.signedGrantRefreshed -ne $true -or
+              $ux.failurePathCoverage.explicitRecoveryUsed -ne $false -or $ux.guidedHosting.startRequests -ne 1 -or
+              $ux.guidedHosting.successfulStartResponses -ne 1 -or $ux.signedDiscovery.exactCandidateSession -ne $true -or
+              $ux.signedDiscovery.exactAdvertisedEndpoint -ne $true -or $ux.signedDiscovery.exactConnectSelection -ne $true) { throw 'Ten actual UX stages, automatic recovery, one Start and signed Connect must pass.' }
+          $wizard = Read-One local-data/previous-completion/installer-ui summary.json
+          if ($wizard.candidateSha256 -ne $env:CANDIDATE_SHA256 -or $wizard.installerSha256 -ne $env:INSTALLER_SHA256 -or
+              $wizard.candidateAndInstallerUnchanged -ne $true -or $wizard.cleanupCompleted -ne $true) { throw 'Previously exercised installer bytes or cleanup mismatch.' }
+          $silentPath = 'local-data/previous-completion/acceptance-continuation/installer-smoke.log'
+          if ((Get-Item -LiteralPath $silentPath).Length -gt 64KB) { throw 'Silent installer log exceeds its bound.' }
+          $silent = Get-Content -LiteralPath $silentPath -Raw
+          $expectedPasses = @('Decide later retains only in-app guidance and uninstall preserves it',
+            'installer places the exact verified app bytes in a per-user destination',
+            'installer choices persist Join guidance, mode, tray, and exact per-user startup command',
+            'Start-menu search shortcut and per-user uninstall registration are present',
+            'installed app launches with the selected non-blocking preferences',
+            'uninstall removes app integration but preserves settings and data')
+          if ([regex]::Matches($silent,'(?m)^PASS ').Count -ne 6 -or $silent -notmatch '(?m)^Installer checks: 6 passed, 0 failed\. Isolated data: ' -or
+              $silent -match '(?m)^(?:FAIL|Error|Exception)\b') { throw 'All six actual silent installer cases must previously pass.' }
+          foreach ($name in $expectedPasses) {
+            if ($silent -notmatch ('(?m)^PASS '+[regex]::Escape($name)+'\r?$')) { throw 'A required silent installer assertion is missing.' }
+          }
+          @{ originalRunId=$env:COMPLETED_RUN_ID; verificationRevision=$env:COMPLETED_REVISION; candidateSha256=$env:CANDIDATE_SHA256;
+            artifactId=$env:COMPLETED_ARTIFACT_ID; artifactZipSha256=$env:COMPLETED_ARTIFACT_SHA256; installerSha256=$env:INSTALLER_SHA256;
+            uxStages=10; automaticGrantRecovery=$true; exactOneStart=$true; signedConnect=$true; silentInstallerCases=6 } |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/ci-evidence/acceptance-continuation/completed-proof.json -Encoding utf8
+
+      - name: Retrieve the exact already-tested installer without rebuilding or uploading it again
+        id: installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
+          try {
+            $uri = "https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/$env:INSTALLER_ARTIFACT_ID"
+            $artifact = Invoke-RestMethod -Uri $uri -Headers $headers
+            if ($artifact.name -ne 'remaining-installer-candidate' -or $artifact.workflow_run.head_sha -ne $env:COMPLETED_REVISION -or
+                [string]$artifact.workflow_run.id -ne $env:COMPLETED_RUN_ID -or $artifact.expired -ne $false -or
+                $artifact.digest -ne ('sha256:'+$env:INSTALLER_ARTIFACT_SHA256) -or $artifact.size_in_bytes -gt 64MB) { throw 'Retained installer artifact identity mismatch.' }
+            $archive = Join-Path $env:RUNNER_TEMP 'retained-installer.zip'
+            Invoke-WebRequest -Uri ($uri+'/zip') -Headers $headers -OutFile $archive -MaximumRetryCount 2 -RetryIntervalSec 2
+          } finally { $headers.Clear() }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:INSTALLER_ARTIFACT_SHA256 -or
+              (Get-Item -LiteralPath $archive).Length -ne $artifact.size_in_bytes) { throw 'Retained installer ZIP identity mismatch.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath local-data/release-assets
+          $files = @(Get-ChildItem -LiteralPath local-data/release-assets -File -Recurse)
+          $installer = (Resolve-Path local-data/release-assets/TogetherServer-Setup-win-x64.exe).Path
+          if ($files.Count -ne 1 -or $files[0].FullName -ne $installer -or
+              (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:INSTALLER_SHA256 -or
+              (Get-Item -LiteralPath $installer).Length -ne 60584270) { throw 'Retained exact installer identity mismatch.' }
+          @{ installerSha256=$env:INSTALLER_SHA256; artifactId=$env:INSTALLER_ARTIFACT_ID; artifactZipSha256=$env:INSTALLER_ARTIFACT_SHA256;
+            originalRunId=$env:COMPLETED_RUN_ID; recompiled=$false; repeatedSilentChecks=$false } |
+            ConvertTo-Json | Set-Content -LiteralPath local-data/ci-evidence/acceptance-continuation/installer.json -Encoding utf8
+
       - name: Install pinned .NET SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
@@ -157,154 +260,41 @@ jobs:
           node-version-file: .node-version
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - name: Prepare only the dispatcher and browser without rebuilding the candidate
+      - name: Prepare only the locked CDP library
         id: setup
         run: |
           Push-Location ui
           try {
             npm ci --ignore-scripts --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) { throw 'Locked browser dependency setup failed.' }
-            ./node_modules/.bin/playwright.cmd install chromium
-            if ($LASTEXITCODE -ne 0) { throw 'Locked browser installation failed.' }
           } finally { Pop-Location }
-          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode
-          if ($LASTEXITCODE -ne 0) { throw 'Dispatcher locked restore failed.' }
-          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
-          if ($LASTEXITCODE -ne 0) { throw 'Dispatcher compilation failed.' }
       - name: Complete QoL native desktop acceptance
         id: desktop
         continue-on-error: true
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.completed.outcome == 'success' && steps.installer.outcome == 'success' && steps.setup.outcome == 'success' }}
         run: |
           # Explicit opt-in applies only to this dedicated hosted runner's disposable desktop.
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           ./checks/qol-desktop-smoke.ps1 -AppPath $candidate -AllowInteractiveTests *>&1 |
             Tee-Object -FilePath local-data/ci-evidence/acceptance-continuation/qol-desktop.log
 
-      - name: Complete only the ten-stage Host/Friend UX
-        id: pairing
-        continue-on-error: true
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.setup.outcome == 'success' }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          $harness = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
-          $up = @(Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object InterfaceIndex)
-          $lan = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.AddressState.ToString() -eq 'Preferred' -and
-            $_.InterfaceIndex -in $up -and $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)' } |
-            Sort-Object InterfaceIndex,IPAddress | Select-Object -First 1)
-          if ($lan.Count -ne 1) { throw 'One assigned preferred private IPv4 address is required.' }
-          $labRoot = Join-Path (Get-Location) 'local-data/local-pairing-lab'
-          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/local-pairing -Force
-          $results = [Collections.Generic.List[object]]::new()
-          foreach ($mode in @('ux')) {
-            $outcome = 'passed'
-            try {
-              $before = @(if (Test-Path -LiteralPath $labRoot) { Get-ChildItem -LiteralPath $labRoot -Directory | ForEach-Object Name })
-              $arguments = @($harness,$candidate,'--local-pairing-lab-journey','--allow-windowless-lab','--lab-lan-address',$lan[0].IPAddress)
-              if ($mode -eq 'ux') { $arguments += '--lab-ux' }
-              dotnet @arguments
-              $code = $LASTEXITCODE
-              $created = @(Get-ChildItem -LiteralPath $labRoot -Directory | Where-Object Name -notin $before)
-              if ($created.Count -ne 1 -or $created[0].Name -notmatch '^run-[0-9a-f]{32}$') { throw 'One exact new lab case is required.' }
-              $reportPath = Join-Path $created[0].FullName 'report.json'
-              if ((Get-Item -LiteralPath $reportPath).Length -gt 256KB) { throw 'Lab report exceeds its bound.' }
-              $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-              $destination = New-Item -ItemType Directory -Path (Join-Path $evidence.FullName $mode) -Force
-              $report | Select-Object schema,runId,startedUtc,endedUtc,durationMs,mode,physicalPcCount,outcome,failedStage,failureCode,
-                stages,uxStagePassed,apiHostChange,branchTransfer,cleanup,resources,windowObservation,acceptance |
-                ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'report.json') -Encoding utf8
-              $expected = @('isolated-apps','two-ended-ux','cleanup')
-              if ($mode -eq 'lan-api') {
-                $expected = @('isolated-apps','pinned-pairing','separate-permissions-and-consent','signed-chat','synthetic-stop-copy-receipts',
-                  'password-permission-revoke','unsupported-password-source-denied','guided-hosting','local-copy-hosting','lost-response-cleanup','cleanup',
-                  'new-host-notice','new-host-authenticated-connect','new-host-permission-isolation','new-host-stop-and-transfer',
-                  'new-host-restart-reconnect','new-host-revocation-isolation','new-host-receipt-confirmed')
-              } else {
-                $uxRoot = Join-Path $created[0].FullName 'ux'
-                $uxPath = Join-Path $uxRoot 'report.json'
-                if ((Get-Item -LiteralPath $uxPath).Length -gt 256KB) { throw 'UX report exceeds its bound.' }
-                $ux = Get-Content -LiteralPath $uxPath -Raw | ConvertFrom-Json
-                $ux | Select-Object ok,stages,errors,failedRequests,canceledRequests,controlPolicyChanges,boundaries,guidedHosting,signedDiscovery,failurePathCoverage,failure |
-                  ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'ux-report.json') -Encoding utf8
-                $pictures = @(Get-ChildItem -LiteralPath $uxRoot -Filter '*.png' -File)
-                if ($pictures.Count -lt 1 -or $pictures.Count -gt 64) { throw 'Masked UX capture count is outside its bound.' }
-                foreach ($picture in $pictures) {
-                  if ($picture.Name -notmatch '^(?:[0-9]{2}-[a-z0-9-]+|failure-[0-9]+)\.png$' -or $picture.Length -gt 16MB -or
-                      ($picture.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Masked UX capture identity is invalid.' }
-                  Copy-Item -LiteralPath $picture.FullName -Destination (Join-Path $destination.FullName $picture.Name)
-                }
-                if ($ux.ok -ne $true -or @($ux.stages).Count -ne 10 -or @($ux.stages | Where-Object passed -ne $true).Count -ne 0 -or
-                    @($ux.errors).Count -ne 0 -or @($ux.failedRequests).Count -ne 0 -or $ux.failurePathCoverage.hostingGrantWithdrawal -ne $true -or
-                    $ux.failurePathCoverage.localConsentAndCancel -ne $true -or $ux.guidedHosting.startRequests -ne 1 -or
-                    $ux.guidedHosting.successfulStartResponses -ne 1 -or $ux.signedDiscovery.exactCandidateSession -ne $true -or
-                    $ux.signedDiscovery.exactAdvertisedEndpoint -ne $true -or $ux.signedDiscovery.exactConnectSelection -ne $true) { throw 'Ten actual UX stages and exact one-Start/signed-Connect proof must all pass.' }
-              }
-              if ($code -ne 0 -or $report.outcome -ne 'Passed' -or @($report.stages).Count -ne $expected.Count -or
-                  @($report.stages | Where-Object { $_.state -ne 'Passed' -or $_.id -notin $expected }).Count -ne 0 -or
-                  @($report.stages.id | Select-Object -Unique).Count -ne $expected.Count -or $report.cleanup.jobActiveProcesses -ne 0 -or
-                  $report.windowObservation.state -ne 'Passed' -or $report.windowObservation.samples -lt 1 -or
-                  $report.windowObservation.peakVisibleOwnedWindows -ne 0) { throw "Every $mode stage and exact window/job cleanup must pass." }
-              if ($mode -eq 'lan-api' -and ($report.apiHostChange.discoveredHost -ne $true -or $report.apiHostChange.connectedOwner -ne $true -or
-                  $report.apiHostChange.connectedObserver -ne $true -or $report.apiHostChange.transferredCandidateCopy -ne $true -or
-                  $report.apiHostChange.restartedHostConnections -ne $true -or $report.apiHostChange.isolatedRevocation -ne $true)) { throw 'A required hosting, transfer, restart or revocation proof is missing.' }
-            } catch { $outcome = 'failed'; Write-Host "FAIL remaining $mode lab: inspect its redacted report." }
-            $results.Add(@{mode=$mode;outcome=$outcome})
-            if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CANDIDATE_SHA256) { throw 'Immutable candidate changed during the lab.' }
-          }
-          @{candidateSha256=$env:CANDIDATE_SHA256;verificationRevision=$env:GITHUB_SHA;checks=@($results.ToArray())} | ConvertTo-Json -Depth 5 |
-            Set-Content -LiteralPath local-data/ci-evidence/acceptance-continuation/remaining-pairing.json -Encoding utf8
-          if ($results.Count -ne 1 -or @($results | Where-Object outcome -ne 'passed').Count -ne 0) { throw 'The remaining ten-stage UX did not pass.' }
-
-      - name: Install the pinned installer compiler
-        id: compiler
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' }}
-        run: |
-          $compilerSetup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
-          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $compilerSetup -MaximumRetryCount 2 -RetryIntervalSec 2
-          if ((Get-FileHash -LiteralPath $compilerSetup -Algorithm SHA256).Hash -ne '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732') { throw 'Pinned installer compiler digest mismatch.' }
-          $signature = Get-AuthenticodeSignature -LiteralPath $compilerSetup
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw 'Installer compiler publisher mismatch.' }
-          $compilerRoot = Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6'
-          $setup = Start-Process -FilePath $compilerSetup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', "/DIR=`"$compilerRoot`"") -WindowStyle Hidden -Wait -PassThru
-          if ($setup.ExitCode -ne 0 -or !(Test-Path -LiteralPath (Join-Path $compilerRoot 'ISCC.exe'))) { throw 'Installer compiler installation failed.' }
-
-      - name: Wrap the immutable app bytes in the installer
-        id: installer
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.compiler.outcome == 'success' }}
-        run: |
-          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets -CompilerPath (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe') *>&1 |
-            Tee-Object -FilePath local-data/ci-evidence/acceptance-continuation/installer-build.log
-          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-
-      - name: Complete silent installer integration acceptance
-        id: silent
-        continue-on-error: true
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.installer.outcome == 'success' }}
-        run: |
-          ./checks/installer-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath local-data/release-candidate/TogetherServer.exe -AllowInteractiveTests *>&1 |
-            Tee-Object -FilePath local-data/ci-evidence/acceptance-continuation/installer-smoke.log
-
       - name: Complete all three actual installer wizard choices
         id: wizard
         continue-on-error: true
         if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.installer.outcome == 'success' }}
         run: |
-          # The UI script refuses any installed/running app; a failed silent cleanup cannot be bypassed.
+          # The UI script refuses any installed/running app; the exact wrapper already passed silent integration.
           ./checks/installer-ui-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath local-data/release-candidate/TogetherServer.exe -AllowInteractiveTests *>&1 |
             Tee-Object -FilePath local-data/ci-evidence/acceptance-continuation/installer-ui.log
 
       - name: Require every remaining actual outcome and report
         id: package
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.completed.outcome == 'success' && steps.installer.outcome == 'success' && steps.setup.outcome == 'success' }}
         env:
           DESKTOP_OUTCOME: ${{ steps.desktop.outcome }}
-          UX_OUTCOME: ${{ steps.pairing.outcome }}
-          SILENT_OUTCOME: ${{ steps.silent.outcome }}
           WIZARD_OUTCOME: ${{ steps.wizard.outcome }}
         run: |
-          foreach ($name in @('DESKTOP_OUTCOME','UX_OUTCOME','SILENT_OUTCOME','WIZARD_OUTCOME')) {
+          foreach ($name in @('DESKTOP_OUTCOME','WIZARD_OUTCOME')) {
             if ([Environment]::GetEnvironmentVariable($name) -ne 'success') { throw "Required remaining surface did not pass: $name" }
           }
           function Read-One([string]$directory,[string]$name) {
@@ -320,11 +310,11 @@ jobs:
               $desktop.nativeShell.notification.freshTitleAndBodyObserved -ne $true -or $desktop.nativeShell.notification.physicalClickSent -ne $true -or
               $desktop.nativeShell.notification.nativeDestinationVerified -ne $true -or $desktop.nativeShell.trayQuit.exactProcessExited -ne $true -or
               $desktop.nativeShell.trayQuit.nativeFlushObserved -ne $true) { throw 'Every required native case, real notification click and tray Quit must pass.' }
-          $pairing = Read-One local-data/ci-evidence/acceptance-continuation remaining-pairing.json
-          if ($pairing.candidateSha256 -ne $env:CANDIDATE_SHA256 -or @($pairing.checks).Count -ne 1 -or
-              @($pairing.checks | Where-Object { $_.mode -ne 'ux' -or $_.outcome -ne 'passed' }).Count) { throw 'The actual ten-stage UX did not pass.' }
           $wizard = Read-One local-data/ci-evidence/installer-ui summary.json
           $installerHash = (Get-FileHash -LiteralPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $completed = Read-One local-data/ci-evidence/acceptance-continuation completed-proof.json
+          if ($completed.candidateSha256 -ne $env:CANDIDATE_SHA256 -or $completed.installerSha256 -ne $env:INSTALLER_SHA256 -or
+              $completed.uxStages -ne 10 -or $completed.silentInstallerCases -ne 6 -or $installerHash -ne $env:INSTALLER_SHA256) { throw 'Pinned completed proof or exact installer is missing.' }
           if ($wizard.passed -ne $true -or $wizard.skipped -ne 0 -or $wizard.cleanupCompleted -ne $true -or
               $wizard.candidateAndInstallerUnchanged -ne $true -or $wizard.candidateSha256 -ne $env:CANDIDATE_SHA256 -or
               $wizard.installerSha256 -ne $installerHash -or (@($wizard.cases.choice | Sort-Object) -join ',') -ne 'DecideLater,Friend,Host' -or
@@ -339,7 +329,7 @@ jobs:
             @{name=$name;sha256=$hash;bytes=$file.Length;authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
           }
           @{passed=$true;compiledSourceRevision=$env:CANDIDATE_SOURCE_REVISION;verificationRevision=$env:GITHUB_SHA;
-            candidateSha256=$env:CANDIDATE_SHA256;runId=$env:GITHUB_RUN_ID;priorRunId=$env:ORIGINAL_RUN_ID;
+            candidateSha256=$env:CANDIDATE_SHA256;runId=$env:GITHUB_RUN_ID;priorRunId=$env:ORIGINAL_RUN_ID;completedRunId=$env:COMPLETED_RUN_ID;
             assets=$assets;acceptance='Immutable repaired candidate, prior passed actual sharing/browser/LAN proof plus all remaining UX/native/installer checks. Synthetic game data; no real-game or WAN acceptance.'} |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
 
@@ -353,16 +343,12 @@ jobs:
           @{ candidateSha256=$env:CANDIDATE_SHA256; finalCandidateSha256=$actual; unchanged=($actual -eq $env:CANDIDATE_SHA256);
             compiledSourceRevision=$env:CANDIDATE_SOURCE_REVISION; verificationRevision=$env:GITHUB_SHA; runId=$env:GITHUB_RUN_ID } |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'final-candidate.json') -Encoding utf8
-          if ($actual -ne $env:CANDIDATE_SHA256) { throw 'The pinned candidate is unavailable or changed.' }
-
-      - name: Retain the exact installer candidate for targeted retries
-        if: ${{ !cancelled() && steps.installer.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: remaining-installer-candidate
-          path: local-data/release-assets/TogetherServer-Setup-win-x64.exe
-          if-no-files-found: error
-          retention-days: 1
+          $installer = Join-Path (Get-Location) 'local-data/release-assets/TogetherServer-Setup-win-x64.exe'
+          $actualInstaller = if (Test-Path -LiteralPath $installer) { (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+          @{ expectedInstallerSha256=$env:INSTALLER_SHA256; finalInstallerSha256=$actualInstaller; unchanged=($actualInstaller -eq $env:INSTALLER_SHA256);
+            originalRunId=$env:COMPLETED_RUN_ID; installerArtifactId=$env:INSTALLER_ARTIFACT_ID; verificationRevision=$env:GITHUB_SHA; runId=$env:GITHUB_RUN_ID } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'final-installer.json') -Encoding utf8
+          if ($actual -ne $env:CANDIDATE_SHA256 -or $actualInstaller -ne $env:INSTALLER_SHA256) { throw 'The pinned app or installer is unavailable or changed.' }
 
       - name: Retain only bounded acceptance evidence for one day
         if: always()
@@ -373,11 +359,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: Retain verified package assets for one day
+      - name: Retain only the verified manifest and hash sidecars for one day
         if: ${{ success() && steps.package.outcome == 'success' && steps.sentinel.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: acceptance-continuation-assets
-          path: local-data/release-assets/
+          name: acceptance-continuation-manifest
+          path: |
+            local-data/release-assets/release-manifest.json
+            local-data/release-assets/*.sha256
           if-no-files-found: error
           retention-days: 1

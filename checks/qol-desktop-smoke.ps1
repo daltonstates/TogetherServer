@@ -680,8 +680,9 @@ function Post-Json([string]$Path, $Body = $null, [string]$Method = 'POST') {
 }
 . (Join-Path $PSScriptRoot 'qol-native-shell-helper.ps1')
 
-# CDP attaches only to this disposable WebView2. It never launches Chromium or
-# calls Browser.close on the remote native browser. A process exit detaches it.
+# CDP attaches only to this disposable WebView2. In pinned Playwright 1.64.0,
+# Browser.close on this attachment closes its WebSocket transport, not the
+# native browser. Never close the borrowed default context or page.
 $nodeScript = Join-Path $caseRoot 'native-webview.mjs'
 [IO.File]::WriteAllText($nodeScript, @'
 import fs from 'node:fs';
@@ -698,6 +699,25 @@ const out = name => {
 };
 const headers = { Origin: base, 'X-TogetherServer-Local': '1' };
 let browser;
+let page;
+let phaseError;
+const expectsNativeExit = mode === 'arm-draft' || mode === 'arm-tray-draft';
+async function waitForNativeDisconnect() {
+  if (!browser.isConnected()) return;
+  let timer;
+  let disconnected;
+  try {
+    await new Promise((resolve, reject) => {
+      disconnected = resolve;
+      browser.once('disconnected', disconnected);
+      timer = setTimeout(() => reject(new Error('Native process did not disconnect CDP within 30 seconds.')), 30000);
+      if (!browser.isConnected()) resolve();
+    });
+  } finally {
+    clearTimeout(timer);
+    if (disconnected) browser.off('disconnected', disconnected);
+  }
+}
 async function json(url, body, timeoutMs = null) {
   const response = await fetch(base + url, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(timeoutMs === null ? {} : { signal: AbortSignal.timeout(timeoutMs) }) });
   assert.ok(response.ok, `local HTTP ${response.status}`);
@@ -710,7 +730,7 @@ try {
   assert.equal(transport.search, ''); assert.equal(transport.hash, '');
   browser = await chromium.connectOverCDP(debugEndpoint, { timeout: 25000 });
   const pages = browser.contexts().flatMap(context => context.pages());
-  const page = pages.find(candidate => new URL(candidate.url()).origin === base);
+  page = pages.find(candidate => new URL(candidate.url()).origin === base);
   assert.ok(page, 'The owned local WebView page was not present in CDP.');
   page.setDefaultTimeout(25000);
   const errors = [];
@@ -874,7 +894,7 @@ try {
     } else {
       // CDP transport disappears on native process exit; the PowerShell owner
       // separately verifies that the native request happened and reads recovery.
-      await Promise.race([new Promise(resolve => browser.once('disconnected', resolve)), new Promise(resolve => setTimeout(resolve, 30000))]);
+      await waitForNativeDisconnect();
     }
   } else if (mode === 'recovery') {
     const result = await json('/api/local/ui-drafts/read', { purpose: 'chat', profileId, connectionId: null, key: 'compose' });
@@ -907,21 +927,46 @@ try {
     }
   } else throw new Error('Unknown fixed smoke phase.');
   assert.deepEqual(errors, [], 'Native WebView had uncaught page errors.');
-  if (browser.isConnected() && !page.isClosed()) {
-    await page.unrouteAll({ behavior: 'wait' });
-    await page.evaluate(() => {
-      if (window.__qolSmokeNativeListener) window.chrome.webview.removeEventListener('message', window.__qolSmokeNativeListener);
-      delete window.__qolSmokeNativeListener;
-      if (window.__qolSmokeNotificationListener) window.chrome.webview.removeEventListener('message', window.__qolSmokeNotificationListener);
-      delete window.__qolSmokeNotificationListener;
-      delete window.__qolSmokeNotificationClicks;
-    });
+  if (!expectsNativeExit) {
+    assert.ok(browser.isConnected() && !page.isClosed(), 'The borrowed native WebView closed during a non-Quit phase.');
   }
-  fs.writeSync(1, `PASS native WebView phase ${mode}\n`);
-  process.exit(0);
 } catch (error) {
-  fs.writeSync(2, `FAIL native WebView phase ${mode}: ${String(error.message).slice(0, 600)}\n`);
-  process.exit(1);
+  phaseError = error;
+} finally {
+  const cleanupErrors = [];
+  if (browser?.isConnected() && page && !page.isClosed()) {
+    try {
+      await page.unrouteAll({ behavior: 'wait' });
+      await page.evaluate(() => {
+        if (window.__qolSmokeNativeListener) window.chrome.webview.removeEventListener('message', window.__qolSmokeNativeListener);
+        delete window.__qolSmokeNativeListener;
+        if (window.__qolSmokeNotificationListener) window.chrome.webview.removeEventListener('message', window.__qolSmokeNotificationListener);
+        delete window.__qolSmokeNotificationListener;
+        delete window.__qolSmokeNotificationClicks;
+      });
+    } catch (error) { cleanupErrors.push(error); }
+  }
+  if (browser?.isConnected()) {
+    try {
+      // This is the single owned CDP transport disconnect. The native app and
+      // its borrowed default page/context remain owned by PowerShell.
+      await browser.close();
+      assert.equal(browser.isConnected(), false, 'The owned CDP connection did not disconnect.');
+    } catch (error) { cleanupErrors.push(error); }
+  }
+  if (cleanupErrors.length) {
+    const messages = [phaseError, ...cleanupErrors].filter(Boolean).map(error => String(error.message));
+    phaseError = new Error(messages.join('; '));
+  }
+}
+if (phaseError) {
+  fs.writeSync(2, `FAIL native WebView phase ${mode}: ${String(phaseError.message).slice(0, 600)}\n`);
+  process.exitCode = 1;
+} else {
+  fs.writeSync(1, `Native WebView phase ${mode}: assertions completed and CDP disconnected.\n`);
+  // Forced process.exit after fetch/CDP can trigger Windows libuv async-close
+  // assertions. Let pending I/O close naturally; the parent requires exit 0.
+  process.exitCode = 0;
 }
 '@, [Text.UTF8Encoding]::new($false))
 
@@ -943,6 +988,8 @@ function Finish-WebViewPhase($Phase, [int]$Seconds = 35) {
     $errorText = $Phase.Error.GetAwaiter().GetResult()
     if ($output) { Write-Host $output.Trim() }
     Require ($Phase.Identity.Process.ExitCode -eq 0) "Native WebView phase failed: $($Phase.Phase) $errorText"
+    if ($Phase.Phase -notin @('arm-draft', 'arm-tray-draft')) { Assert-AppIdentity }
+    Write-Host "PASS native WebView phase $($Phase.Phase), natural Node exit 0"
 }
 function Run-WebViewPhase([string]$Phase) { Finish-WebViewPhase (Start-WebViewPhase $Phase) }
 function Wait-PhaseReady($Phase) {
@@ -1121,11 +1168,11 @@ try {
     catch {
         $proof = $nativeShellProof.notification
         if ($proof.systemState -ne 'QuietTime' -or !$proof.captionClickExactOwnedHit -or !$proof.captionClickForegroundVerified -or
-            !$proof.captionClickNormalBoundsPreserved -or !$proof.osUiSetup.attempted -or !$proof.osUiSetup.cleanupCompleted -or !$proof.osUiSetup.appRestored) { throw }
+            !$proof.captionClickNormalBoundsPreserved) { throw }
         Assert-OwnedWindow $windowHandle
         $notificationBlocked = $true
         $caseResults.notifications.status = 'BLOCKED'
-        $caseResults.notifications.reason = 'Windows remains in QuietTime after the single supported hosted Settings attempt; real notification delivery and click are unproven.'
+        $caseResults.notifications.reason = 'Windows remains in QuietTime after verified physical caption input; real notification delivery and click are unproven. The earlier hosted Settings attempt did not clear QuietTime and is not repeated.'
         Write-Host ('BLOCKED OS notification acceptance: ' + $caseResults.notifications.reason)
     }
     if (!$notificationBlocked) {

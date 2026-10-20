@@ -474,3 +474,32 @@ signed world/session/branch/address/Connect selection. All 172 owned-window
 samples were empty, cleanup left zero job members, and the production process's
 PID/start/path/executable hash remained unchanged. This uses the existing guarded
 windowless lab, not local native UI or a real game.
+
+Continuation `39398164189` also passed all ten Host/Friend UX stages on hosted
+Windows, including automatic grant recovery, one explicit Start and the exact
+signed Connect destination. Its installer was bit-identical to the repair run
+(`004dcf1cf9431092f85e0a0a2ce34c3e844fd573bfd4b40d61196fd54837269f`)
+and passed all six silent installation checks again. Those surfaces need no
+further rerun for the unchanged candidate.
+
+The continuation still failed overall. The actual wizard screenshot showed an
+enabled Next button exposed through a native provider rather than UIA Button.
+The helper now accepts only reviewed native navigation captions/classes inside
+the exact owned wizard, rechecking process/session/window identity before input.
+The native suite passed tray reopen and the actual file picker assertions, but
+forced Node shutdown then hit a Windows libuv assertion; it now disconnects the
+owned CDP attachment and requires a natural zero exit before recording PASS.
+Neither fix changes application or installer bytes.
+
+One ordinary hosted Windows Settings attempt changed Do not disturb to Off but
+did not clear the fresh Windows profile's QuietTime. That OS notification check
+remains BLOCKED, never passed. The Settings attempt is not repeated and other
+native cases continue independently. The final native gate still requires every
+required case, including actual notification delivery and click, to pass.
+
+The remaining-only continuation now reuses pinned app, installer, completed UX
+and silent-installer artifacts. It performs no app/compiler/dispatcher build,
+browser download, repeated pairing run, silent installer run or duplicate
+installer upload. Only native and actual three-choice wizard checks run, with
+one-day evidence retention. Both recent completed runs report zero billable
+runner milliseconds; storage and unrelated account usage are separate.

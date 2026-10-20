@@ -24,6 +24,9 @@ $priorData = $env:TOGETHERSERVER_DATA_DIR
 $owned = [Collections.Generic.List[object]]::new()
 $screenshots = [Collections.Generic.List[string]]::new()
 $captureObservations = [Collections.Generic.List[object]]::new()
+$buttonObservations = [Collections.Generic.List[object]]::new()
+$buttonObservationKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$testSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
 $results = @(
     [pscustomobject]@{ choice = 'Host'; intent = 'Host'; label = 'Host game servers'; mode = 'Host'; state = 'NotRun' },
     [pscustomobject]@{ choice = 'Friend'; intent = 'Join'; label = "Join a friend's server"; mode = 'Friend'; state = 'NotRun' },
@@ -54,13 +57,15 @@ function Add-Owned([Diagnostics.Process]$process, [string]$path) {
     Require (!$process.HasExited) 'An owned process exited before its identity was retained.'
     $observed = [IO.Path]::GetFullPath($process.MainModule.FileName)
     Require ($observed.Equals([IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)) 'An owned executable path did not match.'
-    $item = [pscustomobject]@{ process = $process; id = $process.Id; ticks = $process.StartTime.ToUniversalTime().Ticks; path = $observed }
+    Require ($process.SessionId -eq $testSessionId) 'An owned process is outside the dedicated test session.'
+    $item = [pscustomobject]@{ process = $process; id = $process.Id; ticks = $process.StartTime.ToUniversalTime().Ticks; path = $observed; sessionId = $process.SessionId }
     $owned.Add($item)
     return $item
 }
 function Assert-Owned($item) {
     $item.process.Refresh()
     Require (!$item.process.HasExited -and $item.process.StartTime.ToUniversalTime().Ticks -eq $item.ticks -and
+        $item.process.SessionId -eq $item.sessionId -and $item.sessionId -eq $testSessionId -and
         [IO.Path]::GetFullPath($item.process.MainModule.FileName).Equals($item.path, [StringComparison]::OrdinalIgnoreCase)) 'A disposable process identity changed.'
 }
 function Refresh-Owned {
@@ -115,18 +120,37 @@ public static class TogetherServerInstallerUi {
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
     public sealed class Window { public IntPtr Handle; public int Pid; public string Class; }
+    public sealed class NavigationButton {
+        public IntPtr Handle, Root;
+        public int Pid;
+        public string Class, Caption;
+        public bool Visible, Enabled, InRoot;
+    }
     private delegate bool EnumProc(IntPtr window, IntPtr parameter);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr parameter);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr child);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder text, int count);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wParam, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
     [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr window, ref Point point);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     public static string ClassName(IntPtr window) { var text = new StringBuilder(256); GetClassName(window, text, text.Capacity); return text.ToString(); }
+    private static string Caption(IntPtr window, bool readControl = false) {
+        var text = new StringBuilder(128);
+        GetWindowText(window, text, text.Capacity);
+        if (text.Length == 0 && readControl) {
+            UIntPtr result;
+            SendMessageTimeout(window, 0x000D, new UIntPtr((uint)text.Capacity), text, 0x0002, 250, out result);
+        }
+        return text.ToString().Replace("&", "").Trim();
+    }
     public static bool IsOwnedVisibleWindow(IntPtr window, int expectedPid) {
         uint pid;
         return IsWindow(window) && IsWindowVisible(window) &&
@@ -138,6 +162,39 @@ public static class TogetherServerInstallerUi {
             if (ids.Contains((int)pid) && IsWindowVisible(window)) result.Add(new Window { Handle=window, Pid=(int)pid, Class=ClassName(window) });
             return true; }, IntPtr.Zero);
         return result.ToArray();
+    }
+    public static NavigationButton[] Buttons(IntPtr root, int expectedPid) {
+        if (!IsOwnedVisibleWindow(root, expectedPid) || ClassName(root) != "TWizardForm")
+            throw new InvalidOperationException("Native navigation requires the exact visible owned wizard.");
+        if (!IsWindowEnabled(root)) return Array.Empty<NavigationButton>();
+        var result = new List<NavigationButton>();
+        var count = 0;
+        var exceeded = false;
+        EnumChildWindows(root, (window, _) => {
+            if (++count > 512) { exceeded = true; return false; }
+            var kind = ClassName(window);
+            var caption = Caption(window, kind == "TNewButton" || kind == "Button");
+            var navigationCaption = caption == "Next" || caption == "Next >" || caption == "Install" || caption == "Finish";
+            if (kind != "TNewButton" && kind != "Button" && !navigationCaption) return true;
+            if (result.Count == 32) { exceeded = true; return false; }
+            uint pid; GetWindowThreadProcessId(window, out pid);
+            result.Add(new NavigationButton { Handle=window, Root=root, Pid=(int)pid, Class=kind, Caption=caption,
+                Visible=IsWindowVisible(window), Enabled=IsWindowEnabled(window), InRoot=IsChild(root, window) });
+            return true;
+        }, IntPtr.Zero);
+        if (exceeded) throw new InvalidOperationException("The owned wizard navigation inventory exceeded its bound.");
+        return result.ToArray();
+    }
+    public static void ClickButton(NavigationButton button) {
+        var allowed = button.Caption == "Next" || button.Caption == "Next >" || button.Caption == "Install" || button.Caption == "Finish";
+        if (!allowed || !IsOwnedVisibleWindow(button.Root, button.Pid) || !IsWindowEnabled(button.Root) ||
+            ClassName(button.Root) != "TWizardForm" || !IsOwnedVisibleWindow(button.Handle, button.Pid) ||
+            !IsWindowEnabled(button.Handle) || !IsChild(button.Root, button.Handle) ||
+            (button.Class != "TNewButton" && button.Class != "Button") || ClassName(button.Handle) != button.Class ||
+            Caption(button.Handle, true) != button.Caption)
+            throw new InvalidOperationException("The exact owned wizard navigation button changed before input.");
+        if (!PostMessage(button.Handle, 0x00F5, IntPtr.Zero, IntPtr.Zero))
+            throw new InvalidOperationException("The exact native wizard button click was refused.");
     }
     public static void ClickRow(IntPtr window, int x, int y) {
         var point = new Point { X=x, Y=y };
@@ -266,12 +323,55 @@ function Set-Checked($root, [string]$name, [bool]$value, [bool]$force = $false) 
     Wait-Until { $current = Find-Ui (Wizard-Root) $name; if ($current -and (Checked $current) -eq $value) { $true } } 'A real wizard choice did not retain its checked state.' 10 | Out-Null
 }
 function Button-Ui($root, [string[]]$names) {
+    Require ($null -ne $root) 'Navigation requires the current wizard root.'
+    $rootOwner = @($owned | Where-Object id -eq $root.Current.ProcessId)
+    Require ($rootOwner.Count -eq 1) 'The navigation root does not belong to one retained process.'
+    Assert-Owned $rootOwner[0]
+    $rootHandle = [IntPtr]$root.Current.NativeWindowHandle
+    Require ($rootHandle -ne [IntPtr]::Zero -and [TogetherServerInstallerUi]::ClassName($rootHandle) -eq 'TWizardForm' -and
+        [TogetherServerInstallerUi]::IsOwnedVisibleWindow($rootHandle, $root.Current.ProcessId)) 'Navigation requires the exact visible owned native wizard root.'
+    Require ($names.Count -gt 0 -and @($names | Where-Object { $_ -notin @('Next', 'Next >', 'Install', 'Finish') }).Count -eq 0) 'An unreviewed wizard navigation caption was requested.'
+    # Install can temporarily disable its window; discovery waits, while every
+    # actual click still requires an enabled current root and enabled control.
+    if (![TogetherServerInstallerUi]::IsWindowEnabled($rootHandle)) { return $null }
     $buttons = $root.FindAll([Windows.Automation.TreeScope]::Descendants,
         [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button))
-    return @($buttons | Where-Object { !$_.Current.IsOffscreen -and $_.Current.IsEnabled -and
-        ($_.Current.Name.Replace('&', '').Trim() -in $names) } | Select-Object -First 1)[0]
+    $uiaMatches = @($buttons | Where-Object { !$_.Current.IsOffscreen -and $_.Current.IsEnabled -and
+        ($_.Current.Name.Replace('&', '').Trim() -in $names) })
+    Require ($uiaMatches.Count -le 1) 'The requested UIA wizard navigation button was ambiguous.'
+    $nativeButtons = @([TogetherServerInstallerUi]::Buttons($rootHandle, $root.Current.ProcessId))
+    foreach ($button in $nativeButtons) {
+        $key = '{0}|{1}|{2}|{3}|{4}|{5}' -f $currentCase.choice, $button.Class, $button.Caption, $button.Visible, $button.Enabled, $button.InRoot
+        if ($buttonObservations.Count -lt 128 -and $buttonObservationKeys.Add($key)) {
+            $caption = if ($button.Caption -in @('Next', 'Next >', 'Install', 'Finish', 'Cancel', '< Back', 'Back', 'Browse...')) { $button.Caption } else { '[unreviewed]' }
+            $uiaType = 'Unavailable'
+            try { $uiaType = [Windows.Automation.AutomationElement]::FromHandle($button.Handle).Current.ControlType.ProgrammaticName } catch { }
+            $observation = @{ choice = $currentCase.choice; windowClass = $button.Class; caption = $caption; uiaControlType = $uiaType;
+                visible = $button.Visible; enabled = $button.Enabled; inWizard = $button.InRoot; ownedPid = ($button.Pid -eq $root.Current.ProcessId) }
+            $buttonObservations.Add($observation)
+            Write-Host ('WIZARD_NAVIGATION ' + ($observation | ConvertTo-Json -Compress))
+        }
+    }
+    if ($uiaMatches.Count) { return $uiaMatches[0] }
+    # Inno native buttons can be exposed as UIA Pane controls. Match their exact
+    # reviewed captions and real HWND ancestry rather than relaxing navigation.
+    $nativeMatches = @($nativeButtons | Where-Object { $_.Class -in @('TNewButton', 'Button') -and $_.Pid -eq $root.Current.ProcessId -and
+        $_.Visible -and $_.Enabled -and $_.InRoot -and $_.Caption -in $names })
+    Require ($nativeMatches.Count -le 1) 'The requested native wizard navigation button was ambiguous.'
+    if ($nativeMatches.Count) { return $nativeMatches[0] }
+    return $null
 }
 function Invoke-Button($element) {
+    if ($element -is [TogetherServerInstallerUi+NavigationButton]) {
+        $owner = @($owned | Where-Object id -eq $element.Pid)
+        Require ($owner.Count -eq 1) 'The native wizard button does not belong to one retained process.'
+        Assert-Owned $owner[0]
+        $root = Wizard-Root
+        Assert-Element $root
+        Require ([IntPtr]$root.Current.NativeWindowHandle -eq $element.Root -and $root.Current.ProcessId -eq $element.Pid) 'The native button no longer belongs to the current wizard.'
+        [TogetherServerInstallerUi]::ClickButton($element)
+        return
+    }
     Assert-Element $element
     $pattern = $null
     if ($element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) { $pattern.Invoke(); return }
@@ -491,7 +591,7 @@ try {
             cases = @($results | Select-Object choice, intent, mode, state); skipped = 0; cleanupCompleted = $cleanupCompleted;
             failedStage = $(if ($failure) { $currentStage } else { $null });
             diagnostic = $diagnostic;
-            screenshots = @($screenshots.ToArray()); captureObservations = @($captureObservations.ToArray());
+            screenshots = @($screenshots.ToArray()); captureObservations = @($captureObservations.ToArray()); buttonObservations = @($buttonObservations.ToArray());
             boundary = 'Actual Inno wizard and fresh installed app on a dedicated hosted Windows runner; synthetic owner save only; no game, credentials or network changes.' }
         $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'summary.json') -Encoding utf8
         if (!$unchanged -and !$failure) { $failure = 'Verified app or installer bytes changed during actual wizard acceptance.' }
