@@ -767,6 +767,39 @@ test('settings jump evidence accepts tall sections but waits for pane visibility
   assert.equal((await wait('shortcuts')).scrollTop, root.scrollTop, 'the same destination passes once it settles');
 });
 
+test('settings jump coordinator awaits async false results and records only settled evidence within its deadline', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'waitForSettledSettingsJump');
+  assert.ok(helper);
+  assert.doesNotMatch(source, /waitForFunction\(settledSettingsJump\b/u,
+    'a Promise returned by the asynchronous geometry helper must not be treated as a truthy settled result');
+  const predicate = () => {};
+  let elapsed = 0, paintCount = 0, evaluations = 0;
+  const evidence = { sectionId: 'profile', scrollTop: 0, headingTop: 128 };
+  const replies = [false, false, evidence];
+  const wait = runInNewContext(`${helper.getText(ast)}\n;waitForSettledSettingsJump`, {
+    settledSettingsJump: predicate, performance: { now: () => elapsed }
+  });
+  const page = { evaluate: async (callback, sectionId) => {
+    elapsed += 100;
+    if (callback !== predicate) { paintCount++; return }
+    assert.equal(sectionId, 'profile'); evaluations++;
+    return await Promise.resolve(replies.shift());
+  } };
+  assert.equal(await wait(page, 'profile'), evidence);
+  assert.equal(evaluations, 3, 'asynchronous false results are retried');
+  assert.equal(paintCount, 2, 'retries advance a real animation frame');
+  elapsed = 0; evaluations = 0;
+  const neverSettled = { evaluate: async callback => {
+    elapsed += 1000;
+    if (callback === predicate) evaluations++;
+    return await Promise.resolve(false);
+  } };
+  await assert.rejects(wait(neverSettled, 'profile'), /did not reach a focused, visible heading.*within 8 seconds/u);
+  assert.ok(evaluations > 1 && evaluations <= 8, 'an unfulfilled destination is retried and remains a bounded failure');
+});
+
 test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {
   const state = createFixtureState('host-ready');
   const before = JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices });

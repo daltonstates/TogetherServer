@@ -407,6 +407,18 @@ async function settledSettingsJump(sectionId) {
   }
   return current;
 }
+async function waitForSettledSettingsJump(page, sectionId) {
+  const deadline = performance.now() + 8000;
+  while (performance.now() < deadline) {
+    // evaluate awaits the helper's three-frame Promise. An async predicate must
+    // never be passed to waitForFunction, where its Promise can count as truthy.
+    const evidence = await page.evaluate(settledSettingsJump, sectionId);
+    if (evidence && typeof evidence === 'object' && evidence.sectionId === sectionId &&
+        Number.isFinite(evidence.scrollTop) && Number.isFinite(evidence.headingTop)) return evidence;
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(done)));
+  }
+  throw new Error(`Settings jump to ${sectionId} did not reach a focused, visible heading with the current navigation and settled scroll within 8 seconds`);
+}
 async function section(page, [label, value, button], record) {
   // Both owned and paired servers now use the selected-server sidebar.
   if (label === 'Join sections') label = 'Selected server sections';
@@ -423,9 +435,7 @@ async function section(page, [label, value, button], record) {
     await page.waitForFunction(({ label, value }) => [...document.querySelectorAll('select')].some(el => el.getAttribute('aria-label') === label && el.value === value), { label, value });
   } else await visible(page.getByRole('navigation', { name: label, exact: true }).locator(label === 'App settings sections' ? '[aria-current="location"]' : '[aria-current="page"]').filter({ hasText: button }));
   if (label === 'App settings sections') {
-    const settled = await page.waitForFunction(settledSettingsJump, value);
-    record.assertions.push({ settingsJumpSettled: await settled.jsonValue() });
-    await settled.dispose();
+    record.assertions.push({ settingsJumpSettled: await waitForSettledSettingsJump(page, value) });
   }
 }
 async function click(page, name, record, exact = true) {
