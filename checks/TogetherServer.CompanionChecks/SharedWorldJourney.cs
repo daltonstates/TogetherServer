@@ -119,10 +119,15 @@ internal static partial class SharedWorldJourney
             Require(!beforeConsent.Ok && beforeConsent.Code == "ConsentRequired",
                 "a Friend accepted signed sharing before this PC consented");
             foreach (var client in new[] { aLocal, bLocal })
+            {
                 Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(client,
                     $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
                     "a Friend PC could not consent to receiving");
-            await RequireNoPublishedSharedSaveAsync(owner, aLocal, profile.Id);
+                // Initial key enrollment publishes a new signed roster. Finish
+                // it before the next PC's automatic catch-up can enroll against
+                // the deliberately blocked, unpublished membership change.
+                await RequireNoPublishedSharedSaveAsync(owner, client, profile.Id);
+            }
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "first verified fixture change");
             await StartAndStopAsync(owner, profile.Id);
