@@ -1,6 +1,7 @@
 name: UI redesign visual review
 
 on:
+  workflow_dispatch:
   push:
     branches: ['review/ui-redesign-*']
     paths-ignore: ['docs/**', '**/*.md']
