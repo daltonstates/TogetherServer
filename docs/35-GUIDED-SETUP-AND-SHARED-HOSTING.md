@@ -1,6 +1,6 @@
 # Guided setup, clearer access, and shared hosting
 
-2026-10-19 delivery. This record covers the notification/settings/access fixes,
+2026-10-20 delivery. This record covers the notification/settings/access fixes,
 installer guidance, simpler shared hosting, separate game-password access, and
 chat presentation/sounds requested together. The running production app and
 owner's active desktop are outside local automated testing.
@@ -121,7 +121,7 @@ history stay quiet. Audio permission/autoplay failures do not interrupt chat.
   source/synthetic groups, whitespace and desktop diagnostic isolation. The
   source-link subcase is skipped because this account cannot create symbolic
   links. Logs: `local-data/setup-polish-final-code-only.log`.
-- PASS full UI rerun: 1,333 tests across 105 files. Coverage includes continuous
+- PASS full UI rerun: 1,336 tests across 105 files. Coverage includes continuous
   scroll tracking, guide placement/late replies, separate password permission and
   revocation, quiet chat history, one-click hosting, and canceled late starts.
   Initial broad-run issues with old two-click expectations and a timeout error
@@ -129,13 +129,40 @@ history stay quiet. Audio permission/autoplay failures do not interrupt chat.
   exposed missing durable revocation; only a pinned HTTP 403 with an explicit
   negative Revoked response now records it. Log:
   `local-data/setup-polish-final-ui-tests.log`.
-- PASS production UI bundle. The existing large-chunk warning remains; this
+- PASS production UI bundle and the app compilation embedding that bundle, with
+  zero .NET warnings/errors. The existing large-chunk warning remains; this
   slice does not restructure the app's bundles.
-- PASS renderer syntax and 28 pure fixture tests. The focused review inventory
+- PASS renderer syntax and 30 pure fixture tests. The focused review inventory
   has 21 cases and 63 plans across desktop, short desktop, and narrow 150% text,
   with both reduced motion and normal motion. Guide checks include clipping
   ancestors, target hit testing, and coach overlap.
-- PENDING hosted rendered review and commit identity.
+- The first hosted pass exposed a real late directory-selection race that reset
+  newer Chat navigation to Play. Navigation tokens now discard that late work;
+  two shell regressions failed before the fix and pass afterward. The review
+  also led to fixed coach controls with independently scrolling guide text and
+  placement below the app header. Old Access labels and an async scroll predicate
+  in the harness were corrected: capture now awaits settled, focused geometry
+  rather than accepting an unfinished Promise. Pure tests cover false results
+  and timeouts; the harness does not force scrolling to conceal failures.
+- PASS final hosted Windows rendered review: [run 39369533252](https://github.com/daltonstates/TogetherServer/actions/runs/39369533252),
+  job `118454026223`, source `faf0c917dc168f68d6b295b5397d0c2fd9daf26e`.
+  All 63 planned case/variant IDs have one result record and one viewport capture.
+  The 296 PNGs comprise those 63 viewports, 224 scroll-pane captures, and nine
+  guide/scroll interaction captures. No missing plans, duplicate IDs, missing
+  capture files, or unlisted PNGs. There are zero failed/skipped cases, layout
+  findings, unhandled fixture requests, blocked network requests, failed HTTP
+  requests, or JavaScript/console errors. Fifteen cases deliberately exercise
+  error or denied states and are accepted as those states, not successful hosting.
+- Downloaded and SHA-256-verified hosted artifact `12241031698`:
+  `002269a6eb0bb12c95976ea110e94c9fd1f9cf089aa608e82974ed1c35be58ae`.
+  Evidence is retained locally under
+  `local-data/setup-polish-ci/39369533252/evidence`. Manual inspection of final
+  notification, permission-card, continuous-settings, narrow Host/Join guide,
+  sharing, missing-server wizard, password, Host notice, and Host/Friend chat
+  captures found no further changes required. Automated geometry and interaction
+  checks cover all 63 cases; manual inspection is representative, not a claim
+  that every one of the 296 images received an independent human review.
+- Implementation commits: `443a30a`, `6412c6b`, `44c57ce`, and `faf0c91`.
 - NOT RUN locally: app/browser/native/process/installer journeys. Installer smoke
   source expectations are updated but execution requires the approved isolated
   Windows runner/session. Real Friend-PC/network, actual game join,
