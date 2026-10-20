@@ -41,6 +41,9 @@ $results = @(
 $currentStage = 'preflight'
 $currentCase = $null
 $failure = $null
+$failureStage = $null
+$failureObservations = [Collections.Generic.List[object]]::new()
+$identityObservations = [Collections.Generic.List[object]]::new()
 $cleanupCompleted = $true
 $app = $null
 $installRoot = $null
@@ -49,6 +52,45 @@ $groupName = $null
 $installedApp = $null
 
 function Require([bool]$value, [string]$message) { if (!$value) { throw $message } }
+function Remember-Failure($record, [string]$origin) {
+    if ($null -eq $script:failure) { $script:failure = $record; $script:failureStage = $currentStage }
+    if ($failureObservations.Count -ge 32) { return }
+    $frames = @([regex]::Matches([string]$record.ScriptStackTrace, '(?m)^at (?<function>[^,\r\n]+), [^\r\n]*: line (?<line>\d+)') |
+        Select-Object -First 8 | ForEach-Object {
+            $function = $_.Groups['function'].Value
+            if ($function -notmatch '^[A-Za-z0-9_<>.-]{1,80}$') { $function = '[script]' }
+            @{ function = $function; line = [int]$_.Groups['line'].Value }
+        })
+    $message = [string]$record.Exception.Message -replace [regex]::Escape($caseRoot), '[disposable data]' -replace '[A-Za-z]:[\\/][^\r\n"'']+', '[location]'
+    $message = $message.Substring(0, [Math]::Min(500, $message.Length))
+    $observed = @{ stage = $currentStage; origin = $origin; type = $record.Exception.GetType().Name;
+        line = $record.InvocationInfo.ScriptLineNumber; frames = $frames; diagnostic = $message }
+    $failureObservations.Add($observed)
+    Write-Host ('WIZARD_FAILURE ' + ($observed | ConvertTo-Json -Depth 4 -Compress))
+}
+function Path-Kind([string]$path) {
+    if ($path.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { return 'ExtendedUNC' }
+    if ($path.StartsWith('\\?\', [StringComparison]::Ordinal)) { return 'ExtendedDOS' }
+    if ($path.StartsWith('\\', [StringComparison]::Ordinal)) { return 'UNC' }
+    if ($path -match '^[A-Za-z]:[\\/]') { return 'DOS' }
+    return 'Other'
+}
+function Record-Identity([string]$origin, [string]$state, [string]$expectedPath, [string]$observedPath, $sameFile = $null, $sameFinalPath = $null) {
+    if ($identityObservations.Count -ge 128) { return }
+    $expectedName = ([IO.Path]::GetFileName($expectedPath) -replace '[^A-Za-z0-9_.-]', '_')
+    $observedName = ([IO.Path]::GetFileName($observedPath) -replace '[^A-Za-z0-9_.-]', '_')
+    $observed = @{ stage = $currentStage; origin = $origin; state = $state;
+        expectedName = $expectedName.Substring(0, [Math]::Min(80, $expectedName.Length));
+        observedName = $observedName.Substring(0, [Math]::Min(80, $observedName.Length));
+        expectedPathKind = (Path-Kind $expectedPath); observedPathKind = (Path-Kind $observedPath);
+        expectedShortAlias = ($expectedPath -match '~[0-9A-Za-z]+(?:\.[^\\/]*)?(?:[\\/]|$)');
+        observedShortAlias = ($observedPath -match '~[0-9A-Za-z]+(?:\.[^\\/]*)?(?:[\\/]|$)');
+        sameTextPath = [string]::Equals($expectedPath, $observedPath, [StringComparison]::OrdinalIgnoreCase);
+        sameDirectory = [string]::Equals([IO.Path]::GetDirectoryName($expectedPath), [IO.Path]::GetDirectoryName($observedPath), [StringComparison]::OrdinalIgnoreCase);
+        sameFileIdentity = $sameFile; sameFinalPath = $sameFinalPath }
+    $identityObservations.Add($observed)
+    Write-Host ('WIZARD_IDENTITY ' + ($observed | ConvertTo-Json -Compress))
+}
 function Uninstall-Entries([string]$target = '') {
     foreach ($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
         if (!(Test-Path -LiteralPath $root)) { continue }
@@ -58,21 +100,51 @@ function Uninstall-Entries([string]$target = '') {
         }
     }
 }
-function Add-Owned([Diagnostics.Process]$process, [string]$path) {
+function Add-Owned([Diagnostics.Process]$process, [string]$path, [Nullable[long]]$expectedTicks = $null, [string]$origin = 'direct-launch') {
+    try {
     $process.Refresh()
     Require (!$process.HasExited) 'An owned process exited before its identity was retained.'
-    $observed = [IO.Path]::GetFullPath($process.MainModule.FileName)
-    Require ($observed.Equals([IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)) 'An owned executable path did not match.'
+    $ticks = $process.StartTime.ToUniversalTime().Ticks
+    Require ($null -eq $expectedTicks -or $ticks -eq $expectedTicks) 'The discovered process creation identity changed before retention.'
     Require ($process.SessionId -eq $testSessionId) 'An owned process is outside the dedicated test session.'
-    $item = [pscustomobject]@{ process = $process; id = $process.Id; ticks = $process.StartTime.ToUniversalTime().Ticks; path = $observed; sessionId = $process.SessionId }
+    # Query the retained kernel process handle, not its mutable/partly initialized
+    # PEB module list. Both spellings must resolve to the same physical file.
+    $observed = ''
+    try {
+        $observed = [TogetherServerInstallerUi]::ProcessImage($process.Handle)
+        $actualFile = [TogetherServerInstallerUi]::ImageFile($observed)
+        $expectedFile = [TogetherServerInstallerUi]::ImageFile($path)
+    } catch { Record-Identity $origin 'FileIdentityUnavailable' $path $observed; throw }
+    $sameFile = $actualFile.Identity -eq $expectedFile.Identity
+    $sameFinalPath = [string]::Equals($actualFile.FinalPath, $expectedFile.FinalPath, [StringComparison]::OrdinalIgnoreCase)
+    Record-Identity $origin 'Retention' $path $observed $sameFile $sameFinalPath
+    Require ($sameFile) 'An owned executable file identity did not match its expected binary.'
+    $process.Refresh()
+    Require (!$process.HasExited -and $process.StartTime.ToUniversalTime().Ticks -eq $ticks -and $process.SessionId -eq $testSessionId) 'The owned process changed while retaining its image identity.'
+    $item = [pscustomobject]@{ process = $process; id = $process.Id; ticks = $ticks; path = $actualFile.FinalPath;
+        fileIdentity = $actualFile.Identity; sessionId = $process.SessionId }
     $owned.Add($item)
     return $item
+    } catch {
+        # Never claim successful cleanup for a live process whose exact image
+        # could not be retained. Unknown identities do not receive any input.
+        if ($origin -ne 'verified-descendant') {
+            try { $process.Refresh(); if (!$process.HasExited) { $script:cleanupCompleted = $false } }
+            catch { $script:cleanupCompleted = $false }
+        }
+        throw
+    }
 }
 function Assert-Owned($item) {
     $item.process.Refresh()
     Require (!$item.process.HasExited -and $item.process.StartTime.ToUniversalTime().Ticks -eq $item.ticks -and
-        $item.process.SessionId -eq $item.sessionId -and $item.sessionId -eq $testSessionId -and
-        [IO.Path]::GetFullPath($item.process.MainModule.FileName).Equals($item.path, [StringComparison]::OrdinalIgnoreCase)) 'A disposable process identity changed.'
+        $item.process.SessionId -eq $item.sessionId -and $item.sessionId -eq $testSessionId) 'A disposable process identity changed.'
+    $observed = [TogetherServerInstallerUi]::ProcessImage($item.process.Handle)
+    $image = [TogetherServerInstallerUi]::ImageFile($observed)
+    if ($image.Identity -ne $item.fileIdentity) {
+        Record-Identity 'owned-recheck' 'FileIdentityMismatch' $item.path $observed $false
+        throw 'The retained process no longer uses the exact owned executable file.'
+    }
 }
 function Refresh-Owned {
     # Inno's verified setup/uninstaller stub owns a temporary wizard child. Retain
@@ -86,17 +158,49 @@ function Refresh-Owned {
             if (!$parent.Count -or !$row.ExecutablePath -or !$row.CreationDate) { continue }
             $born = ([DateTime]$row.CreationDate).ToUniversalTime().Ticks
             if ($born -lt $parent[0].ticks) { continue }
-            $parent[0].process.Refresh()
-            if ($parent[0].process.HasExited -and $born -gt $parent[0].process.ExitTime.ToUniversalTime().Ticks) { continue }
+            try {
+                $parent[0].process.Refresh()
+                if ($parent[0].process.HasExited) {
+                    if ($born -gt $parent[0].process.ExitTime.ToUniversalTime().Ticks) { continue }
+                } else { Assert-Owned $parent[0] }
+            } catch {
+                $parentFailure = $_
+                $parent[0].process.Refresh()
+                if (!$parent[0].process.HasExited -or $born -gt $parent[0].process.ExitTime.ToUniversalTime().Ticks) { throw $parentFailure }
+                # Only discovery may tolerate an exact retained parent exiting
+                # during this read. Its retained exit time still bounds the child.
+            }
             try { $process = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId) }
             catch [ArgumentException] { continue }
             if ($process.HasExited) { $process.Dispose(); continue }
-            try { Add-Owned $process $row.ExecutablePath | Out-Null }
-            catch {
-                $process.Refresh()
-                if ($process.HasExited) { $process.Dispose(); continue }
-                throw
+            $retained = $false
+            try {
+                $ticks = $process.StartTime.ToUniversalTime().Ticks
+                # CIM datetime preserves microseconds; FILETIME also has a final
+                # 100ns digit. Compare the exact common precision, not a time gap.
+                $fresh = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [int]$row.ProcessId) -Property ProcessId, ParentProcessId, ExecutablePath, CreationDate
+                if (!$fresh -or !$fresh.CreationDate -or !$fresh.ExecutablePath -or
+                    $fresh.ParentProcessId -ne $parent[0].id -or
+                    ([DateTime]$fresh.CreationDate).ToUniversalTime().Ticks -ne $born) {
+                    Record-Identity 'descendant-discovery' 'FreshMetadataChanged' $row.ExecutablePath ''
+                    continue
+                }
+                if (($ticks - ($ticks % 10)) -ne $born) {
+                    Record-Identity 'descendant-discovery' 'FreshCreationMismatch' $row.ExecutablePath ''
+                    throw 'The fresh child creation time did not match its retained kernel process identity.'
+                }
+                Add-Owned $process $fresh.ExecutablePath -expectedTicks $ticks -origin 'verified-descendant' | Out-Null
+                $retained = $true
             }
+            catch {
+                $childFailure = $_
+                $childExited = $false
+                try { $process.Refresh(); $childExited = $process.HasExited } catch { }
+                if ($childExited) { continue }
+                $script:cleanupCompleted = $false
+                throw $childFailure
+            }
+            finally { if (!$retained) { $process.Dispose() } }
             $added = $true
         }
         if (!$added) { break }
@@ -125,6 +229,13 @@ using System.Text;
 public static class TogetherServerInstallerUi {
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] private struct FileTime { public uint Low, High; }
+    [StructLayout(LayoutKind.Sequential)] private struct FileInformation {
+        public uint Attributes;
+        public FileTime Created, Accessed, Written;
+        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+    public sealed class ImageIdentity { public string FinalPath, Identity; }
     public sealed class Window { public IntPtr Handle; public int Pid; public string Class; }
     public sealed class NavigationButton {
         public IntPtr Handle, Root;
@@ -180,6 +291,34 @@ public static class TogetherServerInstallerUi {
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("oleacc.dll")] private static extern int AccessibleObjectFromWindow(IntPtr window, uint objectId, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out AccessibleRows value);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder text, ref uint length);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern IntPtr CreateFile(string path, uint access, uint sharing, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetFileInformationByHandle(IntPtr file, out FileInformation information);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern uint GetFinalPathNameByHandle(IntPtr file, StringBuilder text, uint length, uint flags);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    public static string ProcessImage(IntPtr process) {
+        var text = new StringBuilder(32768);
+        uint length = (uint)text.Capacity;
+        if (!QueryFullProcessImageName(process, 0, text, ref length) || length == 0 || length >= text.Capacity)
+            throw new InvalidOperationException("The retained kernel process image path was unavailable: " + Marshal.GetLastWin32Error());
+        return text.ToString();
+    }
+    public static ImageIdentity ImageFile(string path) {
+        var file = CreateFile(path, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        if (file == IntPtr.Zero || file == new IntPtr(-1))
+            throw new InvalidOperationException("The expected executable file could not be identified: " + Marshal.GetLastWin32Error());
+        try {
+            if (!GetFileInformationByHandle(file, out var information) || (information.Attributes & 0x10) != 0 ||
+                (information.IndexHigh == 0 && information.IndexLow == 0))
+                throw new InvalidOperationException("An exact executable file identity was unavailable: " + Marshal.GetLastWin32Error());
+            var text = new StringBuilder(32768);
+            var length = GetFinalPathNameByHandle(file, text, (uint)text.Capacity, 0);
+            if (length == 0 || length >= text.Capacity)
+                throw new InvalidOperationException("The executable's canonical final path was unavailable: " + Marshal.GetLastWin32Error());
+            return new ImageIdentity { FinalPath=text.ToString(),
+                Identity=information.Volume.ToString("X8") + ":" + information.IndexHigh.ToString("X8") + information.IndexLow.ToString("X8") };
+        } finally { CloseHandle(file); }
+    }
     public static string ClassName(IntPtr window) { var text = new StringBuilder(256); GetClassName(window, text, text.Capacity); return text.ToString(); }
     private static string Caption(IntPtr window, bool readControl = false) {
         var text = new StringBuilder(128);
@@ -564,20 +703,33 @@ function Page-Signature($root) {
         Where-Object { !$_.Current.IsOffscreen } | ForEach-Object { $_.Current.Name }) -join '|')
 }
 function Stop-Owned {
-    Refresh-Owned
+    $stopFailure = $null
+    try { Refresh-Owned }
+    catch { $stopFailure = $_; Remember-Failure $_ 'cleanup-discovery' }
     foreach ($item in @($owned.ToArray()) | Sort-Object ticks -Descending) {
-        if ($item.process.HasExited) { continue }
-        Assert-Owned $item
-        $item.process.Kill()
-        Require ($item.process.WaitForExit(10000)) 'An exact disposable process did not exit during cleanup.'
+        try {
+            $item.process.Refresh()
+            if ($item.process.HasExited) { continue }
+            Assert-Owned $item
+            $item.process.Kill()
+            Require ($item.process.WaitForExit(10000)) 'An exact disposable process did not exit during cleanup.'
+        } catch {
+            $ownedStopFailure = $_
+            $exited = $false
+            try { $item.process.Refresh(); $exited = $item.process.HasExited } catch { }
+            if ($exited) { continue }
+            if ($null -eq $stopFailure) { $stopFailure = $ownedStopFailure }
+            Remember-Failure $ownedStopFailure 'cleanup-owned-process'
+        }
     }
+    if ($stopFailure) { throw $stopFailure }
 }
 function Uninstall-Case {
     if (!$installRoot -or !(Test-Path -LiteralPath $installRoot)) { return }
     $uninstallers = @(Get-ChildItem -LiteralPath $installRoot -Filter 'unins*.exe' -File)
     if (!$uninstallers.Count) { return }
     Require ($uninstallers.Count -eq 1 -and ($uninstallers[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'The disposable uninstaller identity was ambiguous.'
-    $uninstall = Add-Owned (Start-Process -FilePath $uninstallers[0].FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -WindowStyle Hidden -PassThru) $uninstallers[0].FullName
+    $uninstall = Add-Owned (Start-Process -FilePath $uninstallers[0].FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -WindowStyle Hidden -PassThru) $uninstallers[0].FullName -origin 'uninstaller-launch'
     Wait-Until { $uninstall.process.HasExited } 'The disposable uninstaller timed out.' 60 | Out-Null
     Require ($uninstall.process.ExitCode -eq 0) 'The disposable uninstaller failed.'
 }
@@ -610,13 +762,14 @@ try {
         $groupName = "TogetherServer Wizard UI $caseId $($case.choice)"
         $env:TOGETHERSERVER_DATA_DIR = $dataRoot
         $app = $null
+        $caseFailure = $null
         try {
             New-Item -ItemType Directory -Path (Join-Path $caseRoot $case.choice) -Force | Out-Null
             $currentStage = 'wizard'
             # Path/log isolation arguments only. Every role and preference is
             # chosen through the actual visible wizard, with no silent flags.
             $setup = Add-Owned (Start-Process -FilePath $installer -ArgumentList @('/SP-', '/NORESTART', '/NOCLOSEAPPLICATIONS',
-                "/DIR=`"$installRoot`"", "/GROUP=`"$groupName`"", "/LOG=`"$(Join-Path $caseRoot ($case.choice + '/setup.log'))`"") -PassThru) $installer
+                "/DIR=`"$installRoot`"", "/GROUP=`"$groupName`"", "/LOG=`"$(Join-Path $caseRoot ($case.choice + '/setup.log'))`"") -PassThru) $installer -origin 'installer-launch'
             $firstWizard = Wait-Until { Wizard-Root } 'The real installer wizard did not appear.' 45
             $wizardOwner = @($owned | Where-Object id -eq $firstWizard.Current.ProcessId)
             Require ($wizardOwner.Count -eq 1) 'The actual installer wizard process was not retained.'
@@ -651,6 +804,7 @@ try {
                     Require ($installed -and $roleSeen -and $preferencesSeen -and $tasksSeen) 'Finish was reached without all actual wizard choices.'
                     Set-Checked $root 'Open TogetherServer' $false
                     Capture-Wizard $root 'finish-launch-off'
+                    $currentStage = 'wizard-finish'
                     Invoke-Button $finish
                     Wait-Until { !(Wizard-Root) } 'The real Finish button did not close the wizard.' 30 | Out-Null
                     $finished = $true
@@ -670,8 +824,10 @@ try {
                 }
             }
             Require $finished 'The actual installer wizard exceeded its page bound.'
+            $currentStage = 'installer-helper-exit'
             Wait-Until { @($owned | Where-Object { !$_.process.HasExited }).Count -eq 0 } 'The installer or its configure helper did not exit.' 30 | Out-Null
             Require ($setup.process.ExitCode -eq 0 -and $wizardOwner[0].process.ExitCode -eq 0) 'The actual installer setup or wizard exited unsuccessfully.'
+            $currentStage = 'installed-file-and-guide'
             Require ((Get-FileHash -LiteralPath $installedApp -Algorithm SHA256).Hash -eq $candidateHash) 'The UI install did not place the exact candidate bytes.'
             Require (@(Uninstall-Entries $installRoot).Count -eq 1) 'The UI install did not register its disposable destination.'
             $guidePath = Join-Path $dataRoot 'getting-started.json'
@@ -683,7 +839,7 @@ try {
                 Require (!(Test-Path -LiteralPath (Join-Path $dataRoot 'mode.json'))) 'Decide later selected a starting mode before the first app launch.'
             }
             $currentStage = 'installed-app'
-            $app = Add-Owned (Start-Process -FilePath $installedApp -WorkingDirectory $installRoot -PassThru) $installedApp
+            $app = Add-Owned (Start-Process -FilePath $installedApp -WorkingDirectory $installRoot -PassThru) $installedApp -origin 'installed-app-launch'
             $snapshot = Wait-Until {
                 Assert-Owned $app
                 try { $view = Invoke-RestMethod -Uri "$baseUrl/api/local/snapshot" -TimeoutSec 2; if ($view.mode) { $view } } catch { }
@@ -726,9 +882,11 @@ try {
             $case.state = 'Passed'
             Write-Host "PASS actual installer UI: $($case.choice), optional tasks skipped, installed backend verified, owner data preserved."
         } catch {
+            $caseFailure = $_
+            Remember-Failure $caseFailure 'case'
             $case.state = 'Failed'
             try { Refresh-Owned; Capture-Dialogs 'failure' } catch { }
-            throw
+            throw $caseFailure
         } finally {
             if ($app -and !$app.process.HasExited) {
                 try {
@@ -740,22 +898,37 @@ try {
                     }
                 } catch { }
             }
-            try {
-                Stop-Owned
-                Uninstall-Case
-                Stop-Owned
-                Require (@(Uninstall-Entries $installRoot).Count -eq 0) 'Disposable installer cleanup left registration.'
-                Remove-EmptyShortcutGroup
-                Require (!(Get-ItemProperty -Path $runKey -Name TogetherServer -ErrorAction SilentlyContinue)) 'Disposable installer cleanup left Windows startup enabled.'
-            } catch { $cleanupCompleted = $false; throw }
+            $cleanupFailure = $null
+            $stageBeforeCleanup = $currentStage
+            foreach ($cleanup in @(
+                @{ name = 'stop-before-uninstall'; action = { Stop-Owned } },
+                @{ name = 'uninstall'; action = { Uninstall-Case } },
+                @{ name = 'stop-after-uninstall'; action = { Stop-Owned } },
+                @{ name = 'verify'; action = {
+                    Require (@(Uninstall-Entries $installRoot).Count -eq 0) 'Disposable installer cleanup left registration.'
+                    Remove-EmptyShortcutGroup
+                    Require (!(Get-ItemProperty -Path $runKey -Name TogetherServer -ErrorAction SilentlyContinue)) 'Disposable installer cleanup left Windows startup enabled.'
+                } }
+            )) {
+                $currentStage = 'cleanup-' + $cleanup.name
+                try { & $cleanup.action }
+                catch {
+                    $cleanupCompleted = $false
+                    if ($null -eq $cleanupFailure) { $cleanupFailure = $_ }
+                    Remember-Failure $_ 'case-cleanup'
+                }
+            }
+            $currentStage = $stageBeforeCleanup
+            if ($cleanupFailure -and !$caseFailure) { throw $cleanupFailure }
         }
     }
 } catch {
-    $failure = $_
+    Remember-Failure $_ 'outer'
     if ($currentCase -and $currentCase.state -ne 'Passed') { $currentCase.state = 'Failed' }
     try { Refresh-Owned; if ($currentCase) { Capture-Dialogs 'failure' } } catch { }
 } finally {
-    try { Stop-Owned } catch { $cleanupCompleted = $false; if (!$failure) { $failure = $_ } }
+    $currentStage = 'cleanup-final-owned-processes'
+    try { Stop-Owned } catch { $cleanupCompleted = $false; Remember-Failure $_ 'final-cleanup' }
     if ($null -eq $priorData) { Remove-Item Env:TOGETHERSERVER_DATA_DIR -ErrorAction SilentlyContinue }
     else { $env:TOGETHERSERVER_DATA_DIR = $priorData }
     if (Test-Path -LiteralPath $evidenceRoot) {
@@ -770,8 +943,8 @@ try {
             installerSha256 = $installerHash.ToLowerInvariant(); candidateAndInstallerUnchanged = $unchanged;
             passed = !$failure -and $cleanupCompleted -and $unchanged -and @($results | Where-Object state -ne 'Passed').Count -eq 0;
             cases = @($results | Select-Object choice, intent, mode, state); skipped = 0; cleanupCompleted = $cleanupCompleted;
-            failedStage = $(if ($failure) { $currentStage } else { $null });
-            diagnostic = $diagnostic;
+            failedStage = $(if ($failure) { $failureStage } else { $null });
+            diagnostic = $diagnostic; failures = @($failureObservations.ToArray()); identityObservations = @($identityObservations.ToArray());
             screenshots = @($screenshots.ToArray()); captureObservations = @($captureObservations.ToArray()); buttonObservations = @($buttonObservations.ToArray());
             choiceLabelsExpected = $reviewedChoiceLabels; choiceInventories = @($choiceInventories.ToArray()); choiceObservations = @($choiceObservations.ToArray());
             boundary = 'Actual Inno wizard and fresh installed app on a dedicated hosted Windows runner; synthetic owner save only; no game, credentials or network changes.' }

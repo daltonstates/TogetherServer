@@ -529,3 +529,21 @@ C# helper compiled against .NET 10 with zero warnings/errors without invoking
 native methods; PowerShell parsing, workflow parsing/saved-proof assertions and
 independent read-only review passed before dispatch. This is helper validation,
 not a substitute for the three hosted installer executions.
+
+Wizard-only run `39401973915` observed all seven actual choice controls, selected
+Host, toggled the Windows/desktop options on and back off, installed, and reached
+Finish with launch disabled. It then failed a process-path comparison and its
+cleanup failed too. The earlier helper could replace the original ErrorRecord
+with a cleanup exception, so this run does not identify the first cause and does
+not prove first launch or successful uninstall.
+
+The helper now binds the retained kernel process image to the expected file's
+volume/file-index identity, allowing path aliases only for the same physical
+binary. It refreshes child ancestry/creation metadata at common timestamp
+precision and tolerates only proven normal exits during discovery/cleanup.
+It preserves the first error and stage, records separate bounded identity and
+cleanup diagnostics, and attempts all exact-known cleanup phases. Live identity
+mismatches and incomplete cleanup still fail acceptance. Static compilation
+again passed with zero warnings/errors; a pure PowerShell check confirmed the
+original failure survives a later cleanup error. No native call was executed
+locally. The next run repeats only the actual wizard against unchanged bytes.
