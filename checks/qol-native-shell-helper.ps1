@@ -165,14 +165,16 @@ function Find-QolTrayIcon {
         $nativeShellProof.trayQuit.searchPolls++
         $nativeShellProof.trayQuit.shellRootsObserved = [Math]::Max($nativeShellProof.trayQuit.shellRootsObserved, $roots.Count)
         foreach ($root in $roots) {
-            foreach ($element in @(Get-QolShellDescendants $root)) {
-                if (!(Test-QolVisibleElement $element) -or $element.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
-                if ($element.Current.Name -eq $qolShellDisplayName -and $element.Current.ClassName -notmatch 'TaskList|TaskbarButton') {
-                    $icons += [pscustomobject]@{ Element = $element; Root = $root }
-                } elseif ($element.Current.Name -match '^(Show hidden icons|Hidden icon menu)') {
-                    $expanders += [pscustomobject]@{ Element = $element; Root = $root }
+            try {
+                foreach ($element in @(Get-QolShellDescendants $root)) {
+                    if (!(Test-QolVisibleElement $element) -or $element.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+                    if ($element.Current.Name -eq $qolShellDisplayName -and $element.Current.ClassName -notmatch 'TaskList|TaskbarButton') {
+                        $icons += [pscustomobject]@{ Element = $element; Root = $root }
+                    } elseif ($element.Current.Name -match '^(Show hidden icons|Hidden icon menu)') {
+                        $expanders += [pscustomobject]@{ Element = $element; Root = $root }
+                    }
                 }
-            }
+            } catch [System.Windows.Automation.ElementNotAvailableException] { }
         }
         $nativeShellProof.trayQuit.iconCandidates = $icons.Count
         $nativeShellProof.trayQuit.overflowCandidates = $expanders.Count

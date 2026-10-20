@@ -342,3 +342,31 @@ Hosted execution and the final candidate artifact identity are pending at this
 checkpoint. Record their exact run, source revision, hashes and results below
 after completion. Real game join/load/save/restart and physical-PC/WAN routing
 remain separate from this same-PC synthetic acceptance.
+
+The first full hosted run was `39385522178`, compiled source
+`9a99b2df3574c171dd02da9e6afe2dc59cf4de2f`, app SHA-256
+`4fee3365429a379a13be5a26d08d238df6c1bb15dc46163141d9900188826b6a`.
+It passed 1,339 UI tests, all 15 Existing checks before Core remote, QolApi,
+Rehearsal, all four compatibility suites and all 11 loopback lab stages. It
+failed and remains failed: older browser/native helpers clicked behind the new
+optional guide, the added password test used a launch value rejected by the
+synthetic fixture, and the LAN transfer convergence deadline was shorter than
+one normal production sync pass. The helpers now use and persist the real
+Set up later choice; the fixture starts with its required synthetic value;
+only branch-transfer convergence gets a 90-second window, with typed progress
+observations and unchanged signed lineage/payload/receipt assertions.
+
+Visual run `39385979932`, verification source `41d9d86`, passed all 63 planned
+setup/sharing cases, producing 296 captures with zero failed/skipped cases or
+layout findings. Representative notification, permission, continuous-settings,
+guide and chat captures were inspected. Product/UI source is identical to the
+compiled candidate; this later commit changed only workflow dispatch.
+
+The owner requested careful GitHub usage. Both hosted runs report zero billable
+execution time; this is a public repository using standard Windows runners.
+Their temporary artifacts total 75.63 MiB. A single pinned continuation reuses
+the existing candidate, completed check reports and loopback proof; it runs
+only failed/unrun acceptance and the installer. It verifies run/job/artifact,
+ZIP and app hashes, and rejects any changed product source. Review artifacts
+now expire after one day. Prior failures are retained as failures, not relabeled
+successful. The continuation has not yet executed at this checkpoint.

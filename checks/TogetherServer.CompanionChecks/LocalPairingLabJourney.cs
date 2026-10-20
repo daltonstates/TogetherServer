@@ -12,6 +12,10 @@ internal static partial class CoreRemoteJourney
 {
     private sealed record PairingLabStage(string Id, string State = "NotRun", string? Code = null, long DurationMs = 0);
     private sealed record PairingLabDevices(IReadOnlyList<DeviceView> Devices);
+    private sealed record PairingLabTransferObservation(int Attempt, long CandidateSyncMs, long ObserverSyncMs,
+        bool CandidateHeadAdvertised, bool CandidateClaimsPayload, bool ObserverReceiveConsented, bool ObserverCanReceive,
+        bool ObserverSeesHead, bool ObserverSeesPayload, bool ObserverSeesRoute, bool CandidateHasWarning,
+        bool ObserverHasWarning, bool ObserverHasConflicts, bool PointerMatched);
     private sealed class PairingLabFailure(string code) : Exception
     {
         internal string Code { get; } = code;
@@ -97,6 +101,7 @@ internal static partial class CoreRemoteJourney
         var transferredCandidateCopy = false;
         var restartedHostConnections = false;
         var isolatedRevocation = false;
+        var transferObservations = new List<PairingLabTransferObservation>();
         var hostedCopy = false;
         string? failureCode = null;
         string? activeStage = null;
@@ -575,12 +580,36 @@ internal static partial class CoreRemoteJourney
                             "CandidateStoppedCopyNotPublished");
                         receivedBranchVersionHash = version!.VersionHash;
                         var vault = Path.Combine(observerData, "received-shared-branches", groupKey!, prepared.BranchHash!);
+                        var transferAttempt = 0;
                         await PairingLabWaitAsync(async () =>
                         {
+                            var timing = Stopwatch.StartNew();
                             await SyncPeersAsync(first);
+                            var candidateSyncMs = timing.ElapsedMilliseconds;
+                            timing.Restart();
                             await SyncPeersAsync(second);
-                            return FriendLink.ReadReceivedLatest(vault)?.VersionHash == version.VersionHash;
-                        }, "CandidateBranchTransferNotVerified");
+                            var observerSyncMs = timing.ElapsedMilliseconds;
+                            var candidateGroup = (await PairingLabGetAsync<WorldPeerGroupView[]>(first, "/api/local/world-peers"))
+                                .SingleOrDefault(item => item.GroupKey == groupKey);
+                            var observerGroup = (await PairingLabGetAsync<WorldPeerGroupView[]>(second, "/api/local/world-peers"))
+                                .SingleOrDefault(item => item.GroupKey == groupKey);
+                            bool HasHead(WorldPeerGroupView? value) => value?.State.Branches.Any(item =>
+                                item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                item.Branch.BranchHash == prepared.BranchHash && item.Branch.HeadVersionHash == version.VersionHash) == true;
+                            bool HasPayload(WorldPeerGroupView? value) => value?.State.Peers.Any(item =>
+                                item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                item.AvailableVersionHashes.Contains(version.VersionHash)) == true;
+                            var matched = FriendLink.ReadReceivedLatest(vault)?.VersionHash == version.VersionHash;
+                            if (transferObservations.Count == 12) transferObservations.RemoveAt(0);
+                            transferObservations.Add(new(++transferAttempt, candidateSyncMs, observerSyncMs,
+                                HasHead(candidateGroup), HasPayload(candidateGroup), observerGroup?.ReceiveConsented == true,
+                                observerGroup?.CanReceive == true, HasHead(observerGroup), HasPayload(observerGroup),
+                                observerGroup?.State.Peers.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                    item.Routes.Any(route => route.Address == $"https://{transportAddress}:{appPorts[4]}")) == true,
+                                candidateGroup?.Warning is not null, observerGroup?.Warning is not null,
+                                observerGroup?.State.Replication.HasConflicts == true, matched));
+                            return matched;
+                        }, "CandidateBranchTransferNotVerified", TimeSpan.FromSeconds(90));
                         var proof = JsonSerializer.Deserialize<WorldSeparateCopyBranch>(await File.ReadAllBytesAsync(Path.Combine(vault, "branch.json")), Json);
                         LabRequire(SharedWorldSeparateCopyStore.Verify(proof) && proof!.BranchHash == preparedBranch.BranchHash &&
                             proof.Offer.Roster.OwnerPublicKey == signedRoster!.OwnerPublicKey &&
@@ -823,6 +852,7 @@ internal static partial class CoreRemoteJourney
                     restartedHostConnections,
                     isolatedRevocation
                 },
+                branchTransfer = new { convergenceTimeoutSeconds = 90, observations = transferObservations },
                 cleanup = new { jobActiveProcesses = job.ActiveCount(), killRemainingMembersOnHarnessExit = true },
                 resources = new
                 {

@@ -124,7 +124,7 @@ jobs:
           name: qol-windows-evidence-${{ matrix.suite }}
           path: local-data/ci-evidence/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   local-pairing:
     needs: candidate
@@ -212,7 +212,7 @@ jobs:
               $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
               # Export fixed report fields only: no process paths, protected state, pairing material or synthetic saves.
               $report | Select-Object schema, runId, startedUtc, endedUtc, durationMs, mode, physicalPcCount, outcome,
-                failedStage, failureCode, stages, uxStagePassed, apiHostChange, cleanup, resources, windowObservation, acceptance |
+                failedStage, failureCode, stages, uxStagePassed, apiHostChange, branchTransfer, cleanup, resources, windowObservation, acceptance |
                 ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'report.json') -Encoding utf8
               $uxReport = $null
               if ($mode -eq 'ux') {
@@ -277,7 +277,7 @@ jobs:
           name: local-pairing-evidence
           path: local-data/ci-evidence/local-pairing/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   mixed-version:
     needs: candidate
@@ -349,7 +349,7 @@ jobs:
           name: mixed-version-evidence-${{ matrix.legacy-version }}
           path: local-data/ci-evidence/mixed-version/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   package:
     needs: [verify, mixed-version, local-pairing]
@@ -410,7 +410,7 @@ jobs:
           name: installer-ui-evidence
           path: local-data/ci-evidence/installer-ui/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
       - name: Preserve the verified portable and installer assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -418,4 +418,4 @@ jobs:
           name: windows-release-assets
           path: local-data/release-assets/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}

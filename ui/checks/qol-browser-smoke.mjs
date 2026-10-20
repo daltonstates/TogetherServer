@@ -494,7 +494,8 @@ async function selectWorkspaceSection(page, label, name, value) {
   } else {
     const button = page.getByRole('navigation', { name: label, exact: true }).getByRole('button', { name, exact: true })
     await button.click()
-    await eventually(() => button.getAttribute('aria-current'), current => current === 'page', `${name} section navigation`)
+    await eventually(() => button.getAttribute('aria-current'),
+      current => current === (label === 'App settings sections' ? 'location' : 'page'), `${name} section navigation`)
   }
 }
 async function openAttention(page) {
@@ -655,6 +656,33 @@ async function openPage(instance, context) {
   await page.goto(instance.origin, { waitUntil: 'domcontentloaded' })
   await completeRequiredProfileSetup(page, instance)
   await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).waitFor()
+  await step(`optional setup guide can be deferred and reopened on ${instance.name}`, async () => {
+    const welcome = page.getByRole('dialog', { name: 'Make room for your next game night', exact: true })
+    const initial = await api(instance, '/api/local/getting-started')
+    if (!initial.offered || initial.dismissed)
+      await page.getByRole('button', { name: 'Setup guides', exact: true }).click()
+    await welcome.waitFor({ state: 'visible' })
+    await welcome.getByRole('button', { name: /^Host on this PC/u }).waitFor({ state: 'visible' })
+    await welcome.getByRole('button', { name: /^Join a friend/u }).waitFor({ state: 'visible' })
+    const [response] = await Promise.all([
+      page.waitForResponse(value => value.url() === `${instance.origin}/api/local/getting-started` && value.request().method() === 'PUT'),
+      welcome.getByRole('button', { name: 'Set up later', exact: true }).click()
+    ])
+    assert.equal(response.status(), 200)
+    assert.equal((await boundedResponseJson(response)).dismissed, true)
+    await welcome.waitFor({ state: 'hidden' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }).waitFor()
+    assert.equal((await api(instance, '/api/local/getting-started')).dismissed, true)
+    assert.equal(await welcome.count(), 0, 'Deferred optional help must stay closed after reload.')
+    await page.getByRole('button', { name: 'Setup guides', exact: true }).click()
+    await welcome.waitFor({ state: 'visible' })
+    await welcome.getByRole('button', { name: 'Set up later', exact: true }).click()
+    await welcome.waitFor({ state: 'hidden' })
+    report.optionalGuides ??= []
+    report.optionalGuides.push({ instance: instance.name, actualWelcomeChoices: true,
+      persistedDeferral: true, reopenedFromHeader: true })
+  })
   // These nodes come from the candidate's embedded bundle, never a Vite server or page.setContent.
   assert(await page.locator('script[src^="/assets/"]').count() > 0, 'The candidate must serve its bundled React assets.')
   return page
@@ -700,7 +728,7 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
     density: document.documentElement.dataset.density, textScale: getComputedStyle(document.documentElement).getPropertyValue('--qol-text-scale').trim(),
     highContrast: document.documentElement.dataset.highContrast,
     liveStatusCount: document.querySelectorAll('[role="status"],[aria-live="polite"]').length,
-    headerControls: [...document.querySelectorAll('.header-tools > .header-servers-trigger, .header-tools > details > summary, .header-tools > .app-settings-trigger, .header-tools > .command-trigger')]
+    headerControls: [...document.querySelectorAll('.header-tools > .header-guides-trigger, .header-tools > .header-servers-trigger, .header-tools > details > summary, .header-tools > .app-settings-trigger, .header-tools > .command-trigger')]
       .map(control => { const bounds = control.getBoundingClientRect(); return { name: control.getAttribute('aria-label'),
         left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height } }) }))
   report.layout.push({ name, ...metrics })
@@ -710,7 +738,7 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
   if (!assertLayout) return // Baseline is observation-only, never a passing layout assertion.
   assert(metrics.documentWidth <= metrics.width + 1, `${name}: the rendered page must not overflow horizontally.`)
   assert.deepEqual(metrics.headerControls.map(control => control.name?.replace(/^Notifications.*$/u, 'Notifications')),
-    ['Servers', 'Notifications', 'App Settings', 'Commands'], `${name}: all four header navigation controls must be present.`)
+    ['Setup guides', 'Servers', 'Notifications', 'App Settings', 'Commands'], `${name}: all five header navigation controls must be present.`)
   assert(metrics.headerControls.every(control => control.name && control.width > 0 && control.height > 0 &&
     control.left >= -1 && control.right <= metrics.width + 1), `${name}: named header controls must fit inside the viewport.`)
 }
@@ -1109,15 +1137,15 @@ async function headerOverlayRegression(page, host) {
         await box(close, `command-close-${suffix}`)
         await closeCommandPalette(palette, () => close.click(), 'Close commands button')
         if (viewport.width <= 700) {
-          const mobileControls = await navigation.locator(':scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
+          const mobileControls = await navigation.locator(':scope > .header-guides-trigger, :scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
             const bounds = element.getBoundingClientRect(), icon = element.querySelector('svg')?.getBoundingClientRect()
             return { name: element.getAttribute('aria-label')?.replace(/^Notifications.*$/u, 'Notifications'),
               width: bounds.width, height: bounds.height, iconVisible: !!icon && icon.width > 0 && icon.height > 0 }
           }))
           report.layout.push({ name: `mobile-navigation-${suffix}`, mobileControls })
-          assert.deepEqual(mobileControls.map(control => control.name), ['Servers', 'Notifications', 'App Settings', 'Commands'])
+          assert.deepEqual(mobileControls.map(control => control.name), ['Setup guides', 'Servers', 'Notifications', 'App Settings', 'Commands'])
           assert(mobileControls.every(control => control.iconVisible && control.width >= 44 && control.height >= 44),
-            `${suffix}: header navigation retains four accessible names, painted icons and 44px touch targets.`)
+            `${suffix}: header navigation retains five accessible names, painted icons and 44px touch targets.`)
         }
       }
     }

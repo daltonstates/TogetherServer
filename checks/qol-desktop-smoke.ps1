@@ -725,6 +725,22 @@ try {
     assert.ok(completedSetup.features.length > 0 && completedSetup.features.every(feature => feature.completed),
       'The native required setup must be persisted before ordinary navigation becomes available.');
   }
+  const gettingStarted = await json('/api/local/getting-started');
+  if (gettingStarted.offered && !gettingStarted.dismissed) {
+    const welcome = page.getByRole('dialog', { name: 'Make room for your next game night', exact: true });
+    // Its preference fetch starts only after required setup. A visible header
+    // does not mean the optional welcome has finished opening over that header.
+    await welcome.waitFor({ state: 'visible' });
+    const savedPreference = page.waitForResponse(response => response.request().method() === 'PUT' &&
+      new URL(response.url()).origin === base && new URL(response.url()).pathname === '/api/local/getting-started');
+    await welcome.getByRole('button', { name: 'Set up later', exact: true }).click();
+    const response = await savedPreference;
+    assert.equal(response.ok(), true, 'The actual native welcome dismissal must save successfully.');
+    await welcome.waitFor({ state: 'hidden' });
+    const dismissed = await json('/api/local/getting-started');
+    assert.equal(dismissed.dismissed, true, 'Set up later must persist before native header actions.');
+    assert.equal(dismissed.intent, gettingStarted.intent, 'Deferring the optional guide must preserve the installer intent.');
+  }
   const openChat = async () => {
     let roomScope = { received: false, ready: false, code: 'Unavailable', profileMatches: false, hostIdentityPresent: false };
     try {

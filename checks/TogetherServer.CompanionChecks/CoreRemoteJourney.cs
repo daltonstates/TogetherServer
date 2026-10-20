@@ -23,7 +23,9 @@ internal static partial class CoreRemoteJourney
         var secondFriendPort = FreeTcpPort(hostPort, companionPort, friendPort);
         var gamePort = FreeUdpPair();
         var endpoint = $"https://127.0.0.1:{companionPort}";
-        var gamePassword = "core-synthetic-" + Guid.NewGuid().ToString("N");
+        // ValheimFixture validates this fixed launch value; password changes
+        // are exercised only after the last lifecycle run has stopped.
+        const string gamePassword = "fixture-pass-123";
         var profile = new ServerProfile
         {
             Kind = GameKinds.Valheim,
