@@ -17,6 +17,13 @@ public static class TogetherServerQolShellCheck {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    public static IntPtr[] VisibleWindows(int processId) {
+        var values = new List<IntPtr>();
+        EnumWindows((window, _) => { uint owner; GetWindowThreadProcessId(window, out owner);
+            if (owner == (uint)processId && IsWindowVisible(window)) values.Add(window);
+            return true; }, IntPtr.Zero);
+        return values.ToArray();
+    }
     public static IntPtr[] ShellWindows() {
         var values = new List<IntPtr>();
         var count = 0;
@@ -48,6 +55,9 @@ $nativeShellProof = [ordered]@{
         systemAllowsBeforeCaptionClick = $false; systemAllowsAfterCaptionClick = $false;
         captionClickSent = $false; captionClickExactOwnedHit = $false; captionClickForegroundVerified = $false;
         captionClickNormalBoundsPreserved = $false; captionBoundsBefore = @(); captionBoundsAfter = @();
+        osUiSetup = [ordered]@{ attempted = $false; status = 'NotAttempted'; stateBefore = $null; stateAfter = $null;
+            binaryVerified = $false; ownedProcessVerified = $false; ownedWindowVerified = $false;
+            controls = @(); failureCode = $null; cleanupCompleted = $true; appRestored = $false };
         physicalClickSent = $false; exactAppForeground = $false; nativeDestinationVerified = $false;
         searchPolls = 0; shellRootsObserved = 0; matchingTitlesObserved = 0 }
     trayQuit = [ordered]@{ exactTrayIconObserved = $false; overflowOpened = $false; ownedQuitMenuObserved = $false;
@@ -66,6 +76,7 @@ function Wait-QolNotificationReadiness($InitialState) {
     $state = $InitialState
     $proof = $nativeShellProof.notification
     $captionStateRecorded = $false
+    $settingsStateRecorded = $false
     do {
         Assert-AppIdentity
         $systemState = [string]$state.systemState
@@ -92,15 +103,187 @@ function Wait-QolNotificationReadiness($InitialState) {
             $proof.systemAllowsAfterCaptionClick = $allows
             Write-Host ('NOTIFICATION_AFTER_CAPTION_INPUT ' + (@{ systemState = $systemState; systemAllowsNotifications = $allows } | ConvertTo-Json -Compress))
         }
+        if ($InitialState.systemState -eq 'QuietTime' -and $systemState -eq 'QuietTime' -and !$proof.osUiSetup.attempted -and
+            $env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_OS -eq 'Windows') {
+            $proof.osUiSetup.stateBefore = $systemState
+            try { Invoke-QolHostedNotificationSettings }
+            catch {
+                Write-Host ('NOTIFICATION_OS_UI_UNAVAILABLE ' + (@{ stage = $proof.osUiSetup.failureCode;
+                    cleanupCompleted = $proof.osUiSetup.cleanupCompleted; appRestored = $proof.osUiSetup.appRestored } | ConvertTo-Json -Compress))
+                if (!$proof.osUiSetup.cleanupCompleted -or !$proof.osUiSetup.appRestored) { throw }
+            }
+            $state = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/notifications" -Headers $headers -TimeoutSec 2 -NoProxy
+            $clock.Restart()
+            continue
+        }
+        if ($proof.osUiSetup.attempted -and !$settingsStateRecorded) {
+            $proof.osUiSetup.stateAfter = $systemState
+            $settingsStateRecorded = $true
+            Write-Host ('NOTIFICATION_AFTER_OS_UI ' + (@{ systemState = $systemState; systemAllowsNotifications = $allows;
+                setupStatus = $proof.osUiSetup.status } | ConvertTo-Json -Compress))
+        }
         if ($allows -or $clock.Elapsed.TotalSeconds -ge 15) {
             Write-Host ('NOTIFICATION_READINESS ' + (@{ systemState = $systemState; systemStatesObserved = $proof.systemStatesObserved;
                 systemAllowsNotifications = $allows; polls = $proof.stateReadinessPolls; elapsedMs = $proof.stateReadinessElapsedMs } | ConvertTo-Json -Compress))
-            Require $allows "Windows notification readiness stayed $systemState for 15 seconds; real OS delivery cannot pass. No Windows preference was changed."
+            Require $allows "Windows notification readiness stayed $systemState for 15 seconds; real OS delivery remains blocked after the bounded supported UI attempt."
+            Require (!$proof.osUiSetup.attempted -or $proof.osUiSetup.status -eq 'Completed') 'The required supported Settings UI attempt was unavailable; full native acceptance cannot pass.'
             return $state
         }
         Start-Sleep -Milliseconds 250
         $state = Invoke-RestMethod -Uri "$baseUrl/api/local/desktop/notifications" -Headers $headers -TimeoutSec 2 -NoProxy
     } while ($true)
+}
+
+function Invoke-QolHostedNotificationSettings {
+    Require ($AllowInteractiveTests -and $env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_OS -eq 'Windows') 'Windows notification setup requires the opted-in disposable hosted desktop.'
+    $proof = $nativeShellProof.notification.osUiSetup
+    Require (!$proof.attempted -and $proof.stateBefore -eq 'QuietTime') 'Only one initial-QuietTime Settings attempt is permitted.'
+    $proof.attempted = $true
+    $proof.status = 'Unavailable'
+    $original = Read-Rect
+    $settings = @{ Identity = $null; Window = [IntPtr]::Zero; Root = $null }
+    $stage = 'BinaryVerification'
+    $settingsDeadline = [DateTime]::UtcNow.AddSeconds(40)
+    $assertSettings = {
+        Require ([DateTime]::UtcNow -lt $settingsDeadline) 'The supported Settings setup exceeded its bound.'
+        $identity = $settings.Identity
+        Require ($null -ne $identity) 'The Settings process was not retained.'
+        $identity.Process.Refresh()
+        Require (!$identity.Process.HasExited -and $identity.Process.Id -eq $identity.Id -and
+            $identity.Process.StartTime.ToUniversalTime().Ticks -eq $identity.Ticks -and
+            $identity.Process.SessionId -eq [Diagnostics.Process]::GetCurrentProcess().SessionId -and
+            [IO.Path]::GetFullPath($identity.Process.Path).Equals($identity.Path, [StringComparison]::OrdinalIgnoreCase)) 'The exact hosted Settings identity changed.'
+    }
+    $readToggle = {
+        param([string]$name)
+        & $assertSettings
+        $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+        $matches = @($settings.Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) | Where-Object {
+            $_.Current.ProcessId -eq $settings.Identity.Id })
+        $toggles = @($matches | Where-Object { $pattern = $null; $_.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern) })
+        Require ($toggles.Count -le 1) 'A whitelisted Windows notification toggle was ambiguous.'
+        if ($toggles.Count -eq 0) { return $null }
+        Require ($toggles[0].Current.IsEnabled) 'A whitelisted Windows notification toggle was disabled.'
+        if ($toggles[0].Current.IsOffscreen) {
+            $scroll = $null
+            if ($toggles[0].TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scroll)) { $scroll.ScrollIntoView() }
+            else { $toggles[0].SetFocus() }
+            Require (!$toggles[0].Current.IsOffscreen) 'A whitelisted Windows notification toggle could not be brought into view.'
+        }
+        $pattern = $toggles[0].GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+        $value = [string]$pattern.Current.ToggleState
+        Require ($value -in @('On', 'Off')) 'A whitelisted Windows notification toggle had an unsupported state.'
+        return @{ Element = $toggles[0]; Pattern = $pattern; State = $value }
+    }
+    try {
+        $settingsPath = Join-Path ([Environment]::GetFolderPath('Windows')) 'ImmersiveControlPanel/SystemSettings.exe'
+        Require (Test-Path -LiteralPath $settingsPath -PathType Leaf) 'The documented Windows Settings application is unavailable.'
+        Require (((Get-Item -LiteralPath $settingsPath).Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'The Settings executable is not a regular system file.'
+        $signature = Get-AuthenticodeSignature -LiteralPath $settingsPath
+        Require ($signature.Status -eq 'Valid' -and $signature.SignerCertificate.Subject -match '(^|,\s*)O=Microsoft Corporation(,|$)') 'The system Settings executable did not have a valid Microsoft signature.'
+        $proof.binaryVerified = $true
+        $stage = 'FreshSettingsSession'
+        Require (@(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue | Where-Object SessionId -eq ([Diagnostics.Process]::GetCurrentProcess().SessionId)).Count -eq 0) 'A pre-existing Settings process cannot be adopted.'
+        $launched = [DateTime]::UtcNow
+        # This is the documented Settings URI, not an undocumented executable
+        # argument, registry edit, policy change or application notification hook.
+        Start-Process -FilePath 'ms-settings:notifications' | Out-Null
+        $stage = 'OwnedSettingsProcess'
+        Wait-Until {
+            $matches = @(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue | Where-Object SessionId -eq ([Diagnostics.Process]::GetCurrentProcess().SessionId))
+            Require ($matches.Count -le 1) 'The fresh Settings process was ambiguous.'
+            if ($matches.Count -eq 0) { return $false }
+            $process = $matches[0]
+            Require ($process.StartTime.ToUniversalTime() -ge $launched -and
+                [IO.Path]::GetFullPath($process.Path).Equals([IO.Path]::GetFullPath($settingsPath), [StringComparison]::OrdinalIgnoreCase)) 'The Settings URI did not activate the verified fresh system executable.'
+            $settings.Identity = Record-Process $process $settingsPath
+            return $true
+        } 'The documented Settings URI did not activate a fresh verified Settings process.' 12
+        $proof.ownedProcessVerified = $true
+        $stage = 'OwnedSettingsWindow'
+        Wait-Until {
+            & $assertSettings
+            $windows = @([TogetherServerQolShellCheck]::VisibleWindows($settings.Identity.Id))
+            Require ($windows.Count -le 4) 'The owned Settings window inventory exceeded its bound.'
+            if ($windows.Count -ne 1) { return $false }
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($windows[0])
+            if ($root.Current.ProcessId -ne $settings.Identity.Id -or $root.Current.IsOffscreen) { return $false }
+            $settings.Window = $windows[0]; $settings.Root = $root; return $true
+        } 'The exact fresh Settings process did not expose one visible owned window.' 8
+        $proof.ownedWindowVerified = $true
+        foreach ($choice in @(@{ Name = 'Notifications'; Expected = 'On' }, @{ Name = 'Do not disturb'; Expected = 'Off' })) {
+            $stage = if ($choice.Name -eq 'Notifications') { 'NotificationsToggle' } else { 'DoNotDisturbToggle' }
+            $found = @{ Value = $null }
+            Wait-Until { $found.Value = & $readToggle $choice.Name; return $null -ne $found.Value } 'A required ordinary notification control was unavailable.' 5
+            $row = [ordered]@{ name = $choice.Name; present = $true; before = $found.Value.State; after = $null }
+            $proof.controls += $row
+            if ($found.Value.State -ne $choice.Expected) { $found.Value.Pattern.Toggle() }
+            Wait-Until { $found.Value = & $readToggle $choice.Name; return $found.Value -and $found.Value.State -eq $choice.Expected } 'An ordinary Windows notification toggle did not retain its requested state.' 5
+            $row.after = $found.Value.State
+        }
+        $stage = 'FirstHourAutomaticRule'
+        $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Turn on do not disturb automatically')
+        $expanders = @($settings.Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) | Where-Object {
+            $expandPattern = $null
+            $_.Current.ProcessId -eq $settings.Identity.Id -and !$_.Current.IsOffscreen -and $_.Current.IsEnabled -and
+                $_.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expandPattern) })
+        Require ($expanders.Count -le 1) 'The ordinary automatic notification section was ambiguous.'
+        if ($expanders.Count -eq 1) {
+            & $assertSettings
+            $pattern = $null
+            Require ($expanders[0].TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) 'The ordinary automatic notification section had no supported expand action.'
+            if ($pattern.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) { $pattern.Expand() }
+            Wait-Until { & $assertSettings; return $pattern.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded } 'The automatic notification section did not expand.' 3
+        }
+        $name = 'For the first hour after a Windows feature update'
+        $firstHourClock = [Diagnostics.Stopwatch]::StartNew()
+        do {
+            $firstHour = & $readToggle $name
+            if ($firstHour) { break }
+            Start-Sleep -Milliseconds 100
+        } while ($firstHourClock.Elapsed.TotalSeconds -lt 3)
+        $row = [ordered]@{ name = $name; present = $null -ne $firstHour; before = $null; after = $null }
+        $proof.controls += $row
+        if ($firstHour) {
+            $row.before = $firstHour.State
+            if ($firstHour.State -ne 'Off') { $firstHour.Pattern.Toggle() }
+            Wait-Until { $current = & $readToggle $name; return $current -and $current.State -eq 'Off' } 'The first-hour automatic rule did not remain off.' 5
+            $row.after = 'Off'
+        }
+        $proof.status = 'Completed'
+    } catch {
+        $proof.failureCode = $stage
+        throw 'The bounded supported Windows notification setup was unavailable; inspect its whitelisted state evidence.'
+    } finally {
+        try {
+            if ($settings.Identity -and !$settings.Identity.Process.HasExited) {
+                # Cleanup retains PID/start-time/path ownership even if the
+                # setup deadline expired; no name-only process mutation.
+                $settingsDeadline = [DateTime]::UtcNow.AddSeconds(15)
+                & $assertSettings
+                if ($settings.Window -ne [IntPtr]::Zero -and [TogetherServerQolWindowCheck]::IsWindowVisible($settings.Window)) {
+                    [uint32]$owner = 0
+                    [TogetherServerQolShellCheck]::GetWindowThreadProcessId($settings.Window, [ref]$owner) | Out-Null
+                    Require ($owner -eq $settings.Identity.Id) 'The Settings HWND changed owner before Close.'
+                    Require ([TogetherServerQolWindowCheck]::PostMessage($settings.Window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) 'The exact Settings window refused Close.'
+                    Wait-Until { return $settings.Identity.Process.HasExited -or ![TogetherServerQolWindowCheck]::IsWindowVisible($settings.Window) } 'The exact Settings window did not close.' 8
+                }
+                if (!$settings.Identity.Process.HasExited) {
+                    & $assertSettings
+                    $settings.Identity.Process.Kill()
+                    Require ($settings.Identity.Process.WaitForExit(5000)) 'The exact newly launched Settings process did not exit.'
+                }
+            }
+            Assert-OwnedWindow $windowHandle
+            Require ((Invoke-RestMethod -Uri "$baseUrl/api/local/show" -Method Post -Headers $headers -TimeoutSec 5 -NoProxy).ok) 'The unchanged owner API refused to restore the test app.'
+            Wait-Until { Assert-OwnedWindow $windowHandle; return [TogetherServerQolShellCheck]::GetForegroundWindow() -eq $windowHandle } 'Closing Settings did not restore the exact test-app foreground HWND.' 5
+            $after = Read-Rect
+            Require (![TogetherServerQolWindowCheck]::IsZoomed($windowHandle) -and ![TogetherServerQolWindowCheck]::IsIconic($windowHandle) -and
+                $original.Left -eq $after.Left -and $original.Top -eq $after.Top -and $original.Right -eq $after.Right -and $original.Bottom -eq $after.Bottom) 'The supported Settings attempt changed the original normal test-window geometry.'
+            $proof.appRestored = $true
+        } catch { $proof.cleanupCompleted = $false; throw }
+        Write-Host ('NOTIFICATION_OS_UI ' + ($proof | ConvertTo-Json -Depth 5 -Compress))
+    }
 }
 
 function Invoke-QolNotificationCaptionClick {
@@ -175,8 +358,9 @@ function Test-QolVisibleElement($Element) {
     return !$current.IsOffscreen -and $current.IsEnabled -and !$box.IsEmpty -and $box.Width -gt 0 -and $box.Height -gt 0
 }
 function Get-QolRuntimeId($Element) { return [string]::Join(',', [string[]]$Element.GetRuntimeId()) }
-function Click-QolShellElement($Element, $Root, [switch]$Right) {
+function Click-QolShellElement($Element, $Root, [switch]$Right, [switch]$Double) {
     Assert-AppIdentity
+    Require (!($Right -and $Double)) 'A shell action cannot combine right-click and double-click.'
     Require (Test-QolVisibleElement $Element) 'The matched native shell element is no longer visible and enabled.'
     Require ($Element.Current.ProcessId -eq $Root.Current.ProcessId) 'The matched native shell element changed owner.'
     $box = $Element.Current.BoundingRectangle
@@ -192,6 +376,11 @@ function Click-QolShellElement($Element, $Root, [switch]$Right) {
     Require ([TogetherServerQolShellCheck]::SetCursorPos([int]$point.X, [int]$point.Y)) 'The dedicated shell input could not be positioned.'
     [TogetherServerQolShellCheck]::mouse_event($(if ($Right) { 0x0008 } else { 0x0002 }), 0, 0, 0, [UIntPtr]::Zero)
     [TogetherServerQolShellCheck]::mouse_event($(if ($Right) { 0x0010 } else { 0x0004 }), 0, 0, 0, [UIntPtr]::Zero)
+    if ($Double) {
+        Start-Sleep -Milliseconds 80
+        [TogetherServerQolShellCheck]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [TogetherServerQolShellCheck]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    }
 }
 function Save-QolShellScreenshot($Element, [string]$Name) {
     Require ($Name -in @('native-os-notification.png', 'native-explorer-quit-menu.png')) 'Unexpected shell capture destination.'
@@ -247,6 +436,17 @@ function Wait-QolBalloon {
     } 'Windows did not expose the freshly triggered development balloon/toast title and fixed body; delivery acceptance failed.' 12
     return $state.Match
 }
+function Test-QolTrayName([string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 256) { return $false }
+    $normalized = [regex]::Replace($Name, '\s+', ' ').Trim()
+    if ($normalized.Equals($qolShellDisplayName, [StringComparison]::Ordinal)) { return $true }
+    # Explorer can prefix the display title to NotifyIcon.Text and flatten its
+    # line breaks. Both forms come from the fixed production TraySummaryText.
+    $title = [regex]::Escape($qolShellDisplayName)
+    $pattern = '^(?:' + $title + ' )?' + $title + ' Hosting: (?<running>[0-9]{1,3}) running, (?<review>[0-9]{1,3}) need review Join: (?:Connected|Disabled|Unknown|Disconnected/Unknown|Revoked|Awaiting approval|No saved connection|Not connected|Update required|Access expired)$'
+    $match = [regex]::Match($normalized, $pattern)
+    return $match.Success -and [int]$match.Groups['running'].Value -le 128 -and [int]$match.Groups['review'].Value -le 128
+}
 function Find-QolTrayIcon {
     $state = @{ Match = $null; Expanded = $false }
     Wait-Until {
@@ -259,7 +459,7 @@ function Find-QolTrayIcon {
             try {
                 foreach ($element in @(Get-QolShellDescendants $root)) {
                     if (!(Test-QolVisibleElement $element) -or $element.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
-                    if ($element.Current.Name -eq $qolShellDisplayName -and $element.Current.ClassName -notmatch 'TaskList|TaskbarButton') {
+                    if ((Test-QolTrayName $element.Current.Name) -and $element.Current.ClassName -notmatch 'TaskList|TaskbarButton') {
                         $icons += [pscustomobject]@{ Element = $element; Root = $root }
                     } elseif ($element.Current.Name -match '^(Show hidden icons|Hidden icon menu)') {
                         $expanders += [pscustomobject]@{ Element = $element; Root = $root }

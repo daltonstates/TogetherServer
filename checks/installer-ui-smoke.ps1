@@ -23,6 +23,7 @@ $headers = @{ Origin = $baseUrl; 'X-TogetherServer-Local' = '1' }
 $priorData = $env:TOGETHERSERVER_DATA_DIR
 $owned = [Collections.Generic.List[object]]::new()
 $screenshots = [Collections.Generic.List[string]]::new()
+$captureObservations = [Collections.Generic.List[object]]::new()
 $results = @(
     [pscustomobject]@{ choice = 'Host'; intent = 'Host'; label = 'Host game servers'; mode = 'Host'; state = 'NotRun' },
     [pscustomobject]@{ choice = 'Friend'; intent = 'Join'; label = "Join a friend's server"; mode = 'Friend'; state = 'NotRun' },
@@ -155,11 +156,31 @@ function Owned-Windows {
 }
 function Capture-Dialogs([string]$phase, [IntPtr]$requiredWindow = [IntPtr]::Zero) {
     $capturedRequired = $false
-    foreach ($window in @(Owned-Windows)) {
+    $visible = @(Owned-Windows)
+    # Process ownership also includes auxiliary Win32/WebView windows. Their
+    # IsWindowVisible flag does not make them a wizard or an app screenshot.
+    # Normal captures require the exact UIA wizard or installed-app HWND; failure
+    # evidence uses only those same reviewed primary surfaces.
+    $appWindow = [IntPtr]::Zero
+    if ($app -and !$app.process.HasExited) {
+        $app.process.Refresh()
+        $appWindow = $app.process.MainWindowHandle
+    }
+    $targets = @($visible | Where-Object {
+        if ($requiredWindow -ne [IntPtr]::Zero) { $_.Handle -eq $requiredWindow }
+        else { $_.Class -eq 'TWizardForm' -or ($appWindow -ne [IntPtr]::Zero -and $_.Handle -eq $appWindow) }
+    })
+    foreach ($window in $targets) {
         Assert-Owned (@($owned | Where-Object id -eq $window.Pid)[0])
+        Require ([TogetherServerInstallerUi]::IsOwnedVisibleWindow($window.Handle, $window.Pid)) 'The exact capture window is no longer visible and owned.'
         $rect = [TogetherServerInstallerUi+Rect]::new()
         Require ([TogetherServerInstallerUi]::GetWindowRect($window.Handle, [ref]$rect)) 'An owned dialog rectangle was unavailable.'
         $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
+        if ($captureObservations.Count -lt 128) {
+            $captureObservations.Add(@{ choice = $currentCase.choice; phase = $phase; windowClass = $window.Class;
+                width = $width; height = $height; exactRequiredWindow = ($window.Handle -eq $requiredWindow);
+                otherOwnedVisibleWindows = $visible.Count - 1 })
+        }
         Require ($width -gt 0 -and $height -gt 0 -and $width -le 2400 -and $height -le 1800 -and $screenshots.Count -lt 64) 'An owned dialog exceeded the screenshot bound.'
         $bitmap = [Drawing.Bitmap]::new($width, $height)
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
@@ -173,7 +194,7 @@ function Capture-Dialogs([string]$phase, [IntPtr]$requiredWindow = [IntPtr]::Zer
             if ($window.Handle -eq $requiredWindow) { $capturedRequired = $true }
         } finally { $bitmap.Dispose() }
     }
-    Require ($requiredWindow -eq [IntPtr]::Zero -or $capturedRequired) 'The actual visible installed app window was not captured.'
+    Require ($requiredWindow -eq [IntPtr]::Zero -or $capturedRequired) 'The exact required visible wizard or installed app window was not captured.'
 }
 function Wizard-Root {
     $windows = @(Owned-Windows | Where-Object Class -eq 'TWizardForm')
@@ -211,6 +232,12 @@ function Assert-Element($element) {
     Require ($null -ne $element -and !$element.Current.IsOffscreen -and $element.Current.IsEnabled -and
         @($owned | Where-Object id -eq $element.Current.ProcessId).Count -eq 1) 'An installer UI action was not bound to one enabled owned control.'
     Assert-Owned (@($owned | Where-Object id -eq $element.Current.ProcessId)[0])
+}
+function Capture-Wizard($root, [string]$phase) {
+    Assert-Element $root
+    $handle = [IntPtr]$root.Current.NativeWindowHandle
+    Require ($handle -ne [IntPtr]::Zero -and [TogetherServerInstallerUi]::ClassName($handle) -eq 'TWizardForm') 'The wizard capture requires its exact native UIA root.'
+    Capture-Dialogs $phase $handle
 }
 function Click-Choice($element) {
     Assert-Element $element
@@ -321,7 +348,7 @@ try {
                     Require (!$roleSeen) 'The installer repeated its role page.'
                     Set-Checked $root $case.label $true $true
                     $roleSeen = $true
-                    Capture-Dialogs 'role'
+                    Capture-Wizard $root 'role'
                 } elseif (Find-Ui $root 'Open TogetherServer at Windows sign-in') {
                     Require (!$preferencesSeen) 'The installer repeated its Windows preferences page.'
                     foreach ($label in @('Open TogetherServer at Windows sign-in', 'Close to the tray instead of quitting')) {
@@ -330,19 +357,19 @@ try {
                         Set-Checked $root $label $false
                     }
                     $preferencesSeen = $true
-                    Capture-Dialogs 'windows-options-off'
+                    Capture-Wizard $root 'windows-options-off'
                 } elseif (Find-Ui $root 'Create a desktop shortcut') {
                     Require (!(Checked (Find-Ui $root 'Create a desktop shortcut'))) 'The optional desktop shortcut was enabled by default.'
                     Set-Checked $root 'Create a desktop shortcut' $true
                     Set-Checked $root 'Create a desktop shortcut' $false
                     $tasksSeen = $true
-                    Capture-Dialogs 'desktop-shortcut-off'
-                } else { Capture-Dialogs 'page' }
+                    Capture-Wizard $root 'desktop-shortcut-off'
+                } else { Capture-Wizard $root 'page' }
                 $finish = Button-Ui $root @('Finish')
                 if ($finish) {
                     Require ($installed -and $roleSeen -and $preferencesSeen -and $tasksSeen) 'Finish was reached without all actual wizard choices.'
                     Set-Checked $root 'Open TogetherServer' $false
-                    Capture-Dialogs 'finish-launch-off'
+                    Capture-Wizard $root 'finish-launch-off'
                     Invoke-Button $finish
                     Wait-Until { !(Wizard-Root) } 'The real Finish button did not close the wizard.' 30 | Out-Null
                     $finished = $true
@@ -464,7 +491,8 @@ try {
             cases = @($results | Select-Object choice, intent, mode, state); skipped = 0; cleanupCompleted = $cleanupCompleted;
             failedStage = $(if ($failure) { $currentStage } else { $null });
             diagnostic = $diagnostic;
-            screenshots = @($screenshots.ToArray()); boundary = 'Actual Inno wizard and fresh installed app on a dedicated hosted Windows runner; synthetic owner save only; no game, credentials or network changes.' }
+            screenshots = @($screenshots.ToArray()); captureObservations = @($captureObservations.ToArray());
+            boundary = 'Actual Inno wizard and fresh installed app on a dedicated hosted Windows runner; synthetic owner save only; no game, credentials or network changes.' }
         $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'summary.json') -Encoding utf8
         if (!$unchanged -and !$failure) { $failure = 'Verified app or installer bytes changed during actual wizard acceptance.' }
     }

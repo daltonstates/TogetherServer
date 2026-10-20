@@ -28,6 +28,7 @@ $evidenceParent = [IO.Path]::GetFullPath((Join-Path $repository 'local-data/ci-e
 $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $evidenceParent $caseId))
 $testSucceeded = $false
 $cleanupSucceeded = $true
+$notificationBlocked = $false
 $currentNativePhase = 'setup'
 $caseResults = [ordered]@{
     appearance = @{ name = 'Native WebView with 150 percent text'; status = 'SKIP'; reason = 'Not reached.' }
@@ -1116,28 +1117,51 @@ try {
     $allowedNotifications = Post-Json '/api/local/desktop/notifications' @{ allowedEvents = @('Lifecycle') } 'PUT'
     Require (@($allowedNotifications.allowedEvents).Count -eq 1 -and $allowedNotifications.allowedEvents[0] -eq 'Lifecycle') 'The disposable notification event choice did not save.'
     $notificationState = Post-Json '/api/local/desktop/notifications' @{ quietMode = $false } 'PUT'
-    $notificationState = Wait-QolNotificationReadiness $notificationState
-    Require (@(Find-QolBalloon).Count -eq 0) 'An earlier matching development notification is already visible; fresh delivery cannot be identified.'
-    $nodePhase = Start-WebViewPhase 'notification-click'
-    Wait-PhaseReady $nodePhase
-    Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
-    Wait-TestApp $false
-    Require ($app.Id -eq $originalId -and $app.Ticks -eq $originalTicks) 'Close-to-tray replaced the app process.'
-    $balloon = Wait-QolBalloon
-    $nativeShellProof.notification.freshTitleAndBodyObserved = $true
-    Save-QolShellScreenshot $balloon.Element 'native-os-notification.png'
-    Click-QolShellElement $balloon.Element $balloon.Root
-    $nativeShellProof.notification.physicalClickSent = $true
-    Wait-TestApp $true
-    Wait-Until { [TogetherServerQolShellCheck]::GetForegroundWindow() -eq $windowHandle } 'Clicking the actual notification did not foreground the exact disposable native window.' 10
-    $nativeShellProof.notification.exactAppForeground = $true
-    Finish-WebViewPhase $nodePhase; $nodePhase = $null
-    Require (Test-Path -LiteralPath (Join-Path $caseRoot 'notification-click-result.json')) 'The actual balloon click did not reach the fixed native App Settings destination.'
-    $nativeShellProof.notification.nativeDestinationVerified = $true
-    Pass-Case 'notifications'
+    try { $notificationState = Wait-QolNotificationReadiness $notificationState }
+    catch {
+        $proof = $nativeShellProof.notification
+        if ($proof.systemState -ne 'QuietTime' -or !$proof.captionClickExactOwnedHit -or !$proof.captionClickForegroundVerified -or
+            !$proof.captionClickNormalBoundsPreserved -or !$proof.osUiSetup.attempted -or !$proof.osUiSetup.cleanupCompleted -or !$proof.osUiSetup.appRestored) { throw }
+        Assert-OwnedWindow $windowHandle
+        $notificationBlocked = $true
+        $caseResults.notifications.status = 'BLOCKED'
+        $caseResults.notifications.reason = 'Windows remains in QuietTime after the single supported hosted Settings attempt; real notification delivery and click are unproven.'
+        Write-Host ('BLOCKED OS notification acceptance: ' + $caseResults.notifications.reason)
+    }
+    if (!$notificationBlocked) {
+        Require (@(Find-QolBalloon).Count -eq 0) 'An earlier matching development notification is already visible; fresh delivery cannot be identified.'
+        $nodePhase = Start-WebViewPhase 'notification-click'
+        Wait-PhaseReady $nodePhase
+        Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
+        Wait-TestApp $false
+        Require ($app.Id -eq $originalId -and $app.Ticks -eq $originalTicks) 'Close-to-tray replaced the app process.'
+        $balloon = Wait-QolBalloon
+        $nativeShellProof.notification.freshTitleAndBodyObserved = $true
+        Save-QolShellScreenshot $balloon.Element 'native-os-notification.png'
+        Click-QolShellElement $balloon.Element $balloon.Root
+        $nativeShellProof.notification.physicalClickSent = $true
+        Wait-TestApp $true
+        Wait-Until { [TogetherServerQolShellCheck]::GetForegroundWindow() -eq $windowHandle } 'Clicking the actual notification did not foreground the exact disposable native window.' 10
+        $nativeShellProof.notification.exactAppForeground = $true
+        Finish-WebViewPhase $nodePhase; $nodePhase = $null
+        Require (Test-Path -LiteralPath (Join-Path $caseRoot 'notification-click-result.json')) 'The actual balloon click did not reach the fixed native App Settings destination.'
+        $nativeShellProof.notification.nativeDestinationVerified = $true
+        Pass-Case 'notifications'
+        Write-Host 'PASS actual first-close Windows notification is delivered, clicked and opens App Settings in the exact native app'
+    } else {
+        # A blocked notification never counts as tray-reopen evidence. Exercise
+        # the real Explorer icon independently while ordinary app quiet mode is on.
+        Require ((Post-Json '/api/local/desktop/notifications' @{ quietMode = $true } 'PUT').quietMode) 'The blocked notification path could not enable ordinary disposable app quiet mode.'
+        Invoke-Chrome 'Close TogetherServer DEVELOPMENT'
+        Wait-TestApp $false
+        Require ($app.Id -eq $originalId -and $app.Ticks -eq $originalTicks) 'Close-to-tray replaced the app process.'
+        $trayIcon = Find-QolTrayIcon
+        Click-QolShellElement $trayIcon.Element $trayIcon.Root -Double
+        Wait-TestApp $true
+        Wait-Until { [TogetherServerQolShellCheck]::GetForegroundWindow() -eq $windowHandle } 'The real Explorer icon did not foreground the exact disposable app.' 5
+    }
     Require-RectNear $remembered
-    Write-Host 'PASS actual first-close Windows notification is delivered, clicked and opens App Settings in the exact native app'
-    Write-Host 'PASS Close-to-tray hides and notification click reopens the exact same native app'
+    Write-Host 'PASS Close-to-tray hides and an actual native user action reopens the exact same app with its saved bounds'
     Pass-Case 'tray'
 
     # The actual native OpenFileDialog receives only a compiled, copied fixture.
@@ -1365,21 +1389,34 @@ finally {
             $screenshots.Add($picture.Name)
         } catch { $exportSucceeded = $false; Write-Warning 'A top-level screenshot could not be exported.' }
     }
-    $success = $testSucceeded -and $cleanupSucceeded -and $exportSucceeded
+    $requiredCases = @($caseResults.GetEnumerator() | Where-Object Key -ne 'startup' | ForEach-Object Value)
+    $requiredPassed = @($requiredCases | Where-Object status -eq 'PASS').Count
+    $blocked = @($requiredCases | Where-Object status -eq 'BLOCKED').Count
+    $allRequiredPassed = $requiredCases.Count -eq 13 -and $requiredPassed -eq 13 -and $caseResults.startup.status -eq 'SKIP'
+    $success = $testSucceeded -and $cleanupSucceeded -and $exportSucceeded -and $allRequiredPassed
+    $onlyBlocked = $testSucceeded -and $cleanupSucceeded -and $exportSucceeded -and $requiredCases.Count -eq 13 -and
+        $blocked -gt 0 -and $requiredPassed + $blocked -eq 13 -and $caseResults.startup.status -eq 'SKIP'
     $summary = [ordered]@{
         schemaVersion = 1
         suite = 'QoL native desktop smoke'
         success = $success
-        result = $(if ($success) { 'PASS' } else { 'FAIL' })
-        testAssertionsCompleted = $testSucceeded
+        result = $(if ($success) { 'PASS' } elseif ($onlyBlocked) { 'BLOCKED' } else { 'FAIL' })
+        testAssertionsCompleted = $testSucceeded -and $allRequiredPassed
+        remainingNativeCasesCompleted = $testSucceeded
+        requiredCaseCount = $requiredCases.Count
+        requiredCasesPassed = $requiredPassed
+        requiredCasesBlocked = $blocked
         cleanupCompleted = $cleanupSucceeded
         screenshotExportCompleted = $exportSucceeded
         cases = @($caseResults.Values)
         screenshots = @($screenshots.ToArray())
         nativeShell = $nativeShellProof
-        boundary = 'Dedicated approved Windows runner; synthetic state only. Native tray Quit and the actual first-close OS notification delivery/click are asserted. Windows --startup coverage belongs to the existing production-mode disposable-candidate gate. Real games, installer and updater replacement are not established.'
+        boundary = 'Dedicated approved Windows runner; synthetic state only. All 13 required cases must PASS for full success. Persistent OS QuietTime leaves notification delivery/click BLOCKED while independent native cases continue. Windows --startup belongs to the production-mode disposable-candidate gate. No game or updater replacement is established.'
     }
-    [IO.File]::WriteAllText((Join-Path $evidenceRoot 'summary.json'), ($summary | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $evidenceRoot 'summary.json'), ($summary | ConvertTo-Json -Depth 7), [Text.UTF8Encoding]::new($false))
     Write-Host 'Redacted native CI evidence exported: top-level screenshots and fixed result summary only.'
-    if ($testSucceeded -and !$success) { throw 'Native assertions completed, but disposable cleanup or screenshot evidence export failed.' }
+    if ($testSucceeded -and !$success) {
+        if ($onlyBlocked) { throw 'BLOCKED: required OS notification acceptance remains unproven; independent native cases completed. Full acceptance did not pass.' }
+        throw 'Native acceptance failed a required case, exact cleanup or screenshot evidence export.'
+    }
 }

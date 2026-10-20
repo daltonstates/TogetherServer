@@ -72,7 +72,7 @@ async function nav(page, name) {
     .or(page.getByRole('tab', { name: exact(name) })).or(page.getByRole('link', { name: exact(name) })));
   await match.first().click({ timeout: 15000 });
 }
-async function choice(page, name, enabled) {
+async function choice(page, name, enabled, savePath) {
   const control = visible(page.getByRole('checkbox', { name })).first();
   await control.waitFor({ state: 'visible', timeout });
   await until(() => control.isEnabled(), Boolean, 'saved checkbox enabled');
@@ -81,7 +81,8 @@ async function choice(page, name, enabled) {
     // Wait for that result before another click or navigation can race it.
     const saving = page.waitForResponse(response => response.request().method() === 'PUT'
       && new URL(response.url()).origin === new URL(page.url()).origin
-      && new URL(response.url()).pathname.startsWith('/api/local/'), { timeout });
+      && (savePath ? savePath.test(new URL(response.url()).pathname)
+        : new URL(response.url()).pathname.startsWith('/api/local/')), { timeout });
     await control.click({ timeout });
     const response = await saving;
     const result = await response.json();
@@ -89,7 +90,7 @@ async function choice(page, name, enabled) {
   }
   await until(() => control.isChecked(), value => value === enabled, 'saved checkbox choice');
 }
-const checked = (page, name) => choice(page, name, true);
+const checked = (page, name, savePath) => choice(page, name, true, savePath);
 async function read(page, suffix = '/api/local/snapshot') {
   return page.evaluate(async endpoint => {
     const response = await fetch(endpoint, { credentials: 'same-origin', headers: { 'X-TogetherServer-Local': '1' } });
@@ -262,19 +263,58 @@ try {
     await shot(host, '03-host-sharing'); await shot(friend, '03-friend-consent');
   });
   await stage('hosting permission withdrawal blocks the action', async () => {
-    await choice(host, /^Can host this save for /, false);
+    const grantPath = new RegExp(`^/api/local/devices/[0-9a-f-]{36}/shared-world/${input.profileId}/grants$`, 'i');
+    await choice(host, /^Can host this save for /, false, grantPath);
     await nav(friend, 'Play');
     await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
       value => !value.allowed && !value.readyForManualStart && !value.running, 'withdrawn hosting permission');
     await until(() => visible(friend.getByRole('button', { name: 'Host on this PC', exact: true })).count(),
       count => count === 0, 'removed hosting action');
     if (hostingStartRequests) throw new Error('Removing hosting permission dispatched Start');
+    report.failurePathCoverage = { hostingGrantWithdrawal: false, grantWithdrawalObserved: true,
+      grantRestoredByOwner: false, authenticatedRecovery: false, signedGrantRefreshed: false,
+      recoveryStep: 'restoring-owner-grant', automaticRecoveryBudgetMs: timeout, explicitRecoveryUsed: false };
     await shot(friend, '03-hosting-permission-removed');
-    await checked(host, /^Can host this save for /);
-    await sharedSaves(friend); await nav(friend, 'Play');
+    await checked(host, /^Can host this save for /, grantPath);
+    report.failurePathCoverage.grantRestoredByOwner = true;
+    report.failurePathCoverage.recoveryStep = 'waiting-for-automatic-connection';
+    await until(async () => {
+      const connection = await read(friend);
+      report.failurePathCoverage.lastConnectionState = ['Connected', 'Disabled', 'Disconnected/Unknown', 'Revoked', 'Access expired', 'Awaiting approval']
+        .includes(connection.state) ? connection.state : 'Other';
+      return ['Connected', 'Disabled'].includes(connection.state) &&
+        connection.profiles?.some(profile => profile.id === input.profileId);
+    }, Boolean, 'automatic fresh assigned connection after restored grant');
+    report.failurePathCoverage.authenticatedRecovery = true;
+    // Keep the status surface mounted until its read and automatic signed-roster
+    // catchup finish. Immediate navigation used to abort this observation.
+    report.failurePathCoverage.recoveryStep = 'waiting-for-shared-save-read';
+    const refreshed = friend.waitForResponse(response => response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/api/local/friend/${input.profileId}/shared-world`, { timeout });
+    await sharedSaves(friend);
+    const refreshedResponse = await refreshed;
+    const result = await refreshedResponse.json();
+    if (!refreshedResponse.ok() || result.consented !== true) throw new Error('Restoring the grant lost the saved local consent');
+    report.failurePathCoverage.recoveryStep = 'waiting-for-automatic-authenticated-grant';
+    await until(async () => {
+      const connection = await read(friend);
+      const hosting = await read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`);
+      report.failurePathCoverage.lastConnectionState = ['Connected', 'Disabled', 'Disconnected/Unknown', 'Revoked', 'Access expired', 'Awaiting approval']
+        .includes(connection.state) ? connection.state : 'Other';
+      report.failurePathCoverage.lastHostingCode = /^[A-Za-z0-9]{1,80}$/.test(hosting.code ?? '') ? hosting.code : 'Unavailable';
+      report.failurePathCoverage.lastHostingAllowed = hosting.allowed === true;
+      report.failurePathCoverage.lastHostingConsented = hosting.consented === true;
+      return ['Connected', 'Disabled'].includes(connection.state) &&
+        connection.profiles?.some(profile => profile.id === input.profileId) && hosting.allowed && hosting.consented;
+    }, Boolean, 'automatic restored hosting permission and fresh assigned connection');
+    report.failurePathCoverage.authenticatedRecovery = true;
+    report.failurePathCoverage.signedGrantRefreshed = true;
+    report.failurePathCoverage.recoveryStep = 'returning-to-play';
+    await nav(friend, 'Play');
     await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
       value => value.allowed && value.consented, 'restored hosting permission without losing consent');
-    report.failurePathCoverage = { hostingGrantWithdrawal: true };
+    report.failurePathCoverage.hostingGrantWithdrawal = true;
+    report.failurePathCoverage.recoveryStep = 'complete';
   });
   await stage('local save consent is required and cancel starts nothing', async () => {
     await sharedSaves(friend);

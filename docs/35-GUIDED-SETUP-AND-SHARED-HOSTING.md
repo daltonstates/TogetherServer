@@ -423,3 +423,54 @@ test account; those are not recorded as executed. Independent workflow review
 checked all step references, inventories, installer independence and the final
 actual-outcome package gate. The production process still matched its original
 PID, executable path and start time.
+
+Repair run `39392686691` built source
+`1b84e8f25943afd71f6ce3041b6159fa519e2ff5`, app SHA-256
+`937dc50d965b5a23fd33bb3611cac15723948c9602bedb833d88fa72c67909f7`.
+Its actual reports pass all five affected sharing/served/formatting checks,
+all 1,339 UI tests, the full browser journeys and all 18 assigned-LAN stages.
+The latter includes the formerly missing durable new-host receipt, restart,
+both authenticated recipient connections and isolated revocation; all 340
+owned-window samples were empty and cleanup left zero job members. The repaired
+receipt path is therefore exercised by the exact production-mode candidate.
+All six silent installer checks also pass for that run's installer.
+
+The run remains failed. The ten-stage UX stopped while restoring a hosting
+grant after its withdrawal assertion had passed; rapid navigation canceled the
+Shared saves read while the connection was temporarily unknown. The helper now
+waits for the exact grant save, automatic assigned-connection recovery and the
+completed Shared saves read before leaving that surface. It retains the
+permission/consent, one-Start and exact signed-Connect assertions, with bounded
+recovery diagnostics and no HTTP mutation or response substitution.
+
+Actual installer UI stopped because its screenshot helper treated an owned
+auxiliary HWND as a dialog. Captures now require the exact native wizard or app
+window, retaining the original size and identity limits. All three real choices
+still need execution. The native test now establishes the OS state: Windows
+returns `QuietTime` before and after verified physical caption input and all
+60 readiness polls. Notification delivery and click remain unproven. The next
+hosted attempt uses ordinary Windows Settings controls once, then rechecks the
+unchanged app gate. Persistent suppression is recorded as BLOCKED while other
+native cases continue; every required case must pass for full native success.
+
+The narrowed continuation reuses the immutable repaired EXE and pinned prior
+reports. It runs only the unfinished UX/native/wizard work; silent installation
+is repeated because the installer wrapper must be rebuilt. It retains that
+exact wrapper even if an independent OS prerequisite blocks acceptance, avoiding
+another needless rebuild. No product source changed for these helper fixes.
+
+Temporary artifacts from the earlier full run, visual review and failed first
+continuation were hash-verified and archived locally before deletion from
+GitHub, freeing 82,497,570 bytes. Unrelated uploads were preserved. The current
+candidate and repair evidence remain available for the pinned continuation;
+all new uploads have one-day retention.
+
+Before that continuation, focused local run
+`56a3845f315d4540a27211d9e0ccf8f6` passed all ten actual UX stages against the
+exact repaired candidate above. Grant recovery completed automatically with no
+manual refresh; the captured connection was Connected, hosting allowed and
+local consent intact. The run made one successful Start and verified the exact
+signed world/session/branch/address/Connect selection. All 172 owned-window
+samples were empty, cleanup left zero job members, and the production process's
+PID/start/path/executable hash remained unchanged. This uses the existing guarded
+windowless lab, not local native UI or a real game.
