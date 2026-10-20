@@ -1,4 +1,4 @@
-name: Finish only native and actual installer acceptance
+name: Finish only actual installer wizard acceptance
 
 on:
   push:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   remaining:
-    name: Finish native and actual wizard acceptance
+    name: Finish actual wizard; retain the existing native boundary
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:
@@ -36,6 +36,10 @@ jobs:
       INSTALLER_ARTIFACT_ID: '12253661098'
       INSTALLER_ARTIFACT_SHA256: f78021d781452c31bae91c297af6d3bd3f583d678dd4bdde0c5f8eca06795e10
       INSTALLER_SHA256: 004dcf1cf9431092f85e0a0a2ce34c3e844fd573bfd4b40d61196fd54837269f
+      NATIVE_RUN_ID: '39400463020'
+      NATIVE_REVISION: 5fbc91e36e58da73c6a80e08f90a0c4a57368794
+      NATIVE_ARTIFACT_ID: '12254997739'
+      NATIVE_ARTIFACT_SHA256: 95a3726a75bb00f1d63b2afe2f862854f42db8c01eaf58e43d4d8dd1e48e640c
     steps:
       - name: Check out the verification source and its ancestry
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -250,33 +254,55 @@ jobs:
             originalRunId=$env:COMPLETED_RUN_ID; recompiled=$false; repeatedSilentChecks=$false } |
             ConvertTo-Json | Set-Content -LiteralPath local-data/ci-evidence/acceptance-continuation/installer.json -Encoding utf8
 
-      - name: Install pinned .NET SDK
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
-        with:
-          global-json-file: global.json
-      - name: Install pinned Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - name: Prepare only the locked CDP library
-        id: setup
-        run: |
-          Push-Location ui
-          try {
-            npm ci --ignore-scripts --no-audit --no-fund
-            if ($LASTEXITCODE -ne 0) { throw 'Locked browser dependency setup failed.' }
-          } finally { Pop-Location }
-      - name: Complete QoL native desktop acceptance
+      - name: Reuse passed native cases and retain the blocked notification result
         id: desktop
         continue-on-error: true
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.completed.outcome == 'success' && steps.installer.outcome == 'success' && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.completed.outcome == 'success' && steps.installer.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Explicit opt-in applies only to this dedicated hosted runner's disposable desktop.
-          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          ./checks/qol-desktop-smoke.ps1 -AppPath $candidate -AllowInteractiveTests *>&1 |
-            Tee-Object -FilePath local-data/ci-evidence/acceptance-continuation/qol-desktop.log
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
+          try {
+            $uri = "https://api.github.com/repos/daltonstates/TogetherServer/actions/artifacts/$env:NATIVE_ARTIFACT_ID"
+            $artifact = Invoke-RestMethod -Uri $uri -Headers $headers
+            if ($artifact.name -ne 'acceptance-continuation-evidence' -or $artifact.workflow_run.head_sha -ne $env:NATIVE_REVISION -or
+                [string]$artifact.workflow_run.id -ne $env:NATIVE_RUN_ID -or $artifact.expired -ne $false -or
+                $artifact.digest -ne ('sha256:'+$env:NATIVE_ARTIFACT_SHA256) -or $artifact.size_in_bytes -gt 2MB) { throw 'Prior native report identity mismatch.' }
+            $archive = Join-Path $env:RUNNER_TEMP 'completed-native-cases.zip'
+            Invoke-WebRequest -Uri ($uri+'/zip') -Headers $headers -OutFile $archive -MaximumRetryCount 2 -RetryIntervalSec 2
+          } finally { $headers.Clear() }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:NATIVE_ARTIFACT_SHA256 -or
+              (Get-Item -LiteralPath $archive).Length -ne $artifact.size_in_bytes) { throw 'Prior native ZIP identity mismatch.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath local-data/previous-native
+          function Read-One([string]$directory,[string]$name) {
+            $files = @(Get-ChildItem -LiteralPath $directory -Filter $name -Recurse -File)
+            if ($files.Count -ne 1 -or $files[0].Length -gt 4MB) { throw 'Require one bounded native report.' }
+            return Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+          }
+          $final = Read-One local-data/previous-native/acceptance-continuation final-candidate.json
+          $wrapper = Read-One local-data/previous-native/acceptance-continuation final-installer.json
+          if ($final.unchanged -ne $true -or $final.finalCandidateSha256 -ne $env:CANDIDATE_SHA256 -or
+              $final.verificationRevision -ne $env:NATIVE_REVISION -or $wrapper.unchanged -ne $true -or
+              $wrapper.finalInstallerSha256 -ne $env:INSTALLER_SHA256) { throw 'Prior native candidate/installer sentinel mismatch.' }
+          $native = Read-One local-data/previous-native/qol-desktop summary.json
+          $startup = 'Windows startup unavailable in development staging'
+          $notification = 'OS balloon delivery, physical click and native navigation'
+          if ($native.result -ne 'BLOCKED' -or $native.remainingNativeCasesCompleted -ne $true -or $native.cleanupCompleted -ne $true -or
+              $native.screenshotExportCompleted -ne $true -or $native.requiredCaseCount -ne 13 -or $native.requiredCasesPassed -ne 12 -or
+              $native.requiredCasesBlocked -ne 1 -or @($native.cases).Count -ne 14 -or @($native.cases.name | Select-Object -Unique).Count -ne 14 -or
+              @($native.cases | Where-Object { $_.name -notin @($startup,$notification) -and $_.status -ne 'PASS' }).Count -or
+              @($native.cases | Where-Object { $_.name -eq $startup -and $_.status -eq 'SKIP' }).Count -ne 1 -or
+              @($native.cases | Where-Object { $_.name -eq $notification -and $_.status -eq 'BLOCKED' }).Count -ne 1 -or
+              $native.nativeShell.notification.systemState -ne 'QuietTime' -or $native.nativeShell.notification.physicalClickSent -ne $false -or
+              $native.nativeShell.trayQuit.exactProcessExited -ne $true -or $native.nativeShell.trayQuit.nativeFlushObserved -ne $true) { throw 'The twelve completed native cases or honest OS boundary differ from the retained report.' }
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/qol-desktop/prior -Force
+          $native | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'summary.json') -Encoding utf8
+          @{ originalRunId=$env:NATIVE_RUN_ID; verificationRevision=$env:NATIVE_REVISION; candidateSha256=$env:CANDIDATE_SHA256;
+            artifactId=$env:NATIVE_ARTIFACT_ID; artifactZipSha256=$env:NATIVE_ARTIFACT_SHA256; nativeCasesPassed=12;
+            notificationResult='BLOCKED'; nativeRepeated=$false; fullNativePassed=$false } |
+            ConvertTo-Json | Set-Content -LiteralPath local-data/ci-evidence/acceptance-continuation/native-proof.json -Encoding utf8
+          throw 'BLOCKED: the retained OS notification result remains unproven. Completed native cases are reused; only the installer wizard is retried.'
 
       - name: Complete all three actual installer wizard choices
         id: wizard
@@ -289,7 +315,7 @@ jobs:
 
       - name: Require every remaining actual outcome and report
         id: package
-        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.completed.outcome == 'success' && steps.installer.outcome == 'success' && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.identity.outcome == 'success' && steps.prior.outcome == 'success' && steps.completed.outcome == 'success' && steps.installer.outcome == 'success' }}
         env:
           DESKTOP_OUTCOME: ${{ steps.desktop.outcome }}
           WIZARD_OUTCOME: ${{ steps.wizard.outcome }}

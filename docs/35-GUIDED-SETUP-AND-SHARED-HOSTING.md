@@ -503,3 +503,29 @@ browser download, repeated pairing run, silent installer run or duplicate
 installer upload. Only native and actual three-choice wizard checks run, with
 one-day evidence retention. Both recent completed runs report zero billable
 runner milliseconds; storage and unrelated account usage are separate.
+
+Remaining-only run `39400463020` passed all twelve other required native cases,
+including the actual file picker with natural Node exit, native Quit/draft flush,
+draft rejection/recovery, window restore and Explorer tray-menu Quit. It completed
+all independent native work and exact cleanup; notification delivery/click remains
+one BLOCKED case because Windows still reported QuietTime. The staging-only
+startup case remains an explicit SKIP covered by the separate production gate.
+All seventeen retained hosted Host/Friend UX images were also visually reviewed.
+
+The wizard now genuinely advances with its exact native buttons. Its next
+failure is the accessible discovery of a required custom setup choice, before
+Install is clicked; all navigation and role/preference/task checks remain
+mandatory. The next retry runs only actual wizard acceptance, reusing the exact
+installer, twelve passed native cases and explicit BLOCKED OS result. It installs
+no SDK, Node/browser dependency or compiler and repeats no other runtime suite.
+The full native/package gate remains failed while notification delivery is
+unproven. App and installer bytes remain unchanged.
+
+The wizard reader now uses Inno's native IAccessible row provider, matching
+reviewed checkbox/radio labels, roles, state and geometry. It revalidates the
+exact owned row before input and reads the actual checked state afterward.
+Bounded diagnostics cover all seven role/Windows/task/Finish labels. The extracted
+C# helper compiled against .NET 10 with zero warnings/errors without invoking
+native methods; PowerShell parsing, workflow parsing/saved-proof assertions and
+independent read-only review passed before dispatch. This is helper validation,
+not a substitute for the three hosted installer executions.

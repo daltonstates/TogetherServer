@@ -26,6 +26,12 @@ $screenshots = [Collections.Generic.List[string]]::new()
 $captureObservations = [Collections.Generic.List[object]]::new()
 $buttonObservations = [Collections.Generic.List[object]]::new()
 $buttonObservationKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$choiceObservations = [Collections.Generic.List[object]]::new()
+$choiceObservationKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$choiceInventories = [Collections.Generic.List[object]]::new()
+$choiceInventoryKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$reviewedChoiceLabels = @('Decide later in TogetherServer', 'Host game servers', "Join a friend's server",
+    'Open TogetherServer at Windows sign-in', 'Close to the tray instead of quitting', 'Create a desktop shortcut', 'Open TogetherServer')
 $testSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
 $results = @(
     [pscustomobject]@{ choice = 'Host'; intent = 'Host'; label = 'Host game servers'; mode = 'Host'; state = 'NotRun' },
@@ -126,6 +132,38 @@ public static class TogetherServerInstallerUi {
         public string Class, Caption;
         public bool Visible, Enabled, InRoot;
     }
+    public sealed class Choice {
+        public IntPtr Handle, Root;
+        public int Pid, ChildId, Role, State, Left, Top, Width, Height;
+        public string Class, Name;
+        public bool Checked, Visible, Enabled;
+    }
+    // Inno 6.7.3 implements native IAccessible, but not IDispatch.Invoke.
+    // Preserve the four IDispatch slots before the IAccessible vtable methods.
+    // https://github.com/jrsoftware/issrc/blob/is-6_7_3/Components/NewCheckListBox.pas
+    [ComImport, Guid("618736e0-3c3d-11cf-810c-00aa00389b71"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface AccessibleRows {
+        [PreserveSig] int GetTypeInfoCount(out uint count);
+        [PreserveSig] int GetTypeInfo(uint index, uint locale, out IntPtr info);
+        [PreserveSig] int GetIDsOfNames(ref Guid iid, IntPtr names, uint count, uint locale, IntPtr ids);
+        [PreserveSig] int Invoke(int id, ref Guid iid, uint locale, ushort flags, IntPtr arguments, IntPtr result, IntPtr error, IntPtr argumentError);
+        [PreserveSig] int Parent(out IntPtr parent);
+        [PreserveSig] int ChildCount(out int count);
+        [PreserveSig] int Child([MarshalAs(UnmanagedType.Struct)] object child, out IntPtr value);
+        [PreserveSig] int Name([MarshalAs(UnmanagedType.Struct)] object child, [MarshalAs(UnmanagedType.BStr)] out string value);
+        [PreserveSig] int Value([MarshalAs(UnmanagedType.Struct)] object child, out IntPtr value);
+        [PreserveSig] int Description([MarshalAs(UnmanagedType.Struct)] object child, out IntPtr value);
+        [PreserveSig] int Role([MarshalAs(UnmanagedType.Struct)] object child, [MarshalAs(UnmanagedType.Struct)] out object value);
+        [PreserveSig] int State([MarshalAs(UnmanagedType.Struct)] object child, [MarshalAs(UnmanagedType.Struct)] out object value);
+        [PreserveSig] int Help([MarshalAs(UnmanagedType.Struct)] object child, out IntPtr value);
+        [PreserveSig] int HelpTopic(out IntPtr helpFile, [MarshalAs(UnmanagedType.Struct)] object child, out int topic);
+        [PreserveSig] int KeyboardShortcut([MarshalAs(UnmanagedType.Struct)] object child, out IntPtr value);
+        [PreserveSig] int Focus([MarshalAs(UnmanagedType.Struct)] out object value);
+        [PreserveSig] int Selection([MarshalAs(UnmanagedType.Struct)] out object value);
+        [PreserveSig] int DefaultAction([MarshalAs(UnmanagedType.Struct)] object child, out IntPtr value);
+        [PreserveSig] int Select(int flags, [MarshalAs(UnmanagedType.Struct)] object child);
+        [PreserveSig] int Location(out int left, out int top, out int width, out int height, [MarshalAs(UnmanagedType.Struct)] object child);
+    }
     private delegate bool EnumProc(IntPtr window, IntPtr parameter);
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
     [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr parameter);
@@ -141,6 +179,7 @@ public static class TogetherServerInstallerUi {
     [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr window, ref Point point);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+    [DllImport("oleacc.dll")] private static extern int AccessibleObjectFromWindow(IntPtr window, uint objectId, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out AccessibleRows value);
     public static string ClassName(IntPtr window) { var text = new StringBuilder(256); GetClassName(window, text, text.Capacity); return text.ToString(); }
     private static string Caption(IntPtr window, bool readControl = false) {
         var text = new StringBuilder(128);
@@ -195,6 +234,99 @@ public static class TogetherServerInstallerUi {
             throw new InvalidOperationException("The exact owned wizard navigation button changed before input.");
         if (!PostMessage(button.Handle, 0x00F5, IntPtr.Zero, IntPtr.Zero))
             throw new InvalidOperationException("The exact native wizard button click was refused.");
+    }
+    private static bool ChoiceClass(string kind) { return kind == "TNewCheckListBox" || kind == "TNewCheckBox" || kind == "Button"; }
+    private static bool ChoiceName(string name) {
+        return name == "Decide later in TogetherServer" || name == "Host game servers" || name == "Join a friend's server" ||
+            name == "Open TogetherServer at Windows sign-in" || name == "Close to the tray instead of quitting" ||
+            name == "Create a desktop shortcut" || name == "Open TogetherServer";
+    }
+    private static void AssertChoiceWindow(IntPtr root, IntPtr control, int pid) {
+        if (!IsOwnedVisibleWindow(root, pid) || !IsWindowEnabled(root) || ClassName(root) != "TWizardForm" ||
+            !IsOwnedVisibleWindow(control, pid) || !IsChild(root, control) || !ChoiceClass(ClassName(control)))
+            throw new InvalidOperationException("Choice discovery requires the exact owned visible wizard control.");
+    }
+    private static AccessibleRows Rows(IntPtr control) {
+        var iid = typeof(AccessibleRows).GUID;
+        var hr = AccessibleObjectFromWindow(control, 0xFFFFFFFC, ref iid, out var rows);
+        if (hr != 0 || rows == null)
+            throw new InvalidOperationException("The owned " + ClassName(control) + " choice control has no native IAccessible provider: " + hr.ToString("X8"));
+        return rows;
+    }
+    private static Choice Row(AccessibleRows rows, IntPtr root, IntPtr control, int pid, int child) {
+        Marshal.ThrowExceptionForHR(rows.Role(child, out var roleValue));
+        if (!(roleValue is int role)) throw new InvalidOperationException("The native choice role was not an exact integer.");
+        if (role != 0x2C && role != 0x2D) return null;
+        Marshal.ThrowExceptionForHR(rows.Name(child, out var name));
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 128)
+            throw new InvalidOperationException("The native choice caption was unavailable or unbounded.");
+        Marshal.ThrowExceptionForHR(rows.State(child, out var stateValue));
+        if (!(stateValue is int state)) throw new InvalidOperationException("The native choice state was unavailable.");
+        Marshal.ThrowExceptionForHR(rows.Location(out var left, out var top, out var width, out var height, child));
+        return new Choice { Root=root, Handle=control, Pid=pid, ChildId=child, Class=ClassName(control),
+            Name=name.Replace("&", "").Trim(), Role=role, State=state, Checked=(state & 0x10) != 0,
+            Visible=(state & 0x18000) == 0 && width > 0 && height > 0,
+            Enabled=(state & 1) == 0 && IsWindowEnabled(control), Left=left, Top=top, Width=width, Height=height };
+    }
+    public static Choice[] Choices(IntPtr root, int pid, out string[] inventory) {
+        if (!IsOwnedVisibleWindow(root, pid) || !IsWindowEnabled(root) || ClassName(root) != "TWizardForm")
+            throw new InvalidOperationException("Native choices require the exact enabled owned wizard.");
+        var controls = new List<IntPtr>();
+        var count = 0;
+        var exceeded = false;
+        EnumChildWindows(root, (control, _) => {
+            if (++count > 512) { exceeded = true; return false; }
+            if (ChoiceClass(ClassName(control)) && IsWindowVisible(control)) {
+                if (controls.Count == 16) { exceeded = true; return false; }
+                controls.Add(control);
+            }
+            return true;
+        }, IntPtr.Zero);
+        if (exceeded) throw new InvalidOperationException("The owned choice control inventory exceeded its bound.");
+        var result = new List<Choice>();
+        var observed = new List<string>();
+        foreach (var control in controls) {
+            AssertChoiceWindow(root, control, pid);
+            var rows = Rows(control);
+            try {
+                Marshal.ThrowExceptionForHR(rows.ChildCount(out var children));
+                if (children < 0 || children > 32) throw new InvalidOperationException("The owned choice row count exceeded its bound.");
+                observed.Add(ClassName(control) + ":" + children);
+                var first = ClassName(control) == "TNewCheckListBox" ? 1 : 0;
+                var last = first == 1 ? children : 0;
+                for (var child = first; child <= last; child++) {
+                    var row = Row(rows, root, control, pid, child);
+                    if (row != null && row.Visible) result.Add(row);
+                    if (result.Count > 32) throw new InvalidOperationException("The visible choice inventory exceeded its bound.");
+                }
+            } finally { Marshal.ReleaseComObject(rows); }
+        }
+        inventory = observed.ToArray();
+        return result.ToArray();
+    }
+    public static Choice ReadChoice(Choice expected) {
+        AssertChoiceWindow(expected.Root, expected.Handle, expected.Pid);
+        if (ClassName(expected.Handle) != expected.Class || !ChoiceName(expected.Name))
+            throw new InvalidOperationException("The exact reviewed native choice control changed.");
+        var rows = Rows(expected.Handle);
+        try {
+            var current = Row(rows, expected.Root, expected.Handle, expected.Pid, expected.ChildId);
+            if (current == null || current.Name != expected.Name || current.Role != expected.Role || !current.Visible || (current.State & 0x20) != 0)
+                throw new InvalidOperationException("The exact native choice row changed or has an indeterminate state.");
+            return current;
+        } finally { Marshal.ReleaseComObject(rows); }
+    }
+    public static void ClickChoice(Choice expected) {
+        var current = ReadChoice(expected);
+        if (!current.Enabled) throw new InvalidOperationException("The exact native choice is disabled.");
+        if (!GetWindowRect(current.Handle, out var control) || current.Width > 2400 || current.Height > 1800 ||
+            current.Left < control.Left || current.Top < control.Top ||
+            (long)current.Left + current.Width > control.Right || (long)current.Top + current.Height > control.Bottom)
+            throw new InvalidOperationException("The exact native choice rectangle is outside its owned control.");
+        if (current.Class == "TNewCheckListBox")
+            ClickRow(current.Handle, current.Left + Math.Min(10, current.Width / 2), current.Top + current.Height / 2);
+        else if (!PostMessage(current.Handle, 0x00F5, IntPtr.Zero, IntPtr.Zero))
+            throw new InvalidOperationException("The exact native checkbox click was refused.");
     }
     public static void ClickRow(IntPtr window, int x, int y) {
         var point = new Point { X=x, Y=y };
@@ -271,11 +403,54 @@ function Find-Ui($root, [string]$name) {
     if ($null -eq $root) { return $null }
     $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $name)
     $matches = @($root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition) | Where-Object { !$_.Current.IsOffscreen })
+    if ($name -in $reviewedChoiceLabels) {
+        # Prefer Inno's native row provider even when UIA exposes only a named
+        # Pane without a checked-state pattern. The input still targets its real
+        # checkbox/radio row and the next read must observe the requested state.
+        Assert-Element $root
+        $inventory = [string[]]@()
+        $choices = @([TogetherServerInstallerUi]::Choices([IntPtr]$root.Current.NativeWindowHandle, $root.Current.ProcessId, [ref]$inventory))
+        $key = $currentCase.choice + '|' + ($inventory -join '|')
+        if ($choiceInventories.Count -lt 64 -and $choiceInventoryKeys.Add($key)) {
+            $observed = @{ choice = $currentCase.choice; controls = @($inventory); visibleChoiceRows = $choices.Count }
+            $choiceInventories.Add($observed)
+            Write-Host ('WIZARD_CHOICE_INVENTORY ' + ($observed | ConvertTo-Json -Compress))
+        }
+        foreach ($choice in $choices) { Record-Choice $choice }
+        $nativeMatches = @($choices | Where-Object Name -CEQ $name)
+        Require ($nativeMatches.Count -le 1) 'The exact native wizard choice caption was ambiguous.'
+        if ($nativeMatches.Count) { return $nativeMatches[0] }
+    }
     Require ($matches.Count -le 1) 'A named wizard control was ambiguous.'
     if ($matches.Count) { return $matches[0] }
     return $null
 }
+function Record-Choice($choice) {
+    $key = '{0}|{1}|{2}|{3}|{4}' -f $currentCase.choice, $choice.Name, $choice.Role, $choice.Checked, $choice.Enabled
+    if ($choiceObservations.Count -lt 128 -and $choiceObservationKeys.Add($key)) {
+        $name = if ($choice.Name -in $reviewedChoiceLabels) { $choice.Name } else { '[unreviewed]' }
+        $observed = @{ choice = $currentCase.choice; caption = $name; windowClass = $choice.Class; childId = $choice.ChildId;
+            role = $choice.Role; checked = $choice.Checked; enabled = $choice.Enabled; visible = $choice.Visible;
+            rect = @{ left = $choice.Left; top = $choice.Top; width = $choice.Width; height = $choice.Height }; provider = 'NativeIAccessible' }
+        $choiceObservations.Add($observed)
+        Write-Host ('WIZARD_CHOICE ' + ($observed | ConvertTo-Json -Depth 3 -Compress))
+    }
+}
+function Assert-NativeChoice($choice) {
+    $owner = @($owned | Where-Object id -eq $choice.Pid)
+    Require ($owner.Count -eq 1) 'The native choice does not belong to one retained process.'
+    Assert-Owned $owner[0]
+    $root = Wizard-Root
+    Assert-Element $root
+    Require ([IntPtr]$root.Current.NativeWindowHandle -eq $choice.Root -and $root.Current.ProcessId -eq $choice.Pid) 'The choice no longer belongs to the exact current wizard.'
+}
 function Checked($element) {
+    if ($element -is [TogetherServerInstallerUi+Choice]) {
+        Assert-NativeChoice $element
+        $current = [TogetherServerInstallerUi]::ReadChoice($element)
+        Record-Choice $current
+        return $current.Checked
+    }
     $pattern = $null
     if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
         return $pattern.Current.ToggleState -eq [Windows.Automation.ToggleState]::On
@@ -286,6 +461,7 @@ function Checked($element) {
     throw 'The actual wizard did not expose an observable checked state.'
 }
 function Assert-Element($element) {
+    if ($element -is [TogetherServerInstallerUi+Choice]) { Assert-NativeChoice $element; return }
     Require ($null -ne $element -and !$element.Current.IsOffscreen -and $element.Current.IsEnabled -and
         @($owned | Where-Object id -eq $element.Current.ProcessId).Count -eq 1) 'An installer UI action was not bound to one enabled owned control.'
     Assert-Owned (@($owned | Where-Object id -eq $element.Current.ProcessId)[0])
@@ -297,6 +473,11 @@ function Capture-Wizard($root, [string]$phase) {
     Capture-Dialogs $phase $handle
 }
 function Click-Choice($element) {
+    if ($element -is [TogetherServerInstallerUi+Choice]) {
+        Assert-NativeChoice $element
+        [TogetherServerInstallerUi]::ClickChoice($element)
+        return
+    }
     Assert-Element $element
     $rect = $element.Current.BoundingRectangle
     $native = $element
@@ -592,6 +773,7 @@ try {
             failedStage = $(if ($failure) { $currentStage } else { $null });
             diagnostic = $diagnostic;
             screenshots = @($screenshots.ToArray()); captureObservations = @($captureObservations.ToArray()); buttonObservations = @($buttonObservations.ToArray());
+            choiceLabelsExpected = $reviewedChoiceLabels; choiceInventories = @($choiceInventories.ToArray()); choiceObservations = @($choiceObservations.ToArray());
             boundary = 'Actual Inno wizard and fresh installed app on a dedicated hosted Windows runner; synthetic owner save only; no game, credentials or network changes.' }
         $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'summary.json') -Encoding utf8
         if (!$unchanged -and !$failure) { $failure = 'Verified app or installer bytes changed during actual wizard acceptance.' }
