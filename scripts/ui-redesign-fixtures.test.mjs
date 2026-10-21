@@ -840,7 +840,7 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
-  const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus } = await import('./simple-shared-hosting-review.mjs');
+  const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
   assert.equal(simpleHostingCases.length, 9);
   assert.equal(simpleHostingVariants.length, 2);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
@@ -870,4 +870,26 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   assert.equal(routeFixture(owner, { method: 'PUT', path: ownerBase, body: { enabled: true } }).body.ok, true);
   assert.equal(owner.sharingEnabled, true);
   assert.equal(routeFixture(owner, { method: 'PUT', path: ownerBase, body: { enabled: true, grants: {} } }), null);
+  const ownerOn = simpleHostingCases.find(item => item.id === 'simple-hosting-owner-on');
+  assert.deepEqual(ownerOn.steps.at(-1), { role: 'checkbox', name: 'Allow friends to host this server' },
+    'the controlled switch uses an ordinary role click instead of an immediate native checked-state assertion');
+  const toggle = { checked: false, disabled: true };
+  let waited = false;
+  const checkbox = { count: async () => 1, isChecked: async () => toggle.checked, isEnabled: async () => !toggle.disabled };
+  const workspace = { getByRole: role => role === 'checkbox' ? checkbox : { count: async () => 0 } };
+  const page = {
+    locator: selector => { assert.equal(selector, '.shared-world-workspace'); return workspace; },
+    waitForFunction: async (predicate, argument, options) => {
+      assert.deepEqual(options, { timeout: 8000 });
+      const matches = () => runInNewContext(`(${predicate.toString()})()`, { document: { querySelector: () => toggle } });
+      assert.equal(matches(), false, 'a pending unchecked switch is not saved');
+      toggle.checked = true;
+      assert.equal(matches(), false, 'an optimistically checked but disabled switch is not saved');
+      toggle.disabled = false;
+      assert.equal(matches(), true, 'only the checked and enabled canonical state completes the wait');
+      waited = true;
+    }
+  };
+  await assertSimpleHostingUi(page, ownerOn, { assertions: [] }, { requests: [{ method: 'PUT', path: ownerBase }] });
+  assert.equal(waited, true);
 });

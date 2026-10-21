@@ -64,9 +64,10 @@ stops a game.
 
 ## Acceptance and remaining checks
 
-Local validation passed. Hosted rendering and the packaged process journey are
-pending at this checkpoint; their exact revision and results will be recorded
-below. No result from an earlier candidate is a pass for these changes.
+Local validation passed. The first hosted run exposed two test-harness timing
+errors; the corrected hosted checks are pending at this checkpoint. Their exact
+revision and results will be recorded below. Earlier failed results remain
+failed and do not establish acceptance for the corrected candidate.
 
 Local automated work is code-only. No app, game, console fixture, browser,
 installer or native dialog is launched on the owner's active desktop.
@@ -89,12 +90,12 @@ Local verification on 2026-10-21:
 | Check | Result |
 | --- | --- |
 | `scripts/verify-code-only.ps1` | PASS: pinned .NET 10.0.301 and Node 24.14.1, locked dependencies, typecheck, lint, full solution compile, all 62 source/synthetic groups, whitespace and desktop diagnostic isolation |
-| Full JSDOM suite | PASS: 1,323 tests in 106 files; final notice follow-up passes all 33 focused cases |
+| Full JSDOM suite | PASS: final current UI passes all 1,326 tests in 106 files |
 | Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax and all seven workflow PowerShell blocks; 18 bounded render plans |
 | Production React bundle | PASS: existing JavaScript chunk-size advisory above 500 kB |
 | Normal app build embedding the current bundle | PASS: zero warnings/errors |
-| Packaged three-app private-address journey | Pending hosted Windows execution |
-| Desktop/narrow rendered UI | Pending hosted Windows execution and visual inspection |
+| Packaged three-app private-address journey | Initial run failed at a premature restart identity check; corrected hosted run pending |
+| Desktop/narrow rendered UI | Initial run accepted 16/18 with no layout findings; corrected switch wait pending hosted execution |
 | Physical PCs, outside game route and real saved game | Not executed; external acceptance remains open |
 
 One source symbolic-link subcase is explicitly SKIPPED because this account
@@ -113,7 +114,38 @@ guard precedence was corrected. Initial compile-only property/namespace errors
 were also corrected. The final full gate above passed after these changes.
 
 Ignored local evidence: `local-data/simple-hosting-code-only-final.log`,
-`local-data/simple-hosting-ui-full-tests.json`,
+`local-data/simple-hosting-ui-final.json`,
 `local-data/simple-hosting-renderer-source.log`,
 `local-data/simple-hosting-bundle-final.log`, and
 `local-data/simple-hosting-embedded-build-final.log`.
+
+### Initial hosted run and bounded corrections
+
+[Run 39649848998](https://github.com/daltonstates/TogetherServer/actions/runs/39649848998)
+tested source `b1c66523b22ca1dd1524eefffdd592bec0ebb7fb`.
+The render job `119394990792` failed its two owner-on cases because Playwright's
+native checked-state assertion ran before the controlled asynchronous save
+settled. The other 16 cases passed with zero layout findings or JavaScript
+errors. The corrected helper clicks normally and waits for the canonical
+checked and enabled state without changing the DOM or submitting a second
+request. Its 31 source checks pass.
+
+The packaged job `119394990327` passed isolated setup, automatic signed grants
+and receiving, ordinary Friend preparation/Start, and the listener-less peer's
+verified descendant receipt. It then failed `SimpleAppIdentityMismatch` before
+the returning Host's HTTP startup had been awaited. The retained identity has a
+nonzero start time and no identity-review flag. The corrected test uses the
+existing lab's health-before-identity order and also verifies that the local
+listener belongs to that exact process. Dispatcher compilation passes with
+zero warnings/errors; no product code changed for this correction.
+
+This partial packaged result does not prove the remaining outbound relay,
+returning owner Start or policy withdrawal. Cleanup reported `jobEmpty: true`.
+The initial candidate SHA-256 was
+`ee5a1f540b39c3b4430cdf56632557de1c6e55df601068dddb80648f0bbd1956`.
+Downloaded evidence was hash-verified: render artifact `12368574582`
+(`5e4fa2efbbd197223dd27ecb2e808c867f646220fb8da19f31cc34162f28406e`)
+and journey artifact `12370105570`
+(`ddb3d6cec736486b9cdff847b7c6163e1275702c2efd2beb6765e983332bc445`).
+Representative Host, desktop/narrow confirmation, installation, connection and
+conflict screenshots were inspected; no overflow or obscured action was found.

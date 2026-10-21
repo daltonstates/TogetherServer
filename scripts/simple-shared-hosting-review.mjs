@@ -10,7 +10,7 @@ export const simpleHostingCases = [
   { id: 'simple-hosting-owner-off', scenario: 'host-offline', workspace: 'Host', section: backups,
     steps: [sharing], screen: { role: 'region', name: 'Shared hosting' } },
   { id: 'simple-hosting-owner-on', scenario: 'host-offline', workspace: 'Host', section: backups,
-    steps: [sharing, { check: 'Allow friends to host this server' }], screen: { role: 'region', name: 'Shared hosting' } },
+    steps: [sharing, { role: 'checkbox', name: 'Allow friends to host this server' }], screen: { role: 'region', name: 'Shared hosting' } },
   friend('not-allowed', 'not-allowed', { steps: [], screen: { role: 'region', name: 'Play' } }),
   friend('network-warning', 'prepare'),
   friend('missing-install', 'missing-server'),
@@ -53,7 +53,12 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     if (await workspace.getByRole('button', { name: /Manage sharing|Move hosting|Approve selected copy/u }).count())
       throw new Error('Legacy sharing management is still reachable');
     const enabled = testCase.id.endsWith('-on');
-    if (await workspace.getByRole('checkbox').isChecked() !== enabled || writes.length !== Number(enabled))
+    if (enabled) await page.waitForFunction(() => {
+      const checkbox = document.querySelector('.shared-world-workspace .host-sharing-master-toggle input[type="checkbox"]');
+      return checkbox?.checked === true && checkbox.disabled === false;
+    }, null, { timeout: 8000 });
+    if (await workspace.getByRole('checkbox').isChecked() !== enabled || enabled && !await workspace.getByRole('checkbox').isEnabled() ||
+        writes.length !== Number(enabled))
       throw new Error('Host switch did not retain the exact requested state');
   } else if (testCase.id.endsWith('-not-allowed')) {
     if (await page.getByRole('button', { name: 'Host locally', exact: true }).count() || writes.length)

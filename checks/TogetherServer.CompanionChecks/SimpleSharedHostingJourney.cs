@@ -64,6 +64,9 @@ internal static partial class CoreRemoteJourney
             candidate = Launch("friend-a", "--friend", ports[1], firstData);
             receiver = Launch("friend-b", "--friend", ports[2], secondData);
             await Task.WhenAll(WaitLocalAsync(ports[0]), WaitLocalAsync(ports[1]), WaitLocalAsync(ports[2]));
+            RequireReady(host, ports[0]);
+            RequireReady(candidate, ports[1]);
+            RequireReady(receiver, ports[2]);
             Directory.CreateDirectory(profile.WorldDirectory);
             await File.WriteAllTextAsync(Path.Combine(profile.WorldDirectory, "world.dat"), initialBytes);
             LabRequire((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", new()
@@ -190,6 +193,7 @@ internal static partial class CoreRemoteJourney
 
             host = Launch("host-returned", "--host", ports[0], hostData);
             await WaitLocalAsync(ports[0]);
+            RequireReady(host, ports[0]);
             await PairingLabWaitAsync(async () => (await PairingLabGetAsync<JsonElement>(owner,
                 "/api/local/companion")).GetProperty("listenerActive").GetBoolean(), "SimpleReturningListenerUnavailable");
             WindowsListenerOwners.RequireTogetherServerOwner(ports[3], host.Process);
@@ -283,8 +287,16 @@ internal static partial class CoreRemoteJourney
             job.Add(process);
             var owned = new PairingLabProcess(process, role, appPath);
             processes.Add(owned);
-            LabRequire(owned.Matches(), "SimpleAppIdentityMismatch");
             return owned;
+        }
+        static void RequireReady(PairingLabProcess owned, int port)
+        {
+            // Windows may not expose MainModule immediately after CreateProcess.
+            // Check the recorded identity after HTTP startup, as the existing lab
+            // does, and bind the responding listener to that exact process.
+            owned.Sample();
+            LabRequire(owned.Matches(), "SimpleAppIdentityMismatch-" + owned.Role);
+            WindowsListenerOwners.RequireTogetherServerOwner(port, owned.Process);
         }
         void TrackFixture(RunView run)
         {
