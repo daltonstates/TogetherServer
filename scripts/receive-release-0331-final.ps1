@@ -80,7 +80,7 @@ try {
     Require ($LASTEXITCODE -eq 0) 'Verification HEAD must descend from the exact compiled candidate source.'
     $changed = @(git diff --no-renames --name-only $revision HEAD)
     Require ($LASTEXITCODE -eq 0) 'Could not compare final verification source inputs.'
-    $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/(Program|LocalPairingLabJourney)\.cs$|\.github/workflows/release-0331-final-checks\.yml$|scripts/receive-release-0331-final\.ps1$)'
+    $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/(Program|LocalPairingLabJourney|SharedWorldJourney)\.cs$|\.github/workflows/release-0331-final-checks\.yml$|scripts/receive-release-0331-final\.ps1$)'
     Require (@($changed | Where-Object { $_ -notmatch $allowed }).Count -eq 0) 'Product, dependency, installer or unrelated check inputs changed after candidate compilation.'
     $evidence = Join-Path $repository 'local-data/ci-evidence/final-candidate'
     Require (!(Test-Path -LiteralPath $evidence)) 'Final candidate evidence must use a fresh directory.'
@@ -194,16 +194,15 @@ try {
             'UI lint', 'UI unit tests', 'Locked application restore', 'TogetherServer.Checks', 'TogetherServer.ValheimChecks',
             'TogetherServer.FactorioChecks', 'TogetherServer.TerrariaChecks', 'TogetherServer.MinecraftChecks',
             'TogetherServer.MinecraftSetupChecks', 'TogetherServer.CustomChecks', 'TogetherServer.SharedHistoryChecks',
-            'TogetherServer.UpdateChecks', 'Core remote journey', 'World-load packaged rehearsal',
-            'Shared Worlds packaged journey', 'Staging LiveSave owner action', 'Shared LiveSave packaged transfer journey')
+            'TogetherServer.UpdateChecks', 'Core remote journey', 'World-load packaged rehearsal')
         $checks = @($report.checks)
-        Require ($checks.Count -eq 21 -and @($checks.name | Select-Object -Unique).Count -eq 21 -and
-            @($checks | Where-Object outcome -CEQ 'passed').Count -eq 20 -and
-            @($checks | Where-Object outcome -CEQ 'failed').Count -eq 1) 'Original partial Existing report must retain exactly twenty passes and one failure.'
+        Require ($checks.Count -eq 18 -and @($checks.name | Select-Object -Unique).Count -eq 18 -and
+            @($checks | Where-Object outcome -CEQ 'passed').Count -eq 17 -and
+            @($checks | Where-Object outcome -CEQ 'failed').Count -eq 1) 'Original partial Existing report must retain exactly seventeen passes and one failure.'
         for ($index = 0; $index -lt $expectedChecks.Count; $index++) {
             Require ($checks[$index].name -ceq $expectedChecks[$index] -and $checks[$index].outcome -ceq 'passed') 'A retained completed Existing stage differs from the reviewed ordered inventory.'
         }
-        Require ($checks[20].name -ceq 'TogetherServer.CompanionChecks' -and $checks[20].outcome -ceq 'failed') 'The original default CompanionChecks failure was omitted or changed.'
+        Require ($checks[17].name -ceq 'Shared Worlds packaged journey' -and $checks[17].outcome -ceq 'failed') 'The original Shared Worlds failure was omitted or changed.'
         Copy-Item -LiteralPath $reports[0].FullName -Destination (Join-Path $existingEvidence 'release-gate-report.json')
         $context.existingJobId = 119512118598L
         $context.existingArtifactId = $artifact.id
@@ -212,14 +211,14 @@ try {
         $context.partialFact = $true
         $context.incomplete = $true
         $context.priorExistingProofPending = $false
-        $context.checkCount = 21
-        $context.passedCheckCount = 20
+        $context.checkCount = 18
+        $context.passedCheckCount = 17
         $context.failedCheckCount = 1
-        $context.failedCheck = 'TogetherServer.CompanionChecks'
-        $context.result = 'Twenty completed Existing passes retained. The original default CompanionChecks stage remains failed; it and all six later stages must pass in the continuation. Full Existing acceptance is incomplete.'
+        $context.failedCheck = 'Shared Worlds packaged journey'
+        $context.result = 'Seventeen completed Existing passes retained. The original Shared Worlds stage remains failed; it and all nine later stages must pass in the continuation. Full Existing acceptance is incomplete.'
         $context | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $existingEvidence 'context.json') -Encoding utf8
         $context | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $evidence 'context.json') -Encoding utf8
-        Write-Host 'RETAINED PARTIAL Existing evidence: 20 passed, 1 failed. Default CompanionChecks and all six later stages still require successful continuation.'
+        Write-Host 'RETAINED PARTIAL Existing evidence: 17 passed, 1 failed. Shared Worlds and all nine later stages still require successful continuation.'
     }
     Write-Host "PASS static final candidate identity $candidateHash; twelve unaffected successful jobs and completed Desktop/pairing failures retained. Existing proof pending: $($context.priorExistingProofPending). No full acceptance claim."
 }

@@ -955,28 +955,121 @@ internal static partial class SharedWorldJourney
     internal static async Task RequireAutomaticSharingAsync(HttpClient owner, Guid profileId,
         params (HttpClient Client, Guid DeviceId)[] receivers)
     {
-        var initialRoster = await GetAsync<SharedWorldRoster>(owner,
-            $"/api/local/profiles/{profileId}/shared-world/governance");
-        Require(SharedWorldRosterTrust.Verify(initialRoster) && initialRoster.ProfileId == profileId,
-            "the automatic hosting roster was not signed for the exact server");
-        var root = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profileId, initialRoster.GroupId);
-        foreach (var (client, _) in receivers)
-            Require((await PostAsync<object, WorldPeerActionResult>(client,
-                $"/api/local/world-peers/{root.GroupKey}/sync", new { })).Ok,
-                "an approved Friend could not automatically enroll and refresh its shared hosting membership");
-        var roster = await GetAsync<SharedWorldRoster>(owner,
-            $"/api/local/profiles/{profileId}/shared-world/governance");
-        Require(SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == root.ProfileId &&
-            roster.OwnerPublicKey == root.OwnerPublicKey && roster.GroupId == root.GroupId,
-            "automatic enrollment changed the pinned signed world");
-        foreach (var (client, deviceId) in receivers)
+        // Membership refresh can queue behind a 45-second peer sync. Use the
+        // bounded hosting-check budget rather than the ordinary short read clients.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        using var rosterClient = new HttpClient { BaseAddress = owner.BaseAddress, Timeout = TimeSpan.FromSeconds(120) };
+        var receiverNumber = 0;
+        var observations = 0;
+        var lastState = "Unobserved";
+        var lastConnectionCode = "Unobserved";
+        var localGroupPresent = false;
+        var localConsent = false;
+        var phase = "InitialRoster";
+        var rosterStatus = 0;
+        long? rosterRevision = null;
+        async Task<SharedWorldRoster?> ReadOwnerRosterAsync()
         {
-            Require(roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is
-            { Revoked: false, Grants: { Receive: true, EligibleHost: true, Reshare: true } },
-                "the server's one hosting choice did not automatically grant Receive, Host and Reshare");
-            Require((await GetAsync<ReceivedSharedWorldStatus>(client,
-                $"/api/local/friend/{profileId}/shared-world")).Consented,
-                "the approved Friend did not automatically allow the server's completed saves");
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"/api/local/profiles/{profileId}/shared-world/governance");
+            request.Headers.Add("X-TogetherServer-Local", "1");
+            using var response = await rosterClient.SendAsync(request, deadline.Token);
+            rosterStatus = (int)response.StatusCode;
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>(Json, deadline.Token);
+            // Enrollment fences the current roster until its signed replacement
+            // is durable. This exact pending response is not a replacement root.
+            if (response.StatusCode == HttpStatusCode.Conflict && body.ValueKind == JsonValueKind.Object &&
+                body.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String &&
+                code.GetString() == "RosterUnavailable") return null;
+            Require(response.IsSuccessStatusCode,
+                $"automatic receiving could not read the signed roster: http={rosterStatus}");
+            var roster = body.Deserialize<SharedWorldRoster>(Json);
+            rosterRevision = roster?.Revision;
+            Require(roster is not null && SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == profileId,
+                $"automatic receiving rejected the signed roster: http={rosterStatus}, " +
+                $"signatureValid={SharedWorldRosterTrust.Verify(roster)}, profileMatches={roster?.ProfileId == profileId}, " +
+                $"revision={rosterRevision?.ToString() ?? "none"}");
+            return roster;
+        }
+        try
+        {
+            SharedWorldRoster? initialRoster;
+            while ((initialRoster = await ReadOwnerRosterAsync()) is null)
+                await Task.Delay(250, deadline.Token);
+            var root = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profileId, initialRoster.GroupId);
+            foreach (var (originalClient, deviceId) in receivers)
+            {
+                using var client = new HttpClient { BaseAddress = originalClient.BaseAddress, Timeout = TimeSpan.FromSeconds(120) };
+                receiverNumber++;
+                observations = 0;
+                localGroupPresent = false;
+                localConsent = false;
+                Guid? connectionId = null;
+                string? memberKey = null;
+                while (true)
+                {
+                    observations++;
+                    // Automatic consent projects the verified local roster/floor.
+                    // Refresh normal Friend status before synchronizing membership;
+                    // do not replace convergence with a consent or hosting mutation.
+                    phase = "FriendPoll";
+                    var view = await PostAsync<object, FriendView>(client,
+                        "/api/local/friend/poll", new { }, deadline.Token);
+                    lastConnectionCode = SupportReportRedactor.Token(view.ConnectionCode);
+                    Require((view.State is "Connected" or "Disabled") && view.ConnectionId != Guid.Empty &&
+                        view.Profiles.Any(profile => profile.Id == profileId) &&
+                        view.ConnectionCode is not ("Revoked" or "AccessExpired" or "ApprovalPending" or "CredentialExpired"),
+                        "automatic receiving lost the approved assigned Friend connection: " + lastConnectionCode);
+                    connectionId ??= view.ConnectionId;
+                    Require(connectionId == view.ConnectionId,
+                        "the selected Friend connection changed during automatic receiving checks");
+                    phase = "PeerSync";
+                    Require((await PostAsync<object, WorldPeerActionResult>(client,
+                        $"/api/local/world-peers/{root.GroupKey}/sync", new { }, deadline.Token)).Ok,
+                        "an approved Friend could not automatically enroll and refresh its shared hosting membership");
+                    phase = "OwnerRoster";
+                    var roster = await ReadOwnerRosterAsync();
+                    if (roster is null) { await Task.Delay(250, deadline.Token); continue; }
+                    Require(roster.ProfileId == root.ProfileId && roster.OwnerPublicKey == root.OwnerPublicKey &&
+                        roster.GroupId == root.GroupId,
+                        "automatic enrollment changed the pinned signed world: " +
+                        $"signatureValid=true, profileMatches={roster.ProfileId == root.ProfileId}, " +
+                        $"ownerMatches={roster.OwnerPublicKey == root.OwnerPublicKey}, groupMatches={roster.GroupId == root.GroupId}, " +
+                        $"revision={roster.Revision}");
+                    var member = roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
+                    Require(member is { Revoked: false, Grants: { Receive: true, EligibleHost: true, Reshare: true } } &&
+                        (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow),
+                        "the server's one hosting choice did not automatically grant Receive, Host and Reshare");
+                    memberKey ??= member!.PublicKey;
+                    Require(memberKey == member!.PublicKey,
+                        "the signed Friend identity changed during automatic receiving checks");
+                    phase = "LocalGroup";
+                    var groups = await GetAsync<WorldPeerGroupView[]>(client,
+                        "/api/local/world-peers", deadline.Token);
+                    var local = groups.SingleOrDefault(group => group.GroupKey == root.GroupKey);
+                    localGroupPresent = local is not null;
+                    Require(local is null || local.ProfileId == profileId && local.SelfDeviceId == deviceId &&
+                        local.State.Root == root && local.State.GroupKey == root.GroupKey,
+                        "automatic receiving adopted another signed world or Friend identity");
+                    phase = "ReceiveStatus";
+                    var status = await GetAsync<ReceivedSharedWorldStatus>(client,
+                        $"/api/local/friend/{profileId}/shared-world", deadline.Token);
+                    lastState = SupportReportRedactor.Token(status.State);
+                    localConsent = local?.ReceiveConsented == true;
+                    Require(!status.State.StartsWith("Host save source changed", StringComparison.Ordinal) &&
+                        !status.State.StartsWith("Competing save histories", StringComparison.Ordinal),
+                        "automatic receiving requires signed source or history review");
+                    if (status.Consented && local is { ReceiveConsented: true, CanReceive: true, CanHost: true, CanReshare: true })
+                        break;
+                    await Task.Delay(250, deadline.Token);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            throw new Exception($"automatic receiving did not converge within 120 seconds: receiver={receiverNumber}, " +
+                $"observations={observations}, phase={phase}, http={rosterStatus}, revision={rosterRevision?.ToString() ?? "none"}, " +
+                $"state={lastState}, connectionCode={lastConnectionCode}, localGroup={localGroupPresent}, localConsent={localConsent}");
         }
     }
 

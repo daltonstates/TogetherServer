@@ -30,14 +30,14 @@ jobs:
     - name: Verify retained source, jobs and immutable candidate
       env:
         GH_TOKEN: ${{ github.token }}
-      run: ./scripts/receive-release-0331-final.ps1
+      run: ./scripts/receive-release-0331-final.ps1 -Existing -ExistingArtifactId 12385857122 -ExistingArtifactSha256 6c6fad90e7f52fe298f499522f80d627126009ce8ac73ade500c70001cc7e8f2
     - name: Compile only the remaining check dispatcher
       run: |
         dotnet restore TogetherServer.slnx --locked-mode
         if ($LASTEXITCODE -ne 0) { throw 'Locked verification restore failed.' }
         dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
         if ($LASTEXITCODE -ne 0) { throw 'Remaining dispatcher compilation failed.' }
-    - name: Complete all seven remaining Existing stages
+    - name: Complete all ten remaining Existing stages
       run: |
         # Explicit dedicated unattended Windows opt-in. Disposable data only.
         $ErrorActionPreference = 'Stop'
@@ -47,6 +47,9 @@ jobs:
         $checks = [Collections.Generic.List[object]]::new()
         $failedChecks = [Collections.Generic.List[string]]::new()
         $expected = @(
+          @{name='Shared Worlds packaged journey';run={dotnet $harness $candidate --shared-world-journey}},
+          @{name='Staging LiveSave owner action';run={dotnet $harness $candidate --live-save-action}},
+          @{name='Shared LiveSave packaged transfer journey';run={dotnet $harness $candidate --shared-live-transfer-journey}},
           @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate}},
           @{name='Solution formatting';run={dotnet format TogetherServer.slnx --verify-no-changes --no-restore}},
           @{name='Packaged served smoke';run={./checks/served-smoke.ps1 -AppPath $candidate}},
@@ -70,14 +73,14 @@ jobs:
               Write-Host "FAIL remaining stage: $($check.name) ($($_.Exception.GetType().Name))."
             }
           }
-          if ($checks.Count -ne 7) { throw 'Remaining Existing stage inventory changed.' }
+          if ($checks.Count -ne 10) { throw 'Remaining Existing stage inventory changed.' }
           if ($failedChecks.Count) { throw "Remaining Existing stages failed: $($failedChecks -join ', ')." }
         } finally {
           $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
           @{suite='ExistingContinuation';sourceRevision=$env:CANDIDATE_SOURCE_REVISION;candidateSha256=$hash;
             verificationRevision=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;
-            priorRunId=39683376603;priorJobId=119512118598;priorExpectedPassedChecks=20;priorExistingProofPending=$true;
-            checks=@($checks.ToArray());expectedChecks=7;nativeNotificationVerified=$false} |
+            retainedRunId=39683376603;retainedJobId=119512118598;retainedPassedChecks=17;
+            checks=@($checks.ToArray());expectedChecks=10;nativeNotificationVerified=$false} |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'report.json') -Encoding utf8
           if ($hash -ne $env:CANDIDATE_SHA256) { throw 'The immutable candidate changed during remaining Existing checks.' }
         }
@@ -95,6 +98,14 @@ jobs:
       with:
         name: final-existing-candidate-context
         path: local-data/ci-evidence/final-candidate/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Preserve bounded verification evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: final-existing-retained-evidence
+        path: local-data/ci-evidence/final-existing/
         if-no-files-found: error
         retention-days: 7
   paired:

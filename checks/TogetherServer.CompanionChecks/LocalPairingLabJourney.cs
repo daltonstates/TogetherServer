@@ -90,7 +90,13 @@ internal static partial class CoreRemoteJourney
         using var owner = LocalClient(hostPort);
         using var first = LocalClient(friendPort);
         using var second = LocalClient(observerPort);
-        foreach (var client in new[] { owner, first, second }) client.DefaultRequestHeaders.Add("X-TogetherServer-Local", "1");
+        // These UI operations have no eight-second app deadline and can await
+        // pinned peer refresh. Keep a finite lab budget on these clients only.
+        foreach (var client in new[] { owner, first, second })
+        {
+            client.DefaultRequestHeaders.Add("X-TogetherServer-Local", "1");
+            client.Timeout = TimeSpan.FromSeconds(120);
+        }
         Guid deviceA = default, deviceB = default, connectionA = default, originalHostId = default;
         Guid? localProfileId = null;
         LocalHostingStatus? prepared = null;
@@ -1123,6 +1129,10 @@ internal static partial class CoreRemoteJourney
             // Export only the status and this public check's source line.
             // A URL, response body or raw exception can contain pairing data.
             throw new PairingLabFailure($"LocalGet{(int?)error.StatusCode ?? 0}At{sourceLine}", (int?)error.StatusCode ?? 0);
+        }
+        catch (TaskCanceledException)
+        {
+            throw new PairingLabFailure($"LocalGetTimedOutAt{sourceLine}");
         }
     }
 
