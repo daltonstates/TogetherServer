@@ -350,7 +350,7 @@ internal static partial class SharedWorldJourney
                 $"/api/local/profiles/{profile.Id}/shared-world/governance");
             Require(SharedWorldRosterTrust.Verify(voterOnlyRoster) &&
                 voterOnlyRoster.Members.Single(member => member.DeviceId == deviceC).Grants is
-                    { Receive: false, EligibleHost: false, Reshare: false, RecoveryVoter: true },
+                { Receive: false, EligibleHost: false, Reshare: false, RecoveryVoter: true },
                 "voter-only history review changed the signed receiving or hosting permissions");
             StopApp(friendC);
             friendC = null;
@@ -970,7 +970,7 @@ internal static partial class SharedWorldJourney
         foreach (var (client, deviceId) in receivers)
         {
             Require(roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is
-                { Revoked: false, Grants: { Receive: true, EligibleHost: true, Reshare: true } },
+            { Revoked: false, Grants: { Receive: true, EligibleHost: true, Reshare: true } },
                 "the server's one hosting choice did not automatically grant Receive, Host and Reshare");
             Require((await GetAsync<ReceivedSharedWorldStatus>(client,
                 $"/api/local/friend/{profileId}/shared-world")).Consented,

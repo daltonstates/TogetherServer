@@ -324,12 +324,12 @@ internal static partial class CoreRemoteJourney
                     var current = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
                     LabRequire(current.Count == 2 && current.All(device => !device.CanViewPassword &&
                         device.SharedWorldGrants?.GetValueOrDefault(profile.Id) is
-                            { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
+                        { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
                         "AutomaticGrantScopeLost");
                     signedRoster = await PairingLabGetAsync<SharedWorldRoster>(owner, $"/api/local/profiles/{profile.Id}/shared-world/governance");
                     LabRequire(SharedWorldRosterTrust.Verify(signedRoster) && signedRoster.Members.Count == 2 &&
                         signedRoster.Members.All(member => !member.Revoked && member.Grants is
-                            { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
+                        { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
                         "CurrentSignedRosterRequired");
                     groupKey = new SharedWorldPeerRoot(signedRoster.OwnerPublicKey, profile.Id, signedRoster.GroupId).GroupKey;
                     return null;

@@ -74,7 +74,7 @@ internal static partial class CoreRemoteJourney
             Require(SharedWorldRosterTrust.Verify(roster) && roster.Members.Count == 1 &&
                 roster.Members.Single() is { Revoked: false } member && member.DeviceId == deviceId &&
                 !string.IsNullOrWhiteSpace(member.PublicKey) && member.Grants is
-                    { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false },
+                { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false },
                 "rehearsal automatic signed permissions were missing");
             Require((await RehearsalOwnerGetAsync<ReceivedSharedWorldStatus>(test,
                 $"/api/local/friend/{profileId}/shared-world")).Consented, "rehearsal automatic receiving was missing");
