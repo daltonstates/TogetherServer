@@ -37,26 +37,28 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw 'Locked verification restore failed.' }
         dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
         if ($LASTEXITCODE -ne 0) { throw 'Remaining dispatcher compilation failed.' }
-    - name: Complete all ten remaining Existing stages
+        dotnet format TogetherServer.slnx --include checks/TogetherServer.CompanionChecks/Program.cs checks/TogetherServer.CompanionChecks/LocalPairingLabJourney.cs --verify-no-changes --no-restore
+        if ($LASTEXITCODE -ne 0) { throw 'Changed default CompanionChecks or paired lab formatting failed.' }
+    - name: Complete only default CompanionChecks
       run: |
         # Explicit dedicated unattended Windows opt-in. Disposable data only.
         $ErrorActionPreference = 'Stop'
         $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
         $harness = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
         $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/existing-remainder -Force
+        $retained = Get-Content -LiteralPath local-data/ci-evidence/final-existing/context.json -Raw | ConvertFrom-Json
+        if ($retained.sourceRevision -ne $env:CANDIDATE_SOURCE_REVISION -or $retained.candidateSha256 -ne $env:CANDIDATE_SHA256 -or
+            $retained.verificationRevision -ne $env:GITHUB_SHA -or $retained.retainedCompletedChecks -ne 26 -or
+            $retained.priorContinuationRevision -ne 'fe932b4e50a611633471ecc7d267ad59666ff531' -or
+            $retained.priorContinuationRunId -ne 39687698900 -or $retained.priorContinuationJobId -ne 119525840594 -or
+            $retained.priorContinuationArtifactId -ne 12386279991 -or
+            $retained.priorContinuationArtifactZipSha256 -ne '8fc4561fa35888b1c927038733a095668c077c7d5930015b21de4c3d83fba8fa' -or
+            $retained.priorContinuationPassedChecks -ne 9 -or $retained.priorExistingProofPending -ne $false -or
+            $retained.fullyAccepted -ne $false) { throw 'Exact original17 and continuation9 evidence was not retained before the remaining check.' }
         $checks = [Collections.Generic.List[object]]::new()
         $failedChecks = [Collections.Generic.List[string]]::new()
         $expected = @(
-          @{name='Shared Worlds packaged journey';run={dotnet $harness $candidate --shared-world-journey}},
-          @{name='Staging LiveSave owner action';run={dotnet $harness $candidate --live-save-action}},
-          @{name='Shared LiveSave packaged transfer journey';run={dotnet $harness $candidate --shared-live-transfer-journey}},
-          @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate}},
-          @{name='Solution formatting';run={dotnet format TogetherServer.slnx --verify-no-changes --no-restore}},
-          @{name='Packaged served smoke';run={./checks/served-smoke.ps1 -AppPath $candidate}},
-          @{name='Production plus staging isolation smoke';run={./checks/staging-smoke.ps1 -AppPath $candidate}},
-          @{name='Packaged hidden desktop smoke';run={./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests}},
-          @{name='Packaged interactive desktop smoke';run={./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests}},
-          @{name='Update handoff smoke';run={./checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests}}
+          @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate}}
         )
         try {
           foreach ($check in $expected) {
@@ -73,14 +75,20 @@ jobs:
               Write-Host "FAIL remaining stage: $($check.name) ($($_.Exception.GetType().Name))."
             }
           }
-          if ($checks.Count -ne 10) { throw 'Remaining Existing stage inventory changed.' }
+          if ($checks.Count -ne 1) { throw 'Remaining Existing stage inventory changed.' }
           if ($failedChecks.Count) { throw "Remaining Existing stages failed: $($failedChecks -join ', ')." }
         } finally {
           $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
           @{suite='ExistingContinuation';sourceRevision=$env:CANDIDATE_SOURCE_REVISION;candidateSha256=$hash;
             verificationRevision=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;
             retainedRunId=39683376603;retainedJobId=119512118598;retainedPassedChecks=17;
-            checks=@($checks.ToArray());expectedChecks=10;nativeNotificationVerified=$false} |
+            priorContinuationRevision=$retained.priorContinuationRevision;priorContinuationRunId=$retained.priorContinuationRunId;
+            priorContinuationRunAttempt=1;priorContinuationJobId=$retained.priorContinuationJobId;
+            priorContinuationArtifactId=$retained.priorContinuationArtifactId;
+            priorContinuationArtifactZipSha256=$retained.priorContinuationArtifactZipSha256;
+            priorContinuationReportSha256=$retained.priorContinuationReportSha256;priorContinuationPassedChecks=9;
+            dispatcherPrefixUnchanged=$retained.dispatcherPrefixUnchanged;retainedCompletedChecks=26;
+            checks=@($checks.ToArray());expectedChecks=1;fullyAccepted=$false;nativeNotificationVerified=$false} |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'report.json') -Encoding utf8
           if ($hash -ne $env:CANDIDATE_SHA256) { throw 'The immutable candidate changed during remaining Existing checks.' }
         }

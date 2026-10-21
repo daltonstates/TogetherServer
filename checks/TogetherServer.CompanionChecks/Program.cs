@@ -155,6 +155,7 @@ var stopHostPort = 0;
 var stopProfileId = Guid.Empty;
 var replacementProfileId = Guid.Empty;
 var passes = 0;
+var sharedRosterDirtyBeforeStop = new Dictionary<Guid, bool>();
 try
 {
     const int probePort = 5131;
@@ -2471,6 +2472,8 @@ async Task<ActionResult> StartAndStopSharedFixtureAsync(HttpClient owner, Guid p
         catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
     }
     Require(matched, $"shared-world fixture run was not observed before Stop: state={SupportReportRedactor.Token(observed?.State)}");
+    sharedRosterDirtyBeforeStop[profileId] = File.Exists(Path.Combine(hostData,
+        "shared-worlds", profileId.ToString("N"), "roster-dirty"));
     var stop = await OwnerPost<object, ActionResult>(owner,
         $"/api/local/profiles/{profileId}/stop", new { });
     if (!stop.Ok || stop.Code != "FixtureStopped")
@@ -2486,20 +2489,94 @@ async Task<ActionResult> StartAndStopSharedFixtureAsync(HttpClient owner, Guid p
 async Task<string> SharedPublicationDiagnosticAsync(HttpClient owner, Guid profileId,
     ActionResult stop, SharedWorldStatus sharing)
 {
+    // Capture this before any awaited diagnostic read or app cleanup can let an
+    // in-flight roster publication finish. Neither observation proves causality.
+    var dirtyAtFailure = File.Exists(Path.Combine(hostData, "shared-worlds",
+        profileId.ToString("N"), "roster-dirty"));
+    var dirtyBeforeStop = sharedRosterDirtyBeforeStop.GetValueOrDefault(profileId);
     var backupFacts = "backups=unavailable";
+    Guid? backupId = null;
     try
     {
         var backups = await OwnerGetJson<WorldBackupList>(owner, $"/api/local/profiles/{profileId}/backups");
         var latest = backups.Backups.OrderByDescending(item => item.CreatedUtc).FirstOrDefault();
+        if (latest is { BackupKind: BackupKinds.Rolling } &&
+            latest.CreatedUtc == stop.Snapshot.Backups?.GetValueOrDefault(profileId)?.LastSuccessfulUtc)
+            backupId = latest.Id;
         backupFacts = $"completedBackups={backups.Status.CompletedCount}; " +
             $"latestSetupIncluded={latest?.SetupIncluded.ToString() ?? "none"}; " +
             $"backupError={SupportReportRedactor.Redact(backups.Status.LastFailure, 240, "none")}; " +
             $"availableBytes={backups.Status.AvailableSpaceBytes?.ToString() ?? "none"}";
     }
     catch (Exception error) { backupFacts = "backupsRead=" + error.GetType().Name; }
+    var probe = ProbeFailedSharedPublication(profileId, backupId, stop);
     return $"; stopCode={SupportReportRedactor.Token(stop.Code)}; sharingEnabled={sharing.Enabled}; " +
         $"latestNumber={sharing.Latest?.Number.ToString() ?? "none"}; " +
-        $"sharingError={SupportReportRedactor.Redact(sharing.Error, 240, "none")}; {backupFacts}";
+        $"sharingError={SupportReportRedactor.Redact(sharing.Error, 240, "none")}; {backupFacts}; " +
+        $"rosterDirtyBeforeStop={dirtyBeforeStop}; rosterDirtyAtFailure={dirtyAtFailure}; publicationProbe={probe}";
+}
+
+string ProbeFailedSharedPublication(Guid profileId, Guid? backupId, ActionResult stop)
+{
+    try
+    {
+        var stoppedProfile = stop.Snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+        if (stop is not { Ok: true, Code: "FixtureStopped" } || backupId is null ||
+            stoppedProfile is not { Kind: GameKinds.Fixture } ||
+            !AppInstance.ContainsPath(root, hostData) || !AppInstance.ContainsPath(root, stoppedProfile.WorldDirectory) ||
+            stop.Snapshot.Runs.Any(run => run.ProcessId is not null)) return "ProbeBoundaryRejected";
+        if (host is not { } failedHost) return "ProbeHostUnavailable";
+        if (!failedHost.HasExited)
+        {
+            failedHost.Kill();
+            if (!failedHost.WaitForExit(5000)) return "ProbeHostExitUnconfirmed";
+        }
+        failedHost.Dispose();
+        host = null;
+        using var failedData = new LocalData(hostData);
+        var current = failedData.LoadSettings().Profiles.SingleOrDefault(item => item.Id == profileId);
+        var backup = failedData.LoadBackupCatalog().Records.SingleOrDefault(item => item.Id == backupId);
+        if (current is null || current.Kind != stoppedProfile.Kind || current.WorldId != stoppedProfile.WorldId ||
+            current.WorldDirectory != stoppedProfile.WorldDirectory || backup is null || backup.ProfileId != profileId ||
+            backup.BackupKind != BackupKinds.Rolling) return "ProbeInputChanged";
+        // This reuses the same completed backup after the exact disposable Host
+        // has exited. It never repeats Start/Stop, captures another save, or makes
+        // the already-failed publication assertion pass, even if this probe succeeds.
+        var result = new SharedWorldService(failedData, new WorldBackupService(failedData, TimeProvider.System))
+            .PublishAfterStop(current, backupId.Value);
+        if (result.Ok) return "ProbeSucceededAfterOriginalFailure";
+        if (result.Code == "SharingOff") return "SharingOff";
+        if (result.Code != "SharedSavePublishFailed") return "UnclassifiedResult";
+        const string prefix = "The completed backup could not be published: ";
+        var rejection = result.Message.StartsWith(prefix, StringComparison.Ordinal) ? result.Message[prefix.Length..] : "";
+        return rejection switch
+        {
+            "Signed membership is unresolved; this PC cannot publish another shared save." => "GovernanceUnresolved",
+            "Sign the shared world roster before publishing a save." => "SignedRosterMissing",
+            "Shared roster failed verification." or "The previous shared roster failed verification." => "SignedRosterInvalid",
+            "Shared roster revisions need owner review." => "RosterRevisionsUnresolved",
+            "The shared save source changed. Review and sign a new source group first." => "SourceChanged",
+            "The existing shared save pointer failed verification." => "PublishedPointerInvalid",
+            "A completed rolling backup was not found." => "RollingBackupMissing",
+            "The backup completion marker is missing or does not match its catalog record." => "BackupCatalogMismatch",
+            "Backup file count changed." or "Backup contents did not match the completed manifest." => "BackupPayloadMismatch",
+            "The setup checkpoint hash changed." => "SetupHashChanged",
+            "The setup checkpoint belongs to a different server or format." => "SetupIdentityInvalid",
+            "The setup checkpoint contains unexpected files." => "SetupFilesInvalid",
+            "The backup lacks a complete reviewed setup checkpoint." => "SetupMissing",
+            "The backup lacks a current reviewed setup checkpoint." => "SetupFormatInvalid",
+            "Portable setup has unsupported or oversized values." => "PortableSetupInvalid",
+            "The backup manifest cannot be shared safely." => "CaptureManifestInvalid",
+            "The shared save manifest is too large." => "CaptureManifestOversized",
+            "Keep 1 GiB free after copying the published backup." => "InsufficientSpace",
+            "Shared version already exists." => "PublishedVersionExists",
+            "Shared save hash changed." or "Shared save file is missing, linked or changed." => "PublishedPayloadMismatch",
+            "This PC has no valid successor authority binding." => "AuthorityBindingInvalid",
+            "Published history does not continue the authority head." => "AuthorityLineageInvalid",
+            _ => "UnclassifiedRejection"
+        };
+    }
+    catch (Exception) { return "ProbeFailed"; }
 }
 
 async Task<TResponse> OwnerPut<TRequest, TResponse>(HttpClient client, string path, TRequest body)

@@ -11,6 +11,11 @@ $candidateHash = 'e382e933ede963a0035215eed1512220525417f640dac651b717a6de88ba7c
 $runId = 39683376603L
 $candidateArtifactId = 12384538572L
 $candidateArchiveHash = '6ccb28da15f989d354b23b823959e5188e3ec1aff5b2eea35e7ec9f5dc15a513'
+$continuationSource = 'fe932b4e50a611633471ecc7d267ad59666ff531'
+$continuationRunId = 39687698900L
+$continuationJobId = 119525840594L
+$continuationArtifactId = 12386279991L
+$continuationArchiveHash = '8fc4561fa35888b1c927038733a095668c077c7d5930015b21de4c3d83fba8fa'
 $api = 'https://api.github.com/repos/daltonstates/TogetherServer'
 $headers = @{}
 
@@ -29,10 +34,11 @@ function Read-BoundedJson([string]$Path) {
     Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
 }
 
-function Receive-FinalArtifact([long]$Id, [string]$Name, [string]$Hash, [string]$Destination) {
+function Receive-FinalArtifact([long]$Id, [string]$Name, [string]$Hash, [string]$Destination,
+    [long]$ExpectedRunId = $runId, [string]$ExpectedSource = $revision) {
     $artifact = Get-FinalJson "actions/artifacts/$Id"
     Require ($artifact.id -eq $Id -and $artifact.name -ceq $Name -and $artifact.expired -eq $false -and
-        $artifact.workflow_run.id -eq $runId -and $artifact.workflow_run.head_sha -ceq $revision -and
+        $artifact.workflow_run.id -eq $ExpectedRunId -and $artifact.workflow_run.head_sha -ceq $ExpectedSource -and
         $artifact.digest -ceq "sha256:$Hash" -and $artifact.size_in_bytes -gt 0 -and
         $artifact.size_in_bytes -le 536870912) 'Pinned final artifact identity or archive digest mismatch.'
     Require (!(Test-Path -LiteralPath $Destination)) 'Refusing to overwrite an existing artifact extraction.'
@@ -82,6 +88,24 @@ try {
     Require ($LASTEXITCODE -eq 0) 'Could not compare final verification source inputs.'
     $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/(Program|LocalPairingLabJourney|SharedWorldJourney)\.cs$|\.github/workflows/release-0331-final-checks\.yml$|scripts/receive-release-0331-final\.ps1$)'
     Require (@($changed | Where-Object { $_ -notmatch $allowed }).Count -eq 0) 'Product, dependency, installer or unrelated check inputs changed after candidate compilation.'
+    git merge-base --is-ancestor $continuationSource HEAD
+    Require ($LASTEXITCODE -eq 0) 'Current verification source must descend from the retained nine-pass continuation source.'
+    $continuationChanges = @(git diff --no-renames --name-only $continuationSource HEAD)
+    Require ($LASTEXITCODE -eq 0) 'Could not compare retained continuation check inputs.'
+    $continuationAllowed = '^(docs/|checks/TogetherServer\.CompanionChecks/(Program|LocalPairingLabJourney)\.cs$|\.github/workflows/release-0331-final-checks\.yml$|scripts/receive-release-0331-final\.ps1$)'
+    Require (@($continuationChanges | Where-Object { $_ -notmatch $continuationAllowed }).Count -eq 0) 'A retained continuation input changed outside default CompanionChecks, the paired lab or release metadata.'
+    $programPath = 'checks/TogetherServer.CompanionChecks/Program.cs'
+    $referenceProgramLines = @(git show ($continuationSource + ':' + $programPath))
+    Require ($LASTEXITCODE -eq 0) 'The retained check dispatcher source is unavailable.'
+    $currentProgramLines = @(git show ('HEAD:' + $programPath))
+    Require ($LASTEXITCODE -eq 0) 'The current check dispatcher source is unavailable.'
+    $referenceProgram = $referenceProgramLines -join "`n"
+    $currentProgram = $currentProgramLines -join "`n"
+    $dispatcherBoundary = 'var root = Path.GetFullPath("local-data/companion-checks/'
+    $referenceBoundary = $referenceProgram.IndexOf($dispatcherBoundary, [StringComparison]::Ordinal)
+    $currentBoundary = $currentProgram.IndexOf($dispatcherBoundary, [StringComparison]::Ordinal)
+    Require ($referenceBoundary -ge 0 -and $currentBoundary -ge 0 -and
+        $referenceProgram.Substring(0, $referenceBoundary) -ceq $currentProgram.Substring(0, $currentBoundary)) 'A dispatcher prefix used by retained passing journeys changed; only the default body and its local functions may differ.'
     $evidence = Join-Path $repository 'local-data/ci-evidence/final-candidate'
     Require (!(Test-Path -LiteralPath $evidence)) 'Final candidate evidence must use a fresh directory.'
     New-Item -ItemType Directory -Path $evidence | Out-Null
@@ -168,6 +192,7 @@ try {
         originalRunStatus = $run.status; originalRunConclusion = $run.conclusion;
         originalExistingJobId = $originalExisting.id; originalExistingStatus = $originalExisting.status;
         originalExistingConclusion = $originalExisting.conclusion; priorExistingProofPending = $true;
+        continuationSourceChanges = $continuationChanges; dispatcherPrefixUnchanged = $true;
         fullyAccepted = $false; nativeNotificationVerified = $false;
         boundary = 'Only twelve unaffected successful jobs and exact Desktop/pairing failure facts are retained. Existing status is recorded but its report remains unproven until separately verified. This receiver performs HTTP/download/static proof only; functional continuation and physical-PC, WAN and real-game acceptance are separate.' }
     $context | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $evidence 'context.json') -Encoding utf8
@@ -215,10 +240,59 @@ try {
         $context.passedCheckCount = 17
         $context.failedCheckCount = 1
         $context.failedCheck = 'Shared Worlds packaged journey'
-        $context.result = 'Seventeen completed Existing passes retained. The original Shared Worlds stage remains failed; it and all nine later stages must pass in the continuation. Full Existing acceptance is incomplete.'
+        $continuedRun = Get-FinalJson "actions/runs/$continuationRunId"
+        $continuedJob = Get-FinalJson "actions/jobs/$continuationJobId"
+        Require ($continuedRun.id -eq $continuationRunId -and $continuedRun.head_sha -ceq $continuationSource -and
+            $continuedRun.run_attempt -eq 1 -and $continuedRun.path -ceq '.github/workflows/release-0331-final-checks.yml' -and
+            $continuedRun.status -ceq 'completed' -and $continuedRun.conclusion -ceq 'failure' -and
+            $continuedJob.id -eq $continuationJobId -and $continuedJob.run_id -eq $continuationRunId -and
+            $continuedJob.head_sha -ceq $continuationSource -and $continuedJob.run_attempt -eq 1 -and
+            $continuedJob.name -ceq 'Complete final Existing checks' -and $continuedJob.status -ceq 'completed' -and
+            $continuedJob.conclusion -ceq 'failure') 'The retained nine-pass continuation run/job identity or preserved failure changed.'
+        $continuedStep = @($continuedJob.steps | Where-Object name -CEQ 'Complete all ten remaining Existing stages')
+        Require ($continuedStep.Count -eq 1 -and $continuedStep[0].status -ceq 'completed' -and
+            $continuedStep[0].conclusion -ceq 'failure') 'The actual ten-stage continuation step must retain its reviewed failure.'
+        $continuedArtifact = Receive-FinalArtifact $continuationArtifactId 'final-existing-remainder-evidence' $continuationArchiveHash (Join-Path $existingEvidence 'prior-continuation-artifact') -ExpectedRunId $continuationRunId -ExpectedSource $continuationSource
+        $continuedReports = @(Get-ChildItem -LiteralPath $continuedArtifact.root -Filter report.json -File -Recurse)
+        Require ($continuedReports.Count -eq 1) 'The retained continuation report is missing or ambiguous.'
+        $continuedReport = Read-BoundedJson $continuedReports[0].FullName
+        Require ($continuedReport.suite -ceq 'ExistingContinuation' -and $continuedReport.sourceRevision -ceq $revision -and
+            $continuedReport.candidateSha256 -ceq $candidateHash -and $continuedReport.verificationRevision -ceq $continuationSource -and
+            $continuedReport.runId -eq $continuationRunId -and $continuedReport.runAttempt -eq 1 -and
+            $continuedReport.retainedRunId -eq $runId -and $continuedReport.retainedJobId -eq 119512118598 -and
+            $continuedReport.retainedPassedChecks -eq 17 -and $continuedReport.expectedChecks -eq 10 -and
+            $continuedReport.nativeNotificationVerified -eq $false) 'Retained continuation candidate, source, run or scope differs from the reviewed facts.'
+        $continuedNames = @('Shared Worlds packaged journey', 'Staging LiveSave owner action', 'Shared LiveSave packaged transfer journey',
+            'TogetherServer.CompanionChecks', 'Solution formatting', 'Packaged served smoke',
+            'Production plus staging isolation smoke', 'Packaged hidden desktop smoke',
+            'Packaged interactive desktop smoke', 'Update handoff smoke')
+        $continuedChecks = @($continuedReport.checks)
+        Require ($continuedChecks.Count -eq 10 -and @($continuedChecks.name | Select-Object -Unique).Count -eq 10 -and
+            @($continuedChecks | Where-Object outcome -CEQ 'passed').Count -eq 9 -and
+            @($continuedChecks | Where-Object outcome -CEQ 'failed').Count -eq 1) 'The retained continuation must contain exactly nine passes and one default-Companion failure.'
+        for ($index = 0; $index -lt 10; $index++) {
+            $expectedOutcome = if ($index -eq 3) { 'failed' } else { 'passed' }
+            Require ($continuedChecks[$index].name -ceq $continuedNames[$index] -and
+                $continuedChecks[$index].outcome -ceq $expectedOutcome) 'A retained continuation outcome or exact stage order changed.'
+        }
+        Copy-Item -LiteralPath $continuedReports[0].FullName -Destination (Join-Path $existingEvidence 'prior-continuation-report.json')
+        $context.priorContinuationRevision = $continuationSource
+        $context.priorContinuationRunId = $continuationRunId
+        $context.priorContinuationRunAttempt = 1
+        $context.priorContinuationJobId = $continuationJobId
+        $context.priorContinuationJobConclusion = 'failure'
+        $context.priorContinuationArtifactId = $continuationArtifactId
+        $context.priorContinuationArtifactZipSha256 = $continuationArchiveHash
+        $context.priorContinuationReportSha256 = (Get-FileHash -LiteralPath $continuedReports[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $context.priorContinuationPassedChecks = 9
+        $context.priorContinuationFailedCheck = 'TogetherServer.CompanionChecks'
+        $context.retainedCompletedChecks = 26
+        $context.remainingCheck = 'TogetherServer.CompanionChecks'
+        $context.boundary = 'Exact seventeen original passes and nine continuation passes retained; both historical jobs remain failed. The current default CompanionChecks stage must still pass. HTTP/download/static proof only; no full native, physical-PC, WAN or real-game acceptance is claimed.'
+        $context.result = 'Seventeen original completed passes and nine later continuation passes retained. The original Shared Worlds failure and later default CompanionChecks failure remain recorded; default CompanionChecks still requires its focused pass. Full acceptance is not claimed.'
         $context | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $existingEvidence 'context.json') -Encoding utf8
         $context | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath (Join-Path $evidence 'context.json') -Encoding utf8
-        Write-Host 'RETAINED PARTIAL Existing evidence: 17 passed, 1 failed. Shared Worlds and all nine later stages still require successful continuation.'
+        Write-Host 'RETAINED PARTIAL Existing evidence: 17 original passes and 9 continuation passes; both historical failures remain recorded. Default CompanionChecks still requires a successful focused check.'
     }
     Write-Host "PASS static final candidate identity $candidateHash; twelve unaffected successful jobs and completed Desktop/pairing failures retained. Existing proof pending: $($context.priorExistingProofPending). No full acceptance claim."
 }

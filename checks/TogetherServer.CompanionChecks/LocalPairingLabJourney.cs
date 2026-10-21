@@ -853,10 +853,47 @@ internal static partial class CoreRemoteJourney
                 }
                 await Stage("lost-response-cleanup", async () =>
                 {
+                    var before = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
+                    LabRequire(before.Runs.All(run => run.State == "Offline" && run.ProcessId is null && run.RunOperationId is null),
+                        "CleanupFaultExistingManagedRun");
+                    var published = lanAddress is null ? null : Path.Combine(friendData, "shared-world-separate-published",
+                        profile.Id.ToString("N"), prepared!.BranchHash!);
+                    var sourceVersion = published is null ?
+                        (await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world")).Latest :
+                        FriendLink.ReadReceivedLatest(published);
+                    LabRequire(sourceVersion is not null && SharedWorldService.VerifySignature(sourceVersion) &&
+                        sourceVersion.ProfileId == profile.Id && sourceVersion.GroupId == signedRoster!.GroupId &&
+                        (published is null || preparedBranch is not null && SharedWorldSeparateCopyStore.Verify(preparedBranch) &&
+                            preparedBranch.Offer.Roster.OwnerPublicKey == signedRoster.OwnerPublicKey &&
+                            SharedWorldSeparateCopyStore.VerifyReceivedBranch(published, preparedBranch, sourceVersion)),
+                        "CleanupFaultSourceVersionUnverified");
                     var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
                     LabRequire(started.Ok, "CleanupFaultFixtureStartRejected");
-                    var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == profile.Id),
+                    // Normal owner Start can continue newer Friend progress in
+                    // a separate profile. Bind its one returned run to this world.
+                    var launched = started.Snapshot.Runs.Where(item => item.ProcessId is not null).ToArray();
+                    LabRequire(launched.Length == 1, "CleanupFaultStartedRunNotUnique");
+                    var startedProfile = started.Snapshot.Settings.Profiles.Single(item => item.Id == launched[0].ProfileId);
+                    LabRequire(startedProfile.Kind == GameKinds.Fixture && startedProfile.WorldId == sourceVersion.WorldId &&
+                        AppInstance.ContainsPath(hostData, startedProfile.WorldDirectory) &&
+                        (startedProfile.Id == profile.Id || startedProfile.SeparateCopySourceProfileId == profile.Id &&
+                            startedProfile.SeparateCopyBranchHash is { } hash && SharedWorldPeerTrust.ValidHash(hash) &&
+                            startedProfile.Id == SharedWorldBranchLiveSource.LocalProfileId(hash)), "CleanupFaultStartedProfileMismatch");
+                    if (startedProfile.Id != profile.Id)
+                    {
+                        var group = (await PairingLabGetAsync<WorldPeerGroupView[]>(owner, "/api/local/world-peers"))
+                            .Single(item => item.GroupKey == groupKey);
+                        LabRequire(group.SelfDeviceId == Guid.Empty && group.State.Root.ProfileId == profile.Id &&
+                            group.State.Root.GroupId == signedRoster!.GroupId && group.State.Root.OwnerPublicKey == signedRoster.OwnerPublicKey &&
+                            group.State.Branches.Any(item => item.DeviceId == Guid.Empty && item.PublicKey == signedRoster.OwnerPublicKey &&
+                                item.Authorized && !item.HasConflict && item.Branch.BranchHash == startedProfile.SeparateCopyBranchHash &&
+                                item.Branch.BaseVersionHash == sourceVersion.VersionHash && item.Branch.HeadVersionHash == sourceVersion.VersionHash),
+                            "CleanupFaultContinuationVersionMismatch");
+                    }
+                    var run = await WaitForFixtureIdentityAsync(launched[0],
                         () => PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot"));
+                    foreach (var file in sourceVersion.Files)
+                        SharedWorldService.VerifyFile(SharedWorldService.SafeChild(startedProfile.WorldDirectory, file.Path), file);
                     LabRequire(run.ProcessId is not null && run.RunOperationId is not null, "CleanupFaultFixtureIdentityMissing");
                     // Deliberately do not add this child to processes, just as when
                     // Start succeeds but its HTTP response never reaches tracking.
