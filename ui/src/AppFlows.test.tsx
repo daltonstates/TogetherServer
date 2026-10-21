@@ -61,9 +61,9 @@ vi.mock('./ServerChat', async () => {
 })
 vi.mock('./ServerLogViewer', async importOriginal => ({
   ...await importOriginal<typeof import('./ServerLogViewer')>(),
-  ServerLogViewer: ({ endpoint }: { endpoint: string }) => {
+  ServerLogViewer: ({ endpoint, compact, expectedRunId }: { endpoint: string; compact?: boolean; expectedRunId?: string }) => {
     if (transport.failures.logs) throw new Error('Synthetic pane failure')
-    return <section aria-label="Server logs" data-endpoint={endpoint}>Diagnostic records</section>
+    return <section aria-label={compact ? 'Startup console log' : 'Server logs'} data-endpoint={endpoint} data-expected-run={expectedRunId}>Diagnostic records</section>
   }
 }))
 vi.mock('./RecentSessions', () => ({ RecentSessions: ({ visible }: { visible: boolean }) => {
@@ -956,6 +956,21 @@ describe('Host task structure', () => {
     fireEvent.click(within(workspace).getByRole('button', { name: 'Stop server' }))
     expect(await screen.findByRole('dialog', { name: 'Stop Contract fixture?' })).toBeVisible()
     expect(transport.change.mock.calls.filter(([path]) => path.endsWith('/stop'))).toHaveLength(0)
+  })
+
+  it('shows this run’s console under startup and swaps to a single full log viewer on request', async () => {
+    host().settings.profiles[0].kind = 'Valheim'
+    host().runs[0].state = 'Starting'
+    host().runs[0].runOperationId = '22222222-2222-4222-8222-222222222222'
+    const workspace = await openHost()
+    const preview = within(workspace).getByRole('region', { name: 'Startup console log' })
+    expect(preview).toHaveAttribute('data-endpoint', `/api/local/profiles/${id}/logs`)
+    expect(preview).toHaveAttribute('data-expected-run', host().runs[0].runOperationId)
+    expect(within(workspace).getByRole('button', { name: 'Stop server' })).toBeEnabled()
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Open full logs' }))
+    expect(await within(workspace).findByRole('region', { name: 'Server logs' })).toHaveAttribute('data-endpoint', `/api/local/profiles/${id}/logs`)
+    expect(within(workspace).queryByRole('region', { name: 'Startup console log' })).not.toBeInTheDocument()
+    expectNoServerAction()
   })
 
   it('prepares an invite, shows its result next to the controls, copies it and can close the review', async () => {

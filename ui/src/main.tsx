@@ -2316,6 +2316,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                 onStop={() => void friendAction(profile.id, 'stop')}
                 onRefresh={() => void friendAction(profile.id, 'refresh')}
                 onOpenConnectionDoctor={openFriendConnectionDoctor}
+                onOpenLogs={() => selectJoinSection('logs')}
                 localHostingAction={profile.kind !== 'Custom' && <FriendLocalHosting key={`local-hosting-${connectionKey}`}
                   profileId={profile.id} connectionId={snapshot.connectionId} worldName={profile.name}
                   available
@@ -2508,6 +2509,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                     <Button className="secondary icon-button" aria-label="More server actions" title="More server actions" onClick={() => setServerToolsProfileId(profile.id)}><Icon name="more" /></Button>
                   </div>
                   <ServerStartupProgress {...status} requestPending={startPending}
+                    logEndpoint={['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) ? `/api/local/profiles/${profile.id}/logs` : undefined}
+                    showConsole={hostServerTab !== 'logs'}
                     onOpenLogs={['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) ? () => selectHostTab('logs') : undefined} />
                   {!startup && status && !['Offline', 'Ready'].includes(status.state) && !isPlayerCountObservationUnavailable(status) && <p className="server-progress" role="status">{status.detail}</p>}
                   {dirty && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or cancel setup changes first.</DismissibleNotice>}

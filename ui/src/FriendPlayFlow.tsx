@@ -154,6 +154,7 @@ export type FriendPlayFlowProps = {
   onStop?: () => void
   onRefresh?: () => void
   onOpenConnectionDoctor?: () => void
+  onOpenLogs?: () => void
   startNotice?: ReactNode
   localHostingAction?: ReactNode
   connectionDetails?: ReactNode
@@ -164,7 +165,7 @@ export type FriendPlayFlowProps = {
 
 // Compose the existing actions. No polling, implicit Start, query or game launch is added.
 export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction = null, nowMs, identityKey, onStart, onStop, onRefresh,
-  onOpenConnectionDoctor, startNotice, localHostingAction, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
+  onOpenConnectionDoctor, onOpenLogs, startNotice, localHostingAction, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
   const headingId = useId()
   const [notificationsOpened, setNotificationsOpened] = useState(false)
   const connection = friendConnectionExplanation(snapshot, nowMs)
@@ -195,7 +196,9 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
-    {permissions.currentAccess && currentProfile && <ServerStartupProgress {...startupState} host={false} />}
+    {permissions.currentAccess && currentProfile && <ServerStartupProgress key={`${snapshot.connectionId}:${currentProfile.id}`} {...startupState} host={false}
+      logEndpoint={permissions.actions.logs.available ? `/api/local/friend/${currentProfile.id}/logs` : undefined}
+      onOpenLogs={permissions.actions.logs.available ? onOpenLogs : undefined} />}
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}

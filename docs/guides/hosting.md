@@ -31,8 +31,10 @@ and the empty-server countdown remain visible while you browse.
 Starting shows a progress bar with **Launch server**, **Check game**, and
 **Ready** steps. It shows the current status while the game starts and clears
 when Ready arrives. The bar has no percentage because games do not report one.
-For supported games, **View startup logs** opens the Logs tab. You can still
-choose **Stop server** while waiting on this PC; the usual confirmation applies.
+For Valheim and Minecraft Java/Bedrock, a live **Console log** shows recent
+lines below the progress bar. Pause it or scroll back to read earlier output;
+**Open full logs** opens the Logs tab. You can still choose **Stop server**
+while waiting on this PC; the usual confirmation applies.
 
 | Tab | Use it for |
 | --- | --- |

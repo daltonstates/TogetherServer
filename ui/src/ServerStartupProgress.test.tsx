@@ -1,6 +1,11 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ServerStartupProgress } from './ServerStartupProgress'
+
+const startupRun = '22222222-2222-4222-8222-222222222222'
+const logPage = (runId: string, message: string) => ({ ok: true, code: 'LogAvailable', message: 'Recent console lines.',
+  sourceState: 'Active', runId: runId.replaceAll('-', ''), cursor: 'current-cursor', hasMore: false,
+  records: [{ timestampUtc: null, severity: 'Info', category: 'Server', stream: 'Server', message }] })
 
 describe('server startup progress', () => {
   it('keeps launch indeterminate, then shows the game check until canonical readiness arrives', () => {
@@ -44,7 +49,7 @@ describe('server startup progress', () => {
   it('opens logs only on an explicit click without moving focus when details update', () => {
     const openLogs = vi.fn()
     const view = render(<ServerStartupProgress state="Starting" detail="Checking the game." onOpenLogs={openLogs} />)
-    const logs = screen.getByRole('button', { name: 'View startup logs' })
+    const logs = screen.getByRole('button', { name: 'Open full logs' })
     logs.focus()
     view.rerender(<ServerStartupProgress state="Starting" detail="Still waiting for a game reply." onOpenLogs={openLogs} />)
     expect(logs).toHaveFocus()
@@ -52,5 +57,54 @@ describe('server startup progress', () => {
     expect(within(screen.getByRole('region', { name: 'Server startup' })).getByRole('status')).toHaveTextContent('Still waiting for a game reply.')
     fireEvent.click(logs)
     expect(openLogs).toHaveBeenCalledOnce()
+  })
+
+  it('starts the live console only for the launched run and removes it at Ready', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(logPage(startupRun, 'Loading the world…'))))
+    vi.stubGlobal('fetch', fetcher)
+    const endpoint = '/api/local/profiles/server/logs'
+    const view = render(<ServerStartupProgress state="Offline" requestPending logEndpoint={endpoint} runOperationId={startupRun} />)
+    expect(screen.getByText('Console output will appear once the server app starts.')).toBeInTheDocument()
+    expect(fetcher).not.toHaveBeenCalled()
+    view.rerender(<ServerStartupProgress state="Starting" logEndpoint={endpoint} runOperationId={startupRun} />)
+    expect(await screen.findByText('Loading the world…')).toBeVisible()
+    expect(fetcher).toHaveBeenCalledWith(`${endpoint}?limit=60`, expect.objectContaining({ headers: { 'X-TogetherServer-Local': '1' } }))
+    expect(screen.getByRole('log', { name: 'Startup console output' })).toHaveAttribute('aria-live', 'off')
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Filters' })).not.toBeInTheDocument()
+    view.rerender(<ServerStartupProgress state="Ready" logEndpoint={endpoint} runOperationId={startupRun} />)
+    expect(screen.queryByRole('log')).not.toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts an old run read and ignores its late result when a new startup uses the same endpoint', async () => {
+    let finishOld!: (response: Response) => void
+    let oldSignal!: AbortSignal
+    const nextRun = '33333333-3333-4333-8333-333333333333'
+    const fetcher = vi.fn((_path: string, init: RequestInit) => {
+      if (!finishOld) {
+        oldSignal = init.signal as AbortSignal
+        return new Promise<Response>(resolve => { finishOld = resolve })
+      }
+      return Promise.resolve(new Response(JSON.stringify(logPage(nextRun, 'Current server start'))))
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const view = render(<ServerStartupProgress state="Starting" logEndpoint="/logs" runOperationId={startupRun} />)
+    await waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+    view.rerender(<ServerStartupProgress state="Starting" logEndpoint="/logs" runOperationId={nextRun} />)
+    expect(await screen.findByText('Current server start')).toBeVisible()
+    expect(oldSignal.aborted).toBe(true)
+    await act(async () => { finishOld(new Response(JSON.stringify(logPage(startupRun, 'Previous server start')))) })
+    expect(screen.queryByText('Previous server start')).not.toBeInTheDocument()
+    expect(screen.getByText('Current server start')).toBeInTheDocument()
+  })
+
+  it('does not start a duplicate log reader while the full Logs tab is open', () => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    render(<ServerStartupProgress state="Starting" logEndpoint="/logs" runOperationId={startupRun} showConsole={false} />)
+    expect(screen.getByRole('progressbar')).toBeInTheDocument()
+    expect(screen.queryByRole('log')).not.toBeInTheDocument()
+    expect(fetcher).not.toHaveBeenCalled()
   })
 })

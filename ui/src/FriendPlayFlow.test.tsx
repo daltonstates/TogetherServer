@@ -239,6 +239,36 @@ describe('the composed play flow', () => {
     expect(stop).not.toHaveBeenCalled()
   })
 
+  it('reads startup console lines only with current assigned View logs access and Host support', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ ok: true, code: 'LogAvailable', message: 'Current console lines.',
+      sourceState: 'Active', runId: profile.runOperationId!.replaceAll('-', ''), cursor: 'cursor', hasMore: false,
+      records: [{ timestampUtc: null, severity: 'Info', category: 'Server', stream: 'Server', message: 'Friend startup output' }] })))
+    vi.stubGlobal('fetch', fetcher)
+    const starting = { ...profile, state: 'Starting' }
+    const openLogs = vi.fn()
+    const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [starting] }} profile={starting} nowMs={nowMs} onOpenLogs={openLogs} />)
+    expect(screen.queryByRole('log')).not.toBeInTheDocument()
+    expect(fetcher).not.toHaveBeenCalled()
+    const allowed = { ...starting, canViewLogs: true }
+    view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [allowed] }} profile={allowed} nowMs={nowMs} onOpenLogs={openLogs} />)
+    expect(await screen.findByText('Friend startup output')).toBeVisible()
+    expect(fetcher).toHaveBeenCalledWith(`/api/local/friend/${profile.id}/logs?limit=60`, expect.anything())
+    fireEvent.click(screen.getByRole('button', { name: 'Open full logs' }))
+    expect(openLogs).toHaveBeenCalledOnce()
+    for (const changed of [
+      { ...snapshot, profiles: [allowed], hostCapabilities: [] },
+      { ...snapshot, profiles: [starting] },
+      { ...snapshot, profiles: [allowed], state: 'Revoked', connectionCode: 'Revoked' },
+      { ...snapshot, profiles: [allowed], lastConnectedUtc: '2026-10-08T14:00:00Z' },
+      { ...snapshot, profiles: [] }
+    ]) {
+      view.rerender(<FriendPlayFlow snapshot={changed} profile={allowed} nowMs={nowMs} onOpenLogs={openLogs} />)
+      expect(screen.queryByRole('log')).not.toBeInTheDocument()
+      expect(screen.queryByText('Friend startup output')).not.toBeInTheDocument()
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
   it('does not offer an actionable Start through maintenance, denied permission or an active operation', () => {
     const onStart = vi.fn()
     const offline = { ...profile, state: 'Offline', maintenanceEnabled: true }

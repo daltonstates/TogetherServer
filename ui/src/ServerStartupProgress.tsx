@@ -1,6 +1,8 @@
 import { useId } from 'react'
 import { Button } from './Controls'
 import { Icon } from './Icon'
+import { PaneErrorBoundary } from './PaneErrorBoundary'
+import { ServerLogViewer } from './ServerLogViewer'
 import './ServerStartupProgress.css'
 
 type StartupState = {
@@ -17,10 +19,12 @@ export function serverStartupStage({ state, requestPending, playerObservationSou
   return null
 }
 
-export function ServerStartupProgress({ detail, host = true, onOpenLogs, ...state }: StartupState & {
+export function ServerStartupProgress({ detail, host = true, onOpenLogs, logEndpoint, showConsole = true, ...state }: StartupState & {
   detail?: string
   host?: boolean
   onOpenLogs?: () => void
+  logEndpoint?: string
+  showConsole?: boolean
 }) {
   const titleId = useId()
   const detailId = useId()
@@ -36,7 +40,7 @@ export function ServerStartupProgress({ detail, host = true, onOpenLogs, ...stat
   return <section className="server-startup" aria-label="Server startup">
     <div className="server-startup-heading">
       <div role="status" aria-atomic="true"><strong id={titleId}>{title}</strong><p id={detailId}>{explanation}</p></div>
-      {onOpenLogs && <Button className="text-button" onClick={onOpenLogs}><Icon name="logs" />View startup logs</Button>}
+      {onOpenLogs && <Button className="text-button" onClick={onOpenLogs}><Icon name="logs" />Open full logs</Button>}
     </div>
     <div className="server-startup-bar" role="progressbar" aria-labelledby={titleId} aria-describedby={detailId}
       aria-valuetext={title}><span /></div>
@@ -45,5 +49,11 @@ export function ServerStartupProgress({ detail, host = true, onOpenLogs, ...stat
         aria-current={index === currentStep ? 'step' : undefined}>
         <span aria-hidden="true">{index < currentStep ? <Icon name="check" size={14} /> : index + 1}</span>{step}
       </li>)}</ol>
+    {logEndpoint && showConsole && (stage === 'game' && state.runOperationId
+      ? <PaneErrorBoundary title="Startup console log" resetKey={`${logEndpoint}:${state.runOperationId}`}>
+        <ServerLogViewer key={`${logEndpoint}:${state.runOperationId}`} endpoint={logEndpoint} visible compact
+          expectedRunId={state.runOperationId} batchSize={60} historyLimit={60} />
+      </PaneErrorBoundary>
+      : <p className="server-startup-console-wait">Console output will appear once the server app starts.</p>)}
   </section>
 }

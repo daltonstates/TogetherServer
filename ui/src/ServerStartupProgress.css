@@ -20,3 +20,12 @@
 .server-startup-steps .current > span, .server-startup-steps .complete > span { border-color: var(--color-accent-border); color: var(--color-accent-text); }
 @keyframes server-startup-wait { from { transform: translateX(0); } to { transform: translateX(185%); } }
 @media (prefers-reduced-motion: reduce) { .server-startup-bar > span { animation: none; transform: translateX(90%); } }
+.server-startup-console-wait { margin: .75rem 0 0; color: var(--color-text-muted); font-size: .8125rem; }
+.server-log-preview .server-log-toolbar { flex-wrap: wrap; gap: .5rem; }
+.server-log-preview .server-log-heading strong { color: var(--color-text); font-size: .8125rem; }
+.server-log-preview .server-log-actions { flex-wrap: wrap; }
+.server-log-preview .server-log-actions .ui-button { min-height: 36px; }
+.server-log-preview .server-log-console { height: 10rem; max-height: 25vh; min-height: 5rem; }
+.server-log-preview .server-log-line { grid-template-columns: 5.5rem minmax(0, 1fr); min-width: 0; }
+.server-log-preview .server-log-line code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.server-log-preview .server-log-source { flex-wrap: wrap; }

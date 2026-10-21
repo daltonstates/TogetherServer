@@ -129,7 +129,7 @@ function displayTime(value: string | null) {
 }
 
 export function ServerLogViewer({ endpoint, visible, unsupported = null, loader = loadServerLogPage,
-  pollIntervalMs = 2500, batchSize = 100, historyLimit = 500, onNavigateIssue }: {
+  pollIntervalMs = 2500, batchSize = 100, historyLimit = 500, onNavigateIssue, compact = false, expectedRunId }: {
   endpoint: string
   visible: boolean
   unsupported?: ServerLogUnsupported | null
@@ -138,6 +138,8 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   batchSize?: number
   historyLimit?: number
   onNavigateIssue?: (destination: ServerLogIssueDestination) => void
+  compact?: boolean
+  expectedRunId?: string
 }) {
   const safeBatchSize = Math.max(1, Math.min(200, batchSize))
   const safeHistoryLimit = Math.max(1, Math.min(1000, historyLimit))
@@ -146,8 +148,8 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const [requestError, setRequestError] = useState('')
   const [paused, setPaused] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [filters, setFilters] = useState<ServerLogFilters>(readLogPreferences)
-  const [filterDraft, setFilterDraft] = useState<ServerLogFilters>(readLogPreferences)
+  const [filters, setFilters] = useState<ServerLogFilters>(() => compact ? { ...emptyFilters } : readLogPreferences())
+  const [filterDraft, setFilterDraft] = useState<ServerLogFilters>(() => compact ? { ...emptyFilters } : readLogPreferences())
   const [filtersExpanded, setFiltersExpanded] = useState(false)
   const filtersId = useId()
   const [onlyProblems, setOnlyProblems] = useState(false)
@@ -170,7 +172,8 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const requestControllerRef = useRef<AbortController | null>(null)
   const manualControllerRef = useRef<AbortController | null>(null)
   const filterKey = useMemo(() => JSON.stringify(filters), [filters])
-  const restartKey = `${endpoint}|${filterKey}|${unsupported?.code ?? ''}`
+  const expectedLogRunId = expectedRunId?.replaceAll('-', '').toLowerCase()
+  const restartKey = `${endpoint}|${filterKey}|${unsupported?.code ?? ''}|${expectedLogRunId ?? ''}`
 
   const rememberReadingPosition = useCallback(() => {
     const console = consoleRef.current
@@ -247,7 +250,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     setFollowLatest(true)
     setNewLineCount(0)
     setReadingLineExpired(false)
-  }, [endpoint, filterKey, unsupported?.code])
+  }, [endpoint, filterKey, unsupported?.code, expectedLogRunId])
 
   useEffect(() => () => {
     requestControllerRef.current?.abort()
@@ -294,6 +297,12 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     const read = async (allowCursorReset: boolean): Promise<void> => {
       const next = await loader(endpoint, { ...filters, cursor: cursorRef.current, limit: safeBatchSize }, controller.signal)
       if (controller.signal.aborted || generation !== generationRef.current) return
+      if (expectedLogRunId && (next.runId !== null && next.runId.toLowerCase() !== expectedLogRunId ||
+        next.ok && (next.runId === null || next.sourceState !== 'Active') || next.sourceState === 'Ended')) {
+        applyResult({ ok: false, code: 'StartupLogRunChanged', sourceState: 'Missing', runId: null,
+          message: 'Waiting for console output from this server start.', records: [], cursor: null, hasMore: false })
+        return
+      }
       if (next.code === 'InvalidLogCursor' && allowCursorReset) {
         cursorRef.current = null
         runIdRef.current = null
@@ -323,7 +332,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     })
     inFlightRef.current = tracked
     return tracked
-  }, [applyResult, endpoint, filters, loader, safeBatchSize])
+  }, [applyResult, endpoint, filters, loader, safeBatchSize, expectedLogRunId])
 
   const handleError = useCallback((error: unknown) => {
     if (error instanceof DOMException && error.name === 'AbortError') return
@@ -349,9 +358,9 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const visibleRecords = onlyProblems ? records.filter(record => serverLogProblem(record) !== null) : records
   const sourceMessage = <><strong>{stateLabel(sourceState, paused)}</strong><span>{message}</span></>
 
-  return <section ref={rootRef} className="server-log-viewer" aria-label="Server logs">
+  return <section ref={rootRef} className={`server-log-viewer${compact ? ' server-log-preview' : ''}`} aria-label={compact ? 'Startup console log' : 'Server logs'}>
     <div className="server-log-toolbar">
-      <div className="server-log-heading"><span className={`server-log-state state-${sourceState.toLocaleLowerCase()}`}>{stateLabel(sourceState, paused)}</span>
+      <div className="server-log-heading">{compact ? <strong>Console log</strong> : <span className={`server-log-state state-${sourceState.toLocaleLowerCase()}`}>{stateLabel(sourceState, paused)}</span>}
         <small>{visibleRecords.length} of {onlyProblems ? records.length : safeHistoryLimit} lines shown{result?.hasMore ? ' · more available' : ''}</small></div>
       <div className="server-log-actions"><Button className="secondary" disabled={!!unsupported} onClick={() => setPaused(value => !value)}>{paused ? <><Icon name="play" />Resume</> : <><Icon name="stop" />Pause</>}</Button>
         <Button className="secondary" aria-pressed={followLatest} onClick={() => {
@@ -360,7 +369,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
         }}>Follow latest</Button>
         <Button className="secondary" disabled={loading || !!unsupported || !visible} onClick={manualRefresh}>{loading ? <><Icon name="loader" />Refreshing</> : <><Icon name="refresh" />Refresh</>}</Button></div>
     </div>
-    <Button className="secondary server-log-filter-toggle" aria-expanded={filtersExpanded} aria-controls={filtersId}
+    {!compact && <><Button className="secondary server-log-filter-toggle" aria-expanded={filtersExpanded} aria-controls={filtersId}
       onClick={() => setFiltersExpanded(value => !value)}><Icon name="search" />Filters
       {(filters.severity || filters.category || filters.contains || onlyProblems) && <span className="status neutral">Active</span>}
       <Icon name={filtersExpanded ? 'chevronDown' : 'chevronRight'} /></Button>
@@ -380,13 +389,13 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
       <Button type="button" className={onlyProblems ? '' : 'secondary'} aria-pressed={onlyProblems}
         onClick={() => setOnlyProblems(value => !value)}>Likely problems</Button>
       <Button className="text-button" disabled={!filters.severity && !filters.category && !filters.contains && !filterDraft.severity && !filterDraft.category && !filterDraft.contains} onClick={() => { setFilterDraft(emptyFilters); setFilters(emptyFilters); saveLogPreferences(emptyFilters) }}>Clear</Button>
-    </form>
+    </form></>}
     {unsupported || requestError || result?.ok === false
       ? <DismissibleNotice className={`server-log-source state-${sourceState.toLocaleLowerCase()}`} role="status" scope={endpoint} noticeKey={message}>{sourceMessage}</DismissibleNotice>
       : <div className={`server-log-source state-${sourceState.toLocaleLowerCase()}`} role="status">{sourceMessage}</div>}
     {!followLatest && <div className="server-log-reading" role="status"><span>{newLineCount > 0 ? `${newLineCount}${newLineCount === 1000 ? '+' : ''} new line${newLineCount === 1 ? '' : 's'}` : 'Reading earlier lines'}{readingLineExpired ? ' · The line you were reading is no longer in the loaded view.' : ''}</span>
       <Button className="secondary" onClick={jumpToLatest}>Jump to latest</Button></div>}
-    <div ref={consoleRef} className="server-log-console" role="log" aria-live="off" aria-label="Server log console"
+    <div ref={consoleRef} className="server-log-console" role="log" aria-live="off" aria-label={compact ? 'Startup console output' : 'Server log console'} tabIndex={0}
       onScroll={event => {
         const console = event.currentTarget
         const restoredScrollTop = restoredScrollTopRef.current
@@ -405,13 +414,13 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
         }
       }}>
       {visibleRecords.map(record => <div className={`server-log-line severity-${record.severity.toLocaleLowerCase()}${serverLogProblem(record) ? ' likely-problem' : ''}`} key={record.localSequence} data-log-sequence={record.localSequence}>
-        <time dateTime={record.timestampUtc ?? undefined}>{displayTime(record.timestampUtc)}</time><span className="server-log-severity">{record.severity}</span><span className="server-log-category">{record.category}</span><code>{record.message}</code>
-        {serverLogIssueDestination(record) && (onNavigateIssue ? <Button className="text-button server-log-problem-label"
+        <time dateTime={record.timestampUtc ?? undefined}>{displayTime(record.timestampUtc)}</time>{!compact && <><span className="server-log-severity">{record.severity}</span><span className="server-log-category">{record.category}</span></>}<code>{record.message}</code>
+        {!compact && serverLogIssueDestination(record) && (onNavigateIssue ? <Button className="text-button server-log-problem-label"
           onClick={() => onNavigateIssue(serverLogIssueDestination(record)!)}>{serverLogProblem(record)} · {issueActions[serverLogIssueDestination(record)!]}</Button> :
           <small className="server-log-problem-label">{serverLogProblem(record)} · {issueActions[serverLogIssueDestination(record)!]}</small>)}
       </div>)}
       {visibleRecords.length === 0 && <div className="server-log-empty">{onlyProblems && records.length > 0 ? 'No likely startup, settings, or add-on problems in the loaded lines.' : sourceState === 'Active' ? 'No matching complete lines yet.' : sourceState === 'Loading' ? 'Loading recent lines…' : 'No logs are available right now.'}</div>}
     </div>
-    <p className="server-log-disclaimer">This log view helps explain problems. It does not control server status, player counts, or shutdown.</p>
+    {!compact && <p className="server-log-disclaimer">This log view helps explain problems. It does not control server status, player counts, or shutdown.</p>}
   </section>
 }

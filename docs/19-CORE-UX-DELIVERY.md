@@ -113,3 +113,45 @@ size warning before publish; the final UI build and publish passed using
 native exit-code checks. No app was launched, installed or replaced. Native,
 real-game and Friend-network acceptance remain unrun; this is a local build,
 with no tag or public release.
+
+### Live startup console (2026-10-21)
+
+The startup panel now includes the latest 60 console lines for Valheim,
+Minecraft Java and Minecraft Bedrock, using the existing sanitized log API
+and single-flight viewer. Pause/Resume, Follow latest and Refresh remain
+available, and Open full logs navigates to the existing Logs tab. The preview
+stops reading while that full viewer is open. A keyboard-scrollable, wrapping
+console keeps long lines and bounded history within the startup panel. Output
+does not announce every line or move focus. The full viewer retains filters;
+startup always begins unfiltered and never overwrites those preferences.
+
+Preview reads begin only after the canonical snapshot identifies the managed
+run. The viewer normalizes the snapshot GUID to the log API's exact run ID
+and refuses another run or an archived source. A new run remounts the reader,
+aborts the old request and ignores late replies. Ready removes the startup
+panel and its reader; old retained logs cannot appear during the launch request.
+An isolated pane failure leaves progress and lifecycle controls usable.
+
+Friend preview and full-log navigation require current authenticated access,
+assignment, the exact View logs grant, an existing supported driver and the
+Host capability. Removed, revoked, stale or unsupported access unmounts the
+preview. Remote controls being paused does not remove an independent log grant.
+No API, log permission, console attachment, command, readiness/count parser,
+Stop policy or real game file changes. Logs remain display information only.
+
+PASS all 1,361 UI tests in 106 files, including real viewer/proxy requests,
+exact-run/archived-source rejection, late reply cancellation, unfiltered
+bounded text rendering, Friend permission/capability/access changes and
+navigation without duplicate readers. The first shell case used a legacy
+fixture without a run ID; adding the exact run ID corrected that fixture,
+and the focused retry and complete final suite passed.
+
+PASS `scripts/verify-code-only.ps1`, including TypeScript, lint, locked
+dependencies, solution compilation with zero warnings/errors, source/synthetic
+checks, whitespace and diagnostic isolation. PASS the production UI bundle;
+Vite retains its existing large-chunk warning. Synthetic source-link subcases
+remain skipped because the account cannot create symbolic links.
+
+Native/WebView viewport, real-game and separate-PC checks remain unrun.
+Validation preserved the active desktop; no app, browser, listener or game
+was launched and the running production app remains untouched.

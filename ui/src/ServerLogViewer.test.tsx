@@ -23,6 +23,46 @@ afterEach(() => {
 })
 
 describe('ServerLogViewer', () => {
+  it('shows bounded unfiltered startup output as text without changing saved full-log filters', async () => {
+    saveLogPreferences({ severity: 'Error', category: 'Lifecycle', contains: '' })
+    const write = vi.spyOn(Storage.prototype, 'setItem')
+    const loader = vi.fn<ServerLogLoader>().mockResolvedValue(result('a'.repeat(32), [
+      record('old line'), record('<img src=x onerror=run()>'), record('Current startup line')
+    ], 'cursor'))
+    render(<ServerLogViewer endpoint="/logs" visible compact expectedRunId={'a'.repeat(32)} loader={loader} historyLimit={2} />)
+    expect(await screen.findByText('Current startup line')).toBeVisible()
+    expect(screen.getByRole('log')).toHaveTextContent('<img src=x onerror=run()>')
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.queryByText('old line')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Filters' })).not.toBeInTheDocument()
+    expect(loader.mock.calls[0][1]).toMatchObject({ severity: '', category: '', contains: '' })
+    expect(write).not.toHaveBeenCalled()
+    expect(readLogPreferences().severity).toBe('Error')
+  })
+
+  it('refuses another run or an archived log in a startup console, then accepts the expected active run', async () => {
+    vi.useFakeTimers()
+    const run = '22222222-2222-4222-8222-222222222222'
+    const runId = run.replaceAll('-', '')
+    const loader = vi.fn<ServerLogLoader>()
+      .mockResolvedValueOnce(result('a'.repeat(32), [record('Other run output')], 'other', 'Ended'))
+      .mockResolvedValueOnce(result(runId, [record('Archived output')], 'ended', 'Ended'))
+      .mockResolvedValueOnce(result(runId, [record('Current run output')], 'current'))
+      .mockResolvedValueOnce(result('b'.repeat(32), [record('Replacement output')], 'replacement'))
+    render(<ServerLogViewer endpoint="/logs" visible compact expectedRunId={run} loader={loader} pollIntervalMs={1000} />)
+    await flush()
+    expect(screen.getByText('Waiting for console output from this server start.')).toBeInTheDocument()
+    expect(screen.queryByText('Other run output')).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.queryByText('Archived output')).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText('Current run output')).toBeInTheDocument()
+    expect(loader.mock.calls[2][1].cursor).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.queryByText('Current run output')).not.toBeInTheDocument()
+    expect(screen.queryByText('Replacement output')).not.toBeInTheDocument()
+  })
+
   it('keeps unfinished filters when their compact controls are collapsed without issuing a request', async () => {
     const loader = vi.fn<ServerLogLoader>().mockResolvedValue(result('a'.repeat(32), [record('latest line')], 'cursor'))
     render(<ServerLogViewer endpoint="/logs" visible loader={loader} />)

@@ -11,6 +11,8 @@
 3. Open the assigned server. Check **Game requirements** before playing.
 4. If allowed, request **Start**. The startup bar shows the launch and game-check
    steps while you wait for the server to report **Ready**.
+   For supported games, console lines appear below it when the Host has granted
+   **View logs**. **Open full logs** opens the complete log viewer.
    Use the connection details and the game's own join screen to connect.
 
 Keep TogetherServer running while using Friend controls. A code initially
