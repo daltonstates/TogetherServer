@@ -579,11 +579,13 @@ await Check("storage v1 migrates pairing to v3 and rejects downgrade or newer sc
     return Task.CompletedTask;
 });
 
-await Check("shared roster separates grants, proves PC key, and rejects rollback or tampering", () =>
+await Check("legacy shared roster separates grants, proves PC key, and rejects rollback or tampering", () =>
 {
     using var data = Data("shared-governance");
     var profile = Profile("governance", "world", FreePort());
-    profile.SharedSavesEnabled = true;
+    // Independent legacy roles are editable only while the global hosting
+    // policy is off. Start/Stop/log access must not grant these roles.
+    profile.SharedSavesEnabled = false;
     data.SaveSettings(Settings(profile));
     var deviceId = Guid.NewGuid();
     var inviteGeneration = Guid.NewGuid();
@@ -1149,7 +1151,7 @@ await Check("companion roster revisions use bounded TestServer pages", async () 
     var pairing = new PairingService(data);
     var manager = new HostManager(data, Games(data));
     var roster = await manager.PublishSharedWorldRosterAsync(profile.Id,
-        [new(deviceId, devicePublic, new(Receive: true), false)]);
+        pairing.SharedRosterMembers(profile.Id));
     pairing.ConfirmSharedRosterPublished(profile.Id, roster);
     var chain = new SharedWorldRosterChainStore(data);
     chain.Append(roster, roster.OwnerPublicKey);
@@ -1454,9 +1456,9 @@ await Check("owner edit preserves a delegated revoke across repair and restart",
     var delegatePublic = Convert.ToBase64String(delegateKey.ExportSubjectPublicKeyInfo());
     var local = new SharedWorldRosterMember[]
     {
-        new(delegateId, delegatePublic, new(ManageSharing: true), false),
-        new(aId, Convert.ToBase64String(aKey.ExportSubjectPublicKeyInfo()), new(Receive: true), false),
-        new(bId, Convert.ToBase64String(bKey.ExportSubjectPublicKeyInfo()), new(), false)
+        new(delegateId, delegatePublic, new(Receive: true, EligibleHost: true, Reshare: true, ManageSharing: true), false),
+        new(aId, Convert.ToBase64String(aKey.ExportSubjectPublicKeyInfo()), new(Receive: true, EligibleHost: true, Reshare: true), false),
+        new(bId, Convert.ToBase64String(bKey.ExportSubjectPublicKeyInfo()), new(Receive: true, EligibleHost: true, Reshare: true), false)
     };
     var root = await manager.PublishSharedWorldRosterAsync(profile.Id, local);
     var draft = root with
@@ -1495,14 +1497,16 @@ await Check("owner edit preserves a delegated revoke across repair and restart",
         Code = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)) }]
     });
     var pairing = new PairingService(data);
-    var editedB = pairing.SetSharedWorldGrants(bId, profile.Id, new(Receive: true));
+    var editedB = pairing.SetSharedWorldGrants(bId, profile.Id,
+        new(Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: true));
     Require(editedB.Ok, "owner could not edit B's local grant: " + editedB.Code);
     var ownerLocal = pairing.SharedRosterMembers(profile.Id);
     var ownerB = await manager.PublishSharedWorldRosterAsync(profile.Id, ownerLocal,
         ownerEdit: new(bId, Grants: ownerLocal.Single(item => item.DeviceId == bId).Grants));
     pairing.ConfirmSharedRosterPublished(profile.Id, ownerB);
     Require(ownerB.Members.Single(item => item.DeviceId == aId).Revoked &&
-        ownerB.Members.Single(item => item.DeviceId == bId).Grants.Receive,
+        ownerB.Members.Single(item => item.DeviceId == bId).Grants is
+        { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: true },
         "editing B silently restored A's delegated revoke");
     var restarted = new HostManager(data, games);
     var restartedPairing = new PairingService(data);
@@ -1833,7 +1837,10 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
     using var voterData = Data("voter-history-friend");
     var profile = Profile("voter-history", "voter-history-world", FreePort());
     profile.Kind = "Fixture";
-    profile.SharedSavesEnabled = true;
+    // This is historical voter-only compatibility data. The current ON
+    // policy gives every approved assigned PC all three core hosting grants,
+    // so keep it OFF while checking legacy roles and read-only history.
+    profile.SharedSavesEnabled = false;
     var companionPort = 51389;
     var address = $"https://127.0.0.1:{companionPort}";
     var settings = Settings(profile);
@@ -1894,15 +1901,11 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
         }]
     });
     var pairing = new PairingService(hostData);
-    var manager = new HostManager(hostData, Games(hostData));
-    if (pairing.SharedRosterDirty(profile.Id))
-    {
-        var initial = await manager.PublishSharedWorldRosterAsync(profile.Id,
-            pairing.SharedRosterMembers(profile.Id));
-        pairing.ConfirmSharedRosterPublished(profile.Id, initial);
-    }
-    var rootRoster = await manager.SharedWorldRosterAsync(profile.Id)
-        ?? throw new Exception("owner root roster was unavailable");
+    var manager = new HostManager(hostData, Games(hostData), TimeProvider.System,
+        new NullHostingPowerGuard(), pairing: pairing);
+    var historicalShares = new SharedWorldService(hostData, new WorldBackupService(hostData, TimeProvider.System));
+    var rootRoster = historicalShares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    pairing.ConfirmSharedRosterPublished(profile.Id, rootRoster);
     var delegatePublicKey = Convert.ToBase64String(delegateKey.ExportSubjectPublicKeyInfo());
     var delegatedDraft = rootRoster with
     {
@@ -1921,8 +1924,15 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
         Signature = Convert.ToBase64String(
         delegateKey.SignData(SharedWorldRosterTrust.Basis(delegatedDraft), HashAlgorithmName.SHA256))
     };
-    var publishedRoster = await manager.PublishDelegatedRosterAsync(profile.Id,
-        delegateId, delegatePublicKey, delegated);
+    // Load a signed legacy chain directly. The current Host management route
+    // correctly requires ON and is covered by the ordinary hosting checks.
+    Require(SharedWorldRosterTrust.VerifyRevision(delegated, rootRoster,
+        rootRoster.OwnerPublicKey, DateTimeOffset.UtcNow, true),
+        "the historical delegated change exceeded its signed authority");
+    var historicalChain = new SharedWorldRosterChainStore(hostData);
+    historicalChain.Append(rootRoster, rootRoster.OwnerPublicKey);
+    var publishedRoster = historicalShares.CountersignDelegatedRoster(delegated, DateTimeOffset.UtcNow);
+    historicalChain.Append(publishedRoster, rootRoster.OwnerPublicKey);
     Require(publishedRoster.Schema == 3 && publishedRoster.Signature == delegated.Signature &&
         publishedRoster.HostAcceptanceSignature is not null,
         "schema-3 delegated roster did not retain Host-attested authority");
@@ -1985,20 +1995,40 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
             rosterHistory?.Any(item => item.Signature == publishedRoster.Signature) == true &&
             voterGrants.RecoveryVoter && !voterGrants.Receive && !voterGrants.EligibleHost,
             "voter-only identity did not retain schema-3 delegated membership");
+        // Enrollment applied the current OFF policy. Restore only the exact
+        // legacy candidate role needed to verify this historical authority;
+        // the voter remains unable to receive or host saves.
+        var historicalCandidateGrants = new SharedWorldGrants(Receive: true, EligibleHost: true, RecoveryVoter: true);
+        Require(pairing.SetSharedWorldGrants(candidateId, profile.Id, historicalCandidateGrants).Ok,
+            "the historical candidate grant could not be loaded");
+        roster = historicalShares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id),
+            ownerEdit: new(candidateId, Grants: historicalCandidateGrants));
+        pairing.ConfirmSharedRosterPublished(profile.Id, roster);
+        Require(roster.Members.Single(member => member.DeviceId == deviceId).Grants is
+        { Receive: false, EligibleHost: false, Reshare: false, RecoveryVoter: true },
+            "loading the historical candidate granted the voter transfer or hosting rights");
         var backups = new WorldBackupService(hostData, TimeProvider.System);
-        var shares = new SharedWorldService(hostData, backups);
+        using var historicalSigner = ECDsa.Create();
+        historicalSigner.ImportPkcs8PrivateKey(hostData.LoadProtected("shared-world-signing-key.protected")!, out _);
+        SharedWorldVersion HistoricalVersion(Guid backupId, long number, string? parentHash)
+        {
+            // Preserve verified backup hashes in synthetic archived manifests;
+            // do not publish a new shared save while the current policy is OFF.
+            var capture = new PostStopBackupCaptureAdapter(backups).ReadVerified(profile, backupId);
+            return SharedWorldService.SignVersion(new(4, roster.GroupId, number, parentHash, profile.Id,
+                profile.Kind, profile.WorldId, capture.CapturedUtc, capture.Kind, backupId,
+                new(profile.GamePort, false, "Fixture", [], []), capture.Files, "", "", ""), historicalSigner);
+        }
         File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first signed version");
         var firstBackup = backups.Create(profile, BackupKinds.Rolling);
         Require(firstBackup.Ok && firstBackup.Backup is not null,
             "first disposable owner backup was unavailable");
-        var firstVersion = shares.PublishAfterStop(profile, firstBackup.Backup!.Id).Version
-            ?? throw new Exception("first disposable owner version was unavailable");
+        var firstVersion = HistoricalVersion(firstBackup.Backup!.Id, 1, null);
         File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second signed version");
         var secondBackup = backups.Create(profile, BackupKinds.Rolling);
         Require(secondBackup.Ok && secondBackup.Backup is not null,
             "second disposable owner backup was unavailable");
-        var secondVersion = shares.PublishAfterStop(profile, secondBackup.Backup!.Id).Version
-            ?? throw new Exception("second disposable owner version was unavailable");
+        var secondVersion = HistoricalVersion(secondBackup.Backup!.Id, 2, firstVersion.VersionHash);
         var candidatePublicKey = Convert.ToBase64String(candidateKey.ExportSubjectPublicKeyInfo());
         var proposalDraft = new WorldAuthorityProposal(1, roster.GroupId, profile.Id, 1, null,
             WorldAuthorityTrust.RosterHash(roster), secondVersion.VersionHash, candidatePublicKey,
@@ -2042,9 +2072,11 @@ await Check("schema-3 delegated voter-only review verifies fenced multi-version 
         WorldHistoryReviewResult reviewed = new(false, "Pending", "");
         for (var attempt = 0; attempt < 3 && !reviewed.Ok; attempt++)
             reviewed = await voter.ReviewSharedHistoryAsync(profile.Id);
+        var reviewedConfiguration = JsonSerializer.Deserialize<FriendConfiguration>(
+            voterData.LoadProtected("friend.protected")!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         Require(reviewed.Ok && reviewed.RecordCount == 1 &&
             new WorldAuthorityStore(voterData).Read(profile.Id).Single().RecordHash == record.RecordHash &&
-            saved.ConsentedSharedWorldProfiles.Count == 0,
+            reviewedConfiguration.ConsentedSharedWorldProfiles.Count == 0,
             "first-time voter did not verify the fenced Host's two-version proof without save consent: " +
             reviewed.Code);
         using var client = Client();
@@ -3877,10 +3909,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-    {
-        Name: "fixturemod", Version: "1.0.0",
-        RequiredGameVersion: "2.0", Type: "Factorio mod"
-    }],
+        {
+            Name: "fixturemod", Version: "1.0.0",
+            RequiredGameVersion: "2.0", Type: "Factorio mod"
+        }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");
@@ -4808,6 +4840,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     var successorId = Guid.NewGuid();
     var routeObserverId = Guid.NewGuid();
     var successorKey = Convert.ToBase64String(successor.ExportSubjectPublicKeyInfo());
+    data.SaveSettings(Settings(profile));
     data.SavePairingState(new PairingPersistentState
     {
         Devices = [new PairedDevice
@@ -4834,6 +4867,7 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "handoff fixture settings failed");
     var shares = new SharedWorldService(data, new WorldBackupService(data, TimeProvider.System));
     var roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
+    pairing.ConfirmSharedRosterPublished(profile.Id, roster);
     var requestId = Guid.Empty;
     var sourceIdentity = "";
     WorldPeerContactCard SuccessorContact()
@@ -4858,8 +4892,9 @@ await Check("planned handoff requires exact final save receipt before durable ol
     }
     async Task RequestAndPrepareAsync()
     {
-        Require((await manager.RequestPlannedHandoffAsync(profile.Id, successorId)).Ok,
-            "the owner could not request the selected paired PC");
+        var requested = await manager.RequestPlannedHandoffAsync(profile.Id, successorId);
+        Require(requested.Ok,
+            "the owner could not request the selected paired PC: " + requested.Code);
         var current = await manager.PlannedHandoffStatusAsync(profile.Id);
         Require(current is { RequestId: not null, Source: not null, RecipientState: "Requested" },
             "the recipient did not receive exact request-bound preliminary setup metadata");
@@ -4936,9 +4971,8 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
     { Code: "ReadyToComplete", ReceiptConfirmed: true, CanComplete: true, CanCancel: true },
         "owner status did not expose exact signed receipt readiness");
-    Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
-        new SharedWorldGrants(Receive: false, EligibleHost: false)).Ok,
-        "successor grant withdrawal failed");
+    Require(pairing.SetServerAccess(successorId, [], null, [profile.Id]).Ok,
+        "successor assignment withdrawal failed");
     Require((await manager.ContinuePlannedHandoffAsync(profile.Id, requestId)).Code ==
         "SuccessorAccessChanged" && !new WorldAuthorityStore(data).HasState(profile.Id) &&
         (await manager.StartAsync(profile.Id)).Code == "PlannedHandoffPending",
@@ -4954,9 +4988,8 @@ await Check("planned handoff requires exact final save receipt before durable ol
     Require(await manager.PlannedHandoffStatusAsync(profile.Id) is
     { Pending: false, RecipientState: "Canceled", CanComplete: false },
         "cancelled handoff remained pending in owner status");
-    Require(pairing.SetSharedWorldGrants(successorId, profile.Id,
-        new SharedWorldGrants(Receive: true, EligibleHost: true)).Ok,
-        "successor grants could not be restored for retry");
+    Require(pairing.SetServerAccess(successorId, [profile.Id], null, [profile.Id]).Ok,
+        "successor assignment could not be restored for retry");
     roster = shares.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
     pairing.ConfirmSharedRosterPublished(profile.Id, roster);
     Require((await manager.StartAsync(profile.Id)).Ok,

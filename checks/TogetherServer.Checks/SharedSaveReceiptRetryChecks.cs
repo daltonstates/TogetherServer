@@ -55,8 +55,11 @@ internal static class SharedSaveReceiptRetryChecks
         var pairing = new PairingService(host);
         var manager = new HostManager(host, games);
         var roster = await manager.PublishSharedWorldRosterAsync(profile.Id,
-            [new(deviceId, publicKey, new(Receive: true, EligibleHost: true), false)]);
+            pairing.SharedRosterMembers(profile.Id));
         pairing.ConfirmSharedRosterPublished(profile.Id, roster);
+        Require(roster.Members.Single(member => member.DeviceId == deviceId).Grants is
+        { Receive: true, EligibleHost: true, Reshare: true },
+            "the retained-copy retry did not use the server's current automatic hosting grants");
         var backups = new WorldBackupService(host, TimeProvider.System);
         var backup = backups.Create(profile, BackupKinds.Rolling);
         Require(backup.Ok && backup.Backup is not null, "disposable backup failed");

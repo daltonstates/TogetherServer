@@ -408,7 +408,12 @@ internal static partial class CoreRemoteJourney
 
                 await Stage("guided-hosting", async () =>
                 {
-                    prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
+                    // Preparation repeats peer/save checks and may check the
+                    // incoming route. Match the UI's bounded operation budget,
+                    // keeping ordinary status requests on their shorter client.
+                    using var prepareClient = LocalClient(friendPort);
+                    prepareClient.Timeout = TimeSpan.FromSeconds(120);
+                    prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                         new(true, true, ServerFile: Path.GetFullPath(fixturePath)));
                     LabRequire(prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
@@ -426,7 +431,7 @@ internal static partial class CoreRemoteJourney
                         LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
                             new(CompanionListeningEnabled: true))).Ok, "CandidateListenerRejected");
                         LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerRestoreRejected");
-                        prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
+                        prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                             $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                             new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
                         LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId == exactLocalProfile &&
@@ -439,7 +444,9 @@ internal static partial class CoreRemoteJourney
                             preparedBranch.CandidatePublicKey == signedRoster.Members.Single(member => member.DeviceId == deviceA).PublicKey,
                             "PreparedCandidateBranchNotAuthorized");
                     }
-                    var result = await PostAsync<object, JsonElement>(first,
+                    using var startClient = LocalClient(friendPort);
+                    startClient.Timeout = TimeSpan.FromSeconds(30);
+                    var result = await PostAsync<object, JsonElement>(startClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
                         {
                             localProfileId = exactLocalProfile,

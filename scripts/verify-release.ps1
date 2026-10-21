@@ -1,5 +1,6 @@
 param(
     [string]$AppPath = '',
+    [ValidatePattern('^$|^[0-9a-f]{40}$')][string]$CandidateSourceRevision = '',
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
@@ -79,6 +80,7 @@ function Write-NewConsoleCheckResult([ValidateSet('minecraft-checks', 'terraria-
 
 Push-Location $repository
 try {
+    if ($Build -and $CandidateSourceRevision) { throw 'An earlier immutable candidate cannot be rebuilt during continuation.' }
     if ($Build -and $AppPath) { throw 'Use either -Build or -AppPath, not both.' }
     if ($Build) {
         Invoke-Checked 'Build release candidate' { & (Join-Path $PSScriptRoot 'build.ps1') -ReleaseName release-candidate }
@@ -103,9 +105,17 @@ try {
         $actualVersion.Revision -ne [Math]::Max(0, $expectedFileVersion.Revision)) {
         throw "Candidate file version $actualVersion does not match project version $expectedVersion."
     }
-    $sourceRevision = (git rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch '^[0-9a-f]{40}$') {
+    $verificationRevision = (git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $verificationRevision -notmatch '^[0-9a-f]{40}$') {
         throw 'Could not resolve the Git source revision.'
+    }
+    $sourceRevision = $verificationRevision
+    if ($CandidateSourceRevision) {
+        git merge-base --is-ancestor $CandidateSourceRevision HEAD
+        if ($LASTEXITCODE -ne 0) { throw 'Candidate source must be an ancestor of the verification source.' }
+        git diff --exit-code $CandidateSourceRevision HEAD -- src ui installer global.json Directory.Build.props Directory.Build.targets
+        if ($LASTEXITCODE -ne 0) { throw 'Product or build inputs changed after the immutable candidate.' }
+        $sourceRevision = $CandidateSourceRevision
     }
     $expectedSourceIdentity = "$expectedVersion+$sourceRevision"
     if ($fileInfo.ProductVersion -ne $expectedSourceIdentity) {
@@ -120,7 +130,7 @@ try {
     Write-Host "Source identity: $($fileInfo.ProductVersion)"
     Write-Host "SHA-256: $candidateHash"
     Write-Host "Authenticode: $($signature.Status)"
-    $candidateIdentity = @{ sourceRevision = $sourceRevision; productVersion = $fileInfo.ProductVersion;
+    $candidateIdentity = @{ sourceRevision = $sourceRevision; verificationRevision = $verificationRevision; productVersion = $fileInfo.ProductVersion;
         sha256 = $candidateHash; authenticode = [string]$signature.Status }
 
     Invoke-Checked 'Git whitespace check' {
