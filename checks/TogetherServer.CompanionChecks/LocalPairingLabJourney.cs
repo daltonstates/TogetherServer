@@ -775,7 +775,11 @@ internal static partial class CoreRemoteJourney
                             () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
                         LabRequire(restored.Runs.All(run => run.ProcessId is null && run.RunOperationId is null), "RestartPollingStartedPreparedGame");
                         var oldSession = candidateSessionId;
-                        var started = await ObserveAsync("StartCandidate", first, () => PostAsync<object, ActionResult>(first,
+                        // Host Start repeats valid peer/save checks and can wait
+                        // behind sync. Allow a bounded lab operation, once only.
+                        using var restartStartClient = LocalClient(friendPort);
+                        restartStartClient.Timeout = TimeSpan.FromSeconds(120);
+                        var started = await ObserveAsync("StartCandidate", restartStartClient, () => PostAsync<object, ActionResult>(restartStartClient,
                             $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared.BranchHash, acceptSplitWarning = true }));
                         LabRequire(started.Ok, "RestartExplicitCandidateStartRejected");
                         var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId),

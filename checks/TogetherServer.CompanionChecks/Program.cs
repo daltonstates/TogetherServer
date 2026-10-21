@@ -929,16 +929,13 @@ try
     var collisionMembership = System.Text.Encoding.UTF8.GetBytes("legitimate world membership.json payload");
     File.WriteAllBytes(Path.Combine(world, "version.json"), collisionVersion);
     File.WriteAllBytes(Path.Combine(world, "membership.json"), collisionMembership);
-    Require((await OwnerPost<object, ActionResult>(owner,
-        $"/api/local/profiles/{profile.Id}/start", new { })).Ok,
-        "shared-world fixture start failed");
-    Require((await OwnerPost<object, ActionResult>(owner,
-        $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
-        "shared-world fixture graceful Stop failed");
+    var sharedStop = await StartAndStopSharedFixtureAsync(owner, profile.Id);
     var publishedShared = await OwnerGetJson<SharedWorldStatus>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world");
-    Require(publishedShared.Enabled && publishedShared.Latest is { Number: 1 },
-        "Host did not publish a signed post-Stop version");
+    var firstPublished = publishedShared.Enabled && publishedShared.Latest is { Number: 1 } firstPublishedVersion &&
+        firstPublishedVersion.CaptureKind == SharedWorldCaptureKinds.PostStopBackup && SharedWorldService.VerifySignature(firstPublishedVersion);
+    Require(firstPublished, "Host did not publish a signed post-Stop version" +
+        (firstPublished ? "" : await SharedPublicationDiagnosticAsync(owner, profile.Id, sharedStop, publishedShared)));
     // The app-owned poll discovers the publication after reconnect; no user pull is sent.
     StopApp(friendA);
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
@@ -982,14 +979,14 @@ try
     StopApp(friendA);
     using (var larger = new FileStream(Path.Combine(world, "world.dat"), FileMode.Create, FileAccess.Write))
         larger.SetLength(3L * SharedWorldService.ChunkBytes);
-    Require((await OwnerPost<object, ActionResult>(owner,
-        $"/api/local/profiles/{profile.Id}/start", new { })).Ok &&
-        (await OwnerPost<object, ActionResult>(owner,
-        $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
-        "second disposable completed save was not published");
+    var secondSharedStop = await StartAndStopSharedFixtureAsync(owner, profile.Id);
     var secondShared = await OwnerGetJson<SharedWorldStatus>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world");
-    Require(secondShared.Latest is { Number: 2 }, "second signed version was absent");
+    var secondPublished = secondShared.Latest is { Number: 2 } secondPublishedVersion &&
+        secondPublishedVersion.ParentHash == publishedShared.Latest!.VersionHash &&
+        secondPublishedVersion.CaptureKind == SharedWorldCaptureKinds.PostStopBackup && SharedWorldService.VerifySignature(secondPublishedVersion);
+    Require(secondPublished, "second signed version was absent" +
+        (secondPublished ? "" : await SharedPublicationDiagnosticAsync(owner, profile.Id, secondSharedStop, secondShared)));
     friendA = StartApp(appPath, "--friend", friendAPort, friendAData, receiveDelayMs: 3000);
     await WaitLocal(friendAPort);
     var slowView = await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { });
@@ -1050,18 +1047,17 @@ try
     Require((await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
         "Host could not re-enable sharing for the replacement source");
-    Require((await OwnerPost<object, ActionResult>(owner,
-        $"/api/local/profiles/{profile.Id}/start", new { })).Ok &&
-        (await OwnerPost<object, ActionResult>(owner,
-        $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
-        "replacement source did not complete a disposable Start and Stop");
+    var rotatedStop = await StartAndStopSharedFixtureAsync(owner, profile.Id);
     var rotatedShared = await OwnerGetJson<SharedWorldStatus>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world");
-    Require(rotatedShared.Latest is { Number: 1 } &&
+    var rotatedPublished = rotatedShared.Latest is { Number: 1 } &&
         rotatedShared.Latest.GroupId != publishedShared.Latest!.GroupId &&
-        rotatedShared.Latest.WorldId == publishedShared.Latest.WorldId,
+        rotatedShared.Latest.WorldId == publishedShared.Latest.WorldId &&
+        rotatedShared.Latest.CaptureKind == SharedWorldCaptureKinds.PostStopBackup &&
+        SharedWorldService.VerifySignature(rotatedShared.Latest);
+    Require(rotatedPublished,
         "same-WorldId source rotation did not create a separate signed group: " +
-        JsonSerializer.Serialize(rotatedShared, webJson));
+        (rotatedPublished ? "" : await SharedPublicationDiagnosticAsync(owner, profile.Id, rotatedStop, rotatedShared)));
     Require(rotatedShared.ConfirmedCopies == 0, "an old source receipt counted for the new group");
     var blockedRotation = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
@@ -2443,6 +2439,69 @@ async Task<TResponse> OwnerPost<TRequest, TResponse>(HttpClient client, string p
     return await response.Content.ReadFromJsonAsync<TResponse>(webJson) ?? throw new Exception($"Empty local POST {path}: {(int)response.StatusCode}");
 }
 
+async Task<ActionResult> StartAndStopSharedFixtureAsync(HttpClient owner, Guid profileId)
+{
+    var start = await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profileId}/start", new { });
+    Require(start.Ok && start.Code == "FixtureStarted", $"shared-world fixture Start failed: {start.Code}");
+    var started = start.Snapshot.Runs.Single(run => run.ProfileId == profileId);
+    Require(started.ProcessId is not null, "shared-world fixture Start did not record its process");
+    var operationId = started.RunOperationId;
+    RunView? observed = started;
+    var matched = false;
+    using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+    {
+        try
+        {
+            while (!matched)
+            {
+                var snapshot = await OwnerGetJson<HostSnapshot>(owner, "/api/local/snapshot", timeout.Token);
+                observed = snapshot.Runs.SingleOrDefault(run => run.ProfileId == profileId);
+                Require(observed is not null && observed.ProcessId == started.ProcessId && observed.State != "Failed" &&
+                    (operationId is null || observed.RunOperationId is null || observed.RunOperationId == operationId),
+                    "shared-world fixture changed or exited before its recorded run was observed");
+                operationId ??= observed!.RunOperationId;
+                // This synthetic driver reports Process running, never game Ready.
+                // Observe the exact launched run before issuing its one graceful Stop.
+                matched = observed!.State == "Process running" && operationId is { } exact && exact != Guid.Empty &&
+                    observed.RunOperationId == operationId;
+                if (!matched) await Task.Delay(100, timeout.Token);
+            }
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
+    }
+    Require(matched, $"shared-world fixture run was not observed before Stop: state={SupportReportRedactor.Token(observed?.State)}");
+    var stop = await OwnerPost<object, ActionResult>(owner,
+        $"/api/local/profiles/{profileId}/stop", new { });
+    if (!stop.Ok || stop.Code != "FixtureStopped")
+    {
+        var sharing = await OwnerGetJson<SharedWorldStatus>(owner,
+            $"/api/local/profiles/{profileId}/shared-world");
+        throw new Exception("shared-world fixture graceful Stop failed" +
+            await SharedPublicationDiagnosticAsync(owner, profileId, stop, sharing));
+    }
+    return stop;
+}
+
+async Task<string> SharedPublicationDiagnosticAsync(HttpClient owner, Guid profileId,
+    ActionResult stop, SharedWorldStatus sharing)
+{
+    var backupFacts = "backups=unavailable";
+    try
+    {
+        var backups = await OwnerGetJson<WorldBackupList>(owner, $"/api/local/profiles/{profileId}/backups");
+        var latest = backups.Backups.OrderByDescending(item => item.CreatedUtc).FirstOrDefault();
+        backupFacts = $"completedBackups={backups.Status.CompletedCount}; " +
+            $"latestSetupIncluded={latest?.SetupIncluded.ToString() ?? "none"}; " +
+            $"backupError={SupportReportRedactor.Redact(backups.Status.LastFailure, 240, "none")}; " +
+            $"availableBytes={backups.Status.AvailableSpaceBytes?.ToString() ?? "none"}";
+    }
+    catch (Exception error) { backupFacts = "backupsRead=" + error.GetType().Name; }
+    return $"; stopCode={SupportReportRedactor.Token(stop.Code)}; sharingEnabled={sharing.Enabled}; " +
+        $"latestNumber={sharing.Latest?.Number.ToString() ?? "none"}; " +
+        $"sharingError={SupportReportRedactor.Redact(sharing.Error, 240, "none")}; {backupFacts}";
+}
+
 async Task<TResponse> OwnerPut<TRequest, TResponse>(HttpClient client, string path, TRequest body)
 {
     using var request = new HttpRequestMessage(HttpMethod.Put, path) { Content = JsonContent.Create(body, options: webJson) };
@@ -2456,17 +2515,17 @@ async Task<TResponse> OwnerPut<TRequest, TResponse>(HttpClient client, string pa
         throw new Exception($"Invalid local PUT {path}: {(int)response.StatusCode}");
 }
 
-async Task<HttpResponseMessage> OwnerGet(HttpClient client, string path)
+async Task<HttpResponseMessage> OwnerGet(HttpClient client, string path, CancellationToken cancellationToken = default)
 {
     using var request = new HttpRequestMessage(HttpMethod.Get, path);
     request.Headers.Add("X-TogetherServer-Local", "1");
-    return await client.SendAsync(request);
+    return await client.SendAsync(request, cancellationToken);
 }
 
-async Task<TResponse> OwnerGetJson<TResponse>(HttpClient client, string path)
+async Task<TResponse> OwnerGetJson<TResponse>(HttpClient client, string path, CancellationToken cancellationToken = default)
 {
-    using var response = await OwnerGet(client, path);
-    return await response.Content.ReadFromJsonAsync<TResponse>(webJson) ??
+    using var response = await OwnerGet(client, path, cancellationToken);
+    return await response.Content.ReadFromJsonAsync<TResponse>(webJson, cancellationToken) ??
         throw new Exception($"Empty local GET {path}: {(int)response.StatusCode}");
 }
 
