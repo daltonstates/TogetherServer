@@ -155,3 +155,15 @@ remain skipped because the account cannot create symbolic links.
 Native/WebView viewport, real-game and separate-PC checks remain unrun.
 Validation preserved the active desktop; no app, browser, listener or game
 was launched and the running production app remains untouched.
+
+The updated production build is
+`local-data/startup-console-production-20261021-a9bcf21/TogetherServer.exe`,
+from clean source `a9bcf2113457de2d0c51522cdfb8cc6d02169010`. Locked restore
+and self-contained win-x64 single-file Release publish passed. Version is
+`0.3.3.0`, size 66,123,563 bytes, Authenticode `NotSigned`. SHA-256:
+`2f00918fb137901707575e251056e317c787d69f3c4337ed8e39369726a539e0`.
+Static verification passed GUI subsystem, exact current bundled assembly,
+all seven embedded UI assets, .NET runtime core, version/source identity and
+console UI content. Package evidence, metadata, checksum and publish logs are
+beside the EXE. It was not launched, installed or used to replace the running
+app. No tag or public release was created.
