@@ -44,6 +44,7 @@ import { MaintenanceGuide } from './MaintenanceGuide'
 import { TemporaryHelperAccess } from './TemporaryHelperAccess'
 import { DataRecoveryPanel } from './DataRecoveryPanel'
 import { StartupRecoveryNotice } from './StartupRecoveryNotice'
+import { ServerStartupProgress, serverStartupStage } from './ServerStartupProgress'
 import { DismissibleNotice } from './DismissibleNotice'
 import { OwnerDiagnostics } from './OwnerDiagnostics'
 import { PaneErrorBoundary } from './PaneErrorBoundary'
@@ -2460,6 +2461,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
+              const startPending = pending === `start-${profile.id}`
+              const startup = serverStartupStage({ ...status, requestPending: startPending })
               const count = status ? playerCountAvailability(status, nowMs).count : null
               const workProfileId = currentOperationProfile.current[pending] ?? savedProfiles.find(item => pending.includes(item.id))?.id
               const profileWorkBusy = !!pending && (!workProfileId || workProfileId === profile.id)
@@ -2489,7 +2492,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   separateCopySourceProfileId: profile.separateCopySourceProfileId, sourceName: null, sourceHostName: null }} />}
                 <div className="server-command-header">
                   <div className="profile-top"><div className="server-identity"><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · {profile.worldId}</p></div>
-                    <div className="server-current-state"><span className={`status ${isPlayerCountObservationUnavailable(status) ? '' : statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{isPlayerCountObservationUnavailable(status) ? 'Status unavailable' : status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
+                    <div className="server-current-state"><span className={`status ${isPlayerCountObservationUnavailable(status) ? '' : statusTone(status?.state ?? 'Unknown')}`}>{(pending === `start-${profile.id}` || pending === `stop-${profile.id}` || pending === `restart-${profile.id}`) && <Icon name="loader" />}{startup ? 'Starting' : isPlayerCountObservationUnavailable(status) ? 'Status unavailable' : status?.state === 'Process running' ? 'Starting' : status?.state ?? 'Unknown'}</span>
                       {['Ready', 'Listening'].includes(status?.state ?? '') && <Button className="text-button server-player-link" onClick={() => selectHostTab('players')}><Icon name="users" />{count === null ? 'Players unknown' : `${count}${status?.maxPlayers !== null && status?.maxPlayers !== undefined ? ` / ${status.maxPlayers}` : ''} online`}</Button>}
                       {count === 0 && <ServerCountdown deadline={status?.autoShutdownAtUtc ?? null} nowMs={nowMs} />}
                     </div>
@@ -2499,12 +2502,14 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                       if ([...draftGuards.current].some(([key, guard]) => key !== 'chat' && (guard.dirty || guard.saving))) return
                       void startLocalProfile(profile)
                     }}>{pending === `start-${profile.id}` ? <><Icon name="loader" /><span>Starting…</span></> : <><Icon name="play" /><span>Start server</span></>}</Button>}
-                    {pending !== `start-${profile.id}` && (['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(status?.state ?? '') || pending === `stop-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || status?.state === 'Stopping'} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` || status?.state === 'Stopping' ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
-                    {['Unknown', 'Failed'].includes(status?.state ?? 'Unknown') && <Button className="secondary" onClick={() => selectHostTab('logs')}><Icon name="warning" />Review server</Button>}
+                    {!startPending && (startup === 'game' || ['Process running', 'Starting', 'Listening', 'Ready', 'Stopping'].includes(status?.state ?? '') || pending === `stop-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || status?.state === 'Stopping'} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Stop')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`stop-${profile.id}`, `/api/local/profiles/${profile.id}/stop`, 'POST') }}>{pending === `stop-${profile.id}` || status?.state === 'Stopping' ? <><Icon name="loader" /><span>Stopping…</span></> : <><Icon name="stop" /><span>Stop server</span></>}</Button>}
+                    {!startup && ['Unknown', 'Failed'].includes(status?.state ?? 'Unknown') && <Button className="secondary" onClick={() => selectHostTab('logs')}><Icon name="warning" />Review server</Button>}
                     <Button className="secondary server-invite-button" disabled={!!pending || dirty || !friendAppAddress} onClick={() => void changeScope(() => { setHostServerTab('overview'); setUiPreferences(current => ({ ...current, serverTabs: { ...current.serverTabs, [profile.id]: 'overview' } })); void inviteFriend(profile.id) })}><Icon name="invite" /><span>Invite friends</span></Button>
                     <Button className="secondary icon-button" aria-label="More server actions" title="More server actions" onClick={() => setServerToolsProfileId(profile.id)}><Icon name="more" /></Button>
                   </div>
-                  {status && !['Offline', 'Ready'].includes(status.state) && !isPlayerCountObservationUnavailable(status) && <p className="server-progress" role="status">{status.detail}</p>}
+                  <ServerStartupProgress {...status} requestPending={startPending}
+                    onOpenLogs={['Valheim', 'MinecraftJava', 'MinecraftBedrock'].includes(profile.kind) ? () => selectHostTab('logs') : undefined} />
+                  {!startup && status && !['Offline', 'Ready'].includes(status.state) && !isPlayerCountObservationUnavailable(status) && <p className="server-progress" role="status">{status.detail}</p>}
                   {dirty && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or cancel setup changes first.</DismissibleNotice>}
                   {!friendAppAddress && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Set this PC’s address before inviting friends. <Button className="text-button" onClick={() => openHostSettings('network')}>Network</Button></DismissibleNotice>}
                   {!dirty && hasUnsavedServerEdits && <DismissibleNotice scope={connectionKey} as="p" className="inline-blocker">Save or discard file changes before starting.</DismissibleNotice>}
@@ -2541,7 +2546,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                 {hostServerTab === 'overview' && ['Ready', 'Listening'].includes(status?.state ?? '') && <p className="helper-text local-game-address">Playing on this PC? Join <code>127.0.0.1:{profile.gamePort}</code>.</p>}
                 {hostServerTab === 'overview' && status?.state === 'Ready' && snapshot.settings.autoShutdownEnabled && <Button className="text-button" onClick={() => selectHostTab('players')}>Add shutdown time</Button>}
                 {hostServerTab === 'overview' && <>
-                  {status?.state === 'Offline' && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
+                  {status?.state === 'Offline' && !startPending && <p className="server-idle-hint">Start this server to play. Join details appear here when it is running.</p>}
                   {['Ready', 'Listening'].includes(status?.state ?? '') && !gameAddress && <div className="connection-empty"><h2>Connection details</h2><p>The game address is unavailable. Check Network before sharing.</p><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Set connection address</Button></div>}
                   {shownBackupStatus?.lastFailureUtc && (!shownBackupStatus.lastSuccessfulUtc || Date.parse(shownBackupStatus.lastFailureUtc) > Date.parse(shownBackupStatus.lastSuccessfulUtc)) && <DismissibleNotice scope={connectionKey} noticeKey={shownBackupStatus.lastFailureUtc} as="p" className="inline-blocker" role="status"><Icon name="warning" />The latest backup attempt failed. <Button className="text-button" onClick={() => selectHostTab('backups')}>Review backups</Button></DismissibleNotice>}
                 </>}

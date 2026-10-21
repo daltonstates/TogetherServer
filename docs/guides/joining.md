@@ -9,7 +9,8 @@
 2. Paste your friend's server code and choose **Connect**. If approval is
    required, wait for the Host to approve this PC.
 3. Open the assigned server. Check **Game requirements** before playing.
-4. If allowed, request **Start** and wait for the server's readiness result.
+4. If allowed, request **Start**. The startup bar shows the launch and game-check
+   steps while you wait for the server to report **Ready**.
    Use the connection details and the game's own join screen to connect.
 
 Keep TogetherServer running while using Friend controls. A code initially

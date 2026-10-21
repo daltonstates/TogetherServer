@@ -188,10 +188,12 @@ describe('the composed play flow', () => {
     const starting = { ...profile, state: 'Starting' }
     view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [starting] }} profile={starting} nowMs={nowMs} onStart={onStart} />)
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
-    expect(screen.getByText(/Wait until it reports Ready/, { selector: '.friend-play-flow > p' })).toBeVisible()
+    expect(screen.getByRole('progressbar', { name: 'Waiting for the game' })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for the game to report Ready.')
     view.rerender(<FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs}
       connectionDetails={<p>Masked connection controls</p>} requirements={<p>Requirements slot</p>} />)
     expect(screen.getByRole('button', { name: 'Open game' })).toBeInTheDocument()
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
     expect(screen.getByText('Masked connection controls')).toBeInTheDocument()
     expect(screen.getByText('Requirements slot')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open game' }).compareDocumentPosition(screen.getByText('Requirements slot')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -210,6 +212,31 @@ describe('the composed play flow', () => {
     view.rerender(<FriendPlayFlow snapshot={paused} profile={listening} nowMs={nowMs + 46_000} />)
     expect(screen.queryByRole('button', { name: 'Open game' })).not.toBeInTheDocument()
     expect(screen.getByText(/Your access:.*Unverified/)).toBeInTheDocument()
+  })
+
+  it('shows pending Friend startup without allowing early Stop and removes progress when access is stale or gone', () => {
+    const start = vi.fn(), stop = vi.fn()
+    const offline = { ...profile, state: 'Offline', joinAddress: null }
+    const view = render(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [offline] }} profile={offline}
+      nowMs={nowMs} busy pendingAction="start" onStart={start} onStop={stop} />)
+    expect(screen.getByRole('progressbar', { name: 'Checking setup and starting' })).toHaveAccessibleDescription(/Waiting for the Host/)
+    expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Stop server' })).not.toBeInTheDocument()
+    const starting = { ...offline, state: 'Starting' }
+    view.rerender(<FriendPlayFlow snapshot={{ ...snapshot, profiles: [starting] }} profile={starting}
+      nowMs={nowMs} onStart={start} onStop={stop} />)
+    expect(screen.getByRole('progressbar', { name: 'Waiting for the game' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Stop server' })).not.toBeInTheDocument()
+    for (const changed of [
+      { ...snapshot, profiles: [starting], lastConnectedUtc: '2026-10-08T14:00:00Z' },
+      { ...snapshot, profiles: [starting], state: 'Revoked', connectionCode: 'Revoked' },
+      { ...snapshot, profiles: [] }
+    ]) {
+      view.rerender(<FriendPlayFlow snapshot={changed} profile={starting} nowMs={nowMs} onStart={start} onStop={stop} />)
+      expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+    }
+    expect(start).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
   })
 
   it('does not offer an actionable Start through maintenance, denied permission or an active operation', () => {

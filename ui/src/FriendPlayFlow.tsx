@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from 'react'
 import { Button } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
+import { ServerStartupProgress, serverStartupStage } from './ServerStartupProgress'
 import type { FriendSnapshot, PublicProfile } from './contracts'
 import { friendCheckFreshness } from './FriendConnectionDoctor'
 import { JoinGuide } from './JoinGuide'
@@ -169,6 +170,8 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
   const connection = friendConnectionExplanation(snapshot, nowMs)
   const permissions = effectiveFriendPermissions(snapshot, profile, nowMs)
   const currentProfile = snapshot.profiles.find(item => item.id === profile.id)
+  const startupState = { ...currentProfile, requestPending: pendingAction === 'start' }
+  const starting = permissions.currentAccess && !!currentProfile && serverStartupStage(startupState)
   const canJoin = permissions.currentAccess && !!currentProfile?.joinAddress && ['Ready', 'Listening'].includes(currentProfile.state)
   const playExplanation = !permissions.currentAccess ? connection.detail
     : currentProfile?.state === 'Offline' ? !permissions.actions.start.available
@@ -179,7 +182,7 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
   return <section className="friend-play-flow" aria-labelledby={headingId} aria-busy={busy}>
     <div className="panel-heading"><h4 id={headingId}>Play</h4>
       {onRefresh && <Button className="icon-button" aria-label="Refresh server status" title="Refresh server status" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} /></Button>}</div>
-    <p>{playExplanation}</p>
+    {!starting && <p>{playExplanation}</p>}
     <div className="friend-primary-actions">
       {(currentProfile?.state === 'Offline' || pendingAction === 'start' && currentProfile?.state === 'Starting') && permissions.currentAccess && onStart && <Button className="server-primary-action" disabled={busy || !permissions.actions.start.available}
         title={!permissions.actions.start.available ? permissions.actions.start.reason : undefined}
@@ -192,6 +195,7 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
+    {permissions.currentAccess && currentProfile && <ServerStartupProgress {...startupState} host={false} />}
     {canJoin && connectionDetails}
     {permissions.currentAccess && currentProfile && ['Ready', 'Listening'].includes(currentProfile.state) && !currentProfile.joinAddress
       && <p className="helper-text">Wait for the Host to share a current game address, then refresh server status.</p>}

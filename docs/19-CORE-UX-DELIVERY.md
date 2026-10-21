@@ -50,3 +50,47 @@ Successful feedback is now a short receipt, not a status authority. It expires a
 Failures are not timed out or discarded because a subsequent snapshot changes. Historical dated activity, backup/checkpoint evidence, version comparisons and draft-save errors remain intact. Existing outside-TCP endpoint/port/five-minute freshness and Friend game-check identity/run/45-second freshness guards were inspected and retained. No server authority, API, polling frequency, pairing, world or lifecycle behavior changed.
 
 Focused regression validation passed 113 cases across action-feedback projection, real shell flows and chat. The shell case drives an initial Start result through the normal snapshot polling path to Ready and verifies that both the header and Notifications retire it. Final validation passed all 687 UI tests in 66 files, the complete code-only gate (including all 20 safe groups, TypeScript/lint and zero-warning/error .NET compilation), and the production UI bundle. The existing Vite chunk-size warning remains. Native-import symbolic-link subcases remain skipped as previously recorded. No automated app, game, browser, fixture/process runner or listener was launched.
+
+## Follow-up: visible server startup (2026-10-21)
+
+The selected Host server now shows an indeterminate progress bar beside its
+controls from the initial Start request through the game's readiness checks.
+Three short steps show Launch server, Check game, and Ready. The current
+canonical driver detail appears below the heading; supported Host games have
+an explicit View startup logs action. The panel remains visible across tabs.
+Friend Play uses the same panel with current authenticated assigned-server
+status and short fixed explanations, without exposing private Host details.
+
+The launch phase covers the pending request. Starting and Process running
+advance to Check game. An initial Unknown / ObservationPending may also show
+that check only when an exact managed run ID is present. Other Unknown states,
+stale observations, failures, Stop, and Listening are not relabeled as startup.
+Ready removes the panel immediately; an old pending request cannot obscure
+Ready or a failure. The bar never invents a percentage or a world-loading
+milestone that the game has not reported. Reduced-motion settings disable
+animation, and detail updates do not move keyboard focus.
+
+The local owner retains the existing confirmed graceful Stop during startup,
+including the first pending game observation for an exact run. Friend Stop
+continues to require Ready and the existing fresh exact-zero safety checks.
+Stale connections, removed assignments and denied access hide Friend progress.
+There is no new API, poller, timer, log parser, lifecycle authority or persisted
+state. No game installation, world, credential or running production app changes.
+
+Validation passed:
+
+- All 1,354 UI tests in 106 files, including startup transitions, a pending
+  initial observation, failed requests, owner Stop confirmation, stale Friend
+  access, Ready cleanup, explicit log navigation and stable keyboard focus.
+- `scripts/verify-code-only.ps1`: pinned tools, locked installs/restores,
+  TypeScript, lint, solution compilation with zero warnings/errors, the safe
+  source/synthetic groups, whitespace and desktop diagnostic isolation.
+- `npm run build` and a final Release app compilation embedding the updated
+  UI, with zero .NET warnings/errors. Vite retains its existing large-chunk
+  warning.
+
+Synthetic source-link subcases remain skipped because this account cannot
+create symbolic links. Browser/WebView viewport and native desktop checks,
+separate-PC/network checks and real-game startup/join/save/restart acceptance
+remain unrun. Validation preserved the owner's active desktop; no app, browser,
+listener or game was launched, and the running production app was left alone.

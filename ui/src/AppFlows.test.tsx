@@ -930,7 +930,32 @@ describe('Host task structure', () => {
     await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/profiles/${id}/start`, 'POST', expect.any(Function), undefined, undefined))
     expect(await within(workspace).findByText('Request accepted.')).toBeInTheDocument()
     expect(within(workspace.querySelector('.server-command-header')!).getByText('Waiting for a real readiness observation.')).toBeVisible()
+    expect(within(workspace).getByRole('progressbar', { name: 'Waiting for the game' })).toBeVisible()
     expect(within(workspace).getByRole('button', { name: 'Stop server' })).toBeInTheDocument()
+  })
+
+  it('shows startup immediately, keeps it through the first pending game check, and lets the owner stop', async () => {
+    let finishStart!: (value: unknown) => void
+    transport.change.mockImplementation((path: string) => path.endsWith('/start')
+      ? new Promise(resolve => { finishStart = resolve })
+      : Promise.resolve({ ok: true, message: 'Request accepted.', snapshot: state }))
+    const workspace = await openHost()
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Start server' }))
+    expect(await within(workspace).findByRole('progressbar', { name: 'Checking setup and starting' })).toBeVisible()
+    expect(within(workspace).getByRole('button', { name: 'Starting…' })).toBeDisabled()
+    expect(within(workspace).queryByText('Start this server to play. Join details appear here when it is running.')).not.toBeInTheDocument()
+    const next = structuredClone(host())
+    next.runs[0].state = 'Unknown'
+    next.runs[0].runOperationId = '22222222-2222-4222-8222-222222222222'
+    next.runs[0].playerObservationSource = 'ObservationPending'
+    next.runs[0].detail = 'Waiting for the next server check.'
+    state = next
+    await act(async () => { finishStart({ ok: true, message: 'Server launched.', snapshot: state }) })
+    expect(await within(workspace).findByRole('progressbar', { name: 'Waiting for the game' })).toBeVisible()
+    expect(within(workspace).getByRole('button', { name: 'Stop server' })).toBeEnabled()
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Stop server' }))
+    expect(await screen.findByRole('dialog', { name: 'Stop Contract fixture?' })).toBeVisible()
+    expect(transport.change.mock.calls.filter(([path]) => path.endsWith('/stop'))).toHaveLength(0)
   })
 
   it('prepares an invite, shows its result next to the controls, copies it and can close the review', async () => {
@@ -951,6 +976,18 @@ describe('Host task structure', () => {
     expectNoServerAction()
   })
 
+  it('clears startup progress and offers Start again after a failed launch request', async () => {
+    transport.change.mockImplementation(async (path: string) => {
+      if (path.endsWith('/start')) throw new Error('The server could not start.')
+      return { ok: true, message: 'Request accepted.', snapshot: state }
+    })
+    const workspace = await openHost()
+    fireEvent.click(within(workspace).getByRole('button', { name: 'Start server' }))
+    expect(await within(workspace).findByText('The server could not start.')).toBeVisible()
+    expect(within(workspace).queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(within(workspace).getByRole('button', { name: 'Start server' })).toBeEnabled()
+  })
+
   it('removes startup receipts from the header and notification menu when a fresh snapshot reaches Ready', async () => {
     const message = 'Valheim process launched. Waiting for its server-connected log signal.'
     transport.change.mockImplementation(async (path: string) => {
@@ -969,6 +1006,7 @@ describe('Host task structure', () => {
     state = ready
     await waitFor(() => expect(within(workspace.querySelector('.server-command-header')!).getByText('Ready', { selector: '.status' })).toBeVisible(), { timeout: 5000 })
     // Fresh canonical status must supersede the initial request result.
+    expect(within(workspace).queryByRole('progressbar')).not.toBeInTheDocument()
     expect(within(workspace).queryByText(message)).not.toBeInTheDocument()
     fireEvent.click(screen.getByLabelText(/Notifications/))
     expect(document.querySelector('.notification-panel')).not.toHaveTextContent(message)

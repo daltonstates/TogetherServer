@@ -28,6 +28,12 @@ does not include game servers or start them for you.
 **Start server** and **Stop server** stay above the tabs. Important blockers
 and the empty-server countdown remain visible while you browse.
 
+Starting shows a progress bar with **Launch server**, **Check game**, and
+**Ready** steps. It shows the current status while the game starts and clears
+when Ready arrives. The bar has no percentage because games do not report one.
+For supported games, **View startup logs** opens the Logs tab. You can still
+choose **Stop server** while waiting on this PC; the usual confirmation applies.
+
 | Tab | Use it for |
 | --- | --- |
 | **Overview** | Connection details, game requirements, status, and connection checks. |
