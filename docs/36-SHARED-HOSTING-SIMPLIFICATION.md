@@ -64,11 +64,11 @@ stops a game.
 
 ## Acceptance and remaining checks
 
-Local validation passed. Hosted rendering passed after two test-harness timing
-corrections. The packaged retry then exposed a returning-owner save-selection
-blocker after successful relay receipt; that correction and final hosted checks
-remain pending at this checkpoint. Earlier failed results remain failed and do
-not establish acceptance for a corrected candidate.
+Local validation and final hosted rendering passed. The latest packaged run
+passed the full journey with lab diagnostics enabled. An earlier returning-owner
+review blocker has not been explained; two bounded hosted runs without a
+diagnostic sink remain pending. Earlier failed results remain failed and do not
+establish acceptance for a later candidate.
 
 Local automated work is code-only. No app, game, console fixture, browser,
 installer or native dialog is launched on the owner's active desktop.
@@ -92,11 +92,11 @@ Local verification on 2026-10-21:
 | --- | --- |
 | `scripts/verify-code-only.ps1` | PASS: pinned .NET 10.0.301 and Node 24.14.1, locked dependencies, typecheck, lint, full solution compile, all 62 source/synthetic groups, whitespace and desktop diagnostic isolation |
 | Full JSDOM suite | PASS: final switch-first UI passes all 1,327 tests in 106 files |
-| Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax and all seven workflow PowerShell blocks; 18 bounded render plans |
+| Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax, workflow YAML and all ten workflow PowerShell blocks; 18 bounded render plans |
 | Production React bundle | PASS: existing JavaScript chunk-size advisory above 500 kB |
 | Normal app build embedding the current bundle | PASS: zero warnings/errors |
-| Packaged three-app private-address journey | Retry verified relay receipt but returning owner Start was blocked; correction pending |
-| Desktop/narrow rendered UI | Retry passes 18/18, zero layout findings/errors; final heading cleanup requires another hosted render |
+| Packaged three-app private-address journey | Full diagnostic-enabled run passes; ordinary runs without diagnostic collection pending |
+| Desktop/narrow rendered UI | Final switch-first view passes 18/18, zero layout findings/errors; desktop and narrow screenshots inspected |
 | Physical PCs, outside game route and real saved game | Not executed; external acceptance remains open |
 
 One source symbolic-link subcase is explicitly SKIPPED because this account
@@ -192,5 +192,35 @@ above completed all registered groups.
 The next hosted candidate retains at most 16 fixed selection-phase, reason,
 exception-type and candidate-count records in its disposable lab report. It
 records no paths, addresses, keys, save identities, payloads or raw errors.
-Only the validated lab mode installs that diagnostic sink; normal application
-behavior and all fail-closed source decisions remain unchanged.
+Only validated lab mode can install that diagnostic sink. The next candidate
+additionally requires an explicit diagnostic opt-in; ordinary application and
+lab runs have no sink. All fail-closed source decisions remain unchanged.
+
+### Diagnostic candidate and final UI evidence
+
+[Run 39655442203](https://github.com/daltonstates/TogetherServer/actions/runs/39655442203)
+tests source `73a9df4c8d9900b40d0901ee3ca60a26aaa9f06f`.
+Render job `119414332802` passes all 18 plans with 44 screenshots, zero failed
+or skipped cases, zero layout findings and zero fatal errors. The final desktop
+and narrow Host-on screenshots were visually inspected: the policy switch is
+first, obsolete governance headings are absent, and the action remains visible.
+The earlier inspected Friend dialogs have unchanged source in this candidate.
+Hash-verified render artifact `12372121018` has ZIP SHA-256
+`8ea3b6d2e978fe925d9a5e2f5f4d14565eb333eeb1a22899189f8f4bc7c581c6`.
+Packaged job `119414333213` passes all seven stages in 134,606 ms. Both Friend
+and returning owner Start succeed on their first attempt. The owner uses the
+relayed descendant in a fresh continuation, original bytes remain unchanged,
+global disable withdraws signed rights, and cleanup reports `jobEmpty: true`
+with no identity-review flags. This is same-runner private-address synthetic
+evidence. It is a pass for this candidate and does not explain or erase the
+earlier rejection.
+
+Candidate SHA-256:
+`20ce4afc2ee9202aeb6054cc5d11ecb82e1abc59838c666c0e5459d9c955a9c7`.
+Hash-verified journey artifact `12370752852` has ZIP SHA-256
+`ac3040bbec26d68b505052dfd204c5131ecdde912b1b468a18aa003a54476773`.
+
+The next bounded hosted check runs the ordinary journey twice against one
+immutable candidate with diagnostic collection explicitly off. If either fails,
+a separate diagnostic attempt may collect fixed failure metadata, but the job
+retains its ordinary failure even if that diagnostic attempt succeeds.

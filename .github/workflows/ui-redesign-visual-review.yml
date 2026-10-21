@@ -128,8 +128,19 @@ jobs:
           if ($addresses.Count -eq 0) { throw 'No assigned private runner IPv4 address is available.' }
           $runnerAddress = $addresses[0].IPAddress
           $candidate = (Resolve-Path local-data/simple-hosting-candidate/TogetherServer.exe).Path
-          dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
-          if ($LASTEXITCODE -ne 0) { throw 'Packaged automatic sharing failed; see the retained stage report.' }
+          # Two bounded ordinary runs have no diagnostic sink or extra file writes.
+          # A diagnostic retry preserves the ordinary failure even if it succeeds.
+          $env:TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS = '0'
+          $normalFailed = $false
+          for ($attempt = 1; $attempt -le 2; $attempt++) {
+            dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+            if ($LASTEXITCODE -ne 0) { $normalFailed = $true; break }
+          }
+          if ($normalFailed) {
+            $env:TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS = '1'
+            dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+            throw 'An ordinary packaged sharing run failed; any diagnostic retry is separate evidence.'
+          }
       - name: Retain bounded redacted candidate and journey evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -142,7 +142,7 @@ Func<string, IEnumerable<string>, HttpClient>? labClient = localLab is null ? nu
     (endpoint, pins) => FriendLink.MakeClient(endpoint, pins, localLab);
 using var friend = new FriendService(data, labClient);
 using var worldPeers = new WorldPeerService(data, manager, friend, pairing, labClient);
-if (localLab is not null)
+if (localLab is not null && Environment.GetEnvironmentVariable("TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS") == "1")
 {
     var latestReviewDiagnostics = new Queue<object>();
     worldPeers.LatestReviewDiagnostic = diagnostic =>
