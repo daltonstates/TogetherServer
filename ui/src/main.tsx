@@ -15,6 +15,7 @@ import { Tooltip } from './Tooltip'
 import { HostSettingsTools, type HostSettingsPatch } from './HostSettingsTools'
 import { FriendPcCard } from './FriendPcCard'
 import { directoryWithSnapshot, GuestHostingLabel, parseServerDirectory, ServerDirectory, type ServerDirectoryView, type ServerSelection } from './ServerDirectory'
+import { originalLocalServer, startedSharedServer } from './sharedServerProfiles'
 import { isRemovedHost, orderProfiles } from './profileLists'
 import { SettingsDialog, SettingsSectionHeading } from './SettingsPresentation'
 import { FriendAccessExpiredNotice, OwnerAccessDeadlineEditor, putDeviceAccessExpiry } from './AccessExpiry'
@@ -1374,9 +1375,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       const result = await changeAction(path, method, body)
       applySnapshot(result.snapshot)
       if (result.ok && key.startsWith('start-') && result.snapshot.mode === 'Host') {
-        const sourceProfileId = key.slice('start-'.length)
-        const continuation = result.snapshot.settings.profiles.find(profile => profile.separateCopySourceProfileId === sourceProfileId &&
-          result.snapshot.mode === 'Host' && result.snapshot.runs.some(run => run.profileId === profile.id && run.state !== 'Offline'))
+        const continuation = startedSharedServer(result.snapshot, snapshot?.mode === 'Host' ? snapshot : null, key.slice('start-'.length))
         if (continuation) {
           setSelectedHostProfileId(continuation.id); setHostScope('server'); setHostServerTab('overview'); setHostMobileDetail(true)
         }
@@ -1399,13 +1398,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   }
   const startLocalProfile = async (profile: Profile) => {
     if (pending || dirty || hasUnsavedServerEdits || dataRecovery?.lifecycleBlocked) return
-    if (profile.separateCopySourceProfileId && profile.separateCopyBranchHash) {
-      if (!await confirm({ title: 'Host this save on this PC?', confirmLabel: 'Start server',
-        description: 'This PC will use its own save. Progress stays separate if another Host is also playing.' })) return
-      await run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/shared-world/hosting/start`, 'POST', {
-        branchHash: profile.separateCopyBranchHash, acceptSplitWarning: true
-      })
-    } else await run(`start-${profile.id}`, `/api/local/profiles/${profile.id}/start`, 'POST')
+    const source = snapshot?.mode === 'Host' ? originalLocalServer(profile, snapshot.settings.profiles) : null
+    await run(`start-${profile.id}`, `/api/local/profiles/${source?.id ?? profile.id}/start`, 'POST')
   }
   const loadBackups = async (profileId: string) => {
     const announce = !pending
@@ -2432,6 +2426,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
               <div className="server-detail-pane">
             {snapshot.settings.profiles.filter(profile => profile.id === selectedHostProfile?.id).map(profile => {
               const status = snapshot.runs.find(run => run.profileId === profile.id)
+              const ownerProfile = originalLocalServer(profile, snapshot.settings.profiles)
+              const sharingProfile = ownerProfile ?? profile
+              const sharingStatus = snapshot.runs.find(run => run.profileId === sharingProfile.id)
               const startPending = pending === `start-${profile.id}`
               const startup = serverStartupStage({ ...status, requestPending: startPending })
               const count = status ? playerCountAvailability(status, nowMs).count : null
@@ -2459,7 +2456,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                 onHide: () => hideConnectionDetails(passwordKey),
                 onCopy: () => void copyGamePassword(profile, passwordKey) }] : [])]
               return <article className="profile-card server-detail-card" key={profile.id} aria-busy={checkingPorts || detectingPublicIp || pending.endsWith(profile.id)}>
-                {profile.separateCopySourceProfileId && <GuestHostingLabel server={directory.localServers.find(server => server.id === profile.id) ?? {
+                {profile.separateCopySourceProfileId && !ownerProfile && <GuestHostingLabel server={directory.localServers.find(server => server.id === profile.id) ?? {
                   separateCopySourceProfileId: profile.separateCopySourceProfileId, sourceName: null, sourceHostName: null }} />}
                 <div className="server-command-header">
                   <div className="profile-top"><div className="server-identity"><h3>{profile.name}</h3><p>{profileGameLabel(profile)} · {profile.worldId}</p></div>
@@ -2575,16 +2572,16 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                         <WorldLoadRehearsalPanel profileId={profile.id} backups={backupList?.backups ?? []} /></div>}
                     </div>
                     {profile.kind !== 'Custom' && <div hidden={section !== 'sharing'} className="protection-sharing-panel">
-                      <HostSharedSaves profileId={profile.id} devices={companion?.devices ?? []} worldName={profile.worldId}
-                      serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} onOpenHostControls={() => selectHostServer(profile.id, 'overview')}
-                      rollingBackupEnabled={profile.backups?.enabled === true}
+                      <HostSharedSaves profileId={sharingProfile.id} devices={companion?.devices ?? []} worldName={sharingProfile.worldId}
+                      serverState={sharingStatus?.state ?? 'Unknown'} serverStatusFresh={!loadError} onOpenHostControls={() => selectHostServer(profile.id, 'overview')}
+                      rollingBackupEnabled={sharingProfile.backups?.enabled === true}
                       currentAddress={snapshot.mode === 'Host' && draft?.companionEndpoint === snapshot.settings.companionEndpoint
                         ? snapshot.settings.companionEndpoint : ''}
                       onGrantChanged={async () => { await refreshCompanion(); applySnapshot(await readSnapshot()) }}
                       onOpenProtection={() => selectProtectionSection('settings')}
                       onOpenConnectionHelp={() => openHostSettings('network')} />
                     <details className="protection-help"><summary>Other Hosts & connections</summary>
-                    <WorldPeerPanel readOnly visible={section === 'sharing'} profileId={profile.id} />
+                    <WorldPeerPanel readOnly visible={section === 'sharing'} profileId={sharingProfile.id} />
                     </details>
                     </div>}
                     {profile.kind === 'Custom' && section === 'sharing' && <p className="helper-text">Shared hosting needs a built-in game. Use Setup for Custom server controls.</p>}

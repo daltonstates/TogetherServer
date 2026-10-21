@@ -207,6 +207,7 @@ export function createFixtureState(scenario = 'host-ready') {
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
     gettingStarted: { offered: false, intent: 'Choose', dismissed: false }, hostingRemedy: options.hostingRemedy ?? null,
     simpleHosting: options.simpleHosting ?? null, simpleHostingPrepared: false, simpleHostingStarted: false,
+    ownerContinuations: options.ownerContinuations === true,
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
       releaseNotes: '', releaseNotesUrl: null, snoozedUntilUtc: null, promptSnoozed: false, versionSkipped: false },
     requests: [] };
@@ -266,6 +267,22 @@ export function createFixtureState(scenario = 'host-ready') {
   }
   worldReview.configure(state, reviewHelpers);
   accessReview.configure(state, reviewHelpers);
+  if (state.ownerContinuations) {
+    const original = host.settings.profiles[0];
+    original.sharedSavesEnabled = true;
+    const retained = { ...clone(original), id: ids.secondary, name: 'Retained server copy', sharedSavesEnabled: false,
+      separateCopySourceProfileId: original.id, separateCopyBranchHash: 'B'.repeat(64), worldDirectory: `${root}\\shared\\retained` };
+    const current = { ...clone(original), id: ids.third, sharedSavesEnabled: false,
+      separateCopySourceProfileId: original.id, separateCopyBranchHash: 'C'.repeat(64), worldDirectory: `${root}\\shared\\current` };
+    host.settings.profiles = [current, original, retained];
+    host.runs = [makeRun(current, 'Ready', 0), makeRun(original, 'Offline'), makeRun(retained, 'Offline')];
+    for (const item of [retained, current]) {
+      host.passwordConfigured[item.id] = true;
+      host.backups[item.id] = backupStatus(item.id);
+    }
+    host.hostingPower.managedServerRunning = true;
+    state.sharingEnabled = true;
+  }
   return state;
 }
 

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import fixture from '../../contracts/host-snapshot.v1.json'
 import { parseSnapshot, type FriendSnapshot } from './contracts'
-import { directoryWithSnapshot, GuestHostingLabel, parseServerDirectory, ServerDirectory,
+import { directoryWithSnapshot, GuestHostingLabel, ordinaryLocalServers, parseServerDirectory, ServerDirectory,
   type DirectoryHost, type DirectoryServer, type ServerDirectoryView } from './ServerDirectory'
 
 const now = Date.parse('2026-10-19T12:00:00Z')
@@ -51,6 +51,56 @@ describe('strict combined server directory', () => {
 })
 
 describe('one grouped server list', () => {
+  it('lists one inactive owner server without changing its retained profiles or selected logical identity', () => {
+    const view: ServerDirectoryView = { localServers: [server({ state: 'Offline' }),
+      server({ id: ids.guest, name: 'Earlier continuation', state: 'Offline', separateCopySourceProfileId: ids.local }),
+      server({ id: ids.source, name: 'Later continuation', state: 'Offline', separateCopySourceProfileId: ids.local })], friendHosts: [] }
+    const retained = structuredClone(view)
+    const actions = show(view, { selection: { kind: 'local', profileId: ids.guest } })
+    const own = screen.getByRole('button', { name: 'Open Our world on this PC' })
+    expect(own).toHaveAttribute('aria-current', 'true')
+    expect(screen.queryByRole('button', { name: /Open (Earlier|Later) continuation/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Hosting for friends' })).not.toBeInTheDocument()
+    fireEvent.click(own)
+    expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'local', profileId: ids.local })
+    expect(view).toEqual(retained)
+  })
+
+  it('keeps the returning owner’s running continuation under Your servers', () => {
+    show({ localServers: [server({ id: ids.guest, name: 'Current continuation',
+      separateCopySourceProfileId: ids.local, sourceName: 'Our world', state: 'Ready' }), server({ state: 'Offline' }),
+    server({ id: ids.removed, name: 'Old copy', state: 'Offline', separateCopySourceProfileId: ids.local })],
+    friendHosts: [host({ servers: [server({ id: ids.local, name: 'A saved Friend alias' })] })] })
+    const active = screen.getByRole('button', { name: 'Open Current continuation on this PC' })
+    expect(active.closest('.server-directory-group')).toHaveTextContent('Your servers')
+    expect(active).not.toHaveTextContent('Hosted for')
+    expect(screen.queryByRole('button', { name: 'Open Our world on this PC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Old copy on this PC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Hosting for friends' })).not.toBeInTheDocument()
+  })
+
+  it('retains every active, Unknown, Failed, and review-needed copy while hiding inactive duplicates', () => {
+    const copies = ['Ready', 'Starting', 'Stopping', 'Unknown', 'Failed'].map((state, index) => server({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, name: state, state, separateCopySourceProfileId: ids.local }))
+    const review = server({ id: ids.connection, name: 'Needs review', state: 'Offline', requiresReview: true, separateCopySourceProfileId: ids.local })
+    const original = server({ state: 'Ready' })
+    const view = { localServers: [original,
+      server({ id: ids.guest, state: 'Offline', separateCopySourceProfileId: ids.local }), ...copies, review], friendHosts: [] }
+    expect(ordinaryLocalServers(view)).toEqual([original, ...copies, review])
+    show(view)
+    for (const copy of [...copies, review]) expect(screen.getByRole('button', { name: `Open ${copy.name} on this PC` })).toBeInTheDocument()
+  })
+
+  it('uses the joined server entry for inactive Friend copies and keeps an orphan available for review', () => {
+    const first = server({ id: ids.guest, state: 'Offline', separateCopySourceProfileId: ids.source })
+    const second = server({ id: ids.removed, state: 'Offline', separateCopySourceProfileId: ids.source })
+    expect(ordinaryLocalServers({ localServers: [first, second], friendHosts: [host()] })).toEqual([])
+    expect(ordinaryLocalServers({ localServers: [first, second], friendHosts: [] })).toEqual([first])
+    expect(ordinaryLocalServers({ localServers: [first, second], friendHosts: [host({ state: 'Revoked' })] })).toEqual([first])
+    expect(ordinaryLocalServers({ localServers: [{ ...first, state: 'Unknown' }, second], friendHosts: [host()] }))
+      .toEqual([{ ...first, state: 'Unknown' }])
+  })
+
   it('keeps own, guest-hosted, and Friend servers distinguishable and selects their exact identities', () => {
     const actions = show()
     expect(screen.getByRole('heading', { name: 'Your servers' })).toBeInTheDocument()
@@ -137,6 +187,21 @@ it('overlays current local status without losing guest origin in the list or det
   render(<GuestHostingLabel server={combined.localServers[0]} />)
   expect(screen.getByText('Hosting for Morgan')).toBeInTheDocument()
   expect(within(screen.getByText('Hosting for Morgan').parentElement!).getByText('Shared save: Shared meadow')).toBeInTheDocument()
+})
+
+it.each(['process identity', 'session recovery', 'crash recovery'])('keeps an Offline retained copy visible for unresolved %s', reason => {
+  const snapshot = parseSnapshot(fixture)
+  if (snapshot.mode !== 'Host') throw new Error('Expected the shared Host fixture.')
+  const original = { ...snapshot.settings.profiles[0], id: ids.local }
+  snapshot.settings.profiles = [original, { ...original, id: ids.guest, separateCopySourceProfileId: ids.local }]
+  snapshot.runs = [ids.local, ids.guest].map(profileId => ({ ...snapshot.runs[0], profileId, state: 'Offline', processId: null }))
+  if (reason === 'process identity') snapshot.runs[1].processId = 123
+  if (reason === 'session recovery') snapshot.startupRecovery = { previousSessionInterrupted: true, previousStartedUtc: null,
+    items: [{ profileId: ids.guest, state: 'Needs review', detail: 'Review the recorded process.', canResume: false }], message: '', windowsRestartRegistered: false }
+  if (reason === 'crash recovery') snapshot.crashRecovery = { [ids.guest]: { profileId: ids.guest, cycleId: 'review', state: 'Suspended',
+    attempts: 1, crashDetectedUtc: new Date(now).toISOString(), nextAttemptUtc: null, readinessDeadlineUtc: null, recoveredUtc: null, lastFailure: 'Review needed.' } }
+  const combined = directoryWithSnapshot(null, snapshot)
+  expect(ordinaryLocalServers(combined)).toEqual([expect.objectContaining({ id: ids.guest, requiresReview: true })])
 })
 
 it('removes a forgotten friend immediately when the current snapshot supplies the complete saved-connection list', () => {

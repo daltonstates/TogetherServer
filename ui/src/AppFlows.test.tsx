@@ -73,7 +73,7 @@ vi.mock('./RecentSessions', () => ({ RecentSessions: ({ visible }: { visible: bo
 vi.mock('./WeeklySummary', () => ({ WeeklySummary: () => <section aria-label="Seven-day summary">Retained seven-day evidence</section> }))
 vi.mock('./BackupCatalog', () => ({ BackupCatalog: () => <section aria-label="Backup catalog">Completed backups</section> }))
 vi.mock('./SharedWorldControls', () => ({
-  HostSharedSaves: () => <section aria-label="Shared saves">Shared save controls</section>,
+  HostSharedSaves: ({ profileId }: { profileId: string }) => <section aria-label="Shared saves" data-profile-id={profileId}>Shared save controls</section>,
   FriendSharedWorlds: ({ profileId, serverStatusFresh, onOpenHostSetup, onOpenHostControls }: {
     profileId: string; serverStatusFresh: boolean; onOpenHostSetup?: () => void; onOpenHostControls?: () => void
   }) => <section aria-label="Shared worlds" data-profile-id={profileId} data-status-fresh={String(serverStatusFresh)}>Received copies
@@ -892,18 +892,74 @@ describe('Host task structure', () => {
     expect(mutationCalls().filter(([path]) => path.endsWith('/start'))).toHaveLength(1)
   })
 
-  it('resumes a shared local copy through the explicit warned Start route', async () => {
+  it('starts a retained Friend copy through its exact normal Start checks without an obsolete split-save dialog', async () => {
     host().settings.profiles[0].separateCopySourceProfileId = '33333333-3333-4333-8333-333333333333'
     host().settings.profiles[0].separateCopyBranchHash = 'B'.repeat(64)
     const workspace = await openHost()
     fireEvent.click(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' }))
-    const warning = await screen.findByRole('dialog', { name: 'Host this save on this PC?' })
-    expectNoServerAction()
-    fireEvent.click(within(warning).getByRole('button', { name: 'Start server' }))
     await waitFor(() => expect(transport.change).toHaveBeenCalledWith(
-      `/api/local/profiles/${id}/shared-world/hosting/start`, 'POST', expect.any(Function),
-      { branchHash: 'B'.repeat(64), acceptSplitWarning: true }, undefined))
-    expect(transport.change.mock.calls.some(([path]) => path === `/api/local/profiles/${id}/start`)).toBe(false)
+      `/api/local/profiles/${id}/start`, 'POST', expect.any(Function), undefined, undefined))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(transport.change.mock.calls.some(([path]) => path.includes('/shared-world/hosting/start'))).toBe(false)
+  })
+
+  it('targets the owner’s original sharing policy from a retained continuation without changing settings', async () => {
+    const childId = '22222222-2222-4222-8222-222222222222'
+    host().runs[0].processId = null
+    const original = host().settings.profiles[0]
+    host().settings.profiles.push({ ...original, id: childId, name: 'Retained owner continuation',
+      separateCopySourceProfileId: id, separateCopyBranchHash: 'B'.repeat(64) })
+    host().runs.push({ ...host().runs[0], profileId: childId })
+    const settings = structuredClone(host().settings)
+    localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ selectedServer: childId }))
+    render(<App />)
+    const workspace = await screen.findByRole('region', { name: 'Retained owner continuation workspace' })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByText(/Hosting for a friend|Hosted for a friend/)).not.toBeInTheDocument()
+    expect(directory().getByRole('button', { name: 'Open Contract fixture on this PC' })).toHaveAttribute('aria-current', 'true')
+    expect(directory().queryByRole('button', { name: 'Open Retained owner continuation on this PC' })).not.toBeInTheDocument()
+    fireEvent.click(serverSections().getByRole('button', { name: 'Backups' }))
+    fireEvent.click(await within(workspace).findByRole('button', { name: 'Sharing & hosting' }))
+    expect(await within(workspace).findByRole('region', { name: 'Shared saves' })).toHaveAttribute('data-profile-id', id)
+    expect(host().settings).toEqual(settings)
+    expectNoMutation()
+  })
+
+  it('starts an old owner continuation through the original root and selects the newly running continuation', async () => {
+    const childId = '22222222-2222-4222-8222-222222222222'
+    const unresolvedId = '33333333-3333-4333-8333-333333333333'
+    const latestId = '44444444-4444-4444-8444-444444444444'
+    host().runs[0].processId = null
+    const original = host().settings.profiles[0]
+    host().settings.profiles.push({ ...original, id: childId, name: 'Earlier owner continuation',
+      separateCopySourceProfileId: id, separateCopyBranchHash: 'B'.repeat(64) },
+    { ...original, id: unresolvedId, name: 'Unresolved retained copy', separateCopySourceProfileId: id, separateCopyBranchHash: 'C'.repeat(64) })
+    host().runs.push({ ...host().runs[0], profileId: childId },
+      { ...host().runs[0], profileId: unresolvedId, state: 'Unknown', processId: null, runOperationId: null })
+    localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ selectedServer: childId }))
+    render(<App />)
+    const workspace = await screen.findByRole('region', { name: 'Earlier owner continuation workspace' })
+    await act(async () => { await Promise.resolve() })
+    let finish!: (value: unknown) => void
+    const change = transport.change.getMockImplementation()!
+    transport.change.mockImplementation((path: string, ...args: unknown[]) => path === `/api/local/profiles/${id}/start`
+      ? new Promise(resolve => { finish = resolve }) : change(path, ...args))
+    fireEvent.click(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' }))
+    expect(await within(workspace).findByRole('progressbar', { name: 'Checking setup and starting' })).toBeVisible()
+    expect(transport.change).toHaveBeenCalledWith(`/api/local/profiles/${id}/start`, 'POST', expect.any(Function), undefined, undefined)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const current = host()
+    state = { ...current, settings: { ...current.settings, profiles: [...current.settings.profiles,
+      { ...original, id: latestId, name: 'Newest owner continuation', separateCopySourceProfileId: id, separateCopyBranchHash: 'D'.repeat(64) }] },
+    runs: [...current.runs, { ...current.runs[0], profileId: latestId, state: 'Starting', runOperationId: '55555555-5555-4555-8555-555555555555' }] }
+    localDirectorySnapshot = state as HostSnapshot
+    await act(async () => { finish({ ok: true, code: 'SeparateCopyStarted', message: 'Starting the latest save.', snapshot: state }) })
+    const running = await screen.findByRole('region', { name: 'Newest owner continuation workspace' })
+    expect(within(running).getByRole('progressbar', { name: 'Waiting for the game' })).toBeVisible()
+    expect(directory().getByRole('button', { name: 'Open Newest owner continuation on this PC' })).toHaveAttribute('aria-current', 'true')
+    expect(directory().getByRole('button', { name: 'Open Unresolved retained copy on this PC' })).toBeInTheDocument()
+    expect(directory().queryByRole('button', { name: 'Open Earlier owner continuation on this PC' })).not.toBeInTheDocument()
+    expect(mutationCalls().filter(([path]) => path.endsWith('/start')).map(([path]) => path)).toEqual([`/api/local/profiles/${id}/start`])
   })
 
   it('opens usable header disclosures and lets Escape dismiss them before leaving Settings', async () => {

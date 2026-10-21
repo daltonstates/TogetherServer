@@ -11,6 +11,8 @@ export const simpleHostingCases = [
     steps: [sharing], screen: { role: 'region', name: 'Shared hosting' } },
   { id: 'simple-hosting-owner-on', scenario: 'host-offline', workspace: 'Host', section: backups,
     steps: [sharing, { role: 'checkbox', name: 'Allow friends to host this server' }], screen: { role: 'region', name: 'Shared hosting' } },
+  { id: 'simple-hosting-owner-continuation', scenario: 'host-offline', fixture: { ownerContinuations: true }, workspace: 'Host',
+    section: backups, steps: [sharing], screen: { role: 'region', name: 'Shared hosting' } },
   friend('not-allowed', 'not-allowed', { steps: [], screen: { role: 'region', name: 'Play' } }),
   friend('network-warning', 'prepare'),
   friend('missing-install', 'missing-server'),
@@ -52,14 +54,26 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     if (await workspace.getByRole('checkbox').count() !== 1) throw new Error('Host sharing must have exactly one switch');
     if (await workspace.getByRole('button', { name: /Manage sharing|Move hosting|Approve selected copy/u }).count())
       throw new Error('Legacy sharing management is still reachable');
-    const enabled = testCase.id.endsWith('-on');
+    const toggled = testCase.id.endsWith('-on');
+    const enabled = toggled || testCase.fixture?.ownerContinuations === true;
     if (enabled) await page.waitForFunction(() => {
       const checkbox = document.querySelector('.shared-world-workspace .host-sharing-master-toggle input[type="checkbox"]');
       return checkbox?.checked === true && checkbox.disabled === false;
     }, null, { timeout: 8000 });
     if (await workspace.getByRole('checkbox').isChecked() !== enabled || enabled && !await workspace.getByRole('checkbox').isEnabled() ||
-        writes.length !== Number(enabled))
+        writes.length !== Number(toggled))
       throw new Error('Host switch did not retain the exact requested state');
+    if (testCase.fixture?.ownerContinuations) {
+      const original = state.host.settings.profiles.find(profile => !profile.separateCopySourceProfileId);
+      const policyReads = state.requests.filter(request => request.method === 'GET' &&
+        /\/shared-world(?:\/governance)?$/u.test(request.path));
+      if (!original || !policyReads.length || policyReads.some(request => !request.path.startsWith(`/api/local/profiles/${original.id}/`)))
+        throw new Error('Owner continuation sharing must use its exact original policy');
+      if (await page.locator('.server-directory button[aria-label="Open Weekend Valheim on this PC"]').count() !== 1 ||
+          await page.locator('.server-directory').getByRole('heading', { name: 'Hosting for friends', exact: true }).count() ||
+          await page.locator('.guest-hosting-label').count())
+        throw new Error('Owner continuation exposed retained copies or a guest-hosting label');
+    }
   } else if (testCase.id.endsWith('-not-allowed')) {
     if (await page.getByRole('button', { name: 'Host locally', exact: true }).count() || writes.length)
       throw new Error('An unauthorized Friend can see or invoke local hosting');

@@ -617,7 +617,7 @@ public sealed partial class HostManager
                 return started with
                 {
                     Code = "SeparateCopyStarted",
-                    Message = "The warned separate server started on this PC. Another game server may still be running. Keep both histories and arrange group review."
+                    Message = "The server is starting on this PC."
                 };
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or

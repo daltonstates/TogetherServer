@@ -29,6 +29,11 @@ and compatibility code remain protected.
   wall-clock time and branch-local numbers have no priority. A returning owner
   follows a newer continuation in fresh managed storage. Every existing world
   remains intact.
+- **Server list:** inactive retained copies collapse into one ordinary server
+  entry. A returning owner's active continuation remains under Your servers;
+  its sharing controls use the original server's switch and normal Start checks
+  the latest save. Active, unknown and recovery-review copies remain visible.
+  Stored profiles and worlds are unchanged by this presentation rule.
 - **Review:** concurrent progress, an incomplete newest known copy, changed
   local files and damaged signed state block automatic selection. The app
   preserves evidence and does not merge worlds or fall back to a known older
@@ -64,11 +69,12 @@ stops a game.
 
 ## Acceptance and remaining checks
 
-Local validation and final hosted rendering passed. The latest packaged run
-passed the full journey with lab diagnostics enabled. An earlier returning-owner
-review blocker has not been explained; two bounded hosted runs without a
-diagnostic sink remain pending. Earlier failed results remain failed and do not
-establish acceptance for a later candidate.
+The complete code-only gate passes after correcting an incomplete-vault
+inventory race and a separate older-history retention gap. Earlier hosted
+checks include both a diagnostic-enabled pass and ordinary failures; the
+expanded final packaged journey and final directory rendering remain pending.
+Earlier failed results remain failed and do not establish acceptance for a
+later candidate.
 
 Local automated work is code-only. No app, game, console fixture, browser,
 installer or native dialog is launched on the owner's active desktop.
@@ -91,11 +97,11 @@ Local verification on 2026-10-21:
 | Check | Result |
 | --- | --- |
 | `scripts/verify-code-only.ps1` | PASS: pinned .NET 10.0.301 and Node 24.14.1, locked dependencies, typecheck, lint, full solution compile, all 62 source/synthetic groups, whitespace and desktop diagnostic isolation |
-| Full JSDOM suite | PASS: final switch-first UI passes all 1,327 tests in 106 files |
-| Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax, workflow YAML and all ten workflow PowerShell blocks; 18 bounded render plans |
+| Full JSDOM suite | PASS: final logical-server UI passes all 1,342 tests in 107 files |
+| Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax, workflow YAML and all ten workflow PowerShell blocks; expanded to 20 bounded render plans |
 | Production React bundle | PASS: existing JavaScript chunk-size advisory above 500 kB |
 | Normal app build embedding the current bundle | PASS: zero warnings/errors |
-| Packaged three-app private-address journey | Full diagnostic-enabled run passes; ordinary runs without diagnostic collection pending |
+| Packaged three-app private-address journey | One diagnostic run passed; following ordinary run and diagnostic retry failed; source corrections pass locally, expanded final hosted check pending |
 | Desktop/narrow rendered UI | Final switch-first view passes 18/18, zero layout findings/errors; desktop and narrow screenshots inspected |
 | Physical PCs, outside game route and real saved game | Not executed; external acceptance remains open |
 
@@ -114,11 +120,11 @@ server-policy code before its existing membership-read-only classification;
 guard precedence was corrected. Initial compile-only property/namespace errors
 were also corrected. The final full gate above passed after these changes.
 
-Ignored local evidence: `local-data/simple-hosting-code-only-diagnostic-final.log`,
-`local-data/simple-hosting-ui-final-cleanup.json`,
-`local-data/simple-hosting-renderer-source.log`,
-`local-data/simple-hosting-bundle-final-cleanup.log`, and
-`local-data/simple-hosting-embedded-build-diagnostic.log`.
+Ignored local evidence: `local-data/simple-hosting-code-only-fixed-final.log`,
+`local-data/simple-hosting-ui-logical-final.json`,
+`local-data/simple-hosting-renderer-logical-final.log`,
+`local-data/simple-hosting-bundle-logical-final.log`, and
+`local-data/simple-hosting-embedded-logical-final.log`.
 
 ### Initial hosted run and bounded corrections
 
@@ -224,3 +230,79 @@ The next bounded hosted check runs the ordinary journey twice against one
 immutable candidate with diagnostic collection explicitly off. If either fails,
 a separate diagnostic attempt may collect fixed failure metadata, but the job
 retains its ordinary failure even if that diagnostic attempt succeeds.
+
+### Ordinary run and diagnostic failure
+
+[Run 39656885865](https://github.com/daltonstates/TogetherServer/actions/runs/39656885865)
+tests source `52b4af1fddcaac1a7a39b84f5756be98743d68ad`.
+Render job `119419404844` passed. Packaged job `119419405630` failed: its first
+ordinary run timed out waiting for the listener-less receiver's descendant.
+The separate diagnostic retry received and forwarded that descendant, but
+returning owner Start then failed `SharedSaveHistoryNeedsReview`. Both attempts
+reported an empty owned job at cleanup. The second ordinary attempt did not run;
+the diagnostic retry is not an ordinary pass.
+
+The diagnostic shows two successful latest-selection passes, with both local
+payloads verified and one unique descendant. The following failure is specifically
+`PeerSync / ReviewRequired / InvalidDataException`, before another inventory
+selection. It is distinct from the separately identified exact-retention gap.
+Candidate SHA-256:
+`3b8b7cc7dbe1b19589f186e1ee15dabb90802fc2b643667e8834de39cd3850c8`.
+Hash-verified journey artifact `12371318349` has ZIP SHA-256
+`f8fec2a2abb227c6fa018c101607caccd59c63e91bb049cedb7631abfdaa2b98`.
+
+The expanded source regression starts from two original publications, then a
+Friend descendant. Its first failure independently exposed inventory reading a
+new incoming branch directory's proof before that transfer had a completed
+pointer. That incomplete directory must be skipped; a present corrupt pointer
+must still fail closed. The regression will also exercise retaining older signed
+manifests across the new owner's prepared source branch. The packaged journey
+now requires two linked original saves before the Friend takes over, rather
+than testing only a first publication.
+
+### Reproduced fixes
+
+Two independent source failures were reproduced before correction:
+
+- Incoming history staging created a branch directory before promoting its
+  proof and completed pointer. Inventory read the proof first and failed on
+  that unfinished directory, including while seeding searched for a parent
+  manifest. Inventory now reads the completed pointer first and skips absent
+  pointers. A present invalid pointer still blocks the group.
+- A newly prepared owner base kept only the Friend's current source segment.
+  Latest selection could verify older canonical ancestry globally, while exact
+  retention searched only its selected vault. Retention now resolves a missing
+  exact hash/number from other managed manifests in the same world. Full parent
+  and signer verification still runs; branch identity and payload source stay
+  pinned.
+
+The expanded file/fake-HTTP regression passes after both fixes, including
+original v1-to-v2, a Friend v3, outbound relay with the producer offline, fresh
+owner source retention, a deliberately unfinished owner incoming vault and
+corrupt completed-pointer refusal. The existing recovery-selection group also
+passes known-newest-without-payload, damaged newest, missing ancestry and fork
+refusal. Both focused groups and the full 62-group code-only gate pass with zero
+build warnings/errors. The expanded packaged journey remains pending at this
+checkpoint. These cases prove
+the two fixes independently; they do not establish the exact cause of every
+earlier hosted failure.
+
+### Final logical-server presentation checkpoint
+
+The returning owner no longer sees its continuation labeled as hosting for a
+friend. Exact local-original identity takes precedence over a same-ID saved
+Friend connection. Normal Start from a retained child targets its original
+local server, then selects the actual newly running continuation. Both the
+sharing switch and read-only peer details target the original policy. The
+obsolete split-save confirmation and its legacy Start route are removed from
+the ordinary local Start path.
+
+Only inactive duplicate rows are hidden. Running, Unknown, failed, recovery
+review and Offline-with-process-identity rows remain visible. No settings,
+profiles or worlds are deleted. Focused JSDOM validation passes 144/144 cases;
+the full suite passes 1,342/1,342 in 107 files. Typecheck, full lint, the React
+bundle and the normal app build embedding that bundle pass with zero compile
+warnings/errors. A new desktop/narrow hosted case starts from
+a current continuation, original and older retained copy, and checks the one
+logical row, original policy request and absence of a guest label. The bounded
+render plan now contains 20 cases.

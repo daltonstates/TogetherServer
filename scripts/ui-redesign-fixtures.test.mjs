@@ -614,7 +614,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 18, 'nine shared-hosting surfaces cover desktop and narrow widths');
+  assert.equal(simple.plans.length, 20, 'ten shared-hosting surfaces cover desktop and narrow widths');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -841,7 +841,7 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 9);
+  assert.equal(simpleHostingCases.length, 10);
   assert.equal(simpleHostingVariants.length, 2);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
@@ -870,6 +870,15 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   assert.equal(routeFixture(owner, { method: 'PUT', path: ownerBase, body: { enabled: true } }).body.ok, true);
   assert.equal(owner.sharingEnabled, true);
   assert.equal(routeFixture(owner, { method: 'PUT', path: ownerBase, body: { enabled: true, grants: {} } }), null);
+  const returnedOwner = createFixtureState({ id: 'host-offline', ownerContinuations: true });
+  const [current, original, retained] = returnedOwner.host.settings.profiles;
+  assert.equal(current.separateCopySourceProfileId, original.id);
+  assert.equal(retained.separateCopySourceProfileId, original.id);
+  assert.equal(original.sharedSavesEnabled, true);
+  assert.equal(current.sharedSavesEnabled, false);
+  assert.deepEqual(returnedOwner.host.runs.map(run => run.state), ['Ready', 'Offline', 'Offline']);
+  assert.equal(routeFixture(returnedOwner, { method: 'GET', path: `/api/local/profiles/${original.id}/shared-world` }).body.enabled, true);
+  assert.equal(simpleHostingCases.find(item => item.id === 'simple-hosting-owner-continuation').fixture.ownerContinuations, true);
   const ownerOn = simpleHostingCases.find(item => item.id === 'simple-hosting-owner-on');
   assert.deepEqual(ownerOn.steps.at(-1), { role: 'checkbox', name: 'Allow friends to host this server' },
     'the controlled switch uses an ordinary role click instead of an immediate native checked-state assertion');

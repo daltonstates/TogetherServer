@@ -116,15 +116,21 @@ internal static partial class CoreRemoteJourney
                     "SimpleAutomaticReceivingMissing");
             Pass("one-server-choice-enrolls-both-friends");
 
-            var originalStart = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-            LabRequire(originalStart.Ok, "SimpleOriginalStartRejected");
-            TrackFixture(originalStart.Snapshot.Runs.Single(item => item.ProfileId == profile.Id));
-            _ = await WaitForRunStateAsync(owner, profile.Id, "Process running");
-            LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
-                "SimpleOriginalStopRejected");
-            initialVersion = (await PairingLabGetAsync<SharedWorldStatus>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world")).Latest;
-            LabRequire(initialVersion is { Number: 1 }, "SimpleInitialCopyMissing");
+            for (var publication = 1; publication <= 2; publication++)
+            {
+                var previousHash = initialVersion?.VersionHash;
+                var originalStart = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
+                LabRequire(originalStart.Ok, "SimpleOriginalStartRejected");
+                TrackFixture(originalStart.Snapshot.Runs.Single(item => item.ProfileId == profile.Id));
+                _ = await WaitForRunStateAsync(owner, profile.Id, "Process running");
+                LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
+                    "SimpleOriginalStopRejected");
+                initialVersion = (await PairingLabGetAsync<SharedWorldStatus>(owner,
+                    $"/api/local/profiles/{profile.Id}/shared-world")).Latest;
+                LabRequire(initialVersion is not null && initialVersion.Number == publication && initialVersion.ParentHash == previousHash,
+                    "SimpleInitialHistoryMissing");
+            }
+            Pass("original-host-completes-two-linked-saves");
             foreach (var pc in new[] { (Client: first, Data: firstData, Device: firstDevice), (Client: second, Data: secondData, Device: secondDevice) })
             {
                 await PairingLabWaitAsync(async () =>
@@ -279,7 +285,9 @@ internal static partial class CoreRemoteJourney
                 failed,
                 cleanup = new { jobEmpty = clean },
                 sourceVersionHash = initialVersion?.VersionHash,
+                sourceVersionNumber = initialVersion?.Number,
                 descendantVersionHash = continuedVersion?.VersionHash,
+                descendantVersionNumber = continuedVersion?.Number,
                 friendStartAttempts,
                 ownerStartAttempts,
                 latestReviewDiagnostic,

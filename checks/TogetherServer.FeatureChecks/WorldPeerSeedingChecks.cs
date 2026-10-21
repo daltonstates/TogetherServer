@@ -60,11 +60,19 @@ internal static class WorldPeerSeedingChecks
         pairing.ConfirmSharedRosterPublished(profile, roster);
         var bytes = new byte[SharedWorldService.ChunkBytes * 2 + 17];
         for (var index = 0; index < bytes.Length; index++) bytes[index] = (byte)(index % 241);
+        var predecessorBytes = Encoding.UTF8.GetBytes("A's first completed session");
+        completed.Set(predecessorBytes);
+        var predecessorPublication = publisher.PublishAfterStop(a.LoadSettings().Profiles.Single(), Guid.NewGuid());
+        Require(predecessorPublication.Ok && predecessorPublication.Version is { Number: 1 },
+            "the original owner's first signed completed-file publication failed");
+        var predecessor = predecessorPublication.Version!;
         completed.Set(bytes);
         var originalPublication = publisher.PublishAfterStop(a.LoadSettings().Profiles.Single(), Guid.NewGuid());
-        Require(originalPublication.Ok && originalPublication.Version is not null,
-            "the original owner's signed completed-file publication failed");
+        Require(originalPublication.Ok && originalPublication.Version is { Number: 2 } &&
+            originalPublication.Version.ParentHash == predecessor.VersionHash,
+            "the original owner's second signed completed-file publication did not continue its first");
         var first = originalPublication.Version!;
+        WriteCopy(Vault(b, bCredential.DeviceId, profile), predecessor, predecessorBytes);
         WriteCopy(Vault(b, bCredential.DeviceId, profile), first, bytes);
         var cStore = Store(c, root, roster);
         var bStore = Store(b, root, roster);
@@ -128,7 +136,7 @@ internal static class WorldPeerSeedingChecks
         var changed = Encoding.UTF8.GetBytes("C's completed next session save");
         var next = SharedWorldService.SignVersion(first with
         {
-            Number = 2,
+            Number = first.Number + 1,
             ParentHash = first.VersionHash,
             BackupId = Guid.NewGuid(),
             CreatedUtc = first.CreatedUtc.AddDays(-1),
@@ -141,13 +149,15 @@ internal static class WorldPeerSeedingChecks
         Require(FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(b, cBranch))?.VersionHash == next.VersionHash,
             "B did not retain C's next completed continuation after supplying C's initial save");
         sourceOnline = false;
-        using var aService = new WorldPeerService(a, new HostManager(a), aFriends, pairing, Offline,
+        var aManager = new HostManager(a);
+        using var aService = new WorldPeerService(a, aManager, aFriends, pairing, Offline,
             (_, _) => Task.CompletedTask);
         using var ownerHandler = new Handler(aService, root, aRoute);
         returnedOwnerHandler = ownerHandler;
         await bService.SyncNowAsync(default);
         Require(FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(a, cBranch))?.VersionHash == next.VersionHash,
-            "listener-less B did not seed the descendant to returned A while producer C was unavailable");
+            "listener-less B did not seed the descendant to returned A while producer C was unavailable: " +
+            $"seeds={ownerHandler.Seeds}, exchangeFailure={ownerHandler.LastFailure?.Message}");
         var ownerLatest = await aService.ResolveLatestRecoverySourceAsync(root, default);
         var ownerFence = aService.CanonicalStartBlock(root, first.VersionHash);
         Require(ownerLatest.Ok && ownerLatest.Source?.Descriptor.Version.VersionHash == next.VersionHash &&
@@ -162,15 +172,39 @@ internal static class WorldPeerSeedingChecks
             ownerBranch.Branch.Offer.Version.VersionHash == next.VersionHash &&
             File.ReadAllText(Path.Combine(originalWorld, "world.dat")) == "original live world remains untouched",
             "returning A could not prepare C's exact continuation in fresh retained storage without changing its original world");
+        var ownerRetained = new SharedWorldSeparateCopyStore(a).RetainedRoot(ownerBranch.Branch!);
+        Require(FriendLink.ReadReceivedManifest(ownerRetained, predecessor.Number, predecessor.VersionHash) is null &&
+            (await aManager.PeerPublishedVersionAsync(root, predecessor.VersionHash, predecessor.Number))?.VersionHash == predecessor.VersionHash,
+            "the regression needs an owner-base vault without the older exact manifest still retained in A's canonical publication");
         Require((await aService.AnnounceLocalHostingAsync(root, default)).Ok,
             "the returning owner could not announce its explicitly enabled local hosting contact");
         await aService.WaitForSyncAsync();
+        // An incoming transfer can stage metadata for this same new lane
+        // before it has either a complete pointer or promoted branch proof.
+        var incomingOwnerVault = SharedWorldBranchVault.Root(a, ownerBranch.Branch!);
+        Directory.CreateDirectory(incomingOwnerVault);
+        FriendLink.KeepSignedManifest(incomingOwnerVault, next);
         var finalOwnerSource = await aService.ResolveLatestRecoverySourceAsync(root, default);
         Require(finalOwnerSource.Ok && finalOwnerSource.Source?.Descriptor.Version.VersionHash == next.VersionHash &&
+            finalOwnerSource.Source.BranchHash == ownerBranch.Branch!.BranchHash &&
             finalOwnerSource.ObservationHash == aService.LatestObservationHash(root),
             $"returning owner's final latest recheck failed after recording its continuation: result={finalOwnerSource.Code}, " +
             $"expectedSave={finalOwnerSource.Source?.Descriptor.Version.VersionHash == next.VersionHash}");
         finalOwnerSource.Source!.Verify(a, root);
+        Require(FriendLink.ReadReceivedManifest(finalOwnerSource.Source.Vault, predecessor.Number,
+            predecessor.VersionHash)?.VersionHash == predecessor.VersionHash,
+            "the exact owner source did not retain the verified older canonical manifest from elsewhere on this PC");
+        Require(FriendLink.ReadReceivedLatest(incomingOwnerVault) is null,
+            "preparing the owner source silently promoted the unfinished incoming copy");
+        var corruptPointer = Path.Combine(incomingOwnerVault, "latest.json");
+        File.WriteAllBytes(corruptPointer, JsonSerializer.SerializeToUtf8Bytes(next with { Signature = "" }, Json));
+        try
+        {
+            var corruptLatest = await aService.ResolveLatestRecoverySourceAsync(root, default);
+            Require(!corruptLatest.Ok && corruptLatest.Code == "SharedSaveHistoryNeedsReview",
+                "a present corrupt incoming pointer was ignored in favor of another complete save");
+        }
+        finally { File.Delete(corruptPointer); }
 
         // An unchanged pointer is not a fresh verification claim after damage.
         sourceOnline = true;
@@ -184,7 +218,7 @@ internal static class WorldPeerSeedingChecks
         var newerBytes = bytes.ToArray(); newerBytes[^1] ^= 0x4F;
         var newerOriginal = SharedWorldService.SignVersion(first with
         {
-            Number = 2,
+            Number = first.Number + 1,
             ParentHash = first.VersionHash,
             BackupId = Guid.NewGuid(),
             Files = [Fact(newerBytes)]
@@ -284,6 +318,7 @@ internal static class WorldPeerSeedingChecks
     private sealed class Handler(WorldPeerService service, SharedWorldPeerRoot root, SharedWorldPeerRoute route) : HttpMessageHandler
     {
         internal int Seeds { get; private set; }
+        internal Exception? LastFailure { get; private set; }
         internal Func<WorldPeerExchangeRequest, Task>? BeforeExchange { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
@@ -296,11 +331,19 @@ internal static class WorldPeerSeedingChecks
             var exchange = WorldPeerProtocol.DecodeEnvelope<WorldPeerExchangeRequest>(bytes, 2 * 1024 * 1024);
             if (exchange.Request.Operation == WorldPeerOperations.Seed) Seeds++;
             if (BeforeExchange is not null) await BeforeExchange(exchange);
-            return new(HttpStatusCode.OK)
+            try
             {
-                Content = new ByteArrayContent(await service.ExchangeAsync(root.GroupKey,
-                exchange.Request, exchange.Payload, token, route.CertificateSha256))
-            };
+                return new(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(await service.ExchangeAsync(root.GroupKey,
+                    exchange.Request, exchange.Payload, token, route.CertificateSha256))
+                };
+            }
+            catch (Exception error)
+            {
+                LastFailure = error;
+                throw;
+            }
         }
     }
 }

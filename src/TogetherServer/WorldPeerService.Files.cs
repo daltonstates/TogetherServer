@@ -113,9 +113,13 @@ internal sealed partial class WorldPeerService
                     cancellationToken.ThrowIfCancellationRequested();
                     var hash = Path.GetFileName(path);
                     if (!SharedWorldPeerTrust.ValidHash(hash)) continue;
-                    var branch = SharedWorldBranchVault.ReadBranch(data, group.Roster, hash);
                     var version = ReadPeerPointer(path);
-                    if (version is not null && AuthorizedDescriptor(group, new(version, branch)))
+                    // History staging creates the vault before its complete
+                    // pointer and branch proof are promoted. It is not a
+                    // local copy yet; a present pointer still verifies above.
+                    if (version is null) continue;
+                    var branch = SharedWorldBranchVault.ReadBranch(data, group.Roster, hash);
+                    if (AuthorizedDescriptor(group, new(version, branch)))
                         result.Add(new(new(version, branch), path, false));
                 }
         }

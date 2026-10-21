@@ -35,7 +35,7 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); controller?.uninstall(); controller = null })
 
-it('shows one grouped workspace and hosts a consented guest copy with one Host locally', async () => {
+it('shows one grouped workspace and hosts a continuation with one Host locally', async () => {
   render(<DemoApp />)
   expect(await screen.findByRole('heading', { name: 'Meadow friends · DEMO' })).toBeInTheDocument()
   expect(screen.getByRole('complementary', { name: 'Demo controls' })).toHaveTextContent('FAKE DATA')
@@ -58,18 +58,21 @@ it('shows one grouped workspace and hosts a consented guest copy with one Host l
   expect(start).toBeEnabled()
   fireEvent.click(start)
   expect(await screen.findByRole('heading', { name: 'Morgan’s Meadow · local DEMO copy' })).toBeInTheDocument()
-  expect(await screen.findByRole('heading', { name: 'Hosting for friends' })).toBeInTheDocument()
+  // This fixture's saved Friend and local original share the exact source ID.
+  // The local original takes precedence, so its running continuation stays under Your servers.
+  expect(screen.queryByRole('heading', { name: 'Hosting for friends' })).not.toBeInTheDocument()
   const localRow = await screen.findByRole('button', { name: 'Open Morgan’s Meadow · local DEMO copy on this PC' })
-  await waitFor(() => expect(localRow).toHaveTextContent('Hosted for Morgan'))
-  expect(await screen.findByText('Hosting for Morgan')).toBeInTheDocument()
-  expect(screen.getByText('Shared save: Morgan’s Meadow · DEMO')).toBeInTheDocument()
+  expect(localRow.closest('.server-directory-group')).toHaveTextContent('Your servers')
+  expect(localRow).not.toHaveTextContent('Hosted for')
+  expect(screen.queryByText('Hosting for Morgan')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Stop server' })).toBeEnabled()
-  fireEvent.click(screen.getByRole('button', { name: 'Open Meadow friends · DEMO on this PC' }))
-  expect(await screen.findByRole('heading', { name: 'Meadow friends · DEMO' })).toBeInTheDocument()
-  expect(localRow).toHaveTextContent('Hosted for Morgan')
+  expect(screen.queryByRole('button', { name: 'Open Meadow friends · DEMO on this PC' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Open Lantern village · DEMO on this PC' }))
+  expect(await screen.findByRole('heading', { name: 'Lantern village · DEMO' })).toBeInTheDocument()
+  expect(localRow).not.toHaveTextContent('Hosted for')
   fireEvent.click(localRow)
   expect(await screen.findByRole('heading', { name: 'Morgan’s Meadow · local DEMO copy' })).toBeInTheDocument()
-  expect(screen.getByText('Hosting for Morgan')).toBeInTheDocument()
+  expect(screen.queryByText('Hosting for Morgan')).not.toBeInTheDocument()
   expect(realFetch).not.toHaveBeenCalled()
 }, 15_000)
 

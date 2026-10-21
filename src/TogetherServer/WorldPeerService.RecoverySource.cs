@@ -226,9 +226,16 @@ internal sealed partial class WorldPeerService
             var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
             var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
             if (!await WorldPeerFileTransfer.StageDescriptorHistoryAsync(group.Root, vault, descriptor, records,
-                async (hash, number, _) => anchor?.VersionHash == hash && anchor.Number == number ? anchor :
-                    selected.Vault is not null ? FriendLink.ReadReceivedManifest(selected.Vault, number, hash) :
-                        await manager.PeerPublishedVersionAsync(group.Root, hash, number), cancellationToken))
+                async (hash, number, token) =>
+                {
+                    var manifest = anchor?.VersionHash == hash && anchor.Number == number ? anchor :
+                        selected.Vault is not null ? FriendLink.ReadReceivedManifest(selected.Vault, number, hash) : null;
+                    // A retained branch base may keep only its current source
+                    // segment. Complete older segments from exact signed
+                    // metadata elsewhere in this world; the selected lane and
+                    // payload stay pinned, and staging verifies every parent.
+                    return manifest ?? await FindManifestAsync(group, hash, number, token);
+                }, cancellationToken))
                 throw new InvalidDataException("The selected signed history is still being copied. Prepare recovery again to continue.");
             WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
             var sourceDirectory = RecoverySourceDirectory(selected);
