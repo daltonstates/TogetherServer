@@ -142,6 +142,26 @@ Func<string, IEnumerable<string>, HttpClient>? labClient = localLab is null ? nu
     (endpoint, pins) => FriendLink.MakeClient(endpoint, pins, localLab);
 using var friend = new FriendService(data, labClient);
 using var worldPeers = new WorldPeerService(data, manager, friend, pairing, labClient);
+if (localLab is not null)
+{
+    var latestReviewDiagnostics = new Queue<object>();
+    worldPeers.LatestReviewDiagnostic = diagnostic =>
+    {
+        // The disposable lab retains only the last fixed phase/count records.
+        // Production has no callback, extra file, or diagnostic HTTP endpoint.
+        try
+        {
+            lock (latestReviewDiagnostics)
+            {
+                if (latestReviewDiagnostics.Count == 16) latestReviewDiagnostics.Dequeue();
+                latestReviewDiagnostics.Enqueue(diagnostic);
+                File.WriteAllText(Path.Combine(root, "simple-hosting-latest-review.json"),
+                    JsonSerializer.Serialize(latestReviewDiagnostics, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    };
+}
 using var updateClient = localLab is null ? new HttpClient { Timeout = TimeSpan.FromSeconds(45) } :
     LocalPairingLabMode.OfflineClient(TimeSpan.FromSeconds(45));
 var appVersion = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0);

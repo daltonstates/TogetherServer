@@ -5,9 +5,23 @@ namespace TogetherServer;
 
 internal sealed record WorldPeerLatestSourceResult(bool Ok, string Code, string Message,
     WorldPeerRecoverySource? Source = null, string? ObservationHash = null);
+internal sealed record WorldPeerLatestReviewDiagnostic(string Phase, string Reason, string ExceptionType,
+    int LocalCopies = 0, int CanonicalCopies = 0, int BranchCopies = 0, int KnownHeadCount = 0,
+    int VerifiedPayloads = 0, int CoveringCandidates = 0, string CandidateKind = "None");
 
 internal sealed partial class WorldPeerService
 {
+    // Optional fixed metadata for an isolated source/packaged lab. Production
+    // has no sink. No save identity, path, key, payload or raw error is emitted,
+    // and a diagnostic failure cannot change an authorization decision.
+    internal Action<WorldPeerLatestReviewDiagnostic>? LatestReviewDiagnostic { get; set; }
+
+    private void ReportLatestReview(WorldPeerLatestReviewDiagnostic diagnostic)
+    {
+        try { LatestReviewDiagnostic?.Invoke(diagnostic); }
+        catch (Exception) { /* Diagnostic storage never authorizes or blocks hosting. */ }
+    }
+
     // A local Host instruction checks reachable members first. A member with
     // no incoming route can still send its signed history to an enabled peer;
     // unavailable peers never turn a known newer save into permission to start
@@ -15,12 +29,14 @@ internal sealed partial class WorldPeerService
     internal async Task<WorldPeerLatestSourceResult> ResolveLatestRecoverySourceAsync(
         SharedWorldPeerRoot root, CancellationToken cancellationToken)
     {
+        var phase = "PeerSync";
         try
         {
             await SyncWorldAsync(root, cancellationToken);
             for (var attempt = 0; ; attempt++)
             {
                 var result = await ResolveLatestRecoverySourceOnceAsync(root, cancellationToken);
+                phase = "IncomingSeedWait";
                 if (result.Ok || attempt == 3 || !await ExpectIncomingSeedAsync(root, cancellationToken)) return result;
                 // A sender whose incoming listener is off may be between its
                 // normal five-second outbound polls. One confirmation waits
@@ -29,7 +45,10 @@ internal sealed partial class WorldPeerService
             }
         }
         catch (Exception error) when (PeerFailure(error))
-        { return new(false, "SharedSaveHistoryNeedsReview", "The current shared save or signed membership needs review. Existing saves were kept."); }
+        {
+            ReportLatestReview(new(phase, "ReviewRequired", error.GetType().Name));
+            return new(false, "SharedSaveHistoryNeedsReview", "The current shared save or signed membership needs review. Existing saves were kept.");
+        }
     }
 
     private async Task<bool> ExpectIncomingSeedAsync(SharedWorldPeerRoot root, CancellationToken cancellationToken)
@@ -50,6 +69,7 @@ internal sealed partial class WorldPeerService
     private async Task<WorldPeerLatestSourceResult> ResolveLatestRecoverySourceOnceAsync(
         SharedWorldPeerRoot root, CancellationToken cancellationToken)
     {
+        var phase = "Membership";
         try
         {
             await refreshGate.WaitAsync(cancellationToken);
@@ -60,7 +80,9 @@ internal sealed partial class WorldPeerService
                     return new(false, "WorldMembershipRequired", "Reconnect to this shared world before hosting its save.");
                 if (!await RecoveryAllowedAsync(group, cancellationToken))
                     return new(false, "HostingPermissionRequired", "This PC needs permission to receive and host this world's saves.");
+                phase = "InitialObservation";
                 var observation = LatestObservationHash(root) ?? throw new InvalidDataException("The shared save observation changed.");
+                phase = "LatestSelection";
                 var selected = await LatestLocalSaveAsync(group, cancellationToken);
                 if (selected is null)
                     return new(false, "SharedSaveUnavailable", "No complete verified save is available on this PC yet. Keep the approved PCs online while the save copies.");
@@ -69,8 +91,10 @@ internal sealed partial class WorldPeerService
                     SessionBranchHash(group, selected.Descriptor);
                 // An explicit exact selection keeps its identity through the
                 // immutable retention and the final permission check.
+                phase = "RetainExactSource";
                 var source = await ResolveRecoverySourceAsync(root.GroupKey, lane, cancellationToken,
                     selected.Descriptor.Version.VersionHash);
+                phase = "FinalRecheck";
                 var current = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
                 if (LatestObservationHash(root) != observation)
                     return new(false, "LatestSaveChanged", "New shared save information arrived. Try Host locally again.");
@@ -84,6 +108,7 @@ internal sealed partial class WorldPeerService
         }
         catch (Exception error) when (PeerFailure(error))
         {
+            ReportLatestReview(new(phase, "ReviewRequired", error.GetType().Name));
             return new(false, "SharedSaveHistoryNeedsReview",
                 "The newest known save is incomplete, changed, or has competing histories. Existing saves were kept; review sharing before hosting.");
         }
@@ -141,11 +166,17 @@ internal sealed partial class WorldPeerService
     {
         var state = Store(group).Project();
         if (state.Peers.Any(peer => peer.HasConflict))
+        {
+            ReportLatestReview(new("Inventory", "SignerConflict", "InvalidDataException"));
             throw new InvalidDataException("Conflicting signed world information needs review.");
+        }
         var local = (await LocalSavesAsync(group, cancellationToken)).Where(item =>
             !item.Descriptor.TestOnly && item.Descriptor.TestArtifact is null && AuthorizedDescriptor(group, item.Descriptor)).ToArray();
         if (local.Length == 0)
         {
+            ReportLatestReview(new("Inventory", "NoCompleteCopy", "None", KnownHeadCount:
+                state.Branches.Select(item => item.Branch.HeadVersionHash)
+                    .Concat(state.Sessions.Select(item => item.Session.HeadVersionHash).OfType<string>()).Distinct().Count()));
             if (state.Branches.Count > 0 || state.Sessions.Any(item => item.Session.HeadVersionHash is not null))
                 throw new InvalidDataException("A known signed save has no complete local payload.");
             return null;
@@ -153,6 +184,8 @@ internal sealed partial class WorldPeerService
         var candidates = local.Select(item => item.Descriptor).ToArray();
         var known = state.Branches.Select(item => item.Branch.HeadVersionHash)
             .Concat(state.Sessions.Select(item => item.Session.HeadVersionHash).OfType<string>()).Distinct(StringComparer.Ordinal).ToArray();
+        ReportLatestReview(new("Inventory", "CandidatesRead", "None", local.Length,
+            candidates.Count(item => item.Branch is null), candidates.Count(item => item.Branch is not null), known.Length));
         var chosen = await WorldPeerLatestSelection.SelectAsync(group.Root, candidates, known,
             async (index, token) =>
             {
@@ -170,7 +203,8 @@ internal sealed partial class WorldPeerService
                     if (!WorldPeerFileTransfer.TrustedHistoricSigner(group.Root, item.Descriptor.Version, records))
                         throw new InvalidDataException("The published source signer changed.");
                 }
-            }, async (hash, number, token) => await FindManifestAsync(group, hash, number, token), cancellationToken);
+            }, async (hash, number, token) => await FindManifestAsync(group, hash, number, token), cancellationToken,
+            ReportLatestReview);
         return local[chosen];
     }
 
@@ -210,31 +244,67 @@ internal static class WorldPeerLatestSelection
         IReadOnlyList<WorldPeerSaveDescriptor> candidates, IReadOnlyList<string> knownHeads,
         Func<int, CancellationToken, Task> verifyPayload,
         Func<string, long, CancellationToken, Task<SharedWorldVersion?>> readManifest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Action<WorldPeerLatestReviewDiagnostic>? diagnostic = null)
     {
         if (!SharedWorldPeerTrust.ValidRoot(root) || candidates.Count is < 1 or > SharedWorldPeerStore.MaximumKnownBranches ||
             knownHeads.Any(hash => !SharedWorldPeerTrust.ValidHash(hash)))
             throw new InvalidDataException("The available histories crossed their world or capacity.");
         var required = candidates.Select(item => item.Version.VersionHash).Concat(knownHeads).ToHashSet(StringComparer.Ordinal);
         var winners = new Dictionary<string, int>(StringComparer.Ordinal);
+        var verifiedPayloads = 0;
+        void Report(string phase, string reason, string exceptionType, string kind = "None")
+        {
+            try
+            {
+                diagnostic?.Invoke(new(phase, reason, exceptionType, candidates.Count,
+                    candidates.Count(item => item.Branch is null), candidates.Count(item => item.Branch is not null),
+                    required.Count, verifiedPayloads, winners.Count, kind));
+            }
+            catch (Exception) { /* Diagnostics cannot change source selection. */ }
+        }
         for (var index = 0; index < candidates.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var descriptor = candidates[index];
             if (descriptor.TestOnly || descriptor.TestArtifact is not null) continue;
+            var phase = "CandidatePayload";
+            var kind = descriptor.Branch is null ? "Canonical" : "Branch";
             try
             {
                 await verifyPayload(index, cancellationToken);
+                verifiedPayloads++;
+                phase = "CandidateAncestry";
                 var ancestry = await AncestorsAsync(root, descriptor, readManifest, cancellationToken);
                 if (required.IsSubsetOf(ancestry)) winners.TryAdd(descriptor.Version.VersionHash, index);
+                else Report(phase, "KnownHeadNotAncestor", "None", kind);
             }
             catch (Exception error) when (error is IOException or InvalidDataException or
                 UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or
                 System.Text.Json.JsonException or ArgumentException)
-            { /* Changed or incomplete copies never authorize an older fallback. */ }
+            {
+                var reason = error.Data["WorldPeerLatestReason"] switch
+                {
+                    "SourceProofChanged" => "SourceProofChanged",
+                    "WorldIdentityChanged" => "WorldIdentityChanged",
+                    "BranchSignerChanged" => "BranchSignerChanged",
+                    "CanonicalSignerChanged" => "CanonicalSignerChanged",
+                    "RepeatedVersion" => "RepeatedVersion",
+                    "FirstVersionHasParent" => "FirstVersionHasParent",
+                    "MissingParentHash" => "MissingParentHash",
+                    "ParentIdentityChanged" => "ParentIdentityChanged",
+                    _ => "CopyVerificationFailed"
+                };
+                Report(phase, reason,
+                    error.GetType().Name, kind);
+                // Changed or incomplete copies never authorize an older fallback.
+            }
         }
         if (winners.Count != 1)
+        {
+            Report("LatestSelection", "UniqueDescendantUnavailable", "InvalidDataException");
             throw new InvalidDataException("The newest history is incomplete or divergent. Keep all copies for review.");
+        }
+        Report("LatestSelection", "UniqueDescendantVerified", "None");
         return winners.Values.Single();
     }
 
@@ -243,12 +313,18 @@ internal static class WorldPeerLatestSelection
         Func<string, long, CancellationToken, Task<SharedWorldVersion?>> readManifest,
         CancellationToken cancellationToken)
     {
+        static InvalidDataException Invalid(string reason, string message)
+        {
+            var error = new InvalidDataException(message);
+            error.Data["WorldPeerLatestReason"] = reason;
+            return error;
+        }
         var result = new HashSet<string>(StringComparer.Ordinal);
         var head = descriptor.Version;
         var branch = descriptor.Branch;
         if (branch is not null && (!SharedWorldSeparateCopyStore.Verify(branch) ||
             branch.Offer.Roster.OwnerPublicKey != root.OwnerPublicKey))
-            throw new InvalidDataException("The continuation's source proof changed.");
+            throw Invalid("SourceProofChanged", "The continuation's source proof changed.");
         var current = head;
         var segmentKey = current.SigningPublicKey;
         while (true)
@@ -257,11 +333,11 @@ internal static class WorldPeerLatestSelection
             if (!SharedWorldService.VerifySignature(current) || current.ProfileId != root.ProfileId ||
                 current.GroupId != root.GroupId || current.WorldId != head.WorldId || current.Game != head.Game ||
                 current.CaptureKind == LiveSaveAcceptanceTrust.TestCaptureKind)
-                throw new InvalidDataException("The signed save ancestry crossed a world.");
+                throw Invalid("WorldIdentityChanged", "The signed save ancestry crossed a world.");
             if (branch is not null)
             {
                 if (!SharedWorldSeparateCopyStore.VerifySnapshotVersion(branch, current))
-                    throw new InvalidDataException("The continuation ancestry has an unauthorized signer.");
+                    throw Invalid("BranchSignerChanged", "The continuation ancestry has an unauthorized signer.");
                 if (current.VersionHash == branch.Offer.Version.VersionHash)
                 {
                     // The signed offer authorizes this exact transition back
@@ -272,21 +348,21 @@ internal static class WorldPeerLatestSelection
                 }
             }
             else if (current.SigningPublicKey != segmentKey)
-                throw new InvalidDataException("The save ancestry changed signer without a continuation proof.");
-            if (!result.Add(current.VersionHash)) throw new InvalidDataException("The save ancestry repeats a version.");
+                throw Invalid("CanonicalSignerChanged", "The save ancestry changed signer without a continuation proof.");
+            if (!result.Add(current.VersionHash)) throw Invalid("RepeatedVersion", "The save ancestry repeats a version.");
             if (current.Number == 1)
             {
-                if (current.ParentHash is not null) throw new InvalidDataException("The first save has a parent.");
+                if (current.ParentHash is not null) throw Invalid("FirstVersionHasParent", "The first save has a parent.");
                 break;
             }
-            if (current.ParentHash is not { } parentHash) throw new InvalidDataException("The save parent is missing.");
+            if (current.ParentHash is not { } parentHash) throw Invalid("MissingParentHash", "The save parent is missing.");
             var previous = branch?.Offer.Version.VersionHash == parentHash ? branch.Offer.Version :
                 await readManifest(parentHash, current.Number - 1, cancellationToken);
             // A signed branch base may outlive older payloads/manifests. It is
             // still an exact anchor; missing older claims cannot be dominated.
             if (previous is null) break;
             if (previous.VersionHash != parentHash || previous.Number != current.Number - 1)
-                throw new InvalidDataException("The signed save parent changed.");
+                throw Invalid("ParentIdentityChanged", "The signed save parent changed.");
             current = previous;
         }
         return result;

@@ -42,6 +42,7 @@ describe('one shared-hosting setting', () => {
   it('shows exactly one switch and no per-PC grant, voter, forwarding or move controls', async () => {
     const writes = setup()
     expect(await toggle()).not.toBeChecked()
+    expect(screen.getByRole('region', { name: 'Shared saves' }).firstElementChild).toBe(screen.getByRole('region', { name: 'Shared hosting' }))
     expect(screen.getAllByRole('checkbox')).toHaveLength(1)
     expect(screen.queryByRole('button', { name: /Manage sharing|Move hosting|Review transfer/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -50,6 +51,8 @@ describe('one shared-hosting setting', () => {
     const people = screen.getByLabelText('Friends with hosting access')
     expect(within(people).getByText('Mira PC')).toBeVisible()
     expect(within(people).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.getByText(/Copies already received stay on those PCs/)).toBeVisible()
+    expect(screen.queryByText(/A real game join and saved restart still need separate testing/)).not.toBeInTheDocument()
     expect(writes).toEqual([])
   })
 
@@ -120,16 +123,20 @@ describe('one shared-hosting setting', () => {
     expect(screen.getByRole('checkbox')).not.toBeChecked()
   })
 
-  it('preserves heading suppression and keeps automatic checks read-only', async () => {
+  it.each([true, false])('leads directly with the policy switch and no governance heading (legacy heading requested: %s)', async showWorldHeading => {
     const writes: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method) writes.push(url)
       return reply(url.endsWith('/governance') ? null : initial)
     }))
-    render(<HostSharedSaves {...props} showWorldHeading={false} />)
+    render(<HostSharedSaves {...props} showWorldHeading={showWorldHeading} serverState="Unknown" />)
     await toggle()
+    const workspace = screen.getByRole('region', { name: 'Shared saves' })
+    expect(workspace.firstElementChild).toBe(screen.getByRole('region', { name: 'Shared hosting' }))
     expect(screen.queryByRole('heading', { name: 'Alderheim' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Shared saves' })).toBeInTheDocument()
+    expect(within(workspace).queryByRole('heading')).not.toBeInTheDocument()
+    expect(within(workspace).queryByLabelText('Approved Host')).not.toBeInTheDocument()
+    expect(workspace).not.toHaveTextContent(/Host decision|Current Host status/)
     expect(writes).toEqual([])
   })
 })

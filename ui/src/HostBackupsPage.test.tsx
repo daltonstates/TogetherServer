@@ -24,6 +24,8 @@ function openEditor() {
 describe('Host world protection workspace', () => {
   it('leads with factual summaries and makes sharing a direct navigation action without losing a backup draft', () => {
     render(<HostBackupsPage {...props()}>{content}</HostBackupsPage>)
+    expect(screen.getByText('Keep recovery copies and allow friends to host this server.')).toBeVisible()
+    expect(screen.queryByText(/choose who can host/)).not.toBeInTheDocument()
     expect(screen.getByText('Not checked yet')).toBeVisible()
     expect(screen.getByText('Space not checked')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Backup library' })).toHaveAttribute('aria-current', 'page')

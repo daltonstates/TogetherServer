@@ -32,6 +32,7 @@ internal static class WorldPeerSeedingChecks
         {
             CompanionEndpoint = aEndpoint,
             CompanionBindAddress = "0.0.0.0",
+            CompanionListeningEnabled = true,
             Profiles = [new() { Id = profile, Kind = GameKinds.Fixture, WorldDirectory = originalWorld,
                 WorldId = "OutboundSynthetic", SharedSavesEnabled = true }]
         });
@@ -48,7 +49,8 @@ internal static class WorldPeerSeedingChecks
         var cCredential = pairing.Activate(new(profile, invite.Code, ServerScope: true))!;
         Bind(pairing, bCredential.DeviceId, bKey, profile);
         Bind(pairing, cCredential.DeviceId, cKey, profile);
-        var publisher = new SharedWorldService(a, new WorldBackupService(a, TimeProvider.System));
+        var completed = new CompletedFiles(a.RootPath);
+        var publisher = new SharedWorldService(a, completed);
         var roster = publisher.PublishRoster(a.LoadSettings().Profiles.Single(),
             pairing.SharedRosterMembers(profile).OrderBy(item => item.DeviceId).ToArray());
         var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, profile, roster.GroupId);
@@ -58,9 +60,11 @@ internal static class WorldPeerSeedingChecks
         pairing.ConfirmSharedRosterPublished(profile, roster);
         var bytes = new byte[SharedWorldService.ChunkBytes * 2 + 17];
         for (var index = 0; index < bytes.Length; index++) bytes[index] = (byte)(index % 241);
-        var first = SharedWorldService.SignVersion(new(4, root.GroupId, 1, null, profile, GameKinds.Fixture,
-            "OutboundSynthetic", DateTimeOffset.Parse("2020-01-01T00:00:00Z"), SharedWorldCaptureKinds.PostStopBackup,
-            Guid.NewGuid(), new(2456, false, "Unknown", [], []), [Fact(bytes)], "", "", ""), owner);
+        completed.Set(bytes);
+        var originalPublication = publisher.PublishAfterStop(a.LoadSettings().Profiles.Single(), Guid.NewGuid());
+        Require(originalPublication.Ok && originalPublication.Version is not null,
+            "the original owner's signed completed-file publication failed");
+        var first = originalPublication.Version!;
         WriteCopy(Vault(b, bCredential.DeviceId, profile), first, bytes);
         var cStore = Store(c, root, roster);
         var bStore = Store(b, root, roster);
@@ -76,12 +80,27 @@ internal static class WorldPeerSeedingChecks
             "C did not advertise its signed configured contact while incoming connections remained off");
         _ = bStore.ImportPage(cStore.ReadPage());
         _ = aStore.ImportPage(cStore.ReadPage());
+        using (var originalOwnerService = new WorldPeerService(a, new HostManager(a), aFriends, pairing, Offline,
+            (_, _) => Task.CompletedTask))
+            await originalOwnerService.SyncNowAsync(default);
+        // All three had learned the owner's signed canonical head and contact
+        // before its service stopped. The returned service must retain that
+        // self-history while accepting a forwarded continuation from B.
+        _ = bStore.ImportPage(aStore.ReadPage());
+        _ = cStore.ImportPage(aStore.ReadPage());
         using var handler = new Handler(cService, root, cRoute);
+        Handler? returnedOwnerHandler = null;
+        var sourceOnline = true;
         HttpClient Client(string endpoint, IEnumerable<string> pins)
         {
+            if (endpoint.TrimEnd('/') == aEndpoint && returnedOwnerHandler is not null)
+            {
+                Require(pins.SequenceEqual([aRoute.CertificateSha256]), "outbound seeding changed its pinned returning owner");
+                return new(returnedOwnerHandler, disposeHandler: false) { BaseAddress = new Uri(aEndpoint + "/") };
+            }
             if (endpoint.TrimEnd('/') != cEndpoint) return Offline(endpoint, pins);
             Require(pins.SequenceEqual([cRoute.CertificateSha256]), "outbound seeding changed its pinned recipient");
-            if (!c.LoadSettings().CompanionListeningEnabled) return Offline(endpoint, pins);
+            if (!sourceOnline || !c.LoadSettings().CompanionListeningEnabled) return Offline(endpoint, pins);
             return new(handler, disposeHandler: false) { BaseAddress = new Uri(cEndpoint + "/") };
         }
         using var bService = new WorldPeerService(b, new HostManager(b), bFriends, new PairingService(b), Client,
@@ -121,22 +140,40 @@ internal static class WorldPeerSeedingChecks
         await bService.SyncNowAsync(default);
         Require(FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(b, cBranch))?.VersionHash == next.VersionHash,
             "B did not retain C's next completed continuation after supplying C's initial save");
-        using var aService = new WorldPeerService(a, new HostManager(a), aFriends, pairing, Client,
+        sourceOnline = false;
+        using var aService = new WorldPeerService(a, new HostManager(a), aFriends, pairing, Offline,
             (_, _) => Task.CompletedTask);
+        using var ownerHandler = new Handler(aService, root, aRoute);
+        returnedOwnerHandler = ownerHandler;
+        await bService.SyncNowAsync(default);
+        Require(FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(a, cBranch))?.VersionHash == next.VersionHash,
+            "listener-less B did not seed the descendant to returned A while producer C was unavailable");
         var ownerLatest = await aService.ResolveLatestRecoverySourceAsync(root, default);
         var ownerFence = aService.CanonicalStartBlock(root, first.VersionHash);
         Require(ownerLatest.Ok && ownerLatest.Source?.Descriptor.Version.VersionHash == next.VersionHash &&
             ownerFence?.Code == "NewerSharedSaveAvailable",
             $"returning A catchup failed: result={ownerLatest.Code}, expectedSave={ownerLatest.Source?.Descriptor.Version.VersionHash == next.VersionHash}, " +
             $"startFence={ownerFence?.Code}, knownBranches={aService.Views().Single().State.Branches.Count}");
+        Require(publisher.Status(a.LoadSettings().Profiles.Single()).Latest?.VersionHash == first.VersionHash,
+            "receiving a descendant changed the original owner's signed publication");
         var ownerBranch = await aService.PrepareOwnerRecoveryAsync(root.GroupKey, ownerLatest.Source!.BranchHash,
             true, default, ownerLatest.Source);
         Require(ownerBranch.Ok && ownerBranch.Branch?.SourceBranch?.BranchHash == cBranch.BranchHash &&
             ownerBranch.Branch.Offer.Version.VersionHash == next.VersionHash &&
             File.ReadAllText(Path.Combine(originalWorld, "world.dat")) == "original live world remains untouched",
             "returning A could not prepare C's exact continuation in fresh retained storage without changing its original world");
+        Require((await aService.AnnounceLocalHostingAsync(root, default)).Ok,
+            "the returning owner could not announce its explicitly enabled local hosting contact");
+        await aService.WaitForSyncAsync();
+        var finalOwnerSource = await aService.ResolveLatestRecoverySourceAsync(root, default);
+        Require(finalOwnerSource.Ok && finalOwnerSource.Source?.Descriptor.Version.VersionHash == next.VersionHash &&
+            finalOwnerSource.ObservationHash == aService.LatestObservationHash(root),
+            $"returning owner's final latest recheck failed after recording its continuation: result={finalOwnerSource.Code}, " +
+            $"expectedSave={finalOwnerSource.Source?.Descriptor.Version.VersionHash == next.VersionHash}");
+        finalOwnerSource.Source!.Verify(a, root);
 
         // An unchanged pointer is not a fresh verification claim after damage.
+        sourceOnline = true;
         File.WriteAllText(Path.Combine(cVault, first.VersionHash, SharedWorldService.PayloadDirectory, "world.dat"), "damaged");
         var proof = cService.Challenge(root.GroupKey, bCredential.DeviceId, Public(bKey), cRoute.CertificateSha256);
         var seedBytes = JsonSerializer.SerializeToUtf8Bytes(new WorldPeerSeedRequest(new(first)), Json);
@@ -166,8 +203,8 @@ internal static class WorldPeerSeedingChecks
         await bService.SyncNowAsync(default);
         Require(withdrew && FriendLink.ReadReceivedLatest(cVault)?.VersionHash == first.VersionHash,
             "withdrawal before the final seeded chunk still promoted the new save");
-        Require(!b.LoadSettings().CompanionListeningEnabled && !a.LoadSettings().CompanionListeningEnabled,
-            "automatic storage, owner catchup or forwarding enabled an incoming listener");
+        Require(!b.LoadSettings().CompanionListeningEnabled && a.LoadSettings().CompanionListeningEnabled,
+            "automatic storage, owner catchup or forwarding changed the explicit incoming-listener choices");
     }
 
     private static async Task Refuses(Func<Task<byte[]>> action, string message)
@@ -228,6 +265,22 @@ internal static class WorldPeerSeedingChecks
     }
     private static void Require([System.Diagnostics.CodeAnalysis.DoesNotReturnIf(false)] bool value, string message)
     { if (!value) throw new InvalidOperationException(message); }
+    private sealed class CompletedFiles(string root) : ISharedWorldCaptureAdapter
+    {
+        private readonly string directory = Path.Combine(root, "completed-synthetic-backup");
+        internal void Set(byte[] bytes)
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllBytes(Path.Combine(directory, "world.dat"), bytes);
+        }
+        public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId)
+        {
+            var bytes = File.ReadAllBytes(Path.Combine(directory, "world.dat"));
+            return new(1, SharedWorldCaptureKinds.PostStopBackup, backupId, DateTimeOffset.UtcNow,
+                [Fact(bytes)], directory,
+                new(3, profile.Id, profile.Kind, profile.WorldId, "Unknown", "SyntheticFilesOnly", [], [], profile.GamePort));
+        }
+    }
     private sealed class Handler(WorldPeerService service, SharedWorldPeerRoot root, SharedWorldPeerRoute route) : HttpMessageHandler
     {
         internal int Seeds { get; private set; }

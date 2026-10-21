@@ -105,7 +105,7 @@ export function HostBackupsPage({ profile, status, state, busy, editDisabled, ba
   return <section className="host-backups-page" aria-label="World protection">
     <header className="host-protection-heading">
       <div><span className="protection-eyebrow"><Icon name="shield" size={15} />WORLD PROTECTION</span><h2>Backups & sharing</h2>
-        <p>Keep recovery copies and choose who can host this world.</p></div>
+        <p>Keep recovery copies and allow friends to host this server.</p></div>
       <div className="actions"><Button className="secondary icon-button" aria-label="Refresh backups" title="Refresh backups" disabled={busy} onClick={onRefresh}><Icon name="refresh" /></Button>
         <Button disabled={busy || editDisabled || state !== 'Offline' || !supported} onClick={onBackup}>
           <Icon name={backingUp ? 'loader' : 'plus'} />{backingUp ? 'Backing up…' : 'Back up now'}</Button></div>

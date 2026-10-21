@@ -64,10 +64,11 @@ stops a game.
 
 ## Acceptance and remaining checks
 
-Local validation passed. The first hosted run exposed two test-harness timing
-errors; the corrected hosted checks are pending at this checkpoint. Their exact
-revision and results will be recorded below. Earlier failed results remain
-failed and do not establish acceptance for the corrected candidate.
+Local validation passed. Hosted rendering passed after two test-harness timing
+corrections. The packaged retry then exposed a returning-owner save-selection
+blocker after successful relay receipt; that correction and final hosted checks
+remain pending at this checkpoint. Earlier failed results remain failed and do
+not establish acceptance for a corrected candidate.
 
 Local automated work is code-only. No app, game, console fixture, browser,
 installer or native dialog is launched on the owner's active desktop.
@@ -90,12 +91,12 @@ Local verification on 2026-10-21:
 | Check | Result |
 | --- | --- |
 | `scripts/verify-code-only.ps1` | PASS: pinned .NET 10.0.301 and Node 24.14.1, locked dependencies, typecheck, lint, full solution compile, all 62 source/synthetic groups, whitespace and desktop diagnostic isolation |
-| Full JSDOM suite | PASS: final current UI passes all 1,326 tests in 106 files |
+| Full JSDOM suite | PASS: final switch-first UI passes all 1,327 tests in 106 files |
 | Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax and all seven workflow PowerShell blocks; 18 bounded render plans |
 | Production React bundle | PASS: existing JavaScript chunk-size advisory above 500 kB |
 | Normal app build embedding the current bundle | PASS: zero warnings/errors |
-| Packaged three-app private-address journey | Initial run failed at a premature restart identity check; corrected hosted run pending |
-| Desktop/narrow rendered UI | Initial run accepted 16/18 with no layout findings; corrected switch wait pending hosted execution |
+| Packaged three-app private-address journey | Retry verified relay receipt but returning owner Start was blocked; correction pending |
+| Desktop/narrow rendered UI | Retry passes 18/18, zero layout findings/errors; final heading cleanup requires another hosted render |
 | Physical PCs, outside game route and real saved game | Not executed; external acceptance remains open |
 
 One source symbolic-link subcase is explicitly SKIPPED because this account
@@ -113,11 +114,11 @@ server-policy code before its existing membership-read-only classification;
 guard precedence was corrected. Initial compile-only property/namespace errors
 were also corrected. The final full gate above passed after these changes.
 
-Ignored local evidence: `local-data/simple-hosting-code-only-final.log`,
-`local-data/simple-hosting-ui-final.json`,
+Ignored local evidence: `local-data/simple-hosting-code-only-diagnostic-final.log`,
+`local-data/simple-hosting-ui-final-cleanup.json`,
 `local-data/simple-hosting-renderer-source.log`,
-`local-data/simple-hosting-bundle-final.log`, and
-`local-data/simple-hosting-embedded-build-final.log`.
+`local-data/simple-hosting-bundle-final-cleanup.log`, and
+`local-data/simple-hosting-embedded-build-diagnostic.log`.
 
 ### Initial hosted run and bounded corrections
 
@@ -149,3 +150,47 @@ and journey artifact `12370105570`
 (`ddb3d6cec736486b9cdff847b7c6163e1275702c2efd2beb6765e983332bc445`).
 Representative Host, desktop/narrow confirmation, installation, connection and
 conflict screenshots were inspected; no overflow or obscured action was found.
+
+### Hosted retry and final presentation review
+
+[Run 39651442020](https://github.com/daltonstates/TogetherServer/actions/runs/39651442020)
+tested source `3c26900dec03e14b5982d2c06dd62f2264a953f0`.
+Render job `119400509182` passed all 18 plans with 45 screenshots, zero layout
+findings, zero fatal/JavaScript errors and zero skipped cases. Hash-verified
+artifact `12370281434` has ZIP SHA-256
+`a8c5e54a5ddac3bb69707778bfec9e08a76ffbdc1cfd8cf969f3932a0bb85c10`.
+Visual inspection found no overflow, but identified an obsolete governance
+heading above the Host switch. That heading and implementation-testing prose
+were removed; the final switch-first presentation passes 46 focused tests,
+typecheck/lint, the full 1,327-test JSDOM suite and a fresh React bundle.
+
+Packaged job `119400509069` successfully restarted the original Host and verified
+the relayed descendant's signature, every file hash and payload. The producer
+was offline, the receiver had no listener, and the original world's bytes
+remained unchanged. Normal owner Start then returned
+`SharedSaveHistoryNeedsReview`; it did not start an older world. This remains a
+failed acceptance case, with successful relay receipt distinguished from Start.
+Cleanup again reported `jobEmpty: true` and no identity-review flags. The
+candidate SHA-256 was
+`42a9c5a343887d5d9b5935cc71eb988dba2230f94b6fcd8456d7eb8d9cdc8f00`;
+hash-verified journey artifact `12370127178` has ZIP SHA-256
+`c82febb791c079926f44a71103cd5449a5a86e5dcf49a59a91d6e69c804227ed`.
+
+The focused source regression was tightened to retain a real original signed
+publication and owner metadata, dispose the original service, make the producing
+peer unavailable, and forward its descendant from a listener-less receiver to a
+fresh owner service. Latest selection and exact owner retention pass in that
+file/fake-HTTP case. This does not replace the failed packaged result.
+The regression also repeats latest selection after owner preparation and
+announcement, matching the ordinary Start service's final recheck. That focused
+case and the full 62-group code-only gate pass. The current embedded app build
+also passes with zero warnings/errors. An earlier redirected Windows PowerShell
+invocation stopped on an intentional source-test stderr warning; it was
+incomplete and is not counted as a gate pass. The isolated child-script rerun
+above completed all registered groups.
+
+The next hosted candidate retains at most 16 fixed selection-phase, reason,
+exception-type and candidate-count records in its disposable lab report. It
+records no paths, addresses, keys, save identities, payloads or raw errors.
+Only the validated lab mode installs that diagnostic sink; normal application
+behavior and all fail-closed source decisions remain unchanged.

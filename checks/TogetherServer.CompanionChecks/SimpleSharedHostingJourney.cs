@@ -207,6 +207,7 @@ internal static partial class CoreRemoteJourney
             LabRequire(!(await SnapshotInHostModeAsync(second)).Settings.CompanionListeningEnabled && candidate.HasExitedNow() &&
                 await File.ReadAllTextAsync(Path.Combine(profile.WorldDirectory, "world.dat")) == initialBytes,
                 "SimpleRelayUsedProducerOrChangedOriginal");
+            Pass("outbound-only-peer-seeds-returning-owner");
             ActionResult? returnedStart = null;
             await PairingLabWaitAsync(async () =>
             {
@@ -262,6 +263,13 @@ internal static partial class CoreRemoteJourney
             foreach (var process in processes.AsEnumerable().Reverse()) await process.StopOwnedAsync();
             await job.StopAsync();
             var clean = job.ActiveCount() == 0;
+            JsonElement? latestReviewDiagnostic = null;
+            var diagnosticFile = Path.Combine(hostData, "simple-hosting-latest-review.json");
+            if (failed is not null && File.Exists(diagnosticFile) && new FileInfo(diagnosticFile).Length <= 16_384)
+            {
+                try { latestReviewDiagnostic = JsonSerializer.Deserialize<JsonElement>(await File.ReadAllTextAsync(diagnosticFile)); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
+            }
             await File.WriteAllTextAsync(Path.Combine(root, "report.json"), JsonSerializer.Serialize(new
             {
                 schema = 1,
@@ -274,6 +282,7 @@ internal static partial class CoreRemoteJourney
                 descendantVersionHash = continuedVersion?.VersionHash,
                 friendStartAttempts,
                 ownerStartAttempts,
+                latestReviewDiagnostic,
                 processes = processes.Select(process => process.Report()).ToArray(),
                 acceptance = new[] { "SameRunnerPrivateAddressOnly", "PackagedPinnedSyntheticFlow", "NoRealGameOrPhysicalFriendPcAcceptance" }
             }, new JsonSerializerOptions(Json) { WriteIndented = true }));

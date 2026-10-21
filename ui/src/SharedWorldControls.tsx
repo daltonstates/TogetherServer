@@ -385,8 +385,7 @@ function parseHistoryReviewResult(value: unknown): HistoryReviewResult {
     ownerPublicKey: source.ownerPublicKey == null ? null : shortText(source.ownerPublicKey, 'Owner identity', 256) }
 }
 
-export function HostSharedSaves({ profileId, devices, currentAddress, onGrantChanged, worldName, showWorldHeading,
-  currentSignedHost, serverState, serverStatusFresh, observedHostAddress, onOpenConnectionHelp }:
+export function HostSharedSaves({ profileId, devices, currentAddress, onGrantChanged, onOpenConnectionHelp }:
   { profileId: string; devices: Device[]; rollingBackupEnabled: boolean; currentAddress?: string;
     onGrantChanged: () => Promise<void>; onOpenProtection?: () => void; onOpenConnectionHelp?: () => void;
     renderAdvancedProof?: () => ReactNode } & SharedWorkspaceProps) {
@@ -466,9 +465,6 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
     !device.accessExpired && device.assignedProfileIds.includes(profileId))
   const enabled = status?.enabled === true
   return <section className="shared-world-workspace" aria-label="Shared saves">
-    <SharedWorldHeading worldName={worldName} showWorldHeading={showWorldHeading} currentSignedHost={currentSignedHost}
-      identitySource={status} host serverState={serverState} serverStatusFresh={serverStatusFresh} noticeScope={noticeScope}
-      observedHostAddress={observedHostAddress} />
     <section className="host-sharing-master" aria-label="Shared hosting">
       <label className="host-sharing-master-toggle"><span>Allow friends to host this server</span><Input type="checkbox"
         checked={enabled} disabled={busy || !status || !status.canManageSharing || blocked}
@@ -486,7 +482,7 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
       <p>{eligible.length} approved {eligible.length === 1 ? 'PC is' : 'PCs are'} assigned to this server. Access changes apply automatically.</p>
       <HostSharingPermissions profileId={profileId} devices={eligible} members={roster?.members ?? []} enabled={enabled} />
       {status?.latest && <p>Latest completed copy: {sharedSaveAge(status.latest.createdUtc)}. Changes after that copy are not included.</p>}
-      <p>The app checks each save and prepares the game automatically. A real game join and saved restart still need separate testing. Copies already received stay on those PCs.</p>
+      <p>The app checks each save and prepares the game automatically. Copies already received stay on those PCs.</p>
       {!normalizedDirectIpHttpsEndpoint(currentAddress ?? '') && enabled && onOpenConnectionHelp && <Button className="text-button"
         disabled={busy} onClick={onOpenConnectionHelp}><Icon name="plug" />Connection help</Button>}
       <Button className="text-button" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" />Refresh sharing</Button>
