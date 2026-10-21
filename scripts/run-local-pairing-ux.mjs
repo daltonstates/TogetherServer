@@ -429,9 +429,9 @@ try {
     await server.fill(input.fixturePath);
     const confirm = dialog.getByRole('button', { name: 'Host locally', exact: true });
     await until(() => confirm.isEnabled(), Boolean, 'explicit network confirmation enabled after choosing server');
-    // Product preparation allows 120 seconds and Start another 30. One shared
-    // 165-second deadline covers their automatic sequence without another click.
-    const hostingDeadline = Date.now() + 165000;
+    // Product preparation and Start each allow 120 seconds. One shared
+    // 255-second deadline covers their automatic sequence without another click.
+    const hostingDeadline = Date.now() + 255000;
     const remainingHostingTime = () => Math.max(1, hostingDeadline - Date.now());
     const firstCheck = friend.waitForResponse(response => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`, { timeout: remainingHostingTime() });

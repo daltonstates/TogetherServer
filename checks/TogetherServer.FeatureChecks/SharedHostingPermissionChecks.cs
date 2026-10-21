@@ -15,6 +15,7 @@ internal static class SharedHostingPermissionChecks
 
     internal static async Task RunAsync(string root)
     {
+        await LateEnrollmentAfterUnassignmentAsync(root);
         await SimpleServerPolicyAsync(root);
         using (var fixture = new Fixture(root, "current-settings"))
         {
@@ -202,6 +203,82 @@ internal static class SharedHostingPermissionChecks
                 !failed.Pairing.TryGetActiveDevice(failed.DeviceId, out _) && failed.Driver.Actions == 0,
                 "a failed grant persistence leaked new hosting access or concealed partial prerequisite preparation");
         }
+    }
+
+    private static async Task LateEnrollmentAfterUnassignmentAsync(string root)
+    {
+        using var fixture = new Fixture(root, "late-enrollment-after-unassignment",
+            profile => profile.Backups.MinimumFreeSpaceMb = 0,
+            device => device.SharedWorldPublicKey = null);
+        var retainedPeer = fixture.AddPeer();
+        var joinId = fixture.Current().Profiles[1].Id;
+        Require(fixture.Pairing.SetServerAccess(fixture.DeviceId, [joinId], null,
+            [fixture.ProfileId, joinId]).Ok, "could not reassign the pending-key PC to its Join server");
+        Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
+            "could not enable the original source after its pending-key PC was unassigned");
+        var before = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId) ??
+            throw new InvalidOperationException("the original source roster is missing");
+        Require(before.Members.Count == 1 && before.Members.Single().DeviceId == retainedPeer &&
+            before.Members.Single().Grants == AutomaticHosting && !fixture.Pairing.SharedRosterDirty(fixture.ProfileId) &&
+            fixture.Data.LoadPairingState().Devices.Single(device => device.Id == fixture.DeviceId) is
+            { SharedWorldPublicKey: null, ProfileId: var original } && original == fixture.ProfileId,
+            "the late enrollment fixture lost the original scope, pending key, or retained approved member");
+
+        var profile = fixture.Current().Profiles[0];
+        Directory.CreateDirectory(profile.WorldDirectory);
+        var payload = System.Text.Encoding.UTF8.GetBytes("completed source save before late Join enrollment");
+        File.WriteAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"), payload);
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "version.json"), "legitimate version payload");
+        File.WriteAllText(Path.Combine(profile.WorldDirectory, "membership.json"), "legitimate membership payload");
+        var backups = new WorldBackupService(fixture.Data, fixture.Clock);
+        var backup = backups.Create(profile, BackupKinds.Rolling);
+        Require(backup is { Ok: true, Backup.SetupIncluded: true } &&
+            backups.Verify(profile, backup.Backup.Id).Ok, "the completed synthetic backup or setup failed verification");
+        fixture.Enroll(fixture.DeviceId);
+        var shared = new SharedWorldService(fixture.Data, backups);
+        var fenced = shared.PublishAfterStop(profile, backup.Backup!.Id);
+        Require(fixture.Pairing.SharedRosterDirty(fixture.ProfileId) && !fenced.Ok &&
+            fenced.Code == "SharedSavePublishFailed" &&
+            fenced.Message.Contains("Signed membership is unresolved", StringComparison.Ordinal),
+            "late enrollment did not preserve the original source publication fence");
+
+        // Match the companion enrollment endpoint's actual resealing work. The
+        // unassigned original scope can be dirty without appearing in assignments.
+        var reseal = fixture.Pairing.SharedEnrollmentProfileIds(fixture.DeviceId, joinId);
+        Require(reseal.ToHashSet().SetEquals([fixture.ProfileId, joinId]),
+            "late Join enrollment omitted the dirty original source from roster resealing");
+        foreach (var id in reseal)
+        {
+            Require(await fixture.Manager.SharedRosterManagementAvailableAsync(id),
+                "late enrollment selected an inherited or unresolved roster for owner signing");
+            await fixture.PublishPolicyAsync(id);
+        }
+        var after = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId);
+        Require(after is not null && SharedWorldRosterTrust.Verify(after) && after.GroupId == before.GroupId &&
+            after.OwnerPublicKey == before.OwnerPublicKey && after.Signature == before.Signature &&
+            after.Members.SequenceEqual(before.Members) && !fixture.Pairing.SharedRosterDirty(fixture.ProfileId) &&
+            !fixture.Pairing.SharedRosterDirty(joinId),
+            "resealing changed the source owner/group/grants or left an affected server fenced");
+        Require(fixture.Pairing.TryGetActiveDevice(fixture.DeviceId, out var unassigned) && unassigned is not null &&
+            unassigned.ProfileId == fixture.ProfileId && unassigned.SharedWorldPublicKey is not null &&
+            unassigned.AssignedProfileIds!.SequenceEqual([joinId]) &&
+            !fixture.Pairing.CanAccess(unassigned, fixture.ProfileId) && fixture.Pairing.CanAccess(unassigned, joinId) &&
+            fixture.Pairing.AuthorizeReceiveSaves(unassigned, fixture.ProfileId, out _).Code == "PermissionDenied" &&
+            fixture.Pairing.AuthorizeSharedHistory(unassigned, fixture.ProfileId, out _).Code == "PermissionDenied" &&
+            fixture.Grants() == new SharedWorldGrants() && !fixture.Current().Profiles[1].SharedSavesEnabled,
+            "resealing exposed source status, manifest/chunk admission, or hosting rights to the unassigned PC");
+        var published = shared.PublishAfterStop(profile, backup.Backup.Id);
+        Require(published is { Ok: true, Version: { Number: 1 } } &&
+            published.Version.BackupId == backup.Backup.Id && published.Version.GroupId == before.GroupId &&
+            published.Version.SigningPublicKey == before.OwnerPublicKey && SharedWorldService.VerifySignature(published.Version) &&
+            published.Version.Files.Count == 3 && published.Version.Files.Single(file => file.Path == "world.dat").Sha256 ==
+                Convert.ToHexString(SHA256.HashData(payload)),
+            "the same complete verified backup could not publish after all affected rosters were resealed");
+        var worldIndex = Array.FindIndex(published.Version!.Files.ToArray(), file => file.Path == "world.dat");
+        Require(shared.ReadChunk(published.Version, worldIndex, 0).AsSpan().SequenceEqual(payload) &&
+            fixture.Driver.Actions == 0 && fixture.Data.LoadRuns().Count == 0 &&
+            !fixture.Current().CompanionListeningEnabled && !fixture.Current().RemoteControlsEnabled,
+            "late enrollment changed the completed payload, invoked a process, or enabled incoming controls");
     }
 
     private static async Task SimpleServerPolicyAsync(string root)

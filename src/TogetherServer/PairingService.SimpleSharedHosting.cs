@@ -62,8 +62,10 @@ public sealed partial class PairingService
         {
             var device = devices.SingleOrDefault(item => item.Id == deviceId);
             if (device is null || device.PeerWorldGroupKey is not null) return [];
-            var assigned = device.AssignedProfileIds ?? [];
-            return data.LoadSettings().Profiles.Where(profile => assigned.Contains(profile.Id) &&
+            // Binding can fence an original or historical scope after unassignment.
+            // Reseal affected owner rosters without granting the PC access to them.
+            var affected = AffectedProfiles(device).ToHashSet();
+            return data.LoadSettings().Profiles.Where(profile => affected.Contains(profile.Id) &&
                 (profile.Id == requestedProfileId || profile.SharedSavesEnabled || SharedRosterDirty(profile.Id)))
                 .Select(profile => profile.Id).ToArray();
         }
