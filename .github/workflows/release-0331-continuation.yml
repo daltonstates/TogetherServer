@@ -49,6 +49,7 @@ jobs:
         $harness = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
         $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/existing-remainder -Force
         $checks = [Collections.Generic.List[object]]::new()
+        $failedChecks = [Collections.Generic.List[string]]::new()
         $expected = @(
           @{name='Shared Worlds packaged journey';run={dotnet $harness $candidate --shared-world-journey}},
           @{name='Staging LiveSave owner action';run={dotnet $harness $candidate --live-save-action}},
@@ -72,10 +73,12 @@ jobs:
               $checks.Add(@{name=$check.name;outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
             } catch {
               $checks.Add(@{name=$check.name;outcome='failed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
-              throw
+              $failedChecks.Add($check.name)
+              Write-Host "FAIL remaining stage: $($check.name) ($($_.Exception.GetType().Name))."
             }
           }
           if ($checks.Count -ne 10) { throw 'Remaining Existing stage inventory changed.' }
+          if ($failedChecks.Count) { throw "Remaining Existing stages failed: $($failedChecks -join ', ')." }
         } finally {
           $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
           @{suite='ExistingContinuation';sourceRevision=$env:CANDIDATE_SOURCE_REVISION;candidateSha256=$hash;
@@ -287,7 +290,7 @@ jobs:
         git merge-base --is-ancestor $verifiedSource HEAD
         if ($LASTEXITCODE -ne 0) { throw 'Stable verification source is not an ancestor.' }
         $changedChecks = @(git diff --name-only $verifiedSource HEAD -- checks/TogetherServer.CompanionChecks checks/update-handoff-smoke.ps1)
-        if ($LASTEXITCODE -ne 0 -or @($changedChecks | Where-Object { $_ -notin @('checks/TogetherServer.CompanionChecks/LocalPairingLabJourney.cs','checks/TogetherServer.CompanionChecks/SharedWorldJourney.cs') }).Count) {
+        if ($LASTEXITCODE -ne 0 -or @($changedChecks | Where-Object { $_ -notin @('checks/TogetherServer.CompanionChecks/LocalPairingLabJourney.cs','checks/TogetherServer.CompanionChecks/SharedWorldJourney.cs','checks/TogetherServer.CompanionChecks/SharedWorldResolutionJourney.cs') }).Count) {
           throw 'Stable compatibility or update check source changed after its successful run.'
         }
         $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/mixed-version -Force

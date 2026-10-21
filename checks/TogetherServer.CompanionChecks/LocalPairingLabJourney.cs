@@ -13,15 +13,17 @@ internal static partial class CoreRemoteJourney
     private sealed record PairingLabStage(string Id, string State = "NotRun", string? Code = null, long DurationMs = 0,
         IReadOnlyList<PairingLabOperation>? Operations = null);
     private sealed record PairingLabOperation(string Id, string State, long StartedMs, long DurationMs, long TimeoutMs,
-        string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false);
+        string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false,
+        int? HttpStatus = null);
     private sealed record PairingLabDevices(IReadOnlyList<DeviceView> Devices);
     private sealed record PairingLabTransferObservation(int Attempt, long CandidateSyncMs, long ObserverSyncMs,
         bool CandidateHeadAdvertised, bool CandidateClaimsPayload, bool ObserverReceiveConsented, bool ObserverCanReceive,
         bool ObserverSeesHead, bool ObserverSeesPayload, bool ObserverSeesRoute, bool CandidateHasWarning,
         bool ObserverHasWarning, bool ObserverHasConflicts, bool PointerMatched);
-    private sealed class PairingLabFailure(string code) : Exception
+    private sealed class PairingLabFailure(string code, int? httpStatus = null) : Exception
     {
         internal string Code { get; } = code;
+        internal int? HttpStatus { get; } = httpStatus;
     }
 
     // Independent app identities exercise real pinned TLS on one Windows PC.
@@ -106,6 +108,7 @@ internal static partial class CoreRemoteJourney
         var isolatedRevocation = false;
         var transferObservations = new List<PairingLabTransferObservation>();
         var guidedOperations = new List<PairingLabOperation>();
+        var restartOperations = new List<PairingLabOperation>();
         var hostedCopy = false;
         string? failureCode = null;
         string? activeStage = null;
@@ -125,7 +128,7 @@ internal static partial class CoreRemoteJourney
                 var skip = await action();
                 if (id != "cleanup") LabRequire(Volatile.Read(ref windowObservationFailure) == 0, "VisibleOwnedWindowObserved");
                 stages[index] = new(id, skip is null ? "Passed" : "Skipped", skip, timer.ElapsedMilliseconds,
-                    id == "guided-hosting" ? guidedOperations.ToArray() : null);
+                    StageOperations(id));
                 Console.WriteLine($"{(skip is null ? "PASS" : "SKIP")} local pairing lab: {id}{(skip is null ? "" : " (" + skip + ")")}");
             }
             catch (Exception error)
@@ -134,10 +137,17 @@ internal static partial class CoreRemoteJourney
                 var code = windowFailure != 0 ? windowFailure == 1 ? "VisibleOwnedWindowObserved" : "OwnedWindowObservationUnavailable" :
                     error is PairingLabFailure assertion ? assertion.Code : error.GetType().Name;
                 stages[index] = new(id, "Failed", code, timer.ElapsedMilliseconds,
-                    id == "guided-hosting" ? guidedOperations.ToArray() : null);
+                    StageOperations(id));
                 throw new PairingLabFailure(code);
             }
         }
+
+        PairingLabOperation[]? StageOperations(string id) => id switch
+        {
+            "guided-hosting" => guidedOperations.ToArray(),
+            "new-host-restart-reconnect" => restartOperations.ToArray(),
+            _ => null
+        };
 
         PairingLabProcess Track(Process process, string role, string executable)
         {
@@ -434,43 +444,8 @@ internal static partial class CoreRemoteJourney
                 await Stage("guided-hosting", async () =>
                 {
                     var operationClock = Stopwatch.StartNew();
-                    async Task<T> ObserveAsync<T>(string id, HttpClient client, Func<Task<T>> action)
-                    {
-                        var startedMs = operationClock.ElapsedMilliseconds;
-                        var timeoutMs = (long)client.Timeout.TotalMilliseconds;
-                        Console.WriteLine("LOCAL_PAIRING_GUIDED_OPERATION " + JsonSerializer.Serialize(
-                            new PairingLabOperation(id, "Started", startedMs, 0, timeoutMs), Json));
-                        try
-                        {
-                            var result = await action();
-                            var code = result switch
-                            {
-                                LocalHostingStatus status => status.Code,
-                                ActionResult status => status.Code,
-                                JsonElement json when json.ValueKind == JsonValueKind.Object &&
-                                    json.TryGetProperty("code", out var field) && field.ValueKind == JsonValueKind.String => field.GetString(),
-                                _ => null
-                            };
-                            // Only fixed result codes are exported. No response
-                            // body, path, identity, message or raw error is saved.
-                            if (code is not { Length: > 0 and <= 64 } || !code.All(char.IsAsciiLetterOrDigit)) code = null;
-                            var observation = new PairingLabOperation(id, "Returned", startedMs,
-                                operationClock.ElapsedMilliseconds - startedMs, timeoutMs, code);
-                            guidedOperations.Add(observation);
-                            Console.WriteLine("LOCAL_PAIRING_GUIDED_OPERATION " + JsonSerializer.Serialize(observation, Json));
-                            return result;
-                        }
-                        catch (Exception error)
-                        {
-                            var observation = new PairingLabOperation(id, "Failed", startedMs,
-                                operationClock.ElapsedMilliseconds - startedMs, timeoutMs,
-                                ExceptionType: error.GetType().Name, InnerExceptionType: error.InnerException?.GetType().Name,
-                                HttpClientTimeout: error is TaskCanceledException && error.InnerException is TimeoutException);
-                            guidedOperations.Add(observation);
-                            Console.WriteLine("LOCAL_PAIRING_GUIDED_OPERATION " + JsonSerializer.Serialize(observation, Json));
-                            throw new PairingLabFailure("Guided" + id + (error is TaskCanceledException ? "TimedOut" : "Failed"));
-                        }
-                    }
+                    Task<T> ObserveAsync<T>(string id, HttpClient client, Func<Task<T>> action) =>
+                        ObserveLabOperationAsync("Guided", id, operationClock, guidedOperations, (long)client.Timeout.TotalMilliseconds, action);
                     async Task<HostSnapshot> SnapshotAsync(string phase)
                     {
                         LabRequire((await ObserveAsync(phase + "OpenHost", first, () =>
@@ -717,46 +692,68 @@ internal static partial class CoreRemoteJourney
                     });
                     await Stage("new-host-restart-reconnect", async () =>
                     {
+                        var operationClock = Stopwatch.StartNew();
+                        Task<T> ObserveAsync<T>(string id, HttpClient client, Func<Task<T>> action) =>
+                            ObserveLabOperationAsync("Restart", id, operationClock, restartOperations, (long)client.Timeout.TotalMilliseconds, action);
+                        Task ObserveWorkAsync(string id, Func<Task> action, long timeoutMs = 0) =>
+                            ObserveLabOperationAsync("Restart", id, operationClock, restartOperations, timeoutMs,
+                                async () => { await action(); return true; });
+                        Task<T> ObserveValueAsync<T>(string id, Func<T> action) =>
+                            ObserveLabOperationAsync("Restart", id, operationClock, restartOperations, 0, () => Task.FromResult(action()));
                         // Only app identities already recorded in our disposable job
                         // are stopped. The saved branch has already stopped safely.
-                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "RestartOwnerJoinModeRejected");
-                        var savedOwner = await WaitForConnectedAsync(owner, allowDisabled: true);
-                        var savedObserver = await WaitForConnectedAsync(second, allowDisabled: true);
-                        var savedDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        LabRequire((await ObserveAsync("OwnerJoinMode", owner, () => PostAsync<object, JsonElement>(owner,
+                            "/api/local/mode/friend", new { }))).GetProperty("ok").GetBoolean(), "RestartOwnerJoinModeRejected");
+                        var savedOwner = await ObserveAsync("OwnerBaselineConnection", owner, () => WaitForConnectedAsync(owner, allowDisabled: true));
+                        var savedObserver = await ObserveAsync("ObserverBaselineConnection", second, () => WaitForConnectedAsync(second, allowDisabled: true));
+                        var savedDevices = (await ObserveAsync("ReadBaselineDevices", first,
+                            () => PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion"))).Devices;
                         LabRequire(savedDevices.Count == 2 && savedDevices.All(device => device.Paired && !device.Revoked &&
                             !device.CanStart && !device.CanStop && !device.CanViewPassword), "RestartCredentialBaselineInvalid");
-                        var beforeCompanion = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
+                        var beforeCompanion = await ObserveAsync("ReadBaselineIdentity", first,
+                            () => PairingLabGetAsync<JsonElement>(first, "/api/local/companion"));
                         var fingerprint = beforeCompanion.GetProperty("fingerprint").GetString();
                         var oldCandidate = processes.Single(process => process.Role == "friend-a" && process.Alive);
                         var oldOwner = processes.Single(process => process.Role == "host" && process.Alive);
-                        await oldCandidate.StopOwnedAsync();
-                        await oldOwner.StopOwnedAsync();
+                        await ObserveWorkAsync("StopCandidateApp", oldCandidate.StopOwnedAsync);
+                        await ObserveWorkAsync("StopOwnerApp", oldOwner.StopOwnedAsync);
                         LabRequire(oldCandidate.HasExitedNow() && oldOwner.HasExitedNow() &&
                             !oldCandidate.IdentityReview && !oldOwner.IdentityReview, "RestartOldAppIdentityStillActive");
-                        await PairingLabWaitAsync(async () =>
+                        await ObserveWorkAsync("WaitObserverOffline", () => PairingLabWaitAsync(async () =>
                         {
-                            var view = await PostAsync<object, FriendView>(second, "/api/local/friend/poll", new { });
+                            var view = await ObserveAsync("ObserverOfflinePoll", second,
+                                () => PostAsync<object, FriendView>(second, "/api/local/friend/poll", new { }));
                             return view.State == "Disconnected/Unknown" && view.ConnectionId == savedObserver.ConnectionId &&
                                 view.Endpoint == savedObserver.Endpoint;
-                        }, "OfflineCandidateWasNotUnknown");
-                        var candidateApp = Track(StartPairingLabApp(appPath, "--host", friendPort, friendData, lanAddress), "friend-a", appPath);
-                        var ownerApp = Track(StartPairingLabApp(appPath, "--friend", hostPort, hostData, lanAddress), "host", appPath);
-                        await Task.WhenAll(WaitLocalAsync(friendPort), WaitLocalAsync(hostPort));
+                        }, "OfflineCandidateWasNotUnknown"));
+                        var candidateApp = await ObserveValueAsync("LaunchCandidateApp", () =>
+                            Track(StartPairingLabApp(appPath, "--host", friendPort, friendData, lanAddress), "friend-a", appPath));
+                        var ownerApp = await ObserveValueAsync("LaunchOwnerApp", () =>
+                            Track(StartPairingLabApp(appPath, "--friend", hostPort, hostData, lanAddress), "host", appPath));
+                        await Task.WhenAll(ObserveWorkAsync("CandidateLocalHealth", () => WaitLocalAsync(friendPort), 300),
+                            ObserveWorkAsync("OwnerLocalHealth", () => WaitLocalAsync(hostPort), 300));
                         LabRequire(candidateApp.Matches() && ownerApp.Matches() && candidateApp.Id != oldCandidate.Id && ownerApp.Id != oldOwner.Id,
                             "RestartNewAppIdentitiesMissing");
-                        WindowsListenerOwners.RequireTogetherServerOwner(friendPort, candidateApp.Process);
-                        WindowsListenerOwners.RequireTogetherServerOwner(hostPort, ownerApp.Process);
-                        WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], candidateApp.Process);
-                        var afterCompanion = await PairingLabGetAsync<JsonElement>(first, "/api/local/companion");
+                        await ObserveValueAsync("VerifyListenerOwners", () =>
+                        {
+                            WindowsListenerOwners.RequireTogetherServerOwner(friendPort, candidateApp.Process);
+                            WindowsListenerOwners.RequireTogetherServerOwner(hostPort, ownerApp.Process);
+                            WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], candidateApp.Process);
+                            return true;
+                        });
+                        var afterCompanion = await ObserveAsync("ReadRestoredIdentity", first,
+                            () => PairingLabGetAsync<JsonElement>(first, "/api/local/companion"));
                         LabRequire(afterCompanion.GetProperty("fingerprint").GetString() == fingerprint, "RestartChangedCandidateTlsIdentity");
-                        var restored = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                        var restored = await ObserveAsync("ReadRestoredRuns", first,
+                            () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
                         LabRequire(restored.Runs.All(run => run.ProcessId is null && run.RunOperationId is null) &&
                             restored.Settings.Profiles.Single(item => item.Id == localProfileId).SeparateCopyBranchHash == prepared!.BranchHash,
                             "AppRestartReplayedHostingStart");
                         var published = Path.Combine(friendData, "shared-world-separate-published", profile.Id.ToString("N"), prepared!.BranchHash!);
-                        LabRequire(FriendLink.ReadReceivedLatest(published)?.VersionHash == receivedBranchVersionHash,
+                        LabRequire((await ObserveValueAsync("ReadPublishedCopy", () => FriendLink.ReadReceivedLatest(published)))?.VersionHash == receivedBranchVersionHash,
                             "RestartLostPublishedBranchCopy");
-                        var persistedDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
+                        var persistedDevices = (await ObserveAsync("ReadRestoredDevices", first,
+                            () => PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion"))).Devices;
                         LabRequire(persistedDevices.Count == 2 && persistedDevices.All(device => savedDevices.Any(saved => saved.Id == device.Id &&
                             saved.CredentialExpiresUtc == device.CredentialExpiresUtc && saved.AssignedProfileIds.SequenceEqual(device.AssignedProfileIds)) &&
                             device.Paired && !device.Revoked && !device.CanStart && !device.CanStop && !device.CanViewPassword),
@@ -765,39 +762,47 @@ internal static partial class CoreRemoteJourney
                         // repeated polling must leave the prepared game offline.
                         foreach (var client in new[] { owner, second })
                         {
-                            var offline = await WaitForConnectedAsync(client, allowDisabled: true);
+                            var offline = await ObserveAsync(client == owner ? "OwnerOfflineReconnection" : "ObserverOfflineReconnection", client,
+                                () => WaitForConnectedAsync(client, allowDisabled: true));
                             LabRequire(offline.Endpoint == savedObserver.Endpoint && offline.HostId == savedObserver.HostId &&
                                 offline.Profiles.Count == 1 && offline.Profiles.Single().Id == localProfileId &&
                                 offline.Profiles.Single().State == "Offline" && offline.Profiles.Single().RunOperationId is null,
                                 "RestartReconnectionReplayedGameStart");
                         }
-                        restored = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                        restored = await ObserveAsync("ReadOfflineRuns", first,
+                            () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
                         LabRequire(restored.Runs.All(run => run.ProcessId is null && run.RunOperationId is null), "RestartPollingStartedPreparedGame");
                         var oldSession = candidateSessionId;
-                        var started = await PostAsync<object, ActionResult>(first,
-                            $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared.BranchHash, acceptSplitWarning = true });
+                        var started = await ObserveAsync("StartCandidate", first, () => PostAsync<object, ActionResult>(first,
+                            $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared.BranchHash, acceptSplitWarning = true }));
                         LabRequire(started.Ok, "RestartExplicitCandidateStartRejected");
                         var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId),
-                            () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
+                            () => ObserveAsync("ReadStartedIdentity", first, () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot")));
                         TrackRun(run);
                         LabRequire(run.RunOperationId != oldSession && run.RunOperationId is not null && !run.PlayerCountTrusted && run.OnlinePlayers is null,
                             "RestartReusedRunIdentityOrClaimedReadiness");
                         candidateSessionId = run.RunOperationId;
                         var freshAfter = DateTimeOffset.UtcNow.AddSeconds(-1);
-                        var ownerView = await RequireCandidateConnectionAsync(owner, freshAfter);
-                        var observerView = await RequireCandidateConnectionAsync(second, freshAfter);
+                        var ownerView = await ObserveAsync("OwnerFreshConnection", owner, () => RequireCandidateConnectionAsync(owner, freshAfter));
+                        var observerView = await ObserveAsync("ObserverFreshConnection", second, () => RequireCandidateConnectionAsync(second, freshAfter));
                         LabRequire(ownerView.HostId == savedOwner.HostId && observerView.HostId == savedObserver.HostId &&
                             ownerView.ConnectionId == savedOwner.ConnectionId && observerView.ConnectionId == savedObserver.ConnectionId &&
                             !ownerView.Profiles.Single().CanStart && !observerView.Profiles.Single().CanStart &&
                             !observerView.Profiles.Single().CanViewPassword, "RestartDidNotReusePinnedScopedConnections");
-                        await PairingLabWaitAsync(async () =>
+                        await ObserveWorkAsync("WaitSignedDiscovery", () => PairingLabWaitAsync(async () =>
                         {
-                            await SyncPeersAsync(first); await SyncPeersAsync(owner); await SyncPeersAsync(second);
-                            return await SeesCandidateAsync(owner, fingerprint) && await SeesCandidateAsync(second, fingerprint);
-                        }, "RestartedCandidateSessionNotDiscovered");
-                        var sent = await PostAsync<ChatPostRequest, ChatRoomView>(first, $"/api/local/profiles/{localProfileId}/chat/messages", new("Restarted synthetic Host message"));
-                        var ownerRoom = await PostAsync<object, ChatRoomView>(owner, $"/api/local/friend/{localProfileId}/chat/sync", new { });
-                        var observerRoom = await PostAsync<object, ChatRoomView>(second, $"/api/local/friend/{localProfileId}/chat/sync", new { });
+                            await ObserveWorkAsync("SyncCandidatePeers", () => SyncPeersAsync(first), 65000);
+                            await ObserveWorkAsync("SyncOwnerPeers", () => SyncPeersAsync(owner), 65000);
+                            await ObserveWorkAsync("SyncObserverPeers", () => SyncPeersAsync(second), 65000);
+                            return await ObserveAsync("OwnerSeesSession", owner, () => SeesCandidateAsync(owner, fingerprint)) &&
+                                await ObserveAsync("ObserverSeesSession", second, () => SeesCandidateAsync(second, fingerprint));
+                        }, "RestartedCandidateSessionNotDiscovered"));
+                        var sent = await ObserveAsync("PostCandidateChat", first, () => PostAsync<ChatPostRequest, ChatRoomView>(first,
+                            $"/api/local/profiles/{localProfileId}/chat/messages", new("Restarted synthetic Host message")));
+                        var ownerRoom = await ObserveAsync("OwnerChatSync", owner, () => PostAsync<object, ChatRoomView>(owner,
+                            $"/api/local/friend/{localProfileId}/chat/sync", new { }));
+                        var observerRoom = await ObserveAsync("ObserverChatSync", second, () => PostAsync<object, ChatRoomView>(second,
+                            $"/api/local/friend/{localProfileId}/chat/sync", new { }));
                         LabRequire(sent.Ok && ownerRoom.Ok && observerRoom.Ok && sent.Entries.All(entry =>
                             ownerRoom.Entries.Any(copy => copy.Id == entry.Id) && observerRoom.Entries.Any(copy => copy.Id == entry.Id)),
                             "RestartedHostAuthenticatedChatFailed");
@@ -1056,6 +1061,50 @@ internal static partial class CoreRemoteJourney
         if (!value) throw new PairingLabFailure(code);
     }
 
+    private static async Task<T> ObserveLabOperationAsync<T>(string scope, string id, Stopwatch clock,
+        List<PairingLabOperation> observations, long timeoutMs, Func<Task<T>> action)
+    {
+        var startedMs = clock.ElapsedMilliseconds;
+        var marker = "LOCAL_PAIRING_" + scope.ToUpperInvariant() + "_OPERATION ";
+        Console.WriteLine(marker + JsonSerializer.Serialize(new PairingLabOperation(id, "Started", startedMs, 0, timeoutMs), Json));
+        try
+        {
+            var result = await action();
+            var code = result switch
+            {
+                LocalHostingStatus status => status.Code,
+                ActionResult status => status.Code,
+                FriendView status => status.ConnectionCode ?? status.State,
+                JsonElement json when json.ValueKind == JsonValueKind.Object &&
+                    json.TryGetProperty("code", out var field) && field.ValueKind == JsonValueKind.String => field.GetString(),
+                _ => null
+            };
+            // Export only fixed codes and timing, never response bodies, paths,
+            // identities, messages or raw errors. Zero means no single HTTP budget.
+            if (code is not { Length: > 0 and <= 64 } || !code.All(char.IsAsciiLetterOrDigit)) code = null;
+            var observation = new PairingLabOperation(id, "Returned", startedMs, clock.ElapsedMilliseconds - startedMs, timeoutMs, code);
+            lock (observations) observations.Add(observation);
+            Console.WriteLine(marker + JsonSerializer.Serialize(observation, Json));
+            return result;
+        }
+        catch (Exception error)
+        {
+            int? httpStatus = error switch
+            {
+                HttpRequestException request => (int?)request.StatusCode ?? 0,
+                PairingLabFailure failure => failure.HttpStatus,
+                _ => null
+            };
+            var observation = new PairingLabOperation(id, "Failed", startedMs, clock.ElapsedMilliseconds - startedMs, timeoutMs,
+                Code: error is PairingLabFailure assertion ? assertion.Code : null,
+                ExceptionType: error.GetType().Name, InnerExceptionType: error.InnerException?.GetType().Name,
+                HttpClientTimeout: error is TaskCanceledException && error.InnerException is TimeoutException, HttpStatus: httpStatus);
+            lock (observations) observations.Add(observation);
+            Console.WriteLine(marker + JsonSerializer.Serialize(observation, Json));
+            throw new PairingLabFailure(scope + id + (error is TaskCanceledException ? "TimedOut" : "Failed"), httpStatus);
+        }
+    }
+
     private static async Task<T> PairingLabGetAsync<T>(HttpClient client, string path,
         [System.Runtime.CompilerServices.CallerLineNumber] int sourceLine = 0)
     {
@@ -1067,7 +1116,7 @@ internal static partial class CoreRemoteJourney
         {
             // Export only the status and this public check's source line.
             // A URL, response body or raw exception can contain pairing data.
-            throw new PairingLabFailure($"LocalGet{(int?)error.StatusCode ?? 0}At{sourceLine}");
+            throw new PairingLabFailure($"LocalGet{(int?)error.StatusCode ?? 0}At{sourceLine}", (int?)error.StatusCode ?? 0);
         }
     }
 

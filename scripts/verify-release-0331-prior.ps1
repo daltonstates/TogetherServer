@@ -82,7 +82,7 @@ try {
     Require ($LASTEXITCODE -eq 0) 'Retained verification source must be an ancestor of the current source.'
     $changed = @(git diff --no-renames --name-only $proofSource HEAD)
     Require ($LASTEXITCODE -eq 0) 'Could not compare retained verification source inputs.'
-    $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/(LocalPairingLabJourney|SharedWorldJourney)\.cs$|\.github/workflows/release-0331-continuation\.yml$|scripts/(receive-release-0331-candidate|verify-release-0331-prior)\.ps1$)'
+    $allowed = '^(docs/|checks/TogetherServer\.CompanionChecks/(LocalPairingLabJourney|SharedWorldJourney|SharedWorldResolutionJourney)\.cs$|\.github/workflows/release-0331-continuation\.yml$|scripts/(receive-release-0331-candidate|verify-release-0331-prior)\.ps1$)'
     Require (@($changed | Where-Object { $_ -notmatch $allowed }).Count -eq 0) 'Existing, installer, product or dependency inputs changed after retained verification.'
     $evidence = Join-Path $repository ('local-data/ci-evidence/retained-' + $Scope.ToLowerInvariant())
     New-Item -ItemType Directory -Path $evidence -Force | Out-Null

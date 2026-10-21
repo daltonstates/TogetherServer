@@ -90,42 +90,53 @@ internal static partial class SharedWorldJourney
             var initialConnections = await Task.WhenAll(PollAsync(aLocal), PollAsync(bLocal));
             var aConnectionId = initialConnections[0].ConnectionId;
             Require(aConnectionId != Guid.Empty, "Friend A did not retain its paired connection");
+            // Establish the historical voter-only role while simple hosting is
+            // off. Turning it on later supplies core grants without adding voters.
             Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
-                "owner-override-off sharing was unavailable");
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+                "owner could not pause shared hosting for the legacy voter fixture");
             foreach (var id in new[] { deviceA, deviceB })
                 Require((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
                     $"/api/local/devices/{id}/shared-world/{profile.Id}/grants",
-                    new(new SharedWorldGrants(Receive: true, EligibleHost: true,
-                        RecoveryVoter: true)))).Ok,
-                    "owner could not appoint two receiving recovery voters");
+                    new(new SharedWorldGrants(RecoveryVoter: true)))).Ok,
+                    "owner could not appoint two independent legacy recovery voters");
             Require((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
                 $"/api/local/devices/{deviceC}/shared-world/{profile.Id}/grants",
                 new(new SharedWorldGrants(RecoveryVoter: true)))).Ok,
                 "owner could not appoint a voter without Receive");
-            foreach (var friend in new[] { aLocal, bLocal })
-            {
-                Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(friend,
-                    $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
-                    "receiving Friend could not consent");
-                // Consent saves locally before background enrollment completes.
-                // Finish this signed roster change before the next PC enrolls.
-                await RequireNoPublishedSharedSaveAsync(owner, friend, profile.Id);
-            }
             var firstCReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review", new());
-            Require(firstCReview.Code == "GroupReviewRequired" &&
+            Require(!firstCReview.Ok && firstCReview.Code == "GroupReviewRequired" &&
                 firstCReview.GroupId is not null && firstCReview.OwnerPublicKey is not null,
                 $"voter-only Friend did not review owner and group before any save: {firstCReview.Code}; " +
                 $"group present={firstCReview.GroupId is not null}; owner present={firstCReview.OwnerPublicKey is not null}");
-            Require((await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
+            var confirmedCReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review",
-                new(firstCReview.GroupId, firstCReview.OwnerPublicKey))).Ok,
-                "voter-only Friend could not pin owner-signed membership");
+                new(firstCReview.GroupId, firstCReview.OwnerPublicKey));
+            Require(confirmedCReview is { Ok: true, Code: "HistoryReviewed" } &&
+                !(await GetAsync<ReceivedSharedWorldStatus>(cLocal,
+                    $"/api/local/friend/{profile.Id}/shared-world")).Consented,
+                "voter-only signed history review granted receiving consent");
+            var voterOnlyRoster = await GetAsync<SharedWorldRoster>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/governance");
+            Require(SharedWorldRosterTrust.Verify(voterOnlyRoster) &&
+                voterOnlyRoster.Members.Single(member => member.DeviceId == deviceC) is
+                { Revoked: false, Grants: { Receive: false, EligibleHost: false, Reshare: false, RecoveryVoter: true, ManageSharing: false } },
+                "voter-only signed history review granted receiving, hosting, or forwarding rights");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
+                "owner-override-off shared hosting was unavailable");
+            await RequireAutomaticSharingAsync(owner, profile.Id,
+                (aLocal, deviceA), (bLocal, deviceB), (cLocal, deviceC));
+            foreach (var friend in new[] { aLocal, bLocal })
+                await RequireNoPublishedSharedSaveAsync(owner, friend, profile.Id);
             var governance = await PutAsync<SharedWorldGovernanceRequest, SharedWorldRoster>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world/governance", new(false));
-            Require(!governance.OwnerOverride && SharedWorldRosterTrust.Verify(governance),
-                "owner override Off was not recorded in a signed roster");
+            Require(!governance.OwnerOverride && SharedWorldRosterTrust.Verify(governance) &&
+                governance.Members.Count == 3 && governance.Members.All(member =>
+                    !member.Revoked && member.Grants is
+                    { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: true, ManageSharing: false }),
+                "the signed automatic policy did not preserve exactly three designated voters with owner override Off");
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "override off: first save");
             var firstStop = await StartAndStopAsync(owner, profile.Id);
@@ -176,7 +187,7 @@ internal static partial class SharedWorldJourney
                 "exactly three recent payloads and the earlier signed manifest were not retained");
             Require((await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review", new())).Ok,
-                "voter-only Friend did not verify the final pre-split roster");
+                "third recovery voter did not verify the final pre-split roster");
             foreach (var (friend, port) in new[] { (aLocal, aCandidatePort),
                 (bLocal, bCandidatePort) })
             {
@@ -298,7 +309,7 @@ internal static partial class SharedWorldJourney
                 $"override-off voters could not verify exact signed split: A={aReview.Code}, C={cReview.Code}");
             Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
-                "voter-only Friend could not consent to resolution vote");
+                "third recovery voter could not confirm consent to the resolution vote");
             var forbiddenOwner = await PostAsync<object, WorldAuthorityOfferResult>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/resolution/owner-offer/{planned.RecordHash}",
                 new { });
@@ -342,7 +353,7 @@ internal static partial class SharedWorldJourney
                 $"/api/local/profiles/{profile.Id}/start", new { });
             Require(RecordedDecision(authorityPath, resolved) &&
                 ReadRecordedAuthorities(authorityPath).Count >= 3 &&
-                !blockedStart.Ok && blockedStart.Code == "SharedWorldAuthorityBlocked" &&
+                !blockedStart.Ok && blockedStart.Code is ("SharedSaveHistoryNeedsReview" or "SharedWorldAuthorityBlocked") &&
                 File.ReadAllText(Path.Combine(world, "world.dat")) == "override off: second save" &&
                 File.ReadAllText(Path.Combine(ReceiverRoot(aData, deviceA, profile.Id),
                     prepared.Version!.VersionHash, "payload", "world.dat")) ==
@@ -358,7 +369,7 @@ internal static partial class SharedWorldJourney
                 !(await GetAsync<HostSnapshot>(aLocal, "/api/local/snapshot"))
                     .Runs.Any(run => run.State != "Offline"),
                 "resolution unexpectedly started the candidate's game process");
-            Console.WriteLine("PASS owner override Off blocks unilateral approval; voter-only PC joins a typed majority resolution");
+            Console.WriteLine("PASS legacy voter-only review preserves receiving denial; automatic hosting keeps three voters and owner override Off for typed majority resolution");
             return 1;
         }
         finally
