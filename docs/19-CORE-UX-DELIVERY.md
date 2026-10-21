@@ -94,3 +94,22 @@ create symbolic links. Browser/WebView viewport and native desktop checks,
 separate-PC/network checks and real-game startup/join/save/restart acceptance
 remain unrun. Validation preserved the owner's active desktop; no app, browser,
 listener or game was launched, and the running production app was left alone.
+
+### Production build handoff (2026-10-21)
+
+The production-named portable app is
+`local-data/startup-progress-production-20261021-5419ead/TogetherServer.exe`,
+built from clean source `5419ead66ca5075fb1c1be83fd9529c0786a594a` with the pinned
+tools, a fresh production UI bundle, locked restore and self-contained win-x64
+single-file Release publish. Version is `0.3.3.0`; size is 66,122,862 bytes;
+Authenticode is `NotSigned`. SHA-256:
+`5c6ae61aac3ac1fa566622370b8f05653f89bf2166b591aaf1959d709663b393`.
+
+PASS static GUI executable, exact bundled/current assembly match, all seven
+current UI assets embedded byte-for-byte, bundled .NET runtime core, version
+and startup-progress content. The folder retains package evidence, build
+metadata, checksum and logs. The first wrapper stopped on Vite's existing
+size warning before publish; the final UI build and publish passed using
+native exit-code checks. No app was launched, installed or replaced. Native,
+real-game and Friend-network acceptance remain unrun; this is a local build,
+with no tag or public release.
