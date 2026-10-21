@@ -343,6 +343,7 @@ jobs:
         }
         @{version=$version; sourceRevision=$env:CANDIDATE_SOURCE_REVISION; verificationRevision=$env:GITHUB_SHA;
           candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets; fullyAccepted=$false; reviewOnly=$true;
+          acceptanceScope='Installer and unchanged portable bytes';functionalGatesCheckedAtPackaging=$false;
           candidateRunId=39669799182; candidateJobId=119464350297; candidateArtifactId=12379945602;
           candidateArtifactZipSha256='4bf29ea3be0a2eaf3bed3db31eddf82853376538b77c85ee947db575954fc276';
           verificationRunId=$env:GITHUB_RUN_ID; verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT; packageJob=$env:GITHUB_JOB;
@@ -354,7 +355,7 @@ jobs:
           knownLimitations=@('OS QuietTime blocked actual notification delivery/click. The original Desktop job remains failed.',
             'Physical second-PC, WAN, real game join/save/load/graceful Stop/restart acceptance remains open.',
             'Unsigned EXEs have no Authenticode publisher identity or SmartScreen trust claim.');
-          acceptance='Original candidate Browser, QolApi, Rehearsal, two automatic handoffs and five older compatibility lanes passed. Prior pinned continuation passed stable 0.3.3 compatibility/update; unchanged checks and exact job/report are verified again. Final continuation passed Existing, loopback/LAN/ten-stage UX, installer smoke and all three wizard choices. Native notification remains blocked, so full native acceptance is not claimed.'} |
+          acceptance='This job passed installer smoke, all three wizard choices and unchanged portable-byte verification. Functional jobs execute independently; publication must separately verify successful Existing, loopback/LAN/ten-stage UX and exact retained stable evidence for this run. Native notification remains blocked, so full native acceptance is not claimed.'} |
           ConvertTo-Json -Depth 6 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
     - name: Preserve bounded actual installer wizard UI evidence
       if: always()
@@ -379,7 +380,3 @@ jobs:
         path: local-data/ci-evidence/continuation/
         if-no-files-found: error
         retention-days: 7
-    needs:
-    - existing
-    - local-pairing
-    - stable

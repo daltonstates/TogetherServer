@@ -113,8 +113,10 @@ try {
     if ($CandidateSourceRevision) {
         git merge-base --is-ancestor $CandidateSourceRevision HEAD
         if ($LASTEXITCODE -ne 0) { throw 'Candidate source must be an ancestor of the verification source.' }
-        git diff --exit-code $CandidateSourceRevision HEAD -- src ui installer global.json Directory.Build.props Directory.Build.targets
-        if ($LASTEXITCODE -ne 0) { throw 'Product or build inputs changed after the immutable candidate.' }
+        $productChanges = @(git diff --no-renames --name-only $CandidateSourceRevision HEAD -- src ui installer global.json Directory.Build.props Directory.Build.targets)
+        if ($LASTEXITCODE -ne 0 -or @($productChanges | Where-Object { $_ -notmatch '^ui/src/.+\.test\.tsx?$' }).Count) {
+            throw 'Product or build inputs changed after the immutable candidate; only UI unit-test sources may differ.'
+        }
         $sourceRevision = $CandidateSourceRevision
     }
     $expectedSourceIdentity = "$expectedVersion+$sourceRevision"

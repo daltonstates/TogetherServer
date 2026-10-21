@@ -308,6 +308,9 @@ it('preserves a reviewed dirty file across supporting sections and blocks confli
 })
 
 it('reveals a hidden file editor when its protected draft cannot be kept before navigation', async () => {
+  // Fail storage before editing so an autosave cannot keep this exact draft
+  // successfully before the navigation flush checks whether it is durable.
+  vi.mocked(saveProtectedDraft).mockRejectedValue(new Error('Protected draft unavailable'))
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input)
     return new Response(JSON.stringify(path.endsWith('/files') ? fileListing : path.endsWith('/backups') ? completeBackups : currentFile),
@@ -322,8 +325,10 @@ it('reveals a hidden file editor when its protected draft cannot be kept before 
   await waitFor(() => expect(guard?.dirty).toBe(true))
   fireEvent.click(within(screen.getByRole('navigation', { name: 'Server file sections' })).getByRole('button', { name: 'Setup backups' }))
   expect(editor).not.toBeVisible()
-  vi.mocked(saveProtectedDraft).mockRejectedValue(new Error('Protected draft unavailable'))
   await act(async () => { expect(await guard!.flush()).toBe(false) })
+  expect(saveProtectedDraft).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'file', profileId, key: 'file:admin-list' }),
+    JSON.stringify({ version: 1, key: 'admin-list', sha256: 'current-file-hash', content: 'Steam_333\n' }), 7)
+  await waitFor(() => expect(guard?.dirty).toBe(true))
   expect(editor).toBeVisible()
   expect(editor).toHaveValue('Steam_333\n')
   expect(screen.getByText('Protected draft unavailable')).toBeVisible()

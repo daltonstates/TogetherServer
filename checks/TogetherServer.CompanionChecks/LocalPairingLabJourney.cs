@@ -10,7 +10,10 @@ using TogetherServer.CompanionChecks;
 
 internal static partial class CoreRemoteJourney
 {
-    private sealed record PairingLabStage(string Id, string State = "NotRun", string? Code = null, long DurationMs = 0);
+    private sealed record PairingLabStage(string Id, string State = "NotRun", string? Code = null, long DurationMs = 0,
+        IReadOnlyList<PairingLabOperation>? Operations = null);
+    private sealed record PairingLabOperation(string Id, string State, long StartedMs, long DurationMs, long TimeoutMs,
+        string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false);
     private sealed record PairingLabDevices(IReadOnlyList<DeviceView> Devices);
     private sealed record PairingLabTransferObservation(int Attempt, long CandidateSyncMs, long ObserverSyncMs,
         bool CandidateHeadAdvertised, bool CandidateClaimsPayload, bool ObserverReceiveConsented, bool ObserverCanReceive,
@@ -102,6 +105,7 @@ internal static partial class CoreRemoteJourney
         var restartedHostConnections = false;
         var isolatedRevocation = false;
         var transferObservations = new List<PairingLabTransferObservation>();
+        var guidedOperations = new List<PairingLabOperation>();
         var hostedCopy = false;
         string? failureCode = null;
         string? activeStage = null;
@@ -120,7 +124,8 @@ internal static partial class CoreRemoteJourney
             {
                 var skip = await action();
                 if (id != "cleanup") LabRequire(Volatile.Read(ref windowObservationFailure) == 0, "VisibleOwnedWindowObserved");
-                stages[index] = new(id, skip is null ? "Passed" : "Skipped", skip, timer.ElapsedMilliseconds);
+                stages[index] = new(id, skip is null ? "Passed" : "Skipped", skip, timer.ElapsedMilliseconds,
+                    id == "guided-hosting" ? guidedOperations.ToArray() : null);
                 Console.WriteLine($"{(skip is null ? "PASS" : "SKIP")} local pairing lab: {id}{(skip is null ? "" : " (" + skip + ")")}");
             }
             catch (Exception error)
@@ -128,7 +133,8 @@ internal static partial class CoreRemoteJourney
                 var windowFailure = Volatile.Read(ref windowObservationFailure);
                 var code = windowFailure != 0 ? windowFailure == 1 ? "VisibleOwnedWindowObserved" : "OwnedWindowObservationUnavailable" :
                     error is PairingLabFailure assertion ? assertion.Code : error.GetType().Name;
-                stages[index] = new(id, "Failed", code, timer.ElapsedMilliseconds);
+                stages[index] = new(id, "Failed", code, timer.ElapsedMilliseconds,
+                    id == "guided-hosting" ? guidedOperations.ToArray() : null);
                 throw new PairingLabFailure(code);
             }
         }
@@ -427,37 +433,90 @@ internal static partial class CoreRemoteJourney
 
                 await Stage("guided-hosting", async () =>
                 {
+                    var operationClock = Stopwatch.StartNew();
+                    async Task<T> ObserveAsync<T>(string id, HttpClient client, Func<Task<T>> action)
+                    {
+                        var startedMs = operationClock.ElapsedMilliseconds;
+                        var timeoutMs = (long)client.Timeout.TotalMilliseconds;
+                        Console.WriteLine("LOCAL_PAIRING_GUIDED_OPERATION " + JsonSerializer.Serialize(
+                            new PairingLabOperation(id, "Started", startedMs, 0, timeoutMs), Json));
+                        try
+                        {
+                            var result = await action();
+                            var code = result switch
+                            {
+                                LocalHostingStatus status => status.Code,
+                                ActionResult status => status.Code,
+                                JsonElement json when json.ValueKind == JsonValueKind.Object &&
+                                    json.TryGetProperty("code", out var field) && field.ValueKind == JsonValueKind.String => field.GetString(),
+                                _ => null
+                            };
+                            // Only fixed result codes are exported. No response
+                            // body, path, identity, message or raw error is saved.
+                            if (code is not { Length: > 0 and <= 64 } || !code.All(char.IsAsciiLetterOrDigit)) code = null;
+                            var observation = new PairingLabOperation(id, "Returned", startedMs,
+                                operationClock.ElapsedMilliseconds - startedMs, timeoutMs, code);
+                            guidedOperations.Add(observation);
+                            Console.WriteLine("LOCAL_PAIRING_GUIDED_OPERATION " + JsonSerializer.Serialize(observation, Json));
+                            return result;
+                        }
+                        catch (Exception error)
+                        {
+                            var observation = new PairingLabOperation(id, "Failed", startedMs,
+                                operationClock.ElapsedMilliseconds - startedMs, timeoutMs,
+                                ExceptionType: error.GetType().Name, InnerExceptionType: error.InnerException?.GetType().Name,
+                                HttpClientTimeout: error is TaskCanceledException && error.InnerException is TimeoutException);
+                            guidedOperations.Add(observation);
+                            Console.WriteLine("LOCAL_PAIRING_GUIDED_OPERATION " + JsonSerializer.Serialize(observation, Json));
+                            throw new PairingLabFailure("Guided" + id + (error is TaskCanceledException ? "TimedOut" : "Failed"));
+                        }
+                    }
+                    async Task<HostSnapshot> SnapshotAsync(string phase)
+                    {
+                        LabRequire((await ObserveAsync(phase + "OpenHost", first, () =>
+                            PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { }))).GetProperty("ok").GetBoolean(),
+                            "CandidateSnapshotModeRejected");
+                        try { return await ObserveAsync(phase + "Read", first, () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot")); }
+                        finally
+                        {
+                            LabRequire((await ObserveAsync(phase + "RestoreFriend", first, () =>
+                                PostAsync<object, JsonElement>(first, "/api/local/mode/friend", new { }))).GetProperty("ok").GetBoolean(),
+                                "CandidateSnapshotRestoreRejected");
+                        }
+                    }
                     // Preparation repeats peer/save checks and may check the
                     // incoming route. Match the UI's bounded operation budget,
                     // keeping ordinary status requests on their shorter client.
                     using var prepareClient = LocalClient(friendPort);
                     prepareClient.Timeout = TimeSpan.FromSeconds(120);
-                    prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
+                    prepared = await ObserveAsync("PrepareLocal", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                        new(true, true, ServerFile: Path.GetFullPath(fixturePath)));
+                        new(true, true, ServerFile: Path.GetFullPath(fixturePath))));
                     LabRequire(prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
                         prepared.ReadyForManualStart && !prepared.Running, "SyntheticHostingPreparationRejected");
                     var exactLocalProfile = prepared.LocalProfileId ?? throw new PairingLabFailure("PreparedProfileMissing");
                     localProfileId = exactLocalProfile;
-                    var before = await CandidateSnapshotAsync();
+                    var before = await SnapshotAsync("BeforeStart");
                     LabRequire(before.Runs.All(run => run.ProcessId is null), "PreparationStartedProcess");
                     if (lanAddress is not null)
                     {
                         // Save only explicit incoming consent. The exact guided
                         // preparation registers its signed group before listener
                         // activation; lifecycle permission remains independent.
-                        LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerModeRejected");
-                        LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
-                            new(CompanionListeningEnabled: true))).Ok, "CandidateListenerRejected");
-                        LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "CandidateListenerRestoreRejected");
-                        prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
+                        LabRequire((await ObserveAsync("ListenerOpenHost", first, () => PostAsync<object, JsonElement>(first,
+                            "/api/local/mode/host", new { }))).GetProperty("ok").GetBoolean(), "CandidateListenerModeRejected");
+                        LabRequire((await ObserveAsync("ListenerEnable", first, () => PutAsync<HostControlPolicyChange, ActionResult>(first,
+                            "/api/local/settings/control-policy", new(CompanionListeningEnabled: true)))).Ok, "CandidateListenerRejected");
+                        LabRequire((await ObserveAsync("ListenerRestoreFriend", first, () => PostAsync<object, JsonElement>(first,
+                            "/api/local/mode/friend", new { }))).GetProperty("ok").GetBoolean(), "CandidateListenerRestoreRejected");
+                        prepared = await ObserveAsync("PrepareIncoming", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                             $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                            new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
+                            new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true)));
                         LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId == exactLocalProfile &&
                             prepared.Remedy is not { Kind: "Connection" or "Ports" or "Review" }, "LanHostingPreparationRejected");
                         WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], processes.Single(process => process.Role == "friend-a").Process);
-                        preparedBranch = (await PairingLabGetAsync<WorldSeparateCopyBranch[]>(first,
-                            $"/api/local/friend/{profile.Id}/shared-world/recovery/separate")).Single(branch => branch.BranchHash == prepared.BranchHash);
+                        preparedBranch = (await ObserveAsync("ReadBranchProof", first, () => PairingLabGetAsync<WorldSeparateCopyBranch[]>(first,
+                            $"/api/local/friend/{profile.Id}/shared-world/recovery/separate"))).Single(branch => branch.BranchHash == prepared.BranchHash);
                         LabRequire(SharedWorldSeparateCopyStore.Verify(preparedBranch) &&
                             preparedBranch.Offer.Roster.OwnerPublicKey == signedRoster!.OwnerPublicKey &&
                             preparedBranch.CandidatePublicKey == signedRoster.Members.Single(member => member.DeviceId == deviceA).PublicKey,
@@ -465,15 +524,15 @@ internal static partial class CoreRemoteJourney
                     }
                     using var startClient = LocalClient(friendPort);
                     startClient.Timeout = TimeSpan.FromSeconds(30);
-                    var result = await PostAsync<object, JsonElement>(startClient,
+                    var result = await ObserveAsync("Start", startClient, () => PostAsync<object, JsonElement>(startClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
                         {
                             localProfileId = exactLocalProfile,
                             branchHash = prepared.BranchHash,
                             requestId = (Guid?)null,
                             acceptSplitWarning = true
-                        });
-                    var after = await CandidateSnapshotAsync();
+                        }));
+                    var after = await SnapshotAsync("AfterStart");
                     if (lanAddress is null)
                     {
                         // Ordinary peer-route rules deliberately refuse loopback.
@@ -486,7 +545,7 @@ internal static partial class CoreRemoteJourney
                         LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted",
                             "GuidedLanStartRejected");
                         var run = await WaitForFixtureIdentityAsync(after.Runs.Single(item => item.ProfileId == exactLocalProfile),
-                            CandidateSnapshotAsync);
+                            () => SnapshotAsync("MatchedRun"));
                         TrackRun(run);
                         candidateSessionId = run.RunOperationId;
                         hostedCopy = true;
