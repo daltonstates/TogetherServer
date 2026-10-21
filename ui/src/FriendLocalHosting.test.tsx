@@ -228,6 +228,81 @@ it('does not repeat Start after a failure and a later ready poll', async () => {
   expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
 })
 
+it('keeps Start busy beyond 30 seconds and accepts a delayed reply exactly once', async () => {
+  vi.useFakeTimers()
+  let release!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    if (url.endsWith('/start')) {
+      signal = init?.signal
+      return new Promise<Response>(resolve => { release = resolve })
+    }
+    return response(prepared)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+  await act(async () => { await vi.advanceTimersByTimeAsync(31000) })
+  expect(signal?.aborted).toBe(false)
+  expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Checking this PC...' })).toBeDisabled()
+  expect(open).not.toHaveBeenCalled()
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+  await act(async () => { release(response({ ok: true, code: 'Starting', message: 'Start requested.' })) })
+  expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(120001) })
+  expect(signal?.aborted).toBe(false)
+  expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+})
+
+it.each([true, false])('expires Start at exactly 120 seconds and ignores a late reply without retrying (success: %s)', async ok => {
+  vi.useFakeTimers()
+  let release!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    if (url.endsWith('/start')) {
+      signal = init?.signal
+      return new Promise<Response>(resolve => { release = resolve })
+    }
+    return response(prepared)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+  await act(async () => { await vi.advanceTimersByTimeAsync(119999) })
+  expect(signal?.aborted).toBe(false)
+  expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(signal?.aborted).toBe(true)
+  expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-busy', 'true')
+  const timeoutMessage = /The Start result could not be checked in time. Open local servers to check this PC before trying again./
+  expect(screen.getByText(timeoutMessage)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Retry automatic checks' })).toBeEnabled()
+  await act(async () => {
+    release(response({ ok, code: ok ? 'Starting' : 'PortInUse', message: 'Late result.' }))
+    await vi.advanceTimersByTimeAsync(30000)
+  })
+  expect(screen.getByText(timeoutMessage)).toBeInTheDocument()
+  expect(open).not.toHaveBeenCalled()
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+})
+
 it('bounds preparation and ignores a late result without retrying Start', async () => {
   vi.useFakeTimers()
   let release!: (value: Response) => void

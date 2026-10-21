@@ -336,7 +336,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       if (sequence !== request.current) return
       abort.abort(); ++request.current; mutation.current = false; setBusy(false); setOpen(true); setStatus(null)
       setError('The Start result could not be checked in time. Open local servers to check this PC before trying again.')
-    }, 30000)
+    }, 120000)
     try {
       const result = await changeJson(`${base}/hosting/start`, 'POST', parseBasicResult, {
         branchHash: target.branchHash, requestId: intent.requestId, localProfileId,

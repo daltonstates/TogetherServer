@@ -498,7 +498,9 @@ internal static partial class CoreRemoteJourney
                             "PreparedCandidateBranchNotAuthorized");
                     }
                     using var startClient = LocalClient(friendPort);
-                    startClient.Timeout = TimeSpan.FromSeconds(30);
+                    // Peer/save checks can wait behind the shared sync gate.
+                    // Match the UI's 120-second Start budget without retrying.
+                    startClient.Timeout = TimeSpan.FromSeconds(120);
                     var result = await ObserveAsync("Start", startClient, () => PostAsync<object, JsonElement>(startClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
                         {

@@ -45,7 +45,7 @@ jobs:
           if ($productVersion -ne "$version+$env:GITHUB_SHA") { throw 'Candidate source identity mismatch.' }
           python scripts/verify-demo-package.py --app $candidate --assembly src/TogetherServer/bin/Release/net10.0-windows/win-x64/TogetherServer.dll --ui ui/dist --output local-data/release-candidate/package-evidence.json
           if ($LASTEXITCODE -ne 0) { throw 'Static candidate package verification failed.' }
-          @{ source = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; version = $version;
+          @{ source = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; job = $env:GITHUB_JOB; version = $version;
             sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant();
             productVersion = $productVersion; authenticode = [string](Get-AuthenticodeSignature -LiteralPath $candidate).Status } |
             ConvertTo-Json | Set-Content local-data/release-candidate/candidate.json
@@ -213,7 +213,7 @@ jobs:
           if ($lan.Count -ne 1) { throw 'The hosted local pairing lane requires one assigned preferred private IPv4 address.' }
           $labRoot = Join-Path (Get-Location) 'local-data/local-pairing-lab'
           try {
-            foreach ($mode in @('loopback', 'lan-api', 'ux')) {
+            foreach ($mode in @('lan-api', 'ux', 'loopback')) {
               $before = @(if (Test-Path -LiteralPath $labRoot) { Get-ChildItem -LiteralPath $labRoot -Directory | ForEach-Object Name })
               $labArguments = @($harness, $candidate, '--local-pairing-lab-journey', '--allow-windowless-lab')
               if ($mode -ne 'loopback') { $labArguments += @('--lab-lan-address', $lan[0].IPAddress) }
@@ -328,6 +328,7 @@ jobs:
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           $identity = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
           if ($identity.source -ne $env:GITHUB_SHA -or $identity.runId -ne $env:GITHUB_RUN_ID -or
+              $identity.runAttempt -ne $env:GITHUB_RUN_ATTEMPT -or $identity.job -ne 'candidate' -or
               (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $identity.sha256 -or
               (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne $identity.productVersion) { throw 'Shared hosting candidate identity mismatch.' }
           $addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
@@ -437,15 +438,15 @@ jobs:
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   package:
-    needs: [verify, mixed-version, local-pairing, shared-hosting]
-    name: Package verified release
+    needs: candidate
+    name: Package candidate without full acceptance claim
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - name: Check out the verified source revision
+      - name: Check out the candidate source revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Retrieve the exact verified candidate
+      - name: Retrieve the exact candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: windows-candidate
@@ -471,11 +472,16 @@ jobs:
           $hashBefore = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
           $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
           if ((Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "$version+$env:GITHUB_SHA") { throw 'Candidate source identity mismatch.' }
+          $identity = Get-Content -LiteralPath local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          if ($identity.source -ne $env:GITHUB_SHA -or $identity.runId -ne $env:GITHUB_RUN_ID -or
+              $identity.runAttempt -ne $env:GITHUB_RUN_ATTEMPT -or $identity.job -ne 'candidate' -or
+              $identity.version -ne $version -or $identity.sha256 -ne $hashBefore.ToLowerInvariant()) { throw 'Candidate build provenance mismatch.' }
           ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets -CompilerPath (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
           ./checks/installer-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
           if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance failed.' }
           ./checks/installer-ui-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
+          if ($LASTEXITCODE -ne 0) { throw 'Installer wizard acceptance failed.' }
           if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hashBefore) { throw 'Verified candidate bytes changed during packaging.' }
           Copy-Item -LiteralPath $candidate -Destination local-data/release-assets/TogetherServer-win-x64.exe
           $assets = @()
@@ -485,7 +491,13 @@ jobs:
             Set-Content -LiteralPath ($file.FullName + '.sha256') -Value "$hash  $name" -Encoding ascii
             $assets += @{name=$name; sha256=$hash; bytes=$file.Length; authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
           }
-          @{version=$version; sourceRevision=$env:GITHUB_SHA; candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets; acceptance='All Windows verification suites, local pairing and actual Host/Friend UX, two automatic shared-hosting handoffs, mixed-version directions, installer smoke and three actual wizard choices passed on dedicated runners.'} |
+          @{version=$version; sourceRevision=$env:GITHUB_SHA; candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets;
+            candidateRunId=$identity.runId; candidateRunAttempt=$identity.runAttempt; candidateJob=$identity.job; verificationRevision=$env:GITHUB_SHA;
+            verificationRunId=$env:GITHUB_RUN_ID; verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT; packageJob=$env:GITHUB_JOB;
+            fullyAccepted=$false; reviewOnly=$true; acceptanceScope='Installer and unchanged portable bytes';
+            functionalGatesCheckedAtPackaging=$false; nativeNotificationVerified=$false;
+            installerSmokeCases=6; installerWizardChoices=@('Host','Friend','DecideLater');
+            acceptance='This job passed six installer smoke checks, all three actual wizard choices and unchanged portable-byte verification on its dedicated runner. Functional and native jobs run independently and must be reviewed before publication. This package does not claim full acceptance.'} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
 
       - name: Preserve bounded actual installer wizard UI evidence
