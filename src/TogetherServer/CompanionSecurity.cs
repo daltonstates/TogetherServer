@@ -450,6 +450,12 @@ public sealed partial class PairingService
                 var normalized = NormalizeAssignments(out var rosterChanged);
                 var codesChanged = NormalizeServerCodes();
                 normalized |= codesChanged;
+                foreach (var device in devices)
+                {
+                    if (!ApplySimpleSharedHostingPolicyLocked(device)) continue;
+                    normalized = true;
+                    rosterChanged = true;
+                }
                 normalized |= renewalReceipts.RemoveAll(receipt => receipt.PreviousAcceptedUntilUtc <= UtcNow ||
                     devices.All(device => device.Id != receipt.DeviceId)) > 0;
                 if (normalized)
@@ -457,6 +463,22 @@ public sealed partial class PairingService
                     if (rosterChanged || codesChanged) MarkSharedRostersDirty();
                     SaveState();
                 }
+            }
+            else
+            {
+                // This PC may also own unrelated servers while retaining a
+                // friend's signed continuation. Reconcile only its own groups.
+                var changed = false;
+                foreach (var profile in data.LoadSettings().Profiles.Where(profile => !AuthorityStateOrDamaged(profile.Id)))
+                {
+                    var profileChanged = false;
+                    foreach (var device in devices)
+                        profileChanged |= ApplySimpleSharedHostingPolicyLocked(device, [profile]);
+                    if (!profileChanged) continue;
+                    MarkSharedRostersDirty([profile.Id]);
+                    changed = true;
+                }
+                if (changed) SaveState();
             }
         }
     }
@@ -564,7 +586,9 @@ public sealed partial class PairingService
     {
         var selected = affected?.ToHashSet();
         foreach (var profile in data.LoadSettings().Profiles.Where(item =>
-            (item.SharedSavesEnabled || AuthorityStateOrDamaged(item.Id)) &&
+            (item.SharedSavesEnabled || SharedRosterDirty(item.Id) ||
+                Directory.Exists(Path.Combine(data.RootPath, "shared-worlds", item.Id.ToString("N"))) ||
+                AuthorityStateOrDamaged(item.Id)) &&
             (selected is null || selected.Contains(item.Id))))
         {
             var path = RosterDirtyPath(profile.Id);
@@ -866,6 +890,8 @@ public sealed partial class PairingService
                 heartbeats.TryRemove(device.Id, out _);
                 changedDevices = true;
             }
+            foreach (var device in devices)
+                changedDevices |= ApplySimpleSharedHostingPolicyLocked(device);
             if (removed > 0 || changedDevices)
             {
                 if (changedDevices) MarkSharedRostersDirty();
@@ -1138,7 +1164,7 @@ public sealed partial class PairingService
                 var id = Guid.NewGuid();
                 var serverToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
                 var expires = UtcNow.AddDays(90);
-                devices.Add(new PairedDevice
+                var paired = new PairedDevice
                 {
                     Id = id,
                     ProfileId = state.ProfileId,
@@ -1153,7 +1179,9 @@ public sealed partial class PairingService
                     CredentialHash = Hash(serverToken),
                     CredentialExpiresUtc = expires,
                     ApprovalPending = state.RequireApproval
-                });
+                };
+                devices.Add(paired);
+                ApplySimpleSharedHostingPolicyLocked(paired);
                 if (state.ActivatedDevices < int.MaxValue) state.ActivatedDevices++;
                 SaveState();
                 data.TryAudit($"activate {id} {state.ProfileId} approval-pending={state.RequireApproval} {UtcNow:O}");
@@ -1179,6 +1207,7 @@ public sealed partial class PairingService
             device.InviteExpiresUtc = null;
             if (request.ProfileName is not null) device.ProfileName = profileName;
             heartbeats.TryRemove(device.Id, out _);
+            if (ApplySimpleSharedHostingPolicyLocked(device)) MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             data.TryAudit($"activate {device.Id} {UtcNow:O}");
             return new PairingCredential(device.Id, token, device.CredentialExpiresUtc.Value,
@@ -1399,6 +1428,7 @@ public sealed partial class PairingService
 
             device.AccessExpiresUtc = deadline;
             device.AccessExpiryNotifiedForUtc = null;
+            ApplySimpleSharedHostingPolicyLocked(device);
             MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             if (deadline is null)
@@ -1451,6 +1481,7 @@ public sealed partial class PairingService
             if (!device.ApprovalPending) return new(true, "AlreadyApproved", "This PC is already approved.");
             if (!CanChangeSharedRoster(AffectedProfiles(device))) return SuccessorRosterDenied();
             device.ApprovalPending = false;
+            ApplySimpleSharedHostingPolicyLocked(device);
             MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             data.TryAudit($"device-approve {device.Id} {UtcNow:O}");
@@ -1569,6 +1600,7 @@ public sealed partial class PairingService
             device.SharedWorldGrants = (device.SharedWorldGrants ?? [])
                 .Where(item => device.AssignedProfileIds.Contains(item.Key))
                 .ToDictionary(item => item.Key, item => item.Value);
+            ApplySimpleSharedHostingPolicyLocked(device);
             MarkSharedRostersDirty(affected);
             if (permissions is null)
             {
@@ -1740,6 +1772,9 @@ public sealed partial class PairingService
             if (devices.Any(item => item.Id == deviceId && item.PeerWorldGroupKey is not null))
                 return new(false, "PeerMembershipReadOnly", "Change shared world grants on the original signed member, not a session credential.");
             if (!CanChangeSharedRoster([profileId])) return SuccessorRosterDenied();
+            if (data.LoadSettings().Profiles.Any(profile => profile.Id == profileId && profile.SharedSavesEnabled))
+                return new(false, "ServerHostingSettingRequired",
+                    "Use Allow friends to host this server. Remove a PC's server assignment or access to exclude it.");
             var device = devices.SingleOrDefault(item => item.Id == deviceId && !IsRevoked(item) &&
                 item.CredentialHash is not null);
             if (device is null) return new(false, "UnknownDevice", "Connect and approve this PC first.");
@@ -1798,10 +1833,18 @@ public sealed partial class PairingService
             if (device.SharedWorldPublicKey is not null && device.SharedWorldPublicKey != request.PublicKey)
                 return new(false, "KeyReviewRequired", "The owner must reset this PC's shared world identity first.");
             if (device.SharedWorldPublicKey == request.PublicKey)
+            {
+                if (ApplySimpleSharedHostingPolicyLocked(device))
+                {
+                    MarkSharedRostersDirty(AffectedProfiles(device));
+                    SaveState();
+                }
                 return new(true, "IdentityAlreadyEnrolled", "This PC's signing identity is already bound.");
+            }
             if (devices.Any(item => item.Id != deviceId && item.SharedWorldPublicKey == request.PublicKey))
                 return new(false, "KeyAlreadyBound", "This signing identity is already bound to another PC.");
             device.SharedWorldPublicKey = request.PublicKey;
+            ApplySimpleSharedHostingPolicyLocked(device);
             MarkSharedRostersDirty(AffectedProfiles(device));
             SaveState();
             return new(true, "IdentityEnrolled", "This PC's signing identity is bound to its device ID.");
@@ -1822,7 +1865,7 @@ public sealed partial class PairingService
             device.SaveReceiveProfileIds?.Clear();
             MarkSharedRostersDirty(affected);
             SaveState();
-            return new(true, "IdentityReset", "Shared world identity reset. Review grants after this PC enrolls again.");
+            return new(true, "IdentityReset", "Shared world identity reset. Assigned shared servers authorize this PC again after it enrolls its new identity.");
         }
     }
 

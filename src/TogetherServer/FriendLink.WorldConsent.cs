@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+
 namespace TogetherServer;
 
 internal sealed partial class FriendLink
@@ -21,7 +24,44 @@ internal sealed partial class FriendLink
             !withdrawnSharedConsent.ContainsKey(profileId);
         var root = ReceiveConsentRoot(profileId);
         return root is null ? legacy : new WorldPeerReceiveConsentStore(data).Effective(root,
-            current!.PeerWorldMemberDeviceId ?? current.DeviceId, legacy);
+            current!.PeerWorldMemberDeviceId ?? current.DeviceId,
+            legacy || !withdrawnSharedConsent.ContainsKey(profileId) && AutomaticHostingReceiveConsent(root));
+    }
+
+    // Shared hosting includes keeping and forwarding the server's completed
+    // saves. The owner's verified grant supplies the initial policy; a saved
+    // local withdrawal or damaged consent record always takes precedence.
+    // This projection opens no listener and writes no consent or world files.
+    private bool AutomaticHostingReceiveConsent(SharedWorldPeerRoot root)
+    {
+        try
+        {
+            if (config is null || config.KnownRevoked ||
+                view.ConnectionCode is "Revoked" or "AccessExpired" or "ApprovalPending" ||
+                config.PendingSharedWorldGroups?.ContainsKey(root.ProfileId) == true ||
+                config.SharedWorldConflicts?.Contains(root.ProfileId) == true)
+                return false;
+            var floor = config.SharedRosterFloors?.GetValueOrDefault(root.ProfileId);
+            var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{root.ProfileId:N}.protected");
+            var keyBytes = data.LoadProtected($"shared-world-pc-signing-{SharedWorldDeviceId:N}.protected");
+            if (floor is null || bytes is null || bytes.Length > SharedWorldService.MaximumManifestBytes || keyBytes is null)
+                return false;
+            var roster = JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json);
+            if (roster is null || !SharedWorldRosterTrust.Verify(roster) ||
+                roster.OwnerPublicKey != root.OwnerPublicKey || roster.ProfileId != root.ProfileId ||
+                roster.GroupId != root.GroupId || roster.GroupId != floor.GroupId ||
+                roster.Epoch != floor.Epoch || roster.Revision != floor.Revision ||
+                roster.Signature != floor.Signature || !new WorldAuthorityStore(data).TrustsCurrentRoster(roster))
+                return false;
+            using var key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(keyBytes, out _);
+            return SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId,
+                Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
+                grants => grants.Receive && grants.EligibleHost && grants.Reshare);
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+            CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return false; }
     }
 
     private WorldConsentChange? CaptureWorldConsentChange(Guid profileId)

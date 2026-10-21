@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 import { parseBasicResult } from './contracts'
 import { Icon } from './Icon'
 import { SettingsDialog } from './SettingsPresentation'
-import { SharedWorldSeparateRoutePanel } from './SharedWorldSeparateRoutePanel'
 import { parsePlannedHandoffStatus, type PlannedHandoffStatus } from './plannedHandoff'
 import './FriendLocalHosting.css'
 
@@ -66,15 +65,13 @@ const checkLabels: Record<CheckKey, string> = {
 
 // These are fixed local actions. A peer's message never becomes a URL or a
 // navigation destination. Older status responses retain the same safe stops.
-export function localHostingAttention(status: LocalHostingStatus | null, accepted = false,
-  acceptedTerms = false, selectedFile = ''): LocalHostingStatus['remedy'] {
+export function localHostingAttention(status: LocalHostingStatus | null, acceptedTerms = false, selectedFile = ''): LocalHostingStatus['remedy'] {
   if (!status) return { kind: 'Review', title: 'Retry the hosting checks', message: 'This PC could not check hosting. Retry before starting.' }
   if (status.running) return null
-  const planned = activeHostingRequest(status)
   if (!status.allowed) return { kind: 'Permission', title: 'Ask the owner to allow hosting', message: status.message }
-  if (planned?.recipientState === 'Requested') return { kind: 'Respond', title: 'Review the hosting request', message: 'Accept or decline before preparing this PC.' }
-  if (status.code === 'HostingHistoryChoiceRequired' || status.code === 'WorldHistoryReviewRequired')
-    return { kind: 'ChooseHistory', title: 'Choose which save to host', message: status.message }
+  if (['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'SharedSaveHistoryNeedsReview'].includes(status.code) || status.remedy?.kind === 'ChooseHistory')
+    return { kind: 'ChooseHistory', title: 'This server has two different save histories',
+      message: 'Ask the owner to resolve the conflicting saves before hosting here. All existing saves are kept.' }
   if (status.needsServerFile && !selectedFile.trim())
     return { kind: 'ChooseServer', title: 'Install or find the game server', message: 'This PC needs the matching dedicated server. Choose its installed file or open game setup.' }
   if (['MinecraftJava', 'MinecraftBedrock'].includes(status.game ?? '') && !acceptedTerms && !status.readyForManualStart && !status.localProfileId)
@@ -85,12 +82,13 @@ export function localHostingAttention(status: LocalHostingStatus | null, accepte
     return { kind: 'Ports', title: 'Free the game ports on this PC', message: status.message }
   if (['PeerMembershipRequired', 'HostingPermissionChanged', 'HostingRequestChanged', 'SeparateCopyReviewRequired', 'SuccessorChecksPending', 'DataRecoveryRequired'].includes(status.code))
     return { kind: 'Review', title: 'Review this PC’s shared save', message: status.message }
+  if (status.remedy?.kind === 'GetSave' || ['SharedSaveRequired', 'WaitingForSuccessorCopy'].includes(status.code))
+    return { kind: 'GetSave', title: 'Wait for the latest completed save',
+      message: 'Ask the current Host to stop the server safely so its latest save can be shared, then retry.' }
   if (status.remedy && !['ConfirmCopy', 'ChooseServer', 'Terms', 'Respond'].includes(status.remedy.kind)) return status.remedy
   if (status.code === 'LocalServerSetupRequired') return { kind: 'GameSetup', title: 'Finish game setup', message: status.message }
   if (status.steps[3].state === 'ActionRequired') return { kind: 'Ports', title: 'Free the game ports on this PC', message: status.steps[3].message }
   if (status.steps[4].state === 'ActionRequired') return { kind: 'Connection', title: 'Let friends connect to this PC', message: status.steps[4].message }
-  if (!planned && !accepted && (!status.consented || !status.branchHash))
-    return { kind: 'ConfirmCopy', title: 'Review before hosting your own copy', message: 'Another Host may still be running. Progress made on each PC stays separate. Starting here does not move or replace that Host.' }
   return null
 }
 
@@ -110,9 +108,8 @@ export type FriendLocalHostingProps = {
 }
 
 export function FriendLocalHosting({ profileId, connectionId, worldName, available, accessBlocked = false,
-  disabled = false, presentation = 'action', onBrowseServerFile, onOpenHost, onOpenConnectionHelp, onOpenGameSetup, onReviewSharedSave }: FriendLocalHostingProps) {
+  disabled = false, presentation = 'action', onBrowseServerFile, onOpenHost, onOpenConnectionHelp, onOpenGameSetup }: FriendLocalHostingProps) {
   const base = `/api/local/friend/${profileId}/shared-world`
-  const splitNoteId = useId()
   const scope = JSON.stringify([connectionId, profileId])
   const request = useRef(0)
   const mutation = useRef(false)
@@ -122,11 +119,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const [error, setError] = useState('')
   const [serverFile, setServerFile] = useState('')
   const [password, setPassword] = useState('')
-  const [accepted, setAccepted] = useState(false)
+  const [networkConfirmed, setNetworkConfirmed] = useState(false)
   const [acceptedTerms, setAcceptedTerms] = useState(false)
   const [actionMessage, setActionMessage] = useState('')
-  const [manualSetupBranch, setManualSetupBranch] = useState<string | null>(null)
-  const [manualBusy, setManualBusy] = useState(false)
   const [plannedOperation, setPlannedOperation] = useState<{ requestId: string; until: number } | null>(null)
   const startIntent = useRef<{ scope: string; until: number; requestId: string | null } | null>(null)
   const plannedAuthorization = useRef(plannedOperation)
@@ -134,20 +129,17 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const plannedAttempt = useRef('')
   const currentStatus = useRef(status)
   currentStatus.current = status
-  const manualOperation = useRef(false)
-  const setManualActivity = useCallback((value: boolean) => { manualOperation.current = value; setManualBusy(value) }, [])
-  const acceptStatus = useCallback((next: LocalHostingStatus) => {
+  const acceptStatus = useCallback((next: LocalHostingStatus, preparedHere = false) => {
     if (!next.allowed || !next.consented || next.running || next.remedy &&
       ['Connection', 'Ports', 'Review', 'ChooseHistory', 'ChooseServer', 'GameSetup', 'Terms', 'GetSave'].includes(next.remedy.kind) ||
-      currentStatus.current?.branchHash && currentStatus.current.branchHash !== next.branchHash) startIntent.current = null
+      !preparedHere && currentStatus.current?.branchHash && currentStatus.current.branchHash !== next.branchHash) startIntent.current = null
     if (activeHostingRequest(currentStatus.current)?.requestId !== activeHostingRequest(next)?.requestId) {
-      setAcceptedTerms(false); setAccepted(false); setPassword('')
+      setAcceptedTerms(false); setPassword('')
       plannedAuthorization.current = null; setPlannedOperation(null); plannedAttempt.current = ''
       startIntent.current = null
     }
     currentStatus.current = next
     setStatus(next)
-    if (next.code === 'LocalServerSetupRequired') setManualSetupBranch(next.branchHash)
   }, [])
   const controller = useRef<AbortController | null>(null)
   const invalidate = useCallback(() => { ++request.current; controller.current?.abort() }, [])
@@ -155,18 +147,17 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   useEffect(() => {
     mutation.current = false
     startIntent.current = null
-    setStatus(null); setOpen(false); setBusy(false); setError(''); setAccepted(false); setAcceptedTerms(false)
+    setStatus(null); setOpen(false); setBusy(false); setError(''); setAcceptedTerms(false)
     setServerFile(''); setPassword(''); setActionMessage('')
+    setNetworkConfirmed(false)
     setPlannedOperation(null); plannedAttempt.current = ''
-    setManualSetupBranch(null)
-    setManualActivity(false)
     if (!available || accessBlocked) return
     let active = true
     let timer: number | undefined
     let currentRead: AbortController | null = null
     let timeout: number | undefined
     const read = async () => {
-      if (!mutation.current && !manualOperation.current) {
+      if (!mutation.current) {
         const sequence = ++request.current
         const abort = new AbortController()
         currentRead = abort
@@ -192,7 +183,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
     void read()
     return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout); invalidate() }
-  }, [scope, base, available, accessBlocked, acceptStatus, invalidate, setManualActivity])
+  }, [scope, base, available, accessBlocked, acceptStatus, invalidate])
 
   useEffect(() => {
     if (disabled || accessBlocked) startIntent.current = null
@@ -214,14 +205,16 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
       if (sequence === request.current && !abort.signal.aborted) acceptStatus(next)
     } catch (cause) {
-      if (sequence === request.current && !abort.signal.aborted) setError(errorMessage(cause))
+      if (sequence === request.current && !abort.signal.aborted) {
+        setStatus(null); startIntent.current = null; setError(errorMessage(cause))
+      }
     } finally {
       window.clearTimeout(timeout)
       if (sequence === request.current) { mutation.current = false; setBusy(false) }
     }
   }
   const prepareStatus = useCallback(async (target: LocalHostingStatus, authorization: typeof plannedOperation) => {
-    if (mutation.current || manualBusy || disabled || !target.allowed) return
+    if (mutation.current || disabled || !target.allowed) return
     const planned = activeHostingRequest(target)
     if (planned?.recipientState === 'Requested') return
     if (planned?.requestId && ['MinecraftJava', 'MinecraftBedrock'].includes(target.game ?? '') && !acceptedTerms) return
@@ -247,8 +240,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       if (sequence !== request.current || abort.signal.aborted) return
       if (authorization && plannedAuthorization.current !== authorization) return
       if (planned?.requestId && currentStatus.current?.handoffRequest?.requestId !== planned.requestId) return
-      acceptStatus(next); setPassword(''); setActionMessage(next.message)
-      if (!next.ok || localHostingAttention(next, accepted, acceptedTerms, serverFile)) {
+      acceptStatus(next, true); setPassword(''); setActionMessage(next.message)
+      if (!next.ok || localHostingAttention(next, acceptedTerms, serverFile)) {
         startIntent.current = null; setOpen(true)
       }
       if (authorization && (!next.ok || next.readyForManualStart)) {
@@ -263,10 +256,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       window.clearTimeout(timeout)
       if (sequence === request.current) { mutation.current = false; setBusy(false) }
     }
-  }, [base, disabled, manualBusy, serverFile, password, accepted, acceptedTerms, acceptStatus])
+  }, [base, disabled, serverFile, password, acceptedTerms, acceptStatus])
   const prepare = () => {
     const invitation = activeHostingRequest(status)
-    if (!status?.allowed || !invitation && !accepted && !(status.branchHash && status.consented)) return
+    if (!status?.allowed) return
     const authorization = invitation ? {
       requestId: invitation.requestId!, until: Date.now() + 10 * 60 * 1000
     } : null
@@ -295,13 +288,14 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       acceptStatus(next)
       if (accept && next.handoffRequest?.requestId === invitation.requestId) {
         const authorization = { requestId: invitation.requestId, until: Date.now() + 10 * 60 * 1000 }
+        startIntent.current = { scope, until: authorization.until, requestId: invitation.requestId }
         plannedAuthorization.current = authorization; setPlannedOperation(authorization)
       }
     } catch (cause) { if (sequence === request.current && !abort.signal.aborted) setError(errorMessage(cause)) }
     finally { if (sequence === request.current) { mutation.current = false; setBusy(false) } }
   }
   useEffect(() => {
-    if (!open || !plannedOperation || !status?.handoffRequest || mutation.current || manualBusy || disabled) return
+    if (!open || !plannedOperation || !status?.handoffRequest || mutation.current || disabled) return
     const invitation = status.handoffRequest
     if (invitation.requestId !== plannedOperation.requestId || ['Requested', 'Declined', 'Canceled'].includes(invitation.recipientState ?? '')) {
       plannedAuthorization.current = null; setPlannedOperation(null)
@@ -315,7 +309,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     if (plannedAttempt.current === attempt) return
     plannedAttempt.current = attempt
     void prepareStatus(status, plannedOperation)
-  }, [status, open, plannedOperation, disabled, manualBusy, serverFile, password, acceptedTerms, prepareStatus])
+  }, [status, open, plannedOperation, disabled, serverFile, password, acceptedTerms, prepareStatus])
   useEffect(() => {
     if (!plannedOperation) return
     const timeout = window.setTimeout(() => {
@@ -328,7 +322,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }, [plannedOperation])
   const startPrepared = useCallback(async (target: LocalHostingStatus) => {
     const intent = startIntent.current
-    if (mutation.current || manualBusy || disabled || !intent || intent.scope !== scope || intent.until <= Date.now()
+    if (mutation.current || disabled || !intent || intent.scope !== scope || intent.until <= Date.now()
       || !target.allowed || !target.readyForManualStart || target.running || !target.localProfileId
       || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)) return
     startIntent.current = null // consume before the request; no poll/error retry can repeat Start
@@ -364,21 +358,20 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       window.clearTimeout(timeout)
       if (sequence === request.current) { mutation.current = false; setBusy(false) }
     }
-  }, [base, scope, manualBusy, disabled, onOpenHost, acceptStatus])
+  }, [base, scope, disabled, onOpenHost, acceptStatus])
   useEffect(() => {
-    if (busy || manualBusy || disabled || !status?.readyForManualStart || !startIntent.current) return
-    if (localHostingAttention(status, accepted, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
+    if (busy || disabled || !status?.readyForManualStart || !startIntent.current) return
+    if (localHostingAttention(status, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
     void startPrepared(status)
-  }, [status, busy, manualBusy, disabled, accepted, acceptedTerms, serverFile, startPrepared])
+  }, [status, busy, disabled, acceptedTerms, serverFile, startPrepared])
 
   const host = () => {
-    if (mutation.current || manualBusy || disabled || !status?.allowed) return
+    if (mutation.current || disabled || !status?.allowed) return
     if (status.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setError(''); setActionMessage('')
-    const attention = localHostingAttention(status, accepted, acceptedTerms, serverFile)
-    if (attention && !['GameSetup', 'Review', 'Ports', 'Connection', 'GetSave'].includes(attention.kind)) { setOpen(true); return }
-    // The first click opens at a known action. Continuing after a remedy is a
-    // new deliberate instruction; checking a box or polling never supplies it.
+    const attention = localHostingAttention(status, acceptedTerms, serverFile)
+    if (attention && ['Permission', 'ChooseHistory'].includes(attention.kind)) return
+    // The dialog's confirmation authorizes this bounded preparation and Start.
     if (attention && !open) { setOpen(true); return }
     startIntent.current = { scope, until: Date.now() + 10 * 60 * 1000,
       requestId: activeHostingRequest(status)?.requestId ?? null }
@@ -389,11 +382,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       setOpen(true)
       return
     }
-    if (status.readyForManualStart && !attention) { void startPrepared(status); return }
     prepare()
   }
   const browse = async () => {
-    if (!status?.game || !onBrowseServerFile || mutation.current || manualBusy || disabled) return
+    if (!status?.game || !onBrowseServerFile || mutation.current || disabled) return
     mutation.current = true
     const sequence = ++request.current
     setError(''); setBusy(true)
@@ -406,18 +398,15 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
 
   if (!available || accessBlocked) return null
   const allowed = status?.allowed === true
-  const handoff = status?.handoffRequest
-  const planned = activeHostingRequest(status) !== null
-  const requestOffered = planned && handoff?.recipientState === 'Requested'
-  const waitingForHost = planned && handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
+  const handoff = activeHostingRequest(status)
+  const requestOffered = handoff?.recipientState === 'Requested'
+  const waitingForHost = handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
   const minecraftTerms = ['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && !status?.readyForManualStart && !status?.localProfileId
-  const manualSetup = !!status?.branchHash && !status.readyForManualStart && !status.running
-    && (status.code === 'LocalServerSetupRequired' || manualSetupBranch === status.branchHash)
-  const historyChoice = ['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'].includes(status?.code ?? '')
-  const attention = localHostingAttention(status, accepted, acceptedTerms, serverFile)
-  const showCopyConsent = allowed && !planned && !status?.running && (!status?.consented || !status?.branchHash || accepted)
+  const attention = localHostingAttention(status, acceptedTerms, serverFile)
+  const historyChoice = attention?.kind === 'ChooseHistory'
   const pause = () => {
     startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
+    setNetworkConfirmed(false)
     invalidate(); mutation.current = false; setBusy(false); setOpen(false)
   }
   const connectionHelp = () => {
@@ -429,50 +418,35 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     pause(); onOpenGameSetup(status.game, status.localProfileId ?? undefined)
   }
   const trigger = () => {
-    if (requestOffered) { setOpen(true); setError(''); setActionMessage(''); return }
-    host()
+    if (disabled || busy || !allowed) return
+    if (status?.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
+    setOpen(true); setNetworkConfirmed(false); setError(''); setActionMessage('')
+    void refresh()
   }
-  const canContinue = allowed && !busy && !manualBusy && !disabled && !manualSetup && !historyChoice
-    && !(showCopyConsent && !accepted) && !(minecraftTerms && !acceptedTerms)
-    && !(status?.needsServerFile && !serverFile.trim())
-    && !(status?.needsPassword && !password)
-    && attention?.kind !== 'Permission'
-  const splitNote = !!status?.branchHash && !planned && !status.running
-    ? <small id={splitNoteId} className="local-hosting-action-note">Starts your own copy. The other Host can keep running; progress on the two servers stays separate.</small> : null
-  if (!allowed && !open && presentation === 'action') return null
+  const canContinue = allowed && !busy && !disabled && !historyChoice
+    && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
+    && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
+  if (!allowed && !open) return null
   return <>
-    {presentation === 'card' ? <section className="local-hosting-card" aria-label="Host on this PC">
-      <Icon name="server" size={24} /><div><h3>{requestOffered ? 'You have a hosting request' : 'Host on this PC'}</h3>
-        <p>{requestOffered ? 'The current Host would like to move this save to your PC. Accept or decline.' :
-          status?.running ? 'This save is already hosted here.' : allowed ? 'Check this PC, prepare the save and start. We ask when something needs your attention.' :
-            status ? 'Ask the owner to turn on Can host this save for this PC.' : 'Checking hosting permission...'}</p>{splitNote}</div>
-      <Button className="secondary" aria-describedby={splitNote ? splitNoteId : undefined} disabled={disabled || busy || !allowed} onClick={trigger}>
-        <Icon name={busy ? 'loader' : 'monitor'} />{busy ? 'Checking this PC...' : requestOffered ? 'Review hosting request' : 'Host on this PC'}</Button>
-    </section> : <span className="local-hosting-action"><Button className="secondary local-hosting-trigger" title="Host on this PC"
-      aria-describedby={splitNote ? splitNoteId : undefined} disabled={disabled || busy || !allowed}
-      onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />{busy ? 'Checking this PC...' : requestOffered ? 'Review hosting request' : 'Host on this PC'}</Button>{splitNote}</span>}
-    {busy && !open && <span className="local-hosting-progress" role="status">Checking this PC and preparing the save before Start...</span>}
-    {open && <SettingsDialog title={requestOffered ? 'Hosting request' : 'Host on this PC'} description={worldName} busy={busy || manualBusy}
-      onClose={pause} wide={manualSetup || historyChoice}
-      footer={requestOffered ? <><Button className="secondary" disabled={busy || disabled} onClick={() => void respond(false)}>Decline</Button>
-        <Button disabled={busy || disabled || !allowed} onClick={() => void respond(true)}>Accept hosting request</Button></> :
-        status?.running && status.localProfileId ? <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :
-        waitingForHost && plannedOperation ? startIntent.current ? <span role="status">Start requested. Waiting for the current Host to finish the move...</span> :
-          <Button disabled={busy || manualBusy || disabled} onClick={host}>Start here when the move finishes</Button> :
-        <Button disabled={!canContinue} onClick={host}><Icon name={busy ? 'loader' : 'play'} />
-          {busy ? 'Checking this PC...' : historyChoice ? 'Choose a save above' : manualSetup ? 'Finish game setup above' : 'Continue and start'}</Button>}>
+    {allowed && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
+      <Icon name="server" size={24} /><div><h3>Host locally</h3>
+        <p>{status?.running ? 'This server is already hosted on this PC.' : 'Use the latest available save to host this server on your PC.'}</p></div>
+      <Button className="secondary" disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>
+    </section> : <Button className="secondary icon-button local-hosting-trigger" title="Host locally" aria-label="Host locally"
+      disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} /></Button>)}
+    {open && <SettingsDialog title="Host locally" description={worldName} busy={busy}
+      onClose={pause} footer={status?.running && status.localProfileId ?
+        <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :
+        waitingForHost && plannedOperation && startIntent.current ? <span role="status">Waiting for the current Host to finish the save...</span> :
+        <Button disabled={!canContinue} onClick={() => { setNetworkConfirmed(true); if (requestOffered) void respond(true); else host() }}><Icon name={busy ? 'loader' : 'play'} />
+          {busy ? 'Checking this PC...' : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
       <div className="local-hosting-flow" aria-busy={busy}>
-        {requestOffered ? <>
-          <p className="local-hosting-intro">The current Host would like you to host {worldName} on this PC.</p>
-          <p>Accept to keep a save here and check your game setup. The current Host stops safely after your PC is prepared.</p>
-          <p>Accepting lets preparation continue for this move. Choose Host on this PC when you want the prepared server to start. Declining keeps hosting on the current PC.</p>
-        </> : <>
-          {busy ? <p role="status">Checking the game, save and this PC's ports. Keep TogetherServer open.</p> :
-            waitingForHost ? <section className="local-hosting-next" aria-label="Next hosting step"><h3>Waiting for the final save</h3>
-              <p>The current Host must stop safely and finish the move. This PC checks the exact final copy before it can start.</p></section> :
-            status?.running ? <p>This save is already hosted on this PC.</p> :
-            <section className="local-hosting-next" aria-label="Next hosting step"><h3>{attention?.title ?? (status?.readyForManualStart ? 'This PC is prepared' : 'Ready to check this PC')}</h3>
-              <p>{attention?.message ?? 'Continue to run the remaining checks and start. If anything needs fixing, we will show that step.'}</p></section>}
+        {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. The app will get the latest available save, check this PC and start when it is ready.</p>}
+        <>
+          {busy ? <p role="status">Checking the game, save and this PC's connection...</p> :
+            waitingForHost ? <p role="status">Waiting for the current Host to finish the latest save.</p> :
+            status?.running ? <p>This server is already hosted on this PC.</p> : attention &&
+            <section className="local-hosting-next" aria-label="Next hosting step"><h3>{attention.title}</h3><p>{attention.message}</p></section>}
           {attention?.kind === 'ChooseServer' && <div className="local-hosting-fix">
             {status?.game === 'Valheim' && <a href="steam://install/896660">Install Valheim Dedicated Server in Steam</a>}
             {['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && <a href="https://www.minecraft.net/en-us/download/server" target="_blank" rel="noreferrer">Get the official Minecraft server</a>}
@@ -490,9 +464,6 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             <span>I have read and accept the terms for preparing this Minecraft server.
               <small>Review the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer">Minecraft EULA</a> and{' '}
                 <a href="https://www.microsoft.com/en-us/privacy/privacystatement" target="_blank" rel="noreferrer">Microsoft Privacy Statement</a>.</small></span></label>}
-          {showCopyConsent && <label className="local-hosting-consent"><Input type="checkbox" checked={accepted} disabled={busy}
-            onChange={event => { setAccepted(event.target.checked); startIntent.current = null }} /><span>Keep this save on my PC and host my own copy.
-              <small>If another Host is running, progress stays separate. Existing saves are preserved. Approved friends can discover this PC's saved connection. Continue and start checks this copy, then starts it if the checks pass.</small></span></label>}
           {attention?.kind === 'Connection' && <div className="local-hosting-fix"><p>Use Connection help to check this PC's address and the port friends need. It explains any Windows, router or provider problem that needs your action.</p>
             {onOpenConnectionHelp && <Button className="secondary" disabled={busy || disabled} onClick={connectionHelp}><Icon name="plug" />Connection help</Button>}
           </div>}
@@ -500,18 +471,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             {status?.localProfileId && <Button className="secondary" disabled={busy || disabled} onClick={() => { pause(); onOpenHost(status.localProfileId!) }}>Open local server setup</Button>}
             {onOpenGameSetup && status?.localProfileId && <Button className="secondary" disabled={busy || disabled} onClick={gameSetup}>Open game setup</Button>}
           </div>}
-          {attention?.kind === 'GameSetup' && onOpenGameSetup && <Button className="secondary" disabled={busy || disabled} onClick={gameSetup}>Open game setup</Button>}
-          {(attention?.kind === 'GetSave' || attention?.kind === 'Review') && onReviewSharedSave && <Button className="secondary" disabled={busy || disabled}
-            onClick={() => { pause(); onReviewSharedSave() }}>Review shared saves</Button>}
-          {manualSetup && status?.branchHash && <details className="local-hosting-advanced" open><summary>Advanced setup for this save's add-ons</summary>
-            <SharedWorldSeparateRoutePanel key={status.branchHash} profileId={profileId} separateCopies={1} game={status.game ?? undefined}
-              selectedBranchHash={status.branchHash} suggestedSetup={status} expanded allowStart={false}
-              onBrowseServerFile={onBrowseServerFile} onPrepared={() => void refresh()} onBusyChange={setManualActivity}
-              onOpenSeparateHostControls={onOpenHost} /></details>}
-          {historyChoice && <SharedWorldSeparateRoutePanel profileId={profileId} separateCopies={1}
-            game={status?.game ?? undefined} expanded allowStart={false} onBrowseServerFile={onBrowseServerFile}
-            onBusyChange={setManualActivity} onOpenSeparateHostControls={onOpenHost} />}
-          {planned && <p className="helper-text">{handoff?.message} Accepting or checking a move does not start a game. Only your Host on this PC instruction can do that.</p>}
+          {attention?.kind === 'GameSetup' && status?.localProfileId && onOpenGameSetup && <Button className="secondary" disabled={busy || disabled} onClick={gameSetup}>Open game setup</Button>}
           <details className="local-hosting-results"><summary>Automatically checked results</summary>
             {status ? <ol className="local-hosting-checks" aria-label="Local hosting checks">{status.steps.map(step => <li key={step.key} data-state={step.state}>
               <Icon name={step.state === 'Ready' ? 'check' : step.state === 'ActionRequired' ? 'warning' : 'plug'} />
@@ -520,13 +480,13 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             </li>)}</ol> : <p role="alert">Hosting checks are unavailable. Retry before starting.</p>}
             <p className="helper-text">These results cover only the checks described. Loading and saving in the real game and a friend joining from another network require separate testing.</p>
           </details>
-          <div className="local-hosting-secondary-actions"><Button className="text-button" disabled={busy || manualBusy || disabled} onClick={() => void refresh()}><Icon name="refresh" />Retry automatic checks</Button>
-            {status?.localProfileId && <Button className="text-button" disabled={busy || manualBusy || disabled}
+          <div className="local-hosting-secondary-actions"><Button className="text-button" disabled={busy || disabled} onClick={() => void refresh()}><Icon name="refresh" />Retry automatic checks</Button>
+            {status?.localProfileId && <Button className="text-button" disabled={busy || disabled}
               onClick={() => { pause(); onOpenHost(status.localProfileId!) }}>Local server &amp; connection details</Button>}
             {onOpenConnectionHelp && attention?.kind !== 'Connection' && status?.steps[4].state !== 'Ready' && <Button className="text-button"
-              disabled={busy || manualBusy || disabled} onClick={connectionHelp}><Icon name="plug" />Connection help</Button>}
+              disabled={busy || disabled} onClick={connectionHelp}><Icon name="plug" />Connection help</Button>}
           </div>
-        </>}
+        </>
         {actionMessage && !busy && <p role="status">{actionMessage}</p>}
         {error && <p role="alert">{error}</p>}
       </div>

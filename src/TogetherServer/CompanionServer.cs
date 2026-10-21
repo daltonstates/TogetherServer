@@ -814,12 +814,17 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             if (!decision.Ok) return Results.Json(decision, statusCode: 403);
             try
             {
-                var roster = await manager.SharedWorldRosterAsync(profileId);
-                if (decision.Code != "IdentityAlreadyEnrolled" || roster is null ||
-                    roster.Members.All(item => item.DeviceId != device.Id || item.PublicKey != request.PublicKey))
+                // This key belongs to the PC across all its assignments. Sign
+                // every changed original-owner server so enrolling through one
+                // card cannot leave its other shared servers fenced indefinitely.
+                foreach (var assigned in pairing.SharedEnrollmentProfileIds(device.Id, profileId))
                 {
-                    var published = await manager.PublishSharedWorldRosterAsync(profileId, pairing.SharedRosterMembers(profileId));
-                    pairing.ConfirmSharedRosterPublished(profileId, published);
+                    if (!await manager.SharedRosterManagementAvailableAsync(assigned)) continue;
+                    var roster = await manager.SharedWorldRosterAsync(assigned);
+                    if (!pairing.SharedRosterDirty(assigned) && decision.Code == "IdentityAlreadyEnrolled" && roster is not null &&
+                        roster.Members.Any(item => item.DeviceId == device.Id && item.PublicKey == request.PublicKey)) continue;
+                    var published = await manager.PublishSimpleSharedHostingRosterAsync(assigned);
+                    pairing.ConfirmSharedRosterPublished(assigned, published);
                 }
                 return Results.Json(decision);
             }

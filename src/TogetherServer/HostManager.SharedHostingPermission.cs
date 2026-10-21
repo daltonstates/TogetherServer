@@ -5,9 +5,9 @@ namespace TogetherServer;
 
 public sealed partial class HostManager
 {
-    // One owner action grants receiving and hosting together. Its backup/sharing
-    // prerequisites merge into current settings under the lifecycle gate; no
-    // browser snapshot, local Friend consent or game action is accepted here.
+    // Retain the old local migration path for a server whose sharing is off.
+    // The enabled server policy owns its receiving/forwarding/hosting grants;
+    // per-PC controls cannot contradict that one choice.
     public async Task<PairingDecision> SetSharedWorldGrantsAsync(Guid deviceId,
         Guid profileId, SharedWorldGrants grants)
     {
@@ -20,6 +20,9 @@ public sealed partial class HostManager
             {
                 var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
                 if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+                if (profile.SharedSavesEnabled)
+                    return new(false, "ServerHostingSettingRequired",
+                        "Use Allow friends to host this server. Remove a PC's server assignment or access to exclude it.");
                 if (profile.WorldLoadRehearsalId is not null)
                     return new(false, "WorldLoadCannotShare", "A disposable load rehearsal cannot publish or change shared-world authority.");
                 if (profile.SeparateCopySourceProfileId is not null || profile.SeparateCopyBranchHash is not null)

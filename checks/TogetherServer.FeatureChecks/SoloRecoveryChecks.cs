@@ -150,6 +150,45 @@ internal static class SoloRecoveryChecks
             "another eligible PC could not manually recover the newest verified branch descendant");
         Require(!SharedWorldSeparateCopyStore.Verify(nextBranch with { SourceBranch = null }),
             "a child recovery lost its bound source branch without invalidating its signature");
+        using (var nextHostingKey = ECDsa.Create())
+        {
+            var hostingBytes = nextData.LoadProtected(WorldAuthorityStore.HostingKeyName(profileId))!;
+            nextHostingKey.ImportPkcs8PrivateKey(hostingBytes, out _);
+            var final = SharedWorldService.SignVersion(publishedTwo.Version with
+            {
+                Number = publishedTwo.Version.Number + 1,
+                ParentHash = publishedTwo.Version.VersionHash,
+                BackupId = Guid.NewGuid(),
+                CreatedUtc = first.CreatedUtc.AddYears(-1),
+                Files = [FileFact(Encoding.UTF8.GetBytes("C continued the world"))]
+            }, nextHostingKey);
+            var rootIdentity = new SharedWorldPeerRoot(Public(owner), profileId, groupId);
+            var manifests = new[] { first, publishedOne.Version, publishedTwo.Version, final }
+                .ToDictionary(item => item.VersionHash);
+            var chosenLatest = await WorldPeerLatestSelection.SelectAsync(rootIdentity,
+                [new(first), new(publishedTwo.Version, branch), new(final, nextBranch)],
+                [first.VersionHash, publishedTwo.Version.VersionHash, final.VersionHash],
+                (_, _) => Task.CompletedTask,
+                (hash, number, _) => Task.FromResult(manifests.TryGetValue(hash, out var value) && value.Number == number ? value : null), default);
+            Require(chosenLatest == 2,
+                "A -> B -> C continuation did not select C for the returning owner, or a wall clock displaced signed descendants");
+            var concurrentOwner = SharedWorldService.SignVersion(first with
+            {
+                Number = first.Number + 1,
+                ParentHash = first.VersionHash,
+                BackupId = Guid.NewGuid(),
+                Files = [FileFact(Encoding.UTF8.GetBytes("A concurrently changed the original"))]
+            }, owner);
+            manifests.Add(concurrentOwner.VersionHash, concurrentOwner);
+            try
+            {
+                await WorldPeerLatestSelection.SelectAsync(rootIdentity,
+                    [new(concurrentOwner), new(final, nextBranch)], [], (_, _) => Task.CompletedTask,
+                    (hash, number, _) => Task.FromResult(manifests.TryGetValue(hash, out var value) && value.Number == number ? value : null), default);
+                throw new InvalidOperationException("returning owner priority silently discarded C's divergent continuation");
+            }
+            catch (InvalidDataException) { }
+        }
         var missingAncestor = Path.Combine(receivedBranch, "signed-history");
         var ancestorFile = Directory.EnumerateFiles(missingAncestor, "*.json", SearchOption.AllDirectories)
             .Single(path => JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json)!.VersionHash == publishedOne.Version.VersionHash);

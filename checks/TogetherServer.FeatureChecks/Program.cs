@@ -70,7 +70,11 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Recovery branch live-save integration", () => BranchLiveIntegrationChecks.RunAsync(root)),
     ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root))
 };
-foreach (var group in groups)
+if (args.Any(name => !groups.Any(group => group.Name.Equals(name, StringComparison.Ordinal))))
+    throw new ArgumentException("Choose an exact registered source-check group name, or omit names to run every group.");
+var selectedGroups = args.Length == 0 ? groups : groups.Where(group => args.Contains(group.Name, StringComparer.Ordinal)).ToArray();
+Console.WriteLine($"Running {selectedGroups.Length} of {groups.Length} source/synthetic groups.");
+foreach (var group in selectedGroups)
 {
     try { await group.Run(); Console.WriteLine($"PASS {group.Name}"); }
     catch (Exception error)

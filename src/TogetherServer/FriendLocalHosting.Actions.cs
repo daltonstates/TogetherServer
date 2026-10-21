@@ -16,16 +16,17 @@ internal sealed partial class FriendLocalHostingService
         {
             { Allowed: false } => new("Permission", "Ask the owner to allow hosting", status.Message),
             { HandoffRequest.RecipientState: "Requested" } => new("Respond", "Review the hosting request", "Accept or decline the move before preparing this PC."),
-            { Code: "HostingHistoryChoiceRequired" or "WorldHistoryReviewRequired" } => new("ChooseHistory", "Choose which save to host", "More than one save history needs review. Keep every copy and choose the one you want to use."),
+            { Code: "HostingHistoryChoiceRequired" or "WorldHistoryReviewRequired" or "SharedSaveHistoryNeedsReview" } =>
+                new("ChooseHistory", "Different progress needs review", "Two sessions have different progress. Every save is protected. Review the copies before hosting again."),
             { Code: "MinecraftTermsRequired" } => new("Terms", "Review Minecraft's terms", status.Message),
-            { Code: "SharedSaveRequired" or "WaitingForSuccessorCopy" } => new("GetSave", "Get a completed save", "Keep an approved Host reachable. If no save has been shared, ask the current Host to move hosting with the final save or stop safely and share a completed copy. Then retry."),
+            { Code: "SharedSaveRequired" or "WaitingForSuccessorCopy" or "SharedSaveUnavailable" } => new("GetSave", "Get a completed save", "Keep an approved PC with the save reachable. If no completed save has been shared, ask the current Host to stop the server safely, then retry."),
             { NeedsServerFile: true } => new("ChooseServer", "Find the game server on this PC", "Install the matching dedicated server or choose its installed file, then continue. Existing worlds stay intact."),
             { Code: "LocalServerSetupRequired" } => new("GameSetup", "Finish this PC's game setup", status.Message),
             { Code: "LocalPortsRequired" or "GamePortInUse" or "PortInUse" or "PortConflict" } => new("Ports", "Free this PC's game ports", "Another app may be using a needed game port. Open local servers, stop the app using it if it is yours, or change this server's port in Setup. Then retry."),
             { Code: "LocalConnectionSetupRequired" or "RecipientConnectionRequired" or "PeerDiscoveryRequired" } => new("Connection", "Set up connections to this PC", status.Message),
             { Code: "LocalHostingReviewRequired" or "SharingReviewRequired" or "HandoffReviewRequired" } => new("Review", "Review the saved setup", status.Message),
-            { Running: false, Consented: false } => new("ConfirmCopy", "Allow a save on this PC", "This PC needs your permission to keep the shared save before hosting."),
-            { Running: false, BranchHash: null, HandoffRequest: null } => new("ConfirmCopy", "Review before making your own copy", "Another Host may still be running. Changes made on each PC stay separate; starting here does not move or replace the other Host."),
+            { Running: false, Consented: false } => new("ConfirmCopy", "Confirm local hosting", "Hosting keeps the latest verified save on this PC so approved friends can continue later."),
+            { Running: false, BranchHash: null, HandoffRequest: null } => new("ConfirmCopy", "Confirm local hosting", "Other players will connect to this PC. The app checks the server, save and connection before starting."),
             _ => null
         };
         if (remedy is null && !status.Running && status.Steps.FirstOrDefault(step => step.Key == "ports")?.State == "ActionRequired")
@@ -76,6 +77,22 @@ internal sealed partial class FriendLocalHostingService
             return Refused("LocalHostingPreparationRequired", "Repeat this PC's automatic hosting checks before starting.");
         if (status.Remedy is { Kind: "Connection" or "Ports" or "Review" })
             return Refused("LocalHostingActionRequired", status.Remedy.Message);
+        if (input.RequestId is null && latestSource is not null && access.Root is { } latestRoot)
+        {
+            var latest = await latestSource(latestRoot, cancellationToken);
+            if (!latest.Ok || latest.Source is null)
+            {
+                if (status.BranchHash is { } refusedBranch)
+                    await manager.InvalidateLocalHostingPreparationAsync(profileId, refusedBranch, cancellationToken);
+                return Refused(latest.Code, latest.Message);
+            }
+            if (!friend.CurrentLocalHostingConnection(connection))
+                return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
+            latest.Source.Verify(data, latestRoot);
+            var retained = await manager.VerifiedLocalContinuationAsync(profileId, input.LocalProfileId, cancellationToken);
+            if (retained?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
+                return Refused("LatestSaveChanged", "A newer completed save is available. Continue hosting to check and use it before starting.");
+        }
         if (input.RequestId is { } exactRequest)
         {
             if (status.HandoffRequest is not { RecipientState: "Completed" } exactHandoff || exactHandoff.RequestId != exactRequest ||
@@ -104,6 +121,16 @@ internal sealed partial class FriendLocalHostingService
         if (!announced.Ok) return Refused(announced.Code, announced.Message);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
+        if (input.RequestId is null && latestSource is not null)
+        {
+            var latest = await latestSource(root, cancellationToken);
+            if (!latest.Ok || latest.Source is null) return Refused(latest.Code, latest.Message);
+            var current = await manager.VerifiedLocalContinuationAsync(profileId, input.LocalProfileId, cancellationToken);
+            if (!friend.CurrentLocalHostingConnection(connection) ||
+                current?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
+                return Refused("LatestSaveChanged", "A newer save arrived. Continue hosting to check the latest copy before starting.");
+            await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, cancellationToken);
+        }
         cancellationToken.ThrowIfCancellationRequested();
         if (input.RequestId is { } requestId)
         {

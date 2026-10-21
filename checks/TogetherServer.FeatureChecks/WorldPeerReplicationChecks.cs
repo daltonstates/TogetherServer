@@ -35,7 +35,7 @@ internal static class WorldPeerReplicationChecks
         using var dData = new LocalData(Path.Combine(prefix, "metadata-d"));
         using var eData = new LocalData(Path.Combine(prefix, "withdrawn-e"));
         var bEndpoint = "https://192.0.2.81:5131";
-        bData.SaveSettings(new HostSettings { CompanionEndpoint = bEndpoint, CompanionListeningEnabled = true, Profiles = [] });
+        bData.SaveSettings(new HostSettings { CompanionEndpoint = bEndpoint, CompanionBindAddress = "0.0.0.0", CompanionListeningEnabled = true, Profiles = [] });
         cData.SaveSettings(new HostSettings { CompanionEndpoint = "https://127.0.0.1:5142", CompanionPort = 5142, Profiles = [] });
         dData.SaveSettings(new HostSettings { Profiles = [] });
         eData.SaveSettings(new HostSettings { Profiles = [] });
@@ -264,7 +264,9 @@ internal static class WorldPeerReplicationChecks
         await eService.SyncNowAsync(default);
         Require(withdrawn && FriendLink.ReadReceivedLatest(Vault(eData, eId, source.ProfileId))?.VersionHash == first.VersionHash &&
             !Receipts(bData, source).Any(item => item.DeviceId == eId && item.VersionHash == second.VersionHash),
-            "withdrawal after a chunk response still promoted or acknowledged the new save");
+            $"withdrawal after a chunk response failed: callback={withdrawn}, " +
+            $"retained={FriendLink.ReadReceivedLatest(Vault(eData, eId, source.ProfileId))?.VersionHash}, " +
+            $"newReceipt={Receipts(bData, source).Any(item => item.DeviceId == eId && item.VersionHash == second.VersionHash)}");
         var eChunks = handler.Requests.Count(item => item.Device == eId && item.Operation == WorldPeerOperations.Chunk);
         await eService.SyncNowAsync(default);
         Require(handler.Requests.Count(item => item.Device == eId && item.Operation == WorldPeerOperations.Chunk) == eChunks &&
@@ -272,6 +274,7 @@ internal static class WorldPeerReplicationChecks
             !cData.LoadSettings().CompanionListeningEnabled && !dData.LoadSettings().CompanionListeningEnabled &&
             !eData.LoadSettings().CompanionListeningEnabled,
             "withdrawn reception resumed payloads or outbound replication enabled a listener");
+        await WorldPeerSeedingChecks.RunAsync(rootPath);
     }
 
     private static void Initialize(LocalData data, SharedWorldPeerRoot source, SharedWorldRoster roster,

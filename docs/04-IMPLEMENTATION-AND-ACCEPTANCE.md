@@ -1,5 +1,11 @@
 # Implementation order and acceptance
 
+The 2026-10-21 single-setting shared-hosting changes and their exact validation
+are recorded in [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+Its one-confirmation flow supersedes earlier user-managed sharing steps.
+Source, synthetic transport, rendered UI and real multi-PC/game evidence remain
+separate acceptance categories.
+
 The 2026-10-16 peer-world implementation and its current verification results
 are tracked in [delivery document 26](26-PEER-SHARED-WORLDS-DELIVERY.md).
 Source/synthetic checks cover solo/descendant recovery, signed directory and

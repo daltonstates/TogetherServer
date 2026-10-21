@@ -25,16 +25,19 @@ internal sealed partial class WorldPeerService
     private readonly FriendService friend;
     private readonly PairingService pairing;
     private readonly Func<string, IEnumerable<string>, HttpClient> makeClient;
+    private readonly Func<TimeSpan, CancellationToken, Task> seedDelay;
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private readonly object stateSync;
     private readonly Dictionary<string, string> warnings = new(StringComparer.Ordinal);
     private Task? backgroundSync;
 
     internal WorldPeerService(LocalData data, HostManager manager, FriendService friend,
-        PairingService pairing, Func<string, IEnumerable<string>, HttpClient>? makeClient = null)
+        PairingService pairing, Func<string, IEnumerable<string>, HttpClient>? makeClient = null,
+        Func<TimeSpan, CancellationToken, Task>? seedDelay = null)
     {
         this.data = data; this.manager = manager; this.friend = friend; this.pairing = pairing;
         this.makeClient = makeClient ?? MakePinnedClient;
+        this.seedDelay = seedDelay ?? ((duration, token) => Task.Delay(duration, token));
         stateSync = SharedWorldMutationGate.For(data.RootPath);
     }
 
@@ -176,14 +179,18 @@ internal sealed partial class WorldPeerService
                 continue;
             var bootstrap = new SharedWorldPeerRoute(membership.HostEndpoint.TrimEnd('/'),
                 membership.HostFingerprint.ToUpperInvariant());
+            var memberKey = membership.DeviceId == Guid.Empty ? membership.Root.OwnerPublicKey :
+                membership.Roster.Members.SingleOrDefault(member => member.DeviceId == membership.DeviceId)?.PublicKey;
+            var autoShare = memberKey is not null && SharedWorldPeerTrust.AccessFromRoster(membership.Root, membership.Roster,
+                membership.DeviceId, memberKey) is { Receive: true, Reshare: true };
             SaveGroup(new(membership.Root, membership.Roster, membership.DeviceId,
                 old?.Name ?? "Shared world", new WorldPeerReceiveConsentStore(data).Effective(membership.Root,
-                    membership.DeviceId, membership.ReceiveConsented), old?.SharingEnabled ?? false,
+                    membership.DeviceId, membership.ReceiveConsented), old?.SharingEnabled == true || autoShare,
                 SharedWorldPeerTrust.ValidRoute(bootstrap) ? bootstrap : old?.Bootstrap));
         }
         var snapshot = await manager.SnapshotAsync();
-        foreach (var profile in snapshot.Settings.Profiles.Where(profile => profile.SharedSavesEnabled &&
-            profile.SeparateCopySourceProfileId is null))
+        foreach (var profile in snapshot.Settings.Profiles.Where(profile => profile.SeparateCopySourceProfileId is null &&
+            (profile.SharedSavesEnabled || Groups().Any(group => group.Root.ProfileId == profile.Id && group.DeviceId == Guid.Empty))))
         {
             var roster = await manager.PeerPublishedRosterAsync(profile.Id);
             if (!SharedWorldRosterTrust.Verify(roster)) continue;

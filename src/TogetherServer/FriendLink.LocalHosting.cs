@@ -4,7 +4,8 @@ using System.Text.Json;
 namespace TogetherServer;
 
 internal sealed record LocalHostingAccess(bool Allowed, bool Consented, string Name,
-    string? Game, SharedWorldVersion? Version, bool SaveVerified, string Code, string Message);
+    string? Game, SharedWorldVersion? Version, bool SaveVerified, string Code, string Message,
+    SharedWorldPeerRoot? Root = null);
 
 internal sealed partial class FriendLink
 {
@@ -116,7 +117,8 @@ internal sealed partial class FriendLink
             !AuthorizedVersionSignerForRecords(owner, version, new WorldAuthorityStore(data).Read(profileId))))
         { version = null; verified = false; }
         return new(true, consented, name, version?.Game ?? profile?.GameKind ?? profile?.Kind,
-            version, verified, "HostingAllowed", "This PC has the owner's signed hosting permission.");
+            version, verified, "HostingAllowed", "The owner allows this PC to host this server.",
+            new(roster.OwnerPublicKey, profileId, roster.GroupId));
     }
 }
 

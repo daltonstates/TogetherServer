@@ -1,5 +1,12 @@
 # Public connection and pairing
 
+The shared-hosting switch authorizes approved assigned members to receive,
+forward and host together. Pinned signatures, membership, access deadlines,
+bounded manifests/chunks and file hashes remain enforced internally. A remote
+owner's choice opens no Friend listener; **Host locally** includes the local
+network confirmation. Outbound-only receivers can seed to an approved enabled
+listener. See [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+
 Peer capability `shared-world-peers-v1` adds only fixed challenge/exchange routes
 under a known world key. Transport requires literal-IP HTTPS, the exact TLS pin,
 bounded strict JSON, no redirects or proxy, and a single-use signed proof bound

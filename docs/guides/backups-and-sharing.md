@@ -63,76 +63,55 @@ recognizable saved change, and graceful restart explicitly. Original worlds,
 backups, and received-copy receipts remain intact. A synthetic fixture trial
 does not accept a real installation.
 
-## Let another PC receive saves or host
+## Let friends host this server
 
-1. Enable automatic post-Stop backups in **Protection settings**, then enable
-   sharing under **Backups > Sharing & hosting**. Open **Manage sharing > People**
-   on the original Host and choose an approved paired PC.
-2. Allow **Receive saves** for private verified copies. **Can host this save**
-   enables receiving and hosting together. Turning hosting off keeps Receive;
-   turning Receive off removes hosting eligibility too.
-3. On the Friend PC, open the server's **Shared saves** and enable
-   **Allow saves on this PC**. Receiving needs local consent as well as the
-   Host's grant.
-4. Use **Host on this PC** when approved to prepare hosting. The guide reviews
-   the game installation, verified copy, storage, ports, and required route
-   checks. Starting remains a deliberate local action.
+On the original Host, open **Backups > Sharing & hosting** and turn on
+**Allow friends to host this server**. That is the shared-hosting setting.
+Approved PCs assigned to this server automatically keep and share its completed,
+verified saves. Safe post-Stop backups are enabled with it. Newly approved PCs
+receive the same permission; removing a PC or its server access still works.
 
-Following signed addresses and sessions does not require storing save files.
-Forwarding received saves requires a separate grant, **Forward verified
-saves** (Reshare). **Manage sharing** and the older **Recovery voter** grant
-are separate too. Solo recovery does not require a vote. Revocation, expiry,
-and newly learned signed policy changes block new transfers and hosting
-actions; offline PCs cannot learn a change until a reachable peer supplies it.
+On a permitted Friend PC, choose the **Host locally** icon beside Start.
+Confirm the warning that other players will connect to your PC and network.
+The app checks the latest available save, its signed history and SHA-256 file
+hashes, the matching installed server, free space, local ports and the saved
+connection. It prepares the world and starts when the checks pass. If something
+needs your action, such as installing the server or fixing its connection,
+the dialog explains it and lets you continue. Game terms remain your choice.
 
-## Plan a move to a paired PC
+Hosting requires a configured incoming connection. Confirmation can enable
+that saved app connection; TogetherServer never changes Windows Firewall,
+router forwards or DNS. Local port and outside TCP checks do not prove that a
+particular player can join the game.
 
-Open **Sharing & hosting > Move hosting**, choose the approved destination
-PC, and send the hosting request. The recipient accepts or declines in
-TogetherServer. Preparation checks its installation and connection using
-signed connection details; you do not type a destination HTTPS address.
+## Continue from the latest save
 
-The move safely stops the source, verifies the final transferred save, and
-keeps the source from starting that moved history again. The destination
-chooses **Start** separately. A successful transfer does not establish a real
-game join or saved restart on that PC. See the
-[planned-move delivery record](../31-PAIRED-PC-HOSTING-MOVES.md).
+Suppose A hosts and B receives the completed session save. With A offline,
+C can get that save from B and host it. After C stops safely, B and C keep the
+new completed save. When A returns, it can receive the newer continuation
+from C and use Start to continue from it. The original world stays preserved
+in its existing location while a newer continuation uses fresh managed storage.
 
-## Recover while the original Host is offline
+The app chooses by verified ancestry, rather than the original Host's identity,
+PC clocks or save numbers alone. You do not manage save permissions, forwarding,
+votes or a group-default Host. A PC that only received saves can forward them
+over an outbound connection to another approved PC's enabled listener.
 
-An eligible receiver with local consent, trusted membership, and a complete
-verified local copy can explicitly recover a separate continuation. Choose
-the exact history, review the split warning, prepare fresh managed storage,
-and manually Start after setup. There is no save-age cutoff, Host-loss wait,
-vote, or second-PC observation required for this separate recovery.
+Keep TogetherServer open long enough to finish copying after Stop. Another
+reachable approved PC must have the completed save to survive the current Host
+going offline. At least one previously learned pinned peer address must still
+work; the app has no cloud relay or automatic NAT setup. Offline PCs cannot
+learn new access removals until authenticated information reaches them.
 
-Another Host may still be running. Both histories stay separate. Reachable
-approved peers can exchange signed addresses, sessions, and save histories
-while the original owner is offline. At least one remembered peer must be
-reachable to learn new remote information. Inbound peer exchange needs an
-explicitly enabled pinned HTTPS IP route; there is no cloud directory, relay,
-or automatic NAT configuration. A game's join code alone does not enroll an
-app member.
+If two sessions produced different progress, the app keeps both and blocks an
+automatic choice. Partial, damaged or private test copies never become the
+latest playable save. Unshared local changes also need review before switching.
 
-The owner or a sharing manager can select a group default. That choice does
-not merge saves, stop games, switch players automatically, or give a returning
-owner priority. Partial transfers and private test copies cannot become
-playable recovery saves. See [peer-world design and evidence](../26-PEER-SHARED-WORLDS-DELIVERY.md).
-
-## Share a save while the game is running
-
-**Save and share now** has reviewed adapter candidates for Valheim, Java,
-Bedrock, Factorio, and Terraria. A game name alone does not enable it. The
-exact installed binary, profile, and setup must pass private six-stage
-completion/copy/transfer/load/change/restart acceptance first. App evidence
-covers the fixed save completion, sealed copy, and signed receipt from a
-separate device; you explicitly report load, change, and graceful restart.
-
-Source checks do not accept a real game. Changing the installed setup requires
-review again. Until accepted, use the guarded post-Stop sharing path. Bedrock
-save-hold recovery remains visible until fresh exact-run evidence confirms
-writes resumed; resolve it before requesting another capture. Details and
-open checks live in the [peer-world delivery record](../26-PEER-SHARED-WORLDS-DELIVERY.md).
+Completed post-Stop copies are the normal path. Sharing while a real game is
+running stays disabled until that exact installation passes its separate
+save/copy/transfer/load/change/restart checks. Hash verification alone cannot
+prove a real game loads or preserves progress. See the
+[implementation and verification record](../36-SHARED-HOSTING-SIMPLIFICATION.md).
 
 ## Move a world without an online handoff
 

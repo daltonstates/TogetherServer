@@ -1,5 +1,12 @@
 # Process, heartbeat, and idle rules
 
+**Host locally** is one explicit preparation-and-Start instruction after its
+network confirmation. Latest-save selection follows verified ancestry across
+approved PCs, with a final in-gate observation check. A returning original Host
+uses a newer continuation in fresh storage; no running world is overwritten.
+Conflicts and unshared local edits block automatic selection. See
+[delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+
 Manual solo world recovery has no Host-loss timer, quorum, second-PC observation
 or save-age limit. A responding companion with an inaccessible game does not
 prevent an eligible receiver from recovering a separate verified history.

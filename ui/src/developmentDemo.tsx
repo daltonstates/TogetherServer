@@ -95,7 +95,7 @@ function makeSession(scene: DevelopmentDemoScene, instance: AppInstanceView): De
   state.devices.forEach((device, index) => {
     device.name = index === 0 ? 'Riley’s desktop · DEMO' : 'Mira’s laptop · DEMO'
     device.profileName = index === 0 ? 'Riley Demo' : 'Mira Demo'
-    device.sharedWorldGrants[ids.primary] = { ...noGrants(), receive: true, eligibleHost: index === 0 }
+    device.sharedWorldGrants[ids.primary] = { ...noGrants(), receive: true, eligibleHost: true }
   })
   state.consented = scene === 'friend-offline'
   state.receivedSaveState = state.consented ? 'verified' : null
@@ -141,10 +141,10 @@ function hostingStatus(session: DemoSession): LocalHostingStatus {
   const prepared = session.prepared && allowed
   return { ok: true, code: !allowed ? 'HostingNotAllowed' : session.running ? 'LocalHostingRunning' :
     prepared ? 'LocalHostingPrepared' : 'NeedsPreparation',
-  message: !allowed ? 'DEMO: turn on Can host this save for Riley’s desktop in the server’s sharing settings.' :
+  message: !allowed ? 'DEMO: turn on Allow friends to host this server in the Host sharing settings.' :
     session.running ? 'DEMO: this local server is simulated; no game process is running.' : prepared ?
       'DEMO: the fake copy is prepared. Starting uses the current hosting consent and checks.' :
-      'DEMO: review the consent, then Continue and start checks this PC and starts the fake copy. Nothing is installed or copied.',
+      'DEMO: Host locally checks this PC and starts the fake copy after the network confirmation. Nothing is installed or copied.',
   allowed, consented: session.state.consented, game: session.game, name: session.state.friend.profiles[0].name,
   needsServerFile: !session.serverInstalled, needsPassword: session.game === 'Valheim' && !session.serverInstalled,
   serverFile: session.serverInstalled ? session.game === 'MinecraftJava' ? `${demoRoot}\\Java\\server.jar` : `${demoRoot}\\Valheim\\valheim_server.exe` : null,
@@ -155,7 +155,7 @@ function hostingStatus(session: DemoSession): LocalHostingStatus {
   steps: [
     { key: 'permission', state: allowed ? 'Ready' : 'ActionRequired', message: allowed ? 'DEMO: the owner allows this PC to host.' : 'DEMO: owner hosting permission is off.' },
     { key: 'server', state: session.serverInstalled ? 'Ready' : 'ActionRequired', message: session.serverInstalled ? 'DEMO: a fake installed server app is available.' : 'DEMO: choose the fake server app with Browse; no real file picker opens.' },
-    { key: 'save', state: prepared || session.running ? 'Ready' : 'ActionRequired', message: prepared || session.running ? 'DEMO: complete fake copy and hashes.' : 'DEMO: allow receiving and prepare the fake copy.' },
+    { key: 'save', state: prepared || session.running ? 'Ready' : 'ActionRequired', message: prepared || session.running ? 'DEMO: complete fake copy and hashes.' : 'DEMO: the latest fake save is prepared automatically before Start.' },
     { key: 'ports', state: prepared || session.running ? 'Ready' : 'Unknown', message: prepared || session.running ? 'DEMO: fake local ports are available.' : 'DEMO: local ports are checked during simulated preparation.' },
     { key: 'connection', state: prepared || session.running ? 'Ready' : 'Unknown', message: prepared || session.running
       ? 'DEMO: the fake Friend connection is prepared. Real reachability remains unverified; no public listener is opened.'
@@ -222,6 +222,11 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     if (state.mode !== 'Host' || Object.keys(body).length !== 1 || typeof body.enabled !== 'boolean')
       return denied('DEMO: choose only whether the owner allows shared hosting.', 'InvalidSharingChoice')
     state.sharingEnabled = body.enabled; state.host.settings.profiles[0].sharedSavesEnabled = body.enabled
+    for (const device of state.devices) {
+      if (device.revoked || device.approvalPending || device.accessExpired || !device.assignedProfileIds.includes(ids.primary)) continue
+      device.sharedWorldGrants[ids.primary] = { ...noGrants(), receive: body.enabled, eligibleHost: body.enabled, reshare: body.enabled }
+      device.saveReceiveProfileIds = body.enabled ? [ids.primary] : []
+    }
     if (body.enabled) state.host.settings.profiles[0].backups = {
       retentionCount: 5, minimumFreeSpaceMb: 1024, ...state.host.settings.profiles[0].backups, enabled: true }
     return reply(result({ message: 'DEMO: shared hosting and safe-Stop backups were updated in fake data only.' }))
@@ -245,7 +250,7 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     if (state.mode !== 'Friend' || Object.keys(body).some(key => !['allowReceiving', 'acceptSplitWarning', 'requirePeerConnection',
       'serverFile', 'gamePassword', 'requestId', 'acceptedTerms'].includes(key)) || body.requestId != null)
       return denied('DEMO: prepare only the selected shared copy in Join.', 'LocalHostingRequestRejected')
-    if (body.allowReceiving !== true || body.acceptSplitWarning !== true) return denied('DEMO: approve receiving and the separate-history notice first.')
+    if (body.allowReceiving !== true || body.acceptSplitWarning !== true) return denied('DEMO: confirm the network warning before hosting locally.')
     if (body.requirePeerConnection !== true) return denied('DEMO: include this PC’s fake Friend connection checks before hosting.', 'PeerDiscoveryRequired')
     if (session.game === 'MinecraftJava' && body.acceptedTerms !== true)
       return denied('DEMO: review Minecraft’s terms in this fake scene before continuing. No real terms are accepted or software downloaded.', 'TermsRequired')

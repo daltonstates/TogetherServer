@@ -37,10 +37,11 @@ internal static class WorldPeerProtocolChecks
         var clock = new ManualClock(now);
         var revoked = false;
         var receive = true;
+        var reshare = true;
         var trust = new SharedWorldPeerTrust(root, (id, key) =>
         {
             if (id == Guid.Empty && key == Public(owner)) return new(true, true, true, true, true, true);
-            if (id == memberId && key == Public(member) && !revoked) return new(true, receive, true, true, false, true);
+            if (id == memberId && key == Public(member) && !revoked) return new(true, receive, true, true, false, reshare);
             if (id == joinerId && key == Public(joiner)) return new(true, false, false, false, false);
             return null;
         });
@@ -113,6 +114,24 @@ internal static class WorldPeerProtocolChecks
             "a metadata-only member could not request bounded per-session status enrollment");
         Invalid(() => WorldPeerProtocol.Sign(enrollmentChallenge, WorldPeerOperations.Enrollment, joiner,
             payload: new byte[8 * 1024 + 1]), "session enrollment accepted an oversized payload");
+        var seedChallenge = protocol.Issue(memberId, Public(member));
+        byte[] seedPayload = [1, 2, 3];
+        var seed = WorldPeerProtocol.Sign(seedChallenge, WorldPeerOperations.Seed, member,
+            versionHash: Hash("seeded version"), fileIndex: 0, chunkOffset: 0, payload: seedPayload);
+        reshare = false;
+        Require(!protocol.Verify(seed, seedPayload, WorldPeerOperations.Seed).Ok,
+            "a member forwarded save bytes after its current Reshare permission was removed");
+        reshare = true;
+        Require(protocol.Verify(seed, seedPayload, WorldPeerOperations.Seed).Ok &&
+            !protocol.Verify(seed, seedPayload, WorldPeerOperations.Seed).Ok,
+            "a permitted seed failed its exact one-use proof or replayed the same nonce");
+        Invalid(() => WorldPeerProtocol.Sign(seedChallenge, WorldPeerOperations.Seed, member,
+            versionHash: Hash("seed"), chunkOffset: 0, payload: seedPayload), "seeding accepted an offset without a manifest file selector");
+        Invalid(() => WorldPeerProtocol.Sign(seedChallenge, WorldPeerOperations.Seed, member,
+            versionHash: Hash("seed"), fileIndex: 0, chunkOffset: 1, payload: seedPayload), "seeding accepted an unaligned chunk");
+        Invalid(() => WorldPeerProtocol.Sign(seedChallenge, WorldPeerOperations.Seed, member,
+            versionHash: Hash("seed"), payload: new byte[SharedWorldPeerTrust.MaximumPageBytes + 1]),
+            "seeding accepted an oversized signed payload");
         var revokedChallenge = protocol.Issue(memberId, Public(member));
         revoked = true;
         Require(!protocol.Verify(WorldPeerProtocol.Sign(revokedChallenge, WorldPeerOperations.Metadata, member), [],

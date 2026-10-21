@@ -29,7 +29,7 @@ internal static class WorldPeerTransportChecks
             Profiles = [new() { Id = profileId, SharedSavesEnabled = false,
                 WorldDirectory = Path.Combine(ownerData.RootPath, "synthetic-world") }]
         });
-        firstData.SaveSettings(new HostSettings { CompanionEndpoint = "https://192.0.2.51:5131", CompanionListeningEnabled = true });
+        firstData.SaveSettings(new HostSettings { CompanionEndpoint = "https://192.0.2.51:5131", CompanionBindAddress = "0.0.0.0", CompanionListeningEnabled = true });
         returningData.SaveSettings(new HostSettings { CompanionEndpoint = "https://192.0.2.52:5131" });
         ownerData.SaveProtected("shared-world-signing-key.protected", owner.ExportPkcs8PrivateKey());
         using var ownerCertificate = new HostIdentity(ownerData).Ensure("https://192.0.2.50:5131");
@@ -241,7 +241,7 @@ internal static class WorldPeerTransportChecks
         var servingId = scenario == BootstrapCase.OutsiderContact ? outsiderId : responderId;
         var servingKey = scenario == BootstrapCase.OutsiderContact ? outsiderKey : responderKey;
         requesterData.SaveSettings(new HostSettings { CompanionEndpoint = "https://192.0.2.71:5131" });
-        responderData.SaveSettings(new HostSettings { CompanionEndpoint = "https://192.0.2.72:5131", CompanionListeningEnabled = true });
+        responderData.SaveSettings(new HostSettings { CompanionEndpoint = "https://192.0.2.72:5131", CompanionBindAddress = "0.0.0.0", CompanionListeningEnabled = true });
         requesterData.SaveProtected($"shared-world-pc-signing-{requesterId:N}.protected", requesterKey.ExportPkcs8PrivateKey());
         responderData.SaveProtected($"shared-world-pc-signing-{servingId:N}.protected", servingKey.ExportPkcs8PrivateKey());
         var requestChain = new SharedWorldRosterChainStore(requesterData);

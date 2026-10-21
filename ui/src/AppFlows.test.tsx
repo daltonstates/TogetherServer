@@ -870,6 +870,28 @@ describe('Task-first app and Host PC navigation', () => {
 })
 
 describe('Host task structure', () => {
+  it('opens the running continuation when ordinary Start follows the latest shared save', async () => {
+    const continuationId = '22222222-2222-4222-8222-222222222222'
+    const workspace = await openHost()
+    const change = transport.change.getMockImplementation()!
+    transport.change.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path === `/api/local/profiles/${id}/start`) {
+        const current = host()
+        state = { ...current, settings: { ...current.settings, profiles: [...current.settings.profiles,
+          { ...current.settings.profiles[0], id: continuationId, name: 'Latest shared continuation',
+            separateCopySourceProfileId: id, separateCopyBranchHash: 'A'.repeat(64) }] },
+          runs: [...current.runs, { ...current.runs[0], profileId: continuationId, state: 'Starting', detail: 'Starting the latest shared save.' }] }
+        localDirectorySnapshot = state as HostSnapshot
+        return { ok: true, code: 'SeparateCopyStarted', message: 'Starting the latest shared save.', snapshot: state }
+      }
+      return change(path, ...args)
+    })
+    fireEvent.click(within(workspace.querySelector('.server-command-header')!).getByRole('button', { name: 'Start server' }))
+    expect(await screen.findByRole('region', { name: 'Latest shared continuation workspace' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(mutationCalls().filter(([path]) => path.endsWith('/start'))).toHaveLength(1)
+  })
+
   it('resumes a shared local copy through the explicit warned Start route', async () => {
     host().settings.profiles[0].separateCopySourceProfileId = '33333333-3333-4333-8333-333333333333'
     host().settings.profiles[0].separateCopyBranchHash = 'B'.repeat(64)
@@ -1357,11 +1379,17 @@ function friend(): FriendSnapshot {
   }
 }
 
-async function openAdvancedSharedSaves() {
-  const disclosure = (await screen.findByText('Shared saves & people')).closest('details')!
-  disclosure.open = true
-  fireEvent(disclosure, new Event('toggle'))
-  return screen.findByRole('region', { name: 'Shared worlds' })
+async function openSharedHostingDetails() {
+  return screen.findByRole('region', { name: 'Shared hosting details' })
+}
+
+function approvedLocalHosting(localProfileId: string): LocalHostingStatus {
+  return { ok: true, code: 'NeedsPreparation', message: 'Check this PC before hosting.', allowed: true,
+    consented: true, game: 'Valheim', name: 'Shared world', needsServerFile: false, needsPassword: false,
+    serverFile: 'C:/synthetic/valheim_server.exe', gameVersion: 'fixture', gamePort: 2456, controlPort: 5131,
+    localProfileId, branchHash: 'A'.repeat(64), readyForManualStart: false, running: false,
+    steps: ['permission', 'server', 'save', 'ports', 'connection'].map(key => ({
+      key: key as LocalHostingStatus['steps'][number]['key'], state: 'Ready', message: 'Local check passed.' })) }
 }
 
 function testPc(id: string, name: string): Device {
@@ -1578,11 +1606,11 @@ describe('Friend task structure', () => {
     transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path.endsWith('/shared-world/hosting') ? checks : read(path, ...args))
     render(<App />)
     const play = await screen.findByRole('region', { name: 'Play' })
-    const local = await within(play).findByRole('button', { name: 'Host on this PC' })
+    const local = await within(play).findByRole('button', { name: 'Host locally' })
     expect(local.closest('.friend-primary-actions')).not.toBeNull()
     expect(local).toBeEnabled()
-    expect(local).toHaveAccessibleDescription(/progress on the two servers stays separate/)
-    expect(screen.queryByRole('dialog', { name: 'Host on this PC' })).not.toBeInTheDocument()
+    expect(local).toHaveAccessibleName('Host locally')
+    expect(screen.queryByRole('dialog', { name: 'Host locally' })).not.toBeInTheDocument()
     expectNoMutation()
   })
 
@@ -1590,7 +1618,7 @@ describe('Friend task structure', () => {
     state = { ...friend(), connectionCode }
     render(<App />)
     await screen.findByRole('navigation', { name: 'Selected server sections' })
-    expect(screen.queryByRole('button', { name: 'Host on this PC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
     expect(transport.read.mock.calls.some(([path]) => path.endsWith('/shared-world/hosting'))).toBe(false)
     expectNoMutation()
   })
@@ -1637,14 +1665,19 @@ describe('Friend task structure', () => {
       else if (path === '/api/local/mode/host') state = localHost
       return { ok: true, code: 'Requested', message: 'Mode changed.', snapshot: state }
     })
+    const read = transport.read.getMockImplementation()!
+    const checks = approvedLocalHosting(secondId)
+    if (destination === 'setup') checks.remedy = { kind: 'Connection', title: 'Let friends connect to this PC', message: 'Review this PC connection.' }
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path.endsWith('/shared-world/hosting') ? checks : read(path, ...args))
     await openHost()
     expect(directory().getByRole('button', { name: 'Open Contract fixture on this PC' })).toHaveAttribute('aria-current', 'true')
     fireEvent.click(directory().getByRole('button', { name: 'Open Shared Join world B on Evening Host' }))
     await screen.findByRole('region', { name: 'Play' })
     fireEvent.click(joinSections().getByRole('button', { name: 'Shared saves' }))
-    const shared = await openAdvancedSharedSaves()
-    expect(shared).toHaveAttribute('data-profile-id', secondId)
-    fireEvent.click(within(shared).getByRole('button', { name: destination === 'setup' ? 'Open Host setup' : 'Open Host controls' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Host locally' })
+    await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
+    fireEvent.click(within(dialog).getByRole('button', { name: destination === 'setup' ? 'Connection help' : 'Local server & connection details' }))
     if (destination === 'setup') {
       const pc = await screen.findByRole('region', { name: 'This Host PC' })
       expect(pcSections().getByRole('button', { name: 'Network' })).toHaveAttribute('aria-current', 'page')
@@ -1775,11 +1808,11 @@ describe('Friend task structure', () => {
     expect(logs.closest('details')).toBeNull()
     expect(chat).not.toBeInTheDocument()
     fireEvent.click(joinSections().getByRole('button', { name: 'Shared saves' }))
-    const saves = await openAdvancedSharedSaves()
+    const saves = await openSharedHostingDetails()
     expect(saves).toBeVisible()
     expect(saves).toHaveAttribute('data-profile-id', secondId)
-    expect(saves).toHaveAttribute('data-status-fresh', 'true')
-    expect(saves.closest('details')).toHaveAttribute('open')
+    expect(within(saves).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(saves.closest('details')).toBeNull()
     expect(logs).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Play' })).not.toBeInTheDocument()
     fireEvent.click(joinSections().getByRole('button', { name: 'Play' }))
@@ -1851,8 +1884,9 @@ describe('Friend task structure', () => {
     }
     expectNoMutation()
     fireEvent.click(joinSections().getByRole('button', { name: 'Shared saves' }))
-    const saves = await openAdvancedSharedSaves()
-    expect(saves).toHaveAttribute('data-status-fresh', evidence === 'Unknown players' ? 'true' : 'false')
+    const saves = await openSharedHostingDetails()
+    expect(within(saves).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
     expectNoMutation()
   })
 

@@ -21,6 +21,17 @@ internal static class LocalHostingChecks
         await OwnerSwitchAsync(root);
         await IncomingConsentAsync(root);
         await FirstIncomingListenerAsync(root);
+        await LatestSelectionBlocksAsync(root);
+        using (var automatic = new Fixture(root, granted: true, automaticReceiving: true))
+        {
+            var automaticStatus = await automatic.Service.StatusAsync(automatic.ProfileId);
+            Require(automaticStatus.Allowed && automaticStatus.Consented &&
+                !automatic.Data.LoadSettings().CompanionListeningEnabled && automatic.Driver.ProcessAttempts == 0,
+                "the combined hosting grant required a storage choice or opened an incoming listener");
+            Require((await automatic.WithdrawReceivingAsync()).Ok &&
+                !(await automatic.Service.StatusAsync(automatic.ProfileId)).Consented,
+                "automatic receiving overrode a saved local withdrawal");
+        }
         using var fixture = new Fixture(root, granted: true);
         var before = await fixture.Service.StatusAsync(fixture.ProfileId);
         Require(before.Allowed && !before.Consented && !before.ReadyForManualStart &&
@@ -55,6 +66,17 @@ internal static class LocalHostingChecks
             $"ports={prepared.GamePort}/{prepared.ControlPort}/{fixture.ControlPort}, " +
             $"steps={string.Join(',', prepared.Steps.Select(step => step.Key + ':' + step.State))}; {prepared.Message}");
         var passive = await fixture.Service.StatusAsync(fixture.ProfileId);
+        var stamp = new string('D', 64);
+        fixture.Manager.SharedHostingObservation = _ => stamp;
+        await fixture.Manager.RecordHostingObservationAsync(prepared.LocalProfileId!.Value,
+            fixture.LatestObservation(prepared.BranchHash!, stamp), CancellationToken.None);
+        fixture.Manager.SharedHostingObservation = _ => new string('E', 64);
+        Require((await fixture.Manager.StartSeparateCopyAsync(prepared.LocalProfileId.Value, prepared.BranchHash!)).Code == "LatestSaveChanged" &&
+            fixture.Driver.ProcessAttempts == 0, "a locally learned newer save crossed the in-gate Start check");
+        fixture.Manager.SharedHostingObservation = _ => stamp;
+        Require((await fixture.Manager.StartSeparateCopyAsync(prepared.LocalProfileId.Value, prepared.BranchHash!)).Code == "LatestSaveChanged" &&
+            fixture.Driver.ProcessAttempts == 0, "a rejected one-shot latest-save observation could be replayed");
+        fixture.Manager.SharedHostingObservation = null;
         using (var canceled = new CancellationTokenSource())
         {
             canceled.Cancel();
@@ -76,6 +98,9 @@ internal static class LocalHostingChecks
             new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 1 && fixture.Driver.ProcessAttempts == 0,
             "a repeated preparation created another signed branch or tried to start a process");
         var branch = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Single();
+        var nextPortPlan = await fixture.Manager.LocalHostingPortsAsync(branch.Offer.Version, null, CancellationToken.None);
+        Require(nextPortPlan.Available && nextPortPlan.GamePort == prepared.GamePort,
+            "an inactive retained world unnecessarily changed the next Host's configured game port");
         var routeIdentity = new LocalHostingRouteSnapshot(branch.Offer.Proposal.CandidateAddress,
             fixture.ControlPort, "0.0.0.0", true, true, CompanionListenerStates.Listening,
             branch.Offer.CandidateTlsFingerprint, true);
@@ -160,6 +185,30 @@ internal static class LocalHostingChecks
         finally { await listener.StopAsync(); }
     }
 
+    private static async Task LatestSelectionBlocksAsync(string root)
+    {
+        using var fixture = new Fixture(root, granted: true);
+        var prepared = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
+        Require(prepared.Ok && prepared.LocalProfileId is not null && prepared.BranchHash is not null,
+            "the newest-selection check did not prepare its synthetic baseline");
+        var profile = fixture.Data.LoadSettings().Profiles.Single(item => item.Id == prepared.LocalProfileId);
+        var save = File.ReadAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"));
+        var attempts = 0;
+        var service = fixture.WithLatestSource((_, cancellationToken) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            attempts++;
+            return Task.FromResult(new WorldPeerLatestSourceResult(false, "SharedSaveHistoryNeedsReview",
+                "Different progress needs review."));
+        });
+        var refused = await service.PrepareAsync(fixture.ProfileId, new(true, true));
+        Require(!refused.Ok && refused.Code == "HostingHistoryChoiceRequired" && !refused.ReadyForManualStart &&
+            !(await service.StatusAsync(fixture.ProfileId)).ReadyForManualStart && attempts == 1 &&
+            File.ReadAllBytes(Path.Combine(profile.WorldDirectory, "world.dat")).SequenceEqual(save) &&
+            fixture.Data.LoadSettings().Profiles.Count == 1 && fixture.Driver.ProcessAttempts == 0,
+            "known competing progress fell back to an older prepared world or polling revived a refused Start");
+    }
+
     private static async Task FirstIncomingListenerAsync(string root)
     {
         foreach (var test in new[] { (Enabled: true, Starts: true, Announces: true), (Enabled: true, Starts: false, Announces: true),
@@ -214,17 +263,10 @@ internal static class LocalHostingChecks
             var result = await service.PrepareAsync(fixture.ProfileId, new(true, true, RequirePeerConnection: true));
             var retainedBranches = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId);
             Require(sawIdleBeforeBranch && fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0 &&
-                fixture.Data.LoadSettings().CompanionListeningEnabled == test.Enabled &&
+                fixture.Data.LoadSettings().CompanionListeningEnabled &&
                 fixture.Data.LoadSettings().CompanionEndpoint == settings.CompanionEndpoint &&
                 fixture.Data.LoadSettings().CompanionBindAddress == settings.CompanionBindAddress,
-                "preparing an incoming listener launched a process or changed the owner's network choices");
-            if (!test.Enabled)
-            {
-                Require(!result.Ok && !result.ReadyForManualStart && result.Code == "LocalConnectionSetupRequired" &&
-                    retainedBranches.Count == 0 && fixture.Data.LoadSettings().Profiles.Count == 0 && announceAttempts == 0,
-                    "an off listener gained a signed branch or incoming permission without the owner's choice");
-                continue;
-            }
+                "confirmed hosting launched a process or changed the configured route");
             Require(sawFinishedBranch && retainedBranches.Count == 1 && result.LocalProfileId is not null &&
                 result.BranchHash == retainedBranches.Single().BranchHash,
                 "the configured Idle listener prevented its first exact signed save from being prepared");
@@ -332,7 +374,7 @@ internal static class LocalHostingChecks
         private readonly string vault;
         private SharedWorldVersion head;
 
-        internal Fixture(string root, bool granted)
+        internal Fixture(string root, bool granted, bool automaticReceiving = false)
         {
             Data = new(Path.Combine(root, "local-hosting-" + Guid.NewGuid().ToString("N")));
             var properties = IPGlobalProperties.GetIPGlobalProperties();
@@ -340,7 +382,7 @@ internal static class LocalHostingChecks
             ControlPort = Enumerable.Range(50000, 8000).First(port => Enumerable.Range(port, 4).All(item => !occupied.Contains(item)));
             Data.SaveSettings(new HostSettings { CompanionPort = ControlPort, Profiles = [] });
             var draft = new SharedWorldRoster(3, GroupId, ProfileId, 1, 1, true, Public(owner),
-                [new(DeviceId, Public(member), new(Receive: granted, EligibleHost: granted), false)], "",
+                [new(DeviceId, Public(member), new(Receive: granted, EligibleHost: granted, Reshare: automaticReceiving), false)], "",
                 SignerDeviceId: Guid.Empty, SignerPublicKey: Public(owner));
             var roster = draft with { Signature = Convert.ToBase64String(owner.SignData(SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
             Data.SaveProtected($"shared-world-pc-signing-{DeviceId:N}.protected", member.ExportPkcs8PrivateKey());
@@ -375,6 +417,14 @@ internal static class LocalHostingChecks
             head = Version(head.Number + 1, head.VersionHash, bytes);
             WriteCopy(head, bytes);
         }
+        internal Task<ReceivedSharedWorldResult> WithdrawReceivingAsync() =>
+            friends.SetSharedWorldConsentAsync(ProfileId, false);
+        internal WorldPeerLatestSourceResult LatestObservation(string branchHash, string observation) =>
+            new(true, "LatestSharedSaveReady", "Synthetic latest-save observation.",
+                new(new(Public(owner), ProfileId, GroupId), branchHash, new(head), vault), observation);
+        internal FriendLocalHostingService WithLatestSource(
+            Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>> latest) =>
+            new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")], latestSource: latest);
         internal FriendLocalHostingService WithIncomingListener(LocalHostingRouteCheck checker, Func<Task> synchronize,
             Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>> announce) =>
             new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")],

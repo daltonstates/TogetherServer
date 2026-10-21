@@ -2,11 +2,23 @@ namespace TogetherServer;
 
 internal sealed partial class WorldPeerService
 {
+    internal async Task<WorldSeparateCopyResult> PrepareLatestOwnerRecoveryAsync(SharedWorldPeerRoot root,
+        bool acceptSplitWarning, CancellationToken cancellationToken)
+    {
+        if (!acceptSplitWarning)
+            return new(false, "SplitWarningRequired", "Confirm hosting this world's latest save on this PC.");
+        var latest = await ResolveLatestRecoverySourceAsync(root, cancellationToken);
+        if (!latest.Ok || latest.Source is null) return new(false, latest.Code, latest.Message);
+        return await PrepareOwnerRecoveryAsync(root.GroupKey, latest.Source.BranchHash, true,
+            cancellationToken, latest.Source);
+    }
+
     // Local fixed-world action only. It creates a warned branch and retained
     // base, then reuses HostManager's fresh restore/finish/manual-Start path.
     // The original owner never becomes a synthetic voter or roster member.
     internal async Task<WorldSeparateCopyResult> PrepareOwnerRecoveryAsync(string groupKey,
-        string? sourceBranchHash, bool acceptSplitWarning, CancellationToken cancellationToken)
+        string? sourceBranchHash, bool acceptSplitWarning, CancellationToken cancellationToken,
+        WorldPeerRecoverySource? selectedSource = null)
     {
         if (!acceptSplitWarning)
             return new(false, "SplitWarningRequired",
@@ -14,7 +26,8 @@ internal sealed partial class WorldPeerService
         await refreshGate.WaitAsync(cancellationToken);
         try
         {
-            var source = await ResolveRecoverySourceAsync(groupKey, sourceBranchHash, cancellationToken);
+            var source = selectedSource ?? await ResolveRecoverySourceAsync(groupKey, sourceBranchHash, cancellationToken);
+            source.Verify(data, source.Root);
             var settings = (await manager.SnapshotAsync()).Settings;
             cancellationToken.ThrowIfCancellationRequested();
             lock (stateSync)

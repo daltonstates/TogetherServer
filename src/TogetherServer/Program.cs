@@ -103,15 +103,17 @@ async Task<SharedWorldRoster> PublishRosterAndConfirmAsync(Guid profileId,
     bool? ownerOverride = null, bool reviewSourceChange = false,
     SharedWorldOwnerEdit? ownerEdit = null)
 {
-    var roster = await manager.PublishSharedWorldRosterAsync(profileId,
-        pairing.SharedRosterMembers(profileId), ownerOverride, reviewSourceChange, ownerEdit);
+    var roster = ownerOverride is null && !reviewSourceChange && ownerEdit is null
+        ? await manager.PublishSimpleSharedHostingRosterAsync(profileId)
+        : await manager.PublishSharedWorldRosterAsync(profileId,
+            pairing.SharedRosterMembers(profileId), ownerOverride, reviewSourceChange, ownerEdit);
     pairing.ConfirmSharedRosterPublished(profileId, roster);
     return roster;
 }
 async Task RepairDirtyRostersAsync()
 {
     foreach (var profile in data.LoadSettings().Profiles.Where(item =>
-        item.SharedSavesEnabled && pairing.SharedRosterDirty(item.Id)))
+        pairing.SharedRosterDirty(item.Id)))
     {
         if (!await manager.SharedRosterManagementAvailableAsync(profile.Id)) continue;
         await PublishRosterAndConfirmAsync(profile.Id);
@@ -167,6 +169,9 @@ var companionServer = new CompanionServer(data, manager, pairing, games, serverL
     labAllowsEndpoint: localLab is null ? null : localLab.IsAllowedEndpoint);
 companionServer.PeerWorlds = worldPeers;
 manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
+manager.SharedHostingStartBlock = (rootKey, publishedHash) => worldPeers.CanonicalStartBlock(rootKey, publishedHash)?.Message;
+manager.SharedHostingObservation = worldPeers.LatestObservationHash;
+var simpleOwnerHosting = new SimpleOwnerHostingService(data, manager, worldPeers, companionServer.SyncAsync);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
@@ -897,7 +902,8 @@ app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => 
     game.Kind,
     game.DisplayName
 })));
-app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id) => HostOnly(() => manager.StartAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id, HttpContext context) =>
+    HostOnly(() => simpleOwnerHosting.StartAsync(id, context.RequestAborted)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) => HostOnly(() => manager.RestartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/safe-restart", (Guid id) =>
@@ -1131,15 +1137,12 @@ app.MapPost("/api/local/profiles/{id:guid}/shared-world/live-orphan/quarantine",
         if (rejection is not null) return rejection;
         return await HostOnly(() => manager.QuarantineSharedLiveOrphanAsync(id, versionHash!));
     });
-app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (Guid id, SharedWorldConsentRequest request) =>
+app.MapPut("/api/local/profiles/{id:guid}/shared-world", async (HttpContext context, Guid id, SharedWorldConsentRequest request) =>
 {
     if (friendMode) return Results.Conflict(new SharedWorldResult(false, "FriendMode", "Switch to Host mode first."));
     if (request.Enabled && !await manager.SharedRosterManagementAvailableAsync(id))
         return Results.Conflict(SuccessorRosterReadOnly());
-    if (request.Enabled) pairing.RequireSharedRosterPublication(id);
-    var result = await manager.SetSharedSavesAsync(id, request.Enabled);
-    if (result.Ok && request.Enabled)
-        await PublishRosterAndConfirmAsync(id);
+    var result = await manager.SetSimpleSharedHostingAsync(id, request.Enabled, context.RequestAborted);
     return Results.Json(result);
 });
 app.MapGet("/api/local/profiles/{id:guid}/shared-world/handoff",
@@ -1292,7 +1295,7 @@ app.MapPost("/api/local/profiles/{id:guid}/resume-hosting", (Guid id) => HostOnl
             run.State is "Ready" or "Starting" or "Process running"
                 ? "TogetherServer already reattached to the exact managed process; another copy was not started."
                 : "The prior process identity needs local review before hosting can resume.", snapshot);
-    return await manager.StartAsync(id);
+    return await simpleOwnerHosting.StartAsync(id, CancellationToken.None);
 }));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
@@ -2048,7 +2051,7 @@ app.MapPost("/api/local/shared-world/repair-rosters", async () =>
         if (friendMode) return Results.Conflict(new { code = "FriendMode" });
         await RepairDirtyRostersAsync();
         foreach (var shared in data.LoadSettings().Profiles.Where(profile =>
-            profile.SharedSavesEnabled && pairing.SharedRosterDirty(profile.Id)))
+            pairing.SharedRosterDirty(profile.Id)))
             if (!await manager.SharedRosterManagementAvailableAsync(shared.Id))
                 return Results.Conflict(new
                 {

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
+import { FriendSharedWorlds } from './SharedWorldControls'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
 const copy = { consented: true, hostVersion: 3, thisPcVersion: 3, state: 'Ready', error: null }
@@ -127,27 +127,6 @@ describe('Shared saves task presentation', () => {
     expect(navigate).toHaveBeenCalledTimes(1)
     expect(join).not.toHaveBeenCalled()
     expect(mutations).toEqual([])
-  })
-
-  it('forwards heading suppression on Host while preserving signed identity and management', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.endsWith('/handoff') ?
-      { pending: false, code: 'None', message: 'No pending transfer.', successorDeviceId: null, finalVersion: null,
-        receiptConfirmed: false, canComplete: false, canCancel: false } : url.endsWith('/governance') ?
-        { revision: 1, ownerOverride: true } : { enabled: true, latest: null, error: null,
-          authority: { state: 'NoTakeover', message: 'No transfer.', head: null, competingHeads: [], exactManagedProcessRunning: false } })))
-    const props = { profileId, devices: [], rollingBackupEnabled: true, onGrantChanged: async () => {}, worldName: 'Alderheim' }
-    const view = render(<HostSharedSaves {...props} showWorldHeading={false} />)
-    await act(async () => {})
-    expect(screen.queryByRole('heading', { name: 'Alderheim' })).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Shared saves' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Approved Host')).toHaveTextContent('Original Host PC')
-    expect(screen.getByRole('button', { name: 'Manage sharing' })).toBeEnabled()
-    view.rerender(<HostSharedSaves {...props} />)
-    expect(screen.getByRole('heading', { name: 'Alderheim' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    const management = screen.getByRole('dialog', { name: 'Manage sharing' })
-    expect(within(management).getByRole('button', { name: 'People' })).toHaveAttribute('aria-current', 'page')
-    fireEvent.click(within(management).getByRole('button', { name: 'Done' }))
   })
 
   it('keeps conflicting authority visible in Manage sharing even without receiving consent or a local copy', async () => {

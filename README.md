@@ -38,14 +38,15 @@ need Node, the .NET SDK, Docker, or a separate web server to use the app.
 | Hosting | Guided setup, multiple saved servers, Start/Stop, player counts, and a comparison of your servers. |
 | Friend access | Server codes, approval, access deadlines, separate permissions for each PC and server, and immediate revocation. |
 | World protection | Named and pinned backups, verified vault copies, restore checks, and a guide for testing a copy in the game. |
-| Shared hosting | Let approved PCs receive saves, prepare to host a verified copy, or accept a planned hosting move. |
+| Shared hosting | Turn on one server setting, then approved friends use Host locally to continue the latest verified save. |
 | Server management | Logs, session history, reviewed settings and player lists, maintenance, and supported local add-on imports. |
 | Playing together | Game requirements, connection details, explicit Open game actions, server chat, and pinned notices. |
 | Windows app | Tray and sign-in options, notifications, resizable sidebars, and updates you choose when to install. |
 
-These features are included in
-[stable 0.3.3](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3).
-Check its release notes for known limits. Installation and updates are covered
+For the features included in
+[stable 0.3.3](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3),
+check its release notes. This guide also covers current source changes that
+have not been released. Installation and updates are covered
 in [getting started](docs/guides/getting-started.md).
 
 ## Games and current limits
@@ -74,10 +75,10 @@ separate from TogetherServer; you handle their installation and terms.
 - **A verified copy still needs a game test.** Hash checks and synthetic tests
   don't prove that a real world loads or survives a saved restart. Live save
   sharing stays gated until the exact installed setup passes its checks.
-- **Shared hosting uses explicit choices.** An approved PC can recover a
-  verified local copy while offline. New remote information and transfers need
-  a reachable peer. There is no cloud relay or automatic world merging, and
-  chat still needs its Host connection.
+- **Shared hosting follows the latest verified progress.** Approved friends
+  keep and forward completed saves automatically. Host locally checks the save,
+  game and connection before starting after your confirmation. New transfers
+  need a reachable approved PC; different progress stays protected for review.
 
 ## Find the right guide
 

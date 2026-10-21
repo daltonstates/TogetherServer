@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus } from './SharedWorldControls'
+import { FriendSharedWorlds, parseFriendSharedWorldStatus } from './SharedWorldControls'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
@@ -117,33 +117,6 @@ describe('shared-save UX evidence', () => {
     fireEvent.click(await screen.findByText('Older recovery flow: ask voters to move hosting'))
     fireEvent.click(await screen.findByRole('button', { name: 'Copy recovery offer code' }))
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith(JSON.stringify(offer)))
-    expect(mutations).toEqual([])
-  })
-
-  it('resumes a pending handoff from the signed receipt after reopening, without running its completion action', async () => {
-    const mutations: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method) mutations.push(url)
-      if (url.endsWith('/handoff')) return reply({ pending: true, code: 'ReadyToComplete', message: 'Exact copy confirmed.',
-        successorDeviceId: deviceId, finalVersion: 4, receiptConfirmed: true, canComplete: true, canCancel: true })
-      if (url.endsWith('/governance')) return reply({ revision: 1, ownerOverride: true })
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    const props = { profileId, devices: [], rollingBackupEnabled: true, onGrantChanged: async () => {} }
-    const first = render(<HostSharedSaves {...props} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    const firstSharing = screen.getByRole('dialog', { name: 'Manage sharing' })
-    fireEvent.click(within(firstSharing).getByRole('button', { name: 'History & recovery' }))
-    fireEvent.click(await within(firstSharing).findByRole('button', { name: /^(Move hosting|Continue transfer|Review transfer)$/ }))
-    expect(await screen.findByText('Finish the saved transfer')).toBeInTheDocument()
-    first.unmount()
-    render(<HostSharedSaves {...props} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    const reopenedSharing = screen.getByRole('dialog', { name: 'Manage sharing' })
-    fireEvent.click(within(reopenedSharing).getByRole('button', { name: 'History & recovery' }))
-    fireEvent.click(await within(reopenedSharing).findByRole('button', { name: /^(Move hosting|Continue transfer|Review transfer)$/ }))
-    expect(await screen.findByText('Finish the saved transfer')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Finish handoff' })).toBeEnabled()
     expect(mutations).toEqual([])
   })
 

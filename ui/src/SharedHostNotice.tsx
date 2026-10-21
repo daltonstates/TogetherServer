@@ -26,7 +26,6 @@ type HostChoice = {
   announcedUtc: string
   current: boolean
   savedAddress: boolean
-  isDefault: boolean
   preparing: boolean
 }
 type HostGroup = { group: WorldPeerGroup; choices: HostChoice[]; competing: boolean; needsReview: boolean }
@@ -46,9 +45,6 @@ function hostingGroups(groups: WorldPeerGroup[], profileId: string, currentHostA
   currentHostSessionId?: string | null): HostGroup[] {
   const currentAddress = hostAddress(currentHostAddress)
   return groups.filter(group => group.profileId === profileId).map(group => {
-    const selection = group.selection
-    const selected = selection && !selection.needsChoice && selection.heads.length === 1
-      && selection.heads[0].authorized && selection.heads[0].targetKnown ? selection.heads[0] : null
     const hosting = group.state.sessions.filter(item => item.authorized && !item.hasConflict
       && (item.session.state === 'Hosting' || item.session.state === 'Preparing'))
     const choices = hosting.flatMap(item => {
@@ -61,12 +57,11 @@ function hostingGroups(groups: WorldPeerGroup[], profileId: string, currentHostA
       return [{ key: JSON.stringify([group.groupKey, item.deviceId, item.publicKey, item.session.sessionId, item.session.branchHash]),
         group, deviceId: item.deviceId, sessionId: item.session.sessionId, addresses, announcedUtc: peer.announcedUtc,
         current: !!currentHostSessionId && item.session.sessionId === currentHostSessionId && currentAddress !== null && addresses.includes(currentAddress),
-        savedAddress: currentAddress !== null && addresses.includes(currentAddress), preparing: item.session.state === 'Preparing',
-        isDefault: selected?.deviceId === item.deviceId && selected.publicKey === item.publicKey
-          && selected.sessionId === item.session.sessionId && selected.branchHash === item.session.branchHash }]
+        savedAddress: currentAddress !== null && addresses.includes(currentAddress), preparing: item.session.state === 'Preparing' }]
     })
-    return { group, choices, competing: hosting.length > 1,
-      needsReview: group.state.needsChoice || !!selection?.needsChoice || (selection?.heads.length ?? 0) > 1 }
+    return { group, choices, competing: new Set(hosting.map(item => item.deviceId)).size > 1,
+      needsReview: group.state.peers.some(peer => peer.authorized && peer.hasConflict) ||
+        group.state.sessions.some(item => item.authorized && item.hasConflict) }
   }).filter(group => group.choices.length > 0)
 }
 
@@ -214,11 +209,11 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
         <h4>{reportTitle(item)}</h4>
         <p>{group.name}</p></div></header>
       {competing && <p className="shared-host-caution">Choose the exact Host you want. These servers may have separate progress.</p>}
-      {needsReview && <p className="shared-host-caution">The group has different save histories or default choices. A newer report does not choose a Host for you.</p>}
+      {needsReview && <p className="shared-host-caution">Some PCs reported different server or connection details. Conflicting reports are not offered as connections.</p>}
       {group.warning && <p className="shared-host-caution">{group.warning}</p>}
       <ul className="shared-host-options">{choices.map(choice => <li key={choice.key}>
         <div className="shared-host-details"><strong>PC ending {choice.deviceId.slice(-6).toUpperCase()}</strong>
-          <div className="shared-host-badges">{choice.preparing && <span>Starting</span>}{choice.savedAddress && <span>{choice.current ? 'Current saved Host' : 'Saved Host address'}</span>}{choice.isDefault && <span>Group default</span>}</div>
+          <div className="shared-host-badges">{choice.preparing && <span>Starting</span>}{choice.savedAddress && <span>{choice.current ? 'Current saved Host' : 'Saved Host address'}</span>}</div>
           <div className="shared-host-addresses">{choice.addresses.map(address => <code key={address}>{address}</code>)}</div>
           <small>Signed {choice.preparing ? 'starting' : 'hosting'} report · Updated {sharedSaveAge(choice.announcedUtc)}. Reachability is checked when you connect.</small>
           {choice.preparing && <small>Game readiness has not been confirmed. Wait for the server to be ready before joining the game.</small>}</div>

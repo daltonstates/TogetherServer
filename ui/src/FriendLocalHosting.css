@@ -4,6 +4,8 @@
 .local-hosting-card p { color: var(--color-text-secondary); line-height: 1.5; }
 .local-hosting-flow { display: grid; gap: 1rem; min-width: 0; }
 .local-hosting-flow > p { margin: 0; line-height: 1.5; }
+.local-hosting-warning { padding: .85rem; border: 1px solid var(--color-border); border-radius: .6rem; background: var(--color-surface-raised); }
+.local-hosting-trigger { flex: none; align-self: center; }
 .local-hosting-next { display: grid; gap: .6rem; min-inline-size: 0; }
 .local-hosting-next > :is(h3, p) { margin: 0; line-height: 1.55; overflow-wrap: anywhere; }
 .local-hosting-next > h3 { font-size: 1rem; }

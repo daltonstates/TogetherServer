@@ -36,6 +36,7 @@ jobs:
           node --check scripts/ui-redesign-fixtures.mjs
           node --check scripts/ui-polish-world-review.mjs
           node --check scripts/ui-polish-access-review.mjs
+          node --check scripts/simple-shared-hosting-review.mjs
           node --test scripts/ui-redesign-fixtures.test.mjs
       - name: Build bundled UI on the hosted runner
         working-directory: ui
@@ -49,11 +50,13 @@ jobs:
           MOVE_HOSTING_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-move-hosting-') }}
           SIDEBAR_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-sidebar-') }}
           SETUP_POLISH_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-setup-polish-') }}
+          SIMPLE_HOSTING_REVIEW: ${{ startsWith(github.ref_name, 'review/ui-redesign-simple-hosting-') }}
         run: |
           $reviewArguments = @('--allow-isolated-browser-tests', '--hosted-runner', 'github-actions')
           if ($env:MOVE_HOSTING_REVIEW -eq 'true') { $reviewArguments += '--move-hosting-only' }
           if ($env:SIDEBAR_REVIEW -eq 'true') { $reviewArguments += '--sidebar-only' }
           if ($env:SETUP_POLISH_REVIEW -eq 'true') { $reviewArguments += '--setup-polish-only' }
+          if ($env:SIMPLE_HOSTING_REVIEW -eq 'true') { $reviewArguments += '--simple-shared-hosting-only' }
           node scripts/render-ui-redesign.mjs @reviewArguments
       - name: Record hosted job outcome
         if: always()
@@ -70,4 +73,70 @@ jobs:
           name: ui-redesign-visual-review
           path: local-data/ui-redesign-visual-review/
           if-no-files-found: error
+          retention-days: 1
+
+  simple-hosting:
+    if: startsWith(github.ref_name, 'review/ui-redesign-simple-hosting-')
+    name: Packaged automatic shared hosting
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the same source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build current bundled UI
+        working-directory: ui
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked UI install failed.' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'UI bundle failed.' }
+      - name: Compile dispatcher and publish one immutable candidate
+        shell: pwsh
+        run: |
+          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Dispatcher restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Dispatcher compilation failed.' }
+          dotnet restore src/TogetherServer.Fixture/TogetherServer.Fixture.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixture restore failed.' }
+          dotnet build src/TogetherServer.Fixture/TogetherServer.Fixture.csproj -c Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixture compilation failed.' }
+          dotnet publish src/TogetherServer/TogetherServer.csproj -c Release --no-restore -o local-data/simple-hosting-candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate publication failed.' }
+          $candidate = (Resolve-Path local-data/simple-hosting-candidate/TogetherServer.exe).Path
+          New-Item -ItemType Directory -Force local-data/local-pairing-lab | Out-Null
+          @{ source = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant(); productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion } |
+            ConvertTo-Json | Set-Content local-data/local-pairing-lab/simple-hosting-candidate.json
+      - name: Verify the real packaged sharing flow on this isolated Windows runner
+        shell: pwsh
+        run: |
+          # Explicit owner-authorized hosted opt-in. Never invoke on the active desktop.
+          $addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+            $_.AddressState.ToString() -eq 'Preferred' -and $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
+          } | Sort-Object InterfaceIndex, IPAddress)
+          if ($addresses.Count -eq 0) { throw 'No assigned private runner IPv4 address is available.' }
+          $runnerAddress = $addresses[0].IPAddress
+          $candidate = (Resolve-Path local-data/simple-hosting-candidate/TogetherServer.exe).Path
+          dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged automatic sharing failed; see the retained stage report.' }
+      - name: Retain bounded redacted candidate and journey evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: simple-shared-hosting-journey
+          path: |
+            local-data/local-pairing-lab/simple-hosting-candidate.json
+            local-data/local-pairing-lab/simple-hosting-*/report.json
+          if-no-files-found: warn
           retention-days: 1

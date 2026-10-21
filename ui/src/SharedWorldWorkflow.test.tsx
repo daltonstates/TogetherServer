@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FriendSharedWorlds, HostSharedSaves } from './SharedWorldControls'
+import { FriendSharedWorlds } from './SharedWorldControls'
 import { SharedWorldReadinessPanel } from './SharedWorldReadinessPanel'
 import { sharedHostObservation, type SharedSignedHost } from './sharedWorldUx'
 
@@ -335,28 +335,5 @@ describe('Shared saves guided workflow', () => {
     expect(navigate).toHaveBeenCalledTimes(1)
     expect(calls).toEqual([`/api/local/friend/${profileId}/shared-world/handoff/finish`])
     expect(calls.some(url => url.endsWith('/start'))).toBe(false)
-  })
-
-  it('keeps lifecycle changes fenced while preserving transfer review and management', async () => {
-    const calls: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method) calls.push(url)
-      if (url.endsWith('/handoff')) return reply({ pending: true, code: 'ReadyToComplete', message: 'Old transfer retained.',
-        successorDeviceId: null, finalVersion: 3, receiptConfirmed: true, canComplete: true, canCancel: true })
-      if (url.endsWith('/governance')) return reply({ revision: 1, ownerOverride: true })
-      return reply({ enabled: true, latest: null, error: null, canManageSharing: true,
-        authority: { state: 'ReviewRequired', message: 'History needs review.', head: null,
-          competingHeads: [], exactManagedProcessRunning: false } })
-    }))
-    render(<HostSharedSaves profileId={profileId} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Review transfer' }))
-    expect(screen.queryByRole('button', { name: 'Finish handoff' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Cancel handoff' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Stop and prepare final save' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Close Move hosting' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Manage sharing' })).getByRole('button', { name: 'History & recovery' }))
-    expect(screen.getByRole('button', { name: 'Check owner decisions' })).toBeEnabled()
-    expect(calls).toEqual([])
   })
 })

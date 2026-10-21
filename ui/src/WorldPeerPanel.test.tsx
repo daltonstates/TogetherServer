@@ -39,6 +39,24 @@ function group() {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('World groups', () => {
+  it('provides read-only diagnostics without receiving, forwarding, default or branch settings', async () => {
+    const writes: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method) writes.push(url)
+      return reply([group()])
+    }))
+    render(<WorldPeerPanel readOnly profileId={profileId} onRecoverBranch={vi.fn()} onRecoverOwnerBranch={vi.fn()} />)
+    const world = await screen.findByRole('article', { name: 'Weekend world' })
+    expect(screen.getByRole('region', { name: 'Shared hosting details' })).toHaveAttribute('data-profile-id', profileId)
+    expect(within(world).getByText(/The app checks these copies automatically before hosting/)).toHaveAttribute('role', 'note')
+    expect(within(world).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(world).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(world).queryByText('Save sharing & permissions')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh details' }))
+    await act(async () => {})
+    expect(writes).toEqual([])
+  })
+
   it('keeps world membership without receiving consent and preserves concurrent session choices', async () => {
     const sent: string[] = []
     const connected = vi.fn()

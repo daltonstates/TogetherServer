@@ -1,5 +1,12 @@
 # Product scope: TogetherServer v1
 
+The 2026-10-21 shared-hosting direction replaces user-managed save grants,
+forwarding and Host selection with one **Allow friends to host this server**
+setting and a permitted Friend's **Host locally** action. Receiving and
+forwarding verified completed saves are automatic. The app selects the newest
+verified descendant, including when the original Host returns; divergent
+progress stays protected for review. See [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+
 The approved 2026-10-16 peer-world direction supersedes earlier requirements for
 Host-loss waits or quorum approval of a separate recovery. An eligible receiver
 may explicitly recover alone from its newest complete verified available copy,

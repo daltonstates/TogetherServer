@@ -128,8 +128,19 @@ internal sealed partial class WorldPeerService
                 if (!SharedWorldPeerTrust.ValidHash(Path.GetFileName(path))) continue;
                 SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
                 var version = ReadPeerPointer(path);
-                if (version is not null && AuthorizedDescriptor(group, new(version)))
-                    result.Add(new(new(version), path, false));
+                var branchPath = Path.Combine(path, "branch.json");
+                WorldSeparateCopyBranch? branch = null;
+                if (File.Exists(branchPath))
+                {
+                    SharedWorldService.EnsureUnlinkedRoot(data.RootPath, branchPath);
+                    if (new FileInfo(branchPath).Length > SharedWorldService.MaximumManifestBytes)
+                        throw new InvalidDataException("The retained history proof is oversized.");
+                    branch = JsonSerializer.Deserialize<WorldSeparateCopyBranch>(File.ReadAllBytes(branchPath), Json);
+                    if (!SharedWorldSeparateCopyStore.Verify(branch))
+                        throw new InvalidDataException("The retained history proof changed.");
+                }
+                if (version is not null && AuthorizedDescriptor(group, new(version, branch)))
+                    result.Add(new(new(version, branch), path, false));
             }
         return result.GroupBy(item => (item.Descriptor.Branch?.BranchHash, item.Descriptor.Version.VersionHash))
             .Select(items => items.OrderByDescending(item => item.ProducedHere).First()).ToArray();
@@ -269,7 +280,9 @@ internal sealed partial class WorldPeerService
         if (catalog is null || catalog.Root != group.Root || catalog.Saves is null || catalog.Saves.Count > 32 ||
             catalog.Saves.Any(item => !AuthorizedDescriptor(group, item)))
             throw new InvalidDataException("The peer save catalog does not match this trusted world.");
-        foreach (var descriptor in catalog.Saves.Where(item => !item.TestOnly))
+        // Scheduling a later numbered payload first avoids an older original
+        // entry delaying a continuation. Ancestry alone still selects history.
+        foreach (var descriptor in catalog.Saves.Where(item => !item.TestOnly).OrderByDescending(item => item.Version.Number))
         {
             var vault = descriptor.Branch is { } branch ? SharedWorldBranchVault.Root(data, branch) : ReceivedRoot(data, group);
             var version = descriptor.Version;
@@ -287,12 +300,13 @@ internal sealed partial class WorldPeerService
                 // Missing local parents do not establish a fork. Fetch and
                 // verify bounded manifest pages before deciding whether a
                 // returning receiver can advance its ordinary recovery head.
-                if (descriptor.Branch is null && existing is not null &&
+                if (existing is not null &&
                     !WorldPeerFileTransfer.KnownDescendant(vault, existing, version) &&
                     !await StagePeerHistoryAsync(group, route, descriptor, vault, cancellationToken)) return;
+                if (existing is not null && WorldPeerFileTransfer.KnownDescendant(vault, version, existing)) continue;
                 // A peer can preserve another signed history, but cannot silently
                 // replace the current received head with a fork or an older copy.
-                if (descriptor.Branch is null && !WorldPeerFileTransfer.KnownDescendant(vault, existing, version))
+                if (!WorldPeerFileTransfer.KnownDescendant(vault, existing, version))
                 {
                     var retained = SharedWorldService.SafeChild(RetainedHistoryParent(data, group), version.VersionHash);
                     SharedWorldService.EnsureUnlinkedRoot(data.RootPath, retained);
@@ -310,9 +324,6 @@ internal sealed partial class WorldPeerService
                     finally { FriendLink.ReceiveGateFor(retained).Release(); }
                     return;
                 }
-                if (descriptor.Branch is not null && existing is not null &&
-                    (existing.Number >= version.Number || existing.Number + 1 == version.Number &&
-                     version.ParentHash != existing.VersionHash)) continue;
                 await ReceivePeerSaveAsync(group, route, descriptor, vault, existing, cancellationToken);
                 return; // One completed payload per group/pass keeps other groups responsive.
             }
@@ -332,9 +343,7 @@ internal sealed partial class WorldPeerService
     {
         Directory.CreateDirectory(vault);
         var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
-        var anchor = descriptor.Branch?.Offer.Version ??
-            WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, descriptor.Version, records);
-        if (!await WorldPeerFileTransfer.StageHistoryAsync(group.Root, vault, descriptor.Version, anchor,
+        return await WorldPeerFileTransfer.StageDescriptorHistoryAsync(group.Root, vault, descriptor, records,
             async (hash, number, token) =>
             {
                 if (!await ReceiveAllowedAsync(group, token)) throw new OperationCanceledException("Save consent changed.");
@@ -342,9 +351,7 @@ internal sealed partial class WorldPeerService
                     versionHash: hash, chunkOffset: number);
                 if (!await ReceiveAllowedAsync(group, token)) throw new OperationCanceledException("Save consent changed.");
                 return JsonSerializer.Deserialize<SharedWorldVersion>(manifest, Json);
-            }, cancellationToken)) return false;
-        WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
-        return true;
+            }, cancellationToken);
     }
 
     private async Task ReceivePeerSaveAsync(Group group, SharedWorldPeerRoute route,
@@ -390,12 +397,28 @@ internal sealed partial class WorldPeerService
                     (output.Position < file.Length || index < version.Files.Count - 1)) return;
             }
         }
-        WorldPeerFileTransfer.VerifyStage(data.RootPath, payloadRoot, version);
+        var receipt = await CompletePeerSaveAsync(group, descriptor, vault, stage, anchor, cancellationToken);
+        if (receipt is not null)
+            await DeliverReceiptAsync(group, route, receipt, JsonSerializer.SerializeToUtf8Bytes(receipt, Json), cancellationToken);
+    }
+
+    // Pull and outbound-only seeding use the same full-payload verification,
+    // immutable lease, current consent and exact signed pointer promotion.
+    private async Task<SharedWorldReceipt?> CompletePeerSaveAsync(Group group, WorldPeerSaveDescriptor descriptor,
+        string vault, string stage, SharedWorldVersion? anchor, CancellationToken cancellationToken,
+        Func<bool>? additionalAuthorization = null)
+    {
+        var version = descriptor.Version;
+        var destination = SharedWorldService.SafeChild(vault, version.VersionHash);
+        if (!Directory.Exists(destination))
+            WorldPeerFileTransfer.VerifyStage(data.RootPath, Path.Combine(stage, SharedWorldService.PayloadDirectory), version);
         if (!await ReceiveAllowedAsync(group, cancellationToken))
             throw new OperationCanceledException("World access changed before copy completion.");
-        File.WriteAllBytes(Path.Combine(stage, "version.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
-        var destination = SharedWorldService.SafeChild(vault, version.VersionHash);
-        if (!Directory.Exists(destination)) Directory.Move(stage, destination);
+        if (!Directory.Exists(destination))
+        {
+            File.WriteAllBytes(Path.Combine(stage, "version.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
+            Directory.Move(stage, destination);
+        }
         // Verify existing destinations too, before latest.json can name them.
         // Read leases keep every verified file unchanged through the promotion.
         using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, destination, version, cancellationToken);
@@ -411,7 +434,12 @@ internal sealed partial class WorldPeerService
                     Access(current, current.DeviceId, Convert.ToBase64String(signingKey.ExportSubjectPublicKeyInfo()))?.Receive != true ||
                     !AuthorizedDescriptor(current, descriptor))
                     throw new OperationCanceledException("World membership or save consent changed before promotion.");
+                if (additionalAuthorization?.Invoke() == false)
+                    throw new InvalidDataException("The forwarding PC's current permission changed before promotion.");
                 WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
+                var previousObservation = data.LoadProtected(SaveObservationName(current.Root)) ?? [];
+                data.SaveProtected(SaveObservationName(current.Root), SHA256.HashData(
+                    previousObservation.Concat(System.Text.Encoding.UTF8.GetBytes(version.VersionHash + "\n" + descriptor.Branch?.BranchHash)).ToArray()));
                 WorldPeerFileTransfer.Promote(vault, descriptor);
                 if (current.DeviceId == Guid.Empty) return;
                 var draft = new SharedWorldReceipt(1, current.Root.GroupId, current.Root.ProfileId, version.VersionHash,
@@ -426,10 +454,9 @@ internal sealed partial class WorldPeerService
         if (group.DeviceId == Guid.Empty) Commit();
         else if (!await friend.CommitPeerReceiveAsync(group.Root, group.DeviceId, Commit, cancellationToken))
             throw new OperationCanceledException("Save consent changed before copy completion.");
-        if (receipt is null) return;
-        var receiptBytes = JsonSerializer.SerializeToUtf8Bytes(receipt, Json);
-        File.WriteAllBytes(Path.Combine(destination, "receipt.json"), receiptBytes);
-        await DeliverReceiptAsync(group, route, receipt, receiptBytes, cancellationToken);
+        if (receipt is not null)
+            File.WriteAllBytes(Path.Combine(destination, "receipt.json"), JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
+        return receipt;
     }
 
     private bool ReceiptDeliveryDue(Group group, SharedWorldPeerRoute route, SharedWorldReceipt receipt)
@@ -504,9 +531,20 @@ internal sealed partial class WorldPeerService
         var access = Access(group, group.DeviceId, publicKey);
         var snapshot = await manager.SnapshotAsync();
         var routes = new List<SharedWorldPeerRoute>();
-        if (group.SharingEnabled && snapshot.Settings.CompanionListeningEnabled)
+        // A signed configured contact is an address hint, not listener or
+        // reachability evidence. Retaining it while incoming connections are
+        // off lets an outbound-only receiver discover this PC after its local
+        // owner explicitly enables hosting, even with the original Host offline.
+        if (group.SharingEnabled && HostIdentity.TryEndpoint(snapshot.Settings.CompanionEndpoint, out var configured) &&
+            configured.Port == snapshot.Settings.CompanionPort &&
+            System.Net.IPAddress.TryParse(configured.Host, out var advertisedAddress) &&
+            System.Net.IPAddress.TryParse(snapshot.Settings.CompanionBindAddress, out var boundAddress) &&
+            !System.Net.IPAddress.IsLoopback(boundAddress) &&
+            (boundAddress.Equals(advertisedAddress) ||
+             boundAddress.Equals(System.Net.IPAddress.Any) && advertisedAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ||
+             boundAddress.Equals(System.Net.IPAddress.IPv6Any) && advertisedAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6))
         {
-            using var certificate = new HostIdentity(data).Load();
+            using var certificate = new HostIdentity(data).Load() ?? new HostIdentity(data).Ensure(snapshot.Settings.CompanionEndpoint);
             if (certificate is not null)
             {
                 var route = new SharedWorldPeerRoute(snapshot.Settings.CompanionEndpoint.TrimEnd('/'),
@@ -686,6 +724,31 @@ internal static class WorldPeerFileTransfer
             current = previous;
         }
         return current.VersionHash == existing.VersionHash;
+    }
+
+    // Carry metadata ancestry through every hosting continuation, including
+    // source histories whose older payloads are no longer on the sending PC.
+    // Without these signed intermediate manifests a returning member could
+    // not prove that C includes B and the original A save.
+    internal static async Task<bool> StageDescriptorHistoryAsync(SharedWorldPeerRoot root, string vault,
+        WorldPeerSaveDescriptor descriptor, IReadOnlyList<WorldAuthorityRecord> records,
+        Func<string, long, CancellationToken, Task<SharedWorldVersion?>> fetch,
+        CancellationToken cancellationToken)
+    {
+        var current = descriptor.Version;
+        var branch = descriptor.Branch;
+        for (var depth = 0; depth <= 16; depth++)
+        {
+            var anchor = branch?.Offer.Version ?? TrustedHistoricAnchor(root, current, records);
+            if (!await StageHistoryAsync(root, vault, current, anchor,
+                (hash, number, token) => anchor?.VersionHash == hash && anchor.Number == number ? Task.FromResult<SharedWorldVersion?>(anchor) :
+                    fetch(hash, number, token), cancellationToken)) return false;
+            VerifyHistory(vault, new(current, branch), anchor);
+            if (branch is null) return true;
+            current = branch.Offer.Version;
+            branch = branch.SourceBranch;
+        }
+        throw new InvalidDataException("The continuation ancestry exceeds its verified depth.");
     }
 
     internal static async Task<bool> StageHistoryAsync(SharedWorldPeerRoot root, string vault,

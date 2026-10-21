@@ -65,6 +65,7 @@ use the document title to identify the topic.
 - [Simple shared hosting](30-SIMPLE-SHARED-HOSTING.md)
 - [Paired-PC hosting moves](31-PAIRED-PC-HOSTING-MOVES.md)
 - [Guided setup and shared hosting](35-GUIDED-SETUP-AND-SHARED-HOSTING.md)
+- [Single-setting shared hosting and automatic latest saves](36-SHARED-HOSTING-SIMPLIFICATION.md)
 
 ### Access, setup, and updates
 

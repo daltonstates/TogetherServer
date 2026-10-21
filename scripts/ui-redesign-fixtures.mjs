@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import * as worldReview from './ui-polish-world-review.mjs';
 import * as accessReview from './ui-polish-access-review.mjs';
+import { simpleHostingStatus } from './simple-shared-hosting-review.mjs';
 
 const contract = JSON.parse(readFileSync(new URL('../contracts/host-snapshot.v1.json', import.meta.url), 'utf8'));
 export const fixtureNow = '2026-10-10T16:00:00Z';
@@ -205,6 +206,7 @@ export function createFixtureState(scenario = 'host-ready') {
     drafts: {}, chatEntries: {}, desktopPreferences: { available: true, launchAtLogin: false, closeToTray: false, startupAvailable: true },
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
     gettingStarted: { offered: false, intent: 'Choose', dismissed: false }, hostingRemedy: options.hostingRemedy ?? null,
+    simpleHosting: options.simpleHosting ?? null, simpleHostingPrepared: false, simpleHostingStarted: false,
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
       releaseNotes: '', releaseNotesUrl: null, snoozedUntilUtc: null, promptSnoozed: false, versionSkipped: false },
     requests: [] };
@@ -490,6 +492,31 @@ export function routeFixture(state, request) {
     if (suffix === 'live-save-acceptance' && method === 'GET') return reply(liveAcceptance(state));
     if (suffix.startsWith('live-save-acceptance/') && method === 'POST') return unavailable('Installed game acceptance or capture');
     if (suffix.startsWith('custom-scripts')) return unavailable('Custom script reveal or writes');
+    if (suffix === 'shared-world/hosting' && host && method === 'PUT') {
+      if (Object.keys(body).join(',') !== 'enabled' || typeof body.enabled !== 'boolean') return null;
+      state.sharingEnabled = body.enabled;
+      p.sharedSavesEnabled = body.enabled;
+      return reply(result({ code: 'SharedHostingSaved', message: 'Friends can host this synthetic server.' }));
+    }
+    if (state.simpleHosting && !host && suffix === 'shared-world/hosting' && method === 'GET')
+      return reply(simpleHostingStatus(state, id, boundary));
+    if (state.simpleHosting && !host && suffix === 'shared-world/hosting/prepare' && method === 'POST') {
+      if (Object.keys(body).sort().join(',') !== 'acceptSplitWarning,allowReceiving,gamePassword,requirePeerConnection,serverFile' ||
+          body.allowReceiving !== true || body.acceptSplitWarning !== true || body.requirePeerConnection !== true ||
+          body.serverFile !== null || body.gamePassword !== null) return null;
+      if (!['prepare', 'ready'].includes(state.simpleHosting)) return reply(simpleHostingStatus(state, id, boundary));
+      state.simpleHostingPrepared = true;
+      return reply(simpleHostingStatus(state, id, boundary));
+    }
+    if (state.simpleHosting && !host && suffix === 'shared-world/hosting/start' && method === 'POST') {
+      if (!state.simpleHostingPrepared || Object.keys(body).sort().join(',') !== 'acceptSplitWarning,branchHash,localProfileId,requestId' ||
+          body.branchHash !== 'A'.repeat(64) || body.localProfileId !== id || body.requestId !== null || body.acceptSplitWarning !== true) return null;
+      state.simpleHostingStarted = true;
+      const run = state.host.runs.find(item => item.profileId === id);
+      Object.assign(run, { state: 'Starting', detail: 'Starting the synthetic local copy.', onlinePlayers: null,
+        playerCountTrusted: false, playerCountObservedUtc: null, playerObservationSource: null });
+      return reply(result({ code: 'Starting', message: 'Starting the synthetic local copy.' }));
+    }
     if (suffix === 'shared-world/hosting' && !host && method === 'GET' && state.hostingRemedy) return reply({
       ok: false, code: state.hostingRemedy === 'missing-server' ? 'InstalledServerRequired' : 'LocalConnectionSetupRequired',
       message: state.hostingRemedy === 'missing-server' ? 'Install the matching game server, then choose its file.' : 'Allow incoming connections on this PC before preparing hosting.',

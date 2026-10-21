@@ -11,9 +11,11 @@ namespace TogetherServer.FeatureChecks;
 internal static class SharedHostingPermissionChecks
 {
     private static readonly SharedWorldGrants Hosting = new(Receive: true, EligibleHost: true);
+    private static readonly SharedWorldGrants AutomaticHosting = new(Receive: true, EligibleHost: true, Reshare: true);
 
     internal static async Task RunAsync(string root)
     {
+        await SimpleServerPolicyAsync(root);
         using (var fixture = new Fixture(root, "current-settings"))
         {
             Require(fixture.Pairing.SetSharedWorldGrants(fixture.DeviceId, fixture.ProfileId,
@@ -202,6 +204,203 @@ internal static class SharedHostingPermissionChecks
         }
     }
 
+    private static async Task SimpleServerPolicyAsync(string root)
+    {
+        using (var fixture = new Fixture(root, "server-policy"))
+        {
+            var second = fixture.AddPeer();
+            var waitingKey = fixture.AddPeer(enroll: false);
+            Require(fixture.Pairing.SetSharedWorldGrants(fixture.DeviceId, fixture.ProfileId,
+                new(RecoveryVoter: true)).Ok, "could not retain an earlier independent voting grant");
+            var before = fixture.Current();
+            var enabled = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None);
+            var expected = Clone(before);
+            expected.Profiles[0].SharedSavesEnabled = true;
+            expected.Profiles[0].Backups.Enabled = true;
+            Require(enabled.Ok && Same(fixture.Current(), expected) &&
+                fixture.Grants() == (AutomaticHosting with { RecoveryVoter = true }) &&
+                fixture.Grants(second) == AutomaticHosting && fixture.Grants(waitingKey) == AutomaticHosting,
+                "the server choice did not cover every approved assigned current/pending-key PC or replaced unrelated settings");
+            var roster = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId);
+            Require(roster is not null && SharedWorldRosterTrust.Verify(roster) && roster.Members.Count == 2 &&
+                roster.Members.All(member => member.Grants.Receive && member.Grants.EligibleHost && member.Grants.Reshare) &&
+                roster.Members.All(member => !member.Grants.ManageSharing) &&
+                roster.Members.All(member => member.DeviceId != waitingKey) && !fixture.Pairing.SharedRosterDirty(fixture.ProfileId),
+                "the server choice forged pending membership, omitted forwarding, or granted management");
+            Require((await fixture.Manager.SetSharedWorldGrantsAsync(fixture.DeviceId, fixture.ProfileId, new())).Code ==
+                "ServerHostingSettingRequired" &&
+                fixture.Pairing.SetReceiveSaves(fixture.DeviceId, fixture.ProfileId, false).Code == "ServerHostingSettingRequired" &&
+                fixture.Grants() == (AutomaticHosting with { RecoveryVoter = true }) &&
+                (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!.Signature == roster!.Signature,
+                "an old per-PC sharing endpoint contradicted the enabled server choice");
+
+            var later = fixture.AddPeer(enroll: false);
+            Require(fixture.Grants(later) == AutomaticHosting && !fixture.Pairing.SharedRosterDirty(fixture.ProfileId),
+                "later pairing did not inherit the server choice or fenced unchanged signed membership before enrollment");
+            fixture.Enroll(later);
+            fixture.Enroll(waitingKey);
+            await fixture.PublishPolicyAsync();
+            var enrolled = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId);
+            Require(enrolled is not null && enrolled.Members.Count == 4 &&
+                enrolled.Members.All(member => member.Grants.Receive && member.Grants.EligibleHost && member.Grants.Reshare),
+                "later signing enrollment did not automatically complete each PC's hosting membership");
+
+            var disabled = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, false, CancellationToken.None);
+            var withdrawn = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId);
+            Require(disabled.Ok && !fixture.Current().Profiles[0].SharedSavesEnabled && fixture.Current().Profiles[0].Backups.Enabled &&
+                withdrawn is not null && withdrawn.GroupId == roster!.GroupId && withdrawn.Revision > enrolled!.Revision &&
+                withdrawn.Members.All(member => !member.Grants.Receive && !member.Grants.EligibleHost && !member.Grants.Reshare) &&
+                fixture.Grants() == new SharedWorldGrants(RecoveryVoter: true) &&
+                fixture.Grants(second) == new SharedWorldGrants() && !fixture.Pairing.SharedRosterDirty(fixture.ProfileId),
+                "turning the server choice off left signed receiving, forwarding or hosting authority, or disabled backup protection");
+            var afterOff = fixture.AddPeer(enroll: false);
+            Require(fixture.Grants(afterOff) == new SharedWorldGrants(), "pairing re-enabled shared hosting while the server choice was off");
+            var restarted = new PairingService(fixture.Data, fixture.Clock);
+            Require(restarted.SharedRosterMembers(fixture.ProfileId).All(member =>
+                !member.Grants.Receive && !member.Grants.EligibleHost && !member.Grants.Reshare) &&
+                fixture.Driver.Actions == 0 && fixture.Data.LoadRuns().Count == 0 &&
+                !fixture.Current().CompanionListeningEnabled && !fixture.Current().RemoteControlsEnabled,
+                "restart restored withdrawn authority or the choice changed listener, remote controls or game state");
+        }
+
+        using (var fixture = new Fixture(root, "later-approval", configureDevice: device => device.ApprovalPending = true))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok &&
+                fixture.Grants() == new SharedWorldGrants(), "a waiting PC received hosting before approval");
+            Require(fixture.Pairing.Approve(fixture.DeviceId).Ok && fixture.Grants() == AutomaticHosting,
+                "later owner approval did not inherit the enabled server choice");
+            await fixture.PublishPolicyAsync();
+        }
+        using (var fixture = new Fixture(root, "later-assignment", configureDevice: device => device.AssignedProfileIds = []))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok &&
+                fixture.Grants() == new SharedWorldGrants(), "an unassigned PC received shared hosting");
+            var known = fixture.Current().Profiles.Select(profile => profile.Id).ToArray();
+            Require(fixture.Pairing.SetServerAccess(fixture.DeviceId, [fixture.ProfileId], null, known).Ok &&
+                fixture.Grants() == AutomaticHosting, "later assignment required a second hosting grant");
+            await fixture.PublishPolicyAsync();
+            Require(fixture.Pairing.SetServerAccess(fixture.DeviceId, [], null, known).Ok,
+                "the shared server choice prevented removing one PC's assignment");
+            await fixture.PublishPolicyAsync();
+            Require((await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!.Members.All(member => member.DeviceId != fixture.DeviceId),
+                "removing one PC's assignment left signed hosting authority");
+        }
+        using (var fixture = new Fixture(root, "later-access-extension", configureDevice: device =>
+            device.AccessExpiresUtc = new(2029, 1, 1, 0, 0, 0, TimeSpan.Zero)))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok &&
+                fixture.Grants() == new SharedWorldGrants(), "an owner-expired PC received shared hosting");
+            Require(fixture.Pairing.SetAccessExpiry(fixture.DeviceId, new(Clear: true)).Ok && fixture.Grants() == AutomaticHosting,
+                "clearing the owner access deadline did not restore the enabled server policy");
+            await fixture.PublishPolicyAsync();
+            Require(fixture.Pairing.Revoke(fixture.DeviceId).Ok, "the shared server choice prevented removing one PC");
+            await fixture.PublishPolicyAsync();
+            var revoked = (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!.Members.Single();
+            Require(revoked.Revoked && !revoked.Grants.Receive && !revoked.Grants.EligibleHost && !revoked.Grants.Reshare,
+                "PC revocation retained hosting or forwarding authority");
+        }
+        using (var fixture = new Fixture(root, "session-credential", configureDevice: device => device.PeerWorldGroupKey = new string('B', 64)))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok &&
+                fixture.Grants() == new SharedWorldGrants() &&
+                (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!.Members.Count == 0,
+                "the server choice blessed a peer session credential as a second signed member");
+        }
+
+        using (var fixture = new Fixture(root, "all-enrolled-assignments", configureDevice: device => device.SharedWorldPublicKey = null))
+        {
+            var siblingId = fixture.Current().Profiles[1].Id;
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok &&
+                (await fixture.Manager.SetSimpleSharedHostingAsync(siblingId, true, CancellationToken.None)).Ok,
+                "could not enable the two synthetic shared servers");
+            Require(fixture.Pairing.SetServerAccess(fixture.DeviceId, [fixture.ProfileId, siblingId], null,
+                [fixture.ProfileId, siblingId]).Ok, "could not assign a pending signing identity to both shared servers");
+            foreach (var assigned in new[] { fixture.ProfileId, siblingId }) await fixture.PublishPolicyAsync(assigned);
+            fixture.Enroll(fixture.DeviceId);
+            var changed = fixture.Pairing.SharedEnrollmentProfileIds(fixture.DeviceId, fixture.ProfileId);
+            Require(changed.Count == 2 && changed.All(fixture.Pairing.SharedRosterDirty),
+                "enrollment did not retain every assigned server requiring signed publication");
+            foreach (var assigned in changed) await fixture.PublishPolicyAsync(assigned);
+            foreach (var assigned in changed)
+                Require(!fixture.Pairing.SharedRosterDirty(assigned) &&
+                    (await fixture.Manager.SharedWorldRosterAsync(assigned))!.Members.Single().Grants == AutomaticHosting,
+                    "enrollment through one server left another assigned shared server fenced or ungranted");
+        }
+
+        await WithdrawDelegatedHostingAsync(root);
+
+        using (var fixture = new Fixture(root, "server-policy-pairing-failure"))
+        {
+            SharedWorldResult result;
+            using (var hold = new FileStream(Path.Combine(fixture.Data.RootPath, "pairing-state.protected"),
+                FileMode.Open, FileAccess.Read, FileShare.Read))
+                result = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None);
+            Require(!result.Ok && result.Code == "SharedHostingUnconfirmed" && fixture.Pairing.SharedRosterDirty(fixture.ProfileId) &&
+                !fixture.Pairing.TryGetActiveDevice(fixture.DeviceId, out _) && fixture.Driver.Actions == 0,
+                "an incomplete server policy write leaked access or removed the signed-publication fence");
+        }
+        using (var fixture = new Fixture(root, "server-policy-disable-failure"))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
+                "could not seed the interrupted disable check");
+            var roster = (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!;
+            var path = Path.Combine(fixture.Data.RootPath, "shared-worlds", fixture.ProfileId.ToString("N"),
+                roster.GroupId.ToString("N") + ".roster.json");
+            SharedWorldResult result;
+            using (var hold = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                result = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, false, CancellationToken.None);
+            Require(!result.Ok && result.Code == "SharedHostingUnconfirmed" &&
+                !fixture.Current().Profiles[0].SharedSavesEnabled && fixture.Grants() == new SharedWorldGrants() &&
+                fixture.Pairing.SharedRosterDirty(fixture.ProfileId),
+                "a failed signed disable retained canonical hosting access or dropped its publication fence");
+            await fixture.PublishPolicyAsync();
+            Require((await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!.Members.All(member =>
+                !member.Grants.Receive && !member.Grants.EligibleHost && !member.Grants.Reshare) &&
+                !fixture.Pairing.SharedRosterDirty(fixture.ProfileId) && fixture.Driver.Actions == 0,
+                "repair of an interrupted disable resumed hosting or kept stale signed authority");
+        }
+    }
+
+    private static async Task WithdrawDelegatedHostingAsync(string root)
+    {
+        using var fixture = new Fixture(root, "withdraw-delegated");
+        var target = fixture.AddPeer();
+        Require(fixture.Pairing.SetSharedWorldGrants(fixture.DeviceId, fixture.ProfileId, new(ManageSharing: true)).Ok,
+            "could not seed an earlier sharing manager");
+        var profile = fixture.Current().Profiles[0];
+        var service = new SharedWorldService(fixture.Data, new WorldBackupService(fixture.Data, fixture.Clock));
+        var baseline = service.PublishRoster(profile, fixture.Pairing.SharedRosterMembers(fixture.ProfileId));
+        var chain = new SharedWorldRosterChainStore(fixture.Data);
+        chain.Append(baseline, baseline.OwnerPublicKey);
+        var draft = baseline with
+        {
+            Schema = 3,
+            Epoch = baseline.Epoch + 1,
+            Revision = baseline.Revision + 1,
+            PreviousRosterHash = SharedWorldRosterTrust.Hash(baseline),
+            SignerDeviceId = fixture.DeviceId,
+            SignerPublicKey = baseline.Members.Single(member => member.DeviceId == fixture.DeviceId).PublicKey,
+            Members = baseline.Members.Select(member => member.DeviceId == target ? member with { Grants = AutomaticHosting } : member).ToArray(),
+            Signature = ""
+        };
+        var delegated = service.CountersignDelegatedRoster(draft with
+        {
+            Signature = Convert.ToBase64String(fixture.DeviceKey.SignData(SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+        }, fixture.Clock.GetUtcNow());
+        chain.Append(delegated, baseline.OwnerPublicKey);
+        Require(fixture.Grants(target) == new SharedWorldGrants() &&
+            (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!.Members.Single(member => member.DeviceId == target).Grants == AutomaticHosting,
+            "the delegated stale-hosting fixture did not preserve a distinct owner baseline");
+        Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, false, CancellationToken.None)).Ok,
+            "turning off hosting could not override a delegated grant");
+        var withdrawn = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId);
+        Require(withdrawn is not null && withdrawn.Revision > delegated.Revision &&
+            withdrawn.Members.Single(member => member.DeviceId == target).Grants == new SharedWorldGrants() &&
+            withdrawn.Members.Single(member => member.DeviceId == fixture.DeviceId).Grants.ManageSharing &&
+            !fixture.Pairing.SharedRosterDirty(fixture.ProfileId),
+            "an unchanged local baseline let an older delegated hosting grant survive server disable");
+    }
+
     private static async Task RejectsAsync(Fixture fixture, string code, Guid? deviceId = null, Guid? profileId = null)
     {
         var before = fixture.Current();
@@ -221,6 +420,7 @@ internal static class SharedHostingPermissionChecks
         internal TestClock Clock { get; } = new();
         internal Guid DeviceId { get; }
         internal Guid ProfileId { get; }
+        internal ECDsa DeviceKey { get; } = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
         internal Fixture(string root, string label, Action<ServerProfile>? configureProfile = null,
             Action<PairedDevice>? configureDevice = null, string kind = GameKinds.Fixture)
@@ -240,8 +440,7 @@ internal static class SharedHostingPermissionChecks
             DeviceId = access.DeviceId;
             var state = Data.LoadPairingState();
             var device = state.Devices.Single(device => device.Id == DeviceId);
-            using (var key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
-                device.SharedWorldPublicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            device.SharedWorldPublicKey = Convert.ToBase64String(DeviceKey.ExportSubjectPublicKeyInfo());
             configureDevice?.Invoke(device);
             Data.SavePairingState(state);
             Pairing = new PairingService(Data, Clock);
@@ -261,9 +460,32 @@ internal static class SharedHostingPermissionChecks
             ExecutablePath = Path.Combine(Data.RootPath, "never-start-server.exe")
         };
         internal HostSettings Current() => Data.LoadSettings();
-        internal SharedWorldGrants Grants() => Data.LoadPairingState().Devices.Single(device => device.Id == DeviceId)
+        internal SharedWorldGrants Grants(Guid? deviceId = null) => Data.LoadPairingState().Devices.Single(device => device.Id == (deviceId ?? DeviceId))
             .SharedWorldGrants?.GetValueOrDefault(ProfileId) ?? new();
-        public void Dispose() => Data.Dispose();
+        internal Guid AddPeer(bool enroll = true)
+        {
+            var code = Pairing.IssueServer(ProfileId, false, false, "https://127.0.0.1:5131", new string('A', 64), refresh: false);
+            var access = Pairing.Activate(new(ProfileId, code.Code, ServerScope: true)) ??
+                throw new InvalidOperationException("later synthetic save-hosting pairing failed");
+            if (enroll) Enroll(access.DeviceId);
+            return access.DeviceId;
+        }
+        internal void Enroll(Guid deviceId)
+        {
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+            Require(Pairing.BindSharedWorldKey(deviceId, new(nonce, publicKey,
+                Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.EnrollmentBasis(deviceId, nonce, publicKey), HashAlgorithmName.SHA256)))).Ok,
+                "the later paired PC could not enroll its signing identity");
+        }
+        internal async Task PublishPolicyAsync(Guid? profileId = null)
+        {
+            var selected = profileId ?? ProfileId;
+            var roster = await Manager.PublishSimpleSharedHostingRosterAsync(selected);
+            Pairing.ConfirmSharedRosterPublished(selected, roster);
+        }
+        public void Dispose() { DeviceKey.Dispose(); Data.Dispose(); }
     }
 
     private sealed class TestClock : TimeProvider

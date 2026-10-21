@@ -1,5 +1,8 @@
 # Simple shared hosting delivery
 
+The user-facing workflow in this historical record is superseded by the
+[2026-10-21 single-setting delivery](36-SHARED-HOSTING-SIMPLIFICATION.md).
+
 Owner request, 2026-10-18: sharing should be one permission and a local-hosting
 action beside Start, with setup and save checks handled by the app. Delivery
 continued on 2026-10-19.

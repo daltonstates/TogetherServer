@@ -34,7 +34,8 @@ internal static class FriendLocalHostingRoutes
         var service = new FriendLocalHostingService(data, friend, manager,
             routeCheck: LocalHostingRouteCheck.Create(data, manager, companion, externalProbe),
             synchronizeListener: companion.SyncAsync,
-            announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync);
+            announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync,
+            latestSource: peers is null ? null : peers.ResolveLatestRecoverySourceAsync);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
         app.MapGet(route, async (HttpContext context, Guid profileId) =>
         {
@@ -138,7 +139,14 @@ internal static class FriendLocalHostingRoutes
                     code = "SplitWarningRequired",
                     message = "Confirm that another Host may still be running and both histories remain separate."
                 });
-                return Results.Json(await manager.StartSeparateCopyAsync(localProfileId, request.BranchHash, context.RequestAborted));
+                var current = await manager.CompanionSnapshotAsync();
+                if (!current.Settings.Profiles.Any(profile => profile.Id == localProfileId &&
+                    profile.SeparateCopyBranchHash == request.BranchHash))
+                    return Results.Json(new { ok = false, code = "SeparateCopyMissing", message = "Check this server's latest save before starting." });
+                return Results.Json(peers is null ?
+                    await manager.StartSeparateCopyAsync(localProfileId, request.BranchHash, context.RequestAborted) :
+                    await new SimpleOwnerHostingService(data, manager, peers, companion.SyncAsync)
+                        .StartAsync(localProfileId, context.RequestAborted));
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ArgumentException)
             { return Results.BadRequest(new { ok = false, code = "LocalHostingRequestRejected", message = "Use the fixed local Start action." }); }

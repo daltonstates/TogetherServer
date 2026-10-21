@@ -31,6 +31,7 @@ internal static class WorldPeerOperations
     internal const string Chunk = "Chunk";
     internal const string Receipt = "Receipt";
     internal const string Enrollment = "Enrollment";
+    internal const string Seed = "Seed";
 }
 
 // A fixed signed request protocol over an already selected/pinned direct peer
@@ -198,6 +199,11 @@ internal sealed class WorldPeerProtocol
                 value.FileIndex is null && value.ChunkOffset is null,
             WorldPeerOperations.Enrollment => value.Offset == 0 && value.VersionHash is null &&
                 value.FileIndex is null && value.ChunkOffset is null,
+            WorldPeerOperations.Seed => value.Offset == 0 && SharedWorldPeerTrust.ValidHash(value.VersionHash) &&
+                (value.FileIndex is null && value.ChunkOffset is null ||
+                 value.FileIndex is >= 0 and < SharedWorldService.MaximumFiles &&
+                 value.ChunkOffset is >= 0 and <= SharedWorldService.MaximumSharedWorldBytes &&
+                 value.ChunkOffset % SharedWorldService.ChunkBytes == 0),
             _ => false
         };
     }
@@ -207,6 +213,7 @@ internal sealed class WorldPeerProtocol
         WorldPeerOperations.Metadata => length is >= 0 and <= SharedWorldPeerTrust.MaximumPageBytes,
         WorldPeerOperations.Receipt => length is > 0 and <= 64 * 1024,
         WorldPeerOperations.Enrollment => length is > 0 and <= 8 * 1024,
+        WorldPeerOperations.Seed => length is > 0 and <= SharedWorldPeerTrust.MaximumPageBytes,
         _ => length == 0
     };
 
@@ -228,7 +235,7 @@ internal sealed class WorldPeerProtocol
                 return new(false, "PeerChallengeChanged", "The peer challenge was replaced or already used.");
             var access = trust.Access(challenge.DeviceId, challenge.PublicKey);
             if (access is null || request.Operation is WorldPeerOperations.Chunk or WorldPeerOperations.Receipt &&
-                !access.Receive)
+                !access.Receive || request.Operation == WorldPeerOperations.Seed && access is not { Receive: true, Reshare: true })
                 return new(false, "PeerPermissionDenied", "Save access is not enabled for this peer.");
             // All signature, current permission, exact nonce and payload checks
             // finish before consumption. A forged request cannot burn a nonce.
@@ -245,6 +252,7 @@ internal sealed class WorldPeerProtocol
         WorldPeerOperations.Chunk => 512 * 1024,
         WorldPeerOperations.Receipt => 64 * 1024,
         WorldPeerOperations.Enrollment => 8 * 1024,
+        WorldPeerOperations.Seed => 64 * 1024,
         _ => throw new InvalidDataException("The peer operation is invalid.")
     };
 

@@ -151,12 +151,12 @@ export function parseWorldPeerGroups(value: unknown): WorldPeerGroup[] {
   return result
 }
 
-export type WorldPeerPanelProps = { visible?: boolean; profileId?: string;
+export type WorldPeerPanelProps = { visible?: boolean; profileId?: string; readOnly?: boolean;
   onConnected?: () => void | Promise<void>; onChanged?: () => void | Promise<void>;
   onRecoverOwnerBranch?: (groupKey: string, profileId: string, branchHash: string) => void;
   onRecoverBranch?: (profileId: string, branchHash: string) => void }
 
-export function WorldPeerPanel({ visible = true, profileId, onConnected, onChanged, onRecoverBranch, onRecoverOwnerBranch }: WorldPeerPanelProps) {
+export function WorldPeerPanel({ visible = true, profileId, readOnly = false, onConnected, onChanged, onRecoverBranch, onRecoverOwnerBranch }: WorldPeerPanelProps) {
   const [groups, setGroups] = useState<WorldPeerGroup[]>([])
   const [loaded, setLoaded] = useState(false)
   const [checkedUtc, setCheckedUtc] = useState<string | null>(null)
@@ -247,6 +247,19 @@ export function WorldPeerPanel({ visible = true, profileId, onConnected, onChang
   if (!visible) return null
   const shown = groups.filter(group => !profileId || group.profileId === profileId)
   const pcName = (deviceId: string, selfDeviceId: string) => deviceId === selfDeviceId ? 'This PC' : `PC ending ${deviceId.slice(-6).toUpperCase()}`
+  if (readOnly) return <section className="world-peer-panel" aria-label="Shared hosting details" data-profile-id={profileId}>
+    <header><div><h3>Other Hosts</h3><p>Saved information from approved PCs updates automatically.</p></div>
+      <Button className="secondary" onClick={() => void refresh()}><Icon name="refresh" />Refresh details</Button></header>
+    {!loaded && !error && <p role="status">Checking shared hosting...</p>}
+    {error && <p role="alert">{error}</p>}
+    {loaded && shown.length === 0 && <p>No shared hosting information is saved on this PC yet.</p>}
+    {shown.map(group => <article className="world-peer-group" key={group.groupKey} aria-label={group.name}>
+      <h4>{group.name}</h4>
+      {group.state.needsChoice && <p role="note">Several saves are recorded. The app checks these copies automatically before hosting.</p>}
+      <p>{group.state.replication.lastSuccessfulSyncUtc ? `Last updated ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}.` : 'Waiting for an approved PC to share an update.'}</p>
+      <p>{group.state.sessions.filter(item => item.authorized && !item.hasConflict && item.session.state === 'Hosting').length} reported running servers. This does not confirm a game connection.</p>
+    </article>)}
+  </section>
   return <section className="world-peer-panel" aria-label="World groups">
     <header><div><h3>World groups</h3><p>See approved PCs, running servers and save histories for each world.</p></div>
       <Button className="secondary" disabled={busy !== null} onClick={() => void refresh()}><Icon name="refresh" />Refresh groups</Button></header>

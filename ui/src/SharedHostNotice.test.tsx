@@ -86,7 +86,7 @@ describe('Shared Host notice', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('verified and saved')
   })
 
-  it('keeps competing hosts separate and marks only the exact signed default without choosing it', async () => {
+  it('keeps concurrent hosting reports separate without showing a legacy preferred Host', async () => {
     const current = group()
     current.state.sessions.push({ ...structuredClone(current.state.sessions[0]), deviceId: otherId, publicKey: `synthetic-key-${otherId}`,
       session: { ...current.state.sessions[0].session, sessionId: otherSessionId, branchHash: 'C'.repeat(64) } })
@@ -97,9 +97,9 @@ describe('Shared Host notice', () => {
     render(<SharedHostNotice {...props} currentHostAddress={address} />)
     expect(await screen.findByRole('heading', { name: 'Multiple PCs report hosting' })).toBeInTheDocument()
     expect(screen.getByText(/These servers may have separate progress/)).toBeInTheDocument()
-    expect(screen.getByText(/A newer report does not choose a Host/)).toBeInTheDocument()
+    expect(screen.queryByText(/different save histories or default choices/)).not.toBeInTheDocument()
     expect(screen.getByText('Saved Host address').closest('li')).toHaveTextContent('PC ending 333333')
-    expect(screen.getByText('Group default').closest('li')).toHaveTextContent('PC ending 444444')
+    expect(screen.queryByText('Group default')).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^Connect to PC ending/ })).toHaveLength(2)
     expect(fetch).toHaveBeenCalledTimes(1)
   })
@@ -296,14 +296,29 @@ describe('Shared Host notice', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('distinguishes unresolved defaults from a verified single default', async () => {
+  it.each(['announced heads', 'legacy preference choices'])('does not classify %s as a save conflict', async evidence => {
     const current = group()
-    current.selection = { canChoose: false, needsChoice: true, heads: [defaultHead(), defaultHead(otherId, otherSessionId)] }
+    if (evidence === 'announced heads') current.state.needsChoice = true
+    else current.selection = { canChoose: false, needsChoice: true, heads: [defaultHead(), defaultHead(otherId, otherSessionId)] }
     vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
     render(<SharedHostNotice {...props} />)
     const notice = await screen.findByRole('article', { name: 'Hosting reports for Weekend world' })
-    expect(within(notice).getByText(/different save histories or default choices/)).toBeInTheDocument()
+    expect(notice.querySelector('.shared-host-caution')).toBeNull()
     expect(within(notice).queryByText('Group default')).not.toBeInTheDocument()
     expect(within(notice).getByRole('button', { name: 'Connect to PC ending 333333' })).toBeEnabled()
+  })
+
+  it.each(['peer', 'session'])('describes conflicting %s metadata while keeping an independent usable report', async conflict => {
+    const current = group()
+    current.state.sessions.push({ ...structuredClone(current.state.sessions[0]), deviceId: otherId, publicKey: `synthetic-key-${otherId}`,
+      session: { ...current.state.sessions[0].session, sessionId: otherSessionId } })
+    if (conflict === 'peer') current.state.peers[1].hasConflict = true
+    else current.state.sessions[1].hasConflict = true
+    vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
+    render(<SharedHostNotice {...props} />)
+    expect(await screen.findByText(/Some PCs reported different server or connection details/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect to PC ending 333333' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Connect to PC ending 444444' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/save histories|Group default/)).not.toBeInTheDocument()
   })
 })

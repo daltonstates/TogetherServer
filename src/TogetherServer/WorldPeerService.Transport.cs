@@ -328,6 +328,11 @@ internal sealed partial class WorldPeerService : IDisposable
                 if (enrollment is null) throw new InvalidDataException("The shared world session is unavailable for enrollment.");
                 result = JsonSerializer.SerializeToUtf8Bytes(enrollment, Json);
                 break;
+            case WorldPeerOperations.Seed:
+                result = JsonSerializer.SerializeToUtf8Bytes(await AcceptSeedAsync(group, request,
+                    WorldPeerProtocol.DecodeEnvelope<WorldPeerSeedRequest>(payload, SharedWorldPeerTrust.MaximumPageBytes),
+                    cancellationToken), Json);
+                break;
             default:
                 throw new InvalidDataException("The fixed world peer operation is invalid.");
         }
@@ -336,7 +341,8 @@ internal sealed partial class WorldPeerService : IDisposable
         var access = current is null ? null : Access(current, request.Challenge.DeviceId, request.Challenge.PublicKey);
         if (current is null || !current.SharingEnabled || access is null || KnownRosterRevision(current) < current.Roster.Revision ||
             Access(current, current.DeviceId, request.Challenge.ResponderPublicKey) is null ||
-            request.Operation is WorldPeerOperations.Chunk or WorldPeerOperations.Receipt && !access.Receive)
+            request.Operation is WorldPeerOperations.Chunk or WorldPeerOperations.Receipt && !access.Receive ||
+            request.Operation == WorldPeerOperations.Seed && access is not { Receive: true, Reshare: true })
             throw new InvalidDataException("World peer access changed during the request.");
         if (result.Length > WorldPeerProtocol.ResponseLimit(request.Operation))
             throw new InvalidDataException("The world peer response is oversized.");
@@ -659,6 +665,7 @@ internal sealed partial class WorldPeerService : IDisposable
         if (authorityOffset < response.AuthorityTotal || response.Page.NextOffset < response.Page.Total)
             SetPeerWarning(group.Root.GroupKey, "Signed world information is catching up; existing histories remain available.");
         await PullCatalogAsync(group, route, cancellationToken);
+        await SeedPeerAsync(group, route, cancellationToken);
     }
 
     private void SetPeerWarning(string groupKey, string? message)
@@ -689,6 +696,47 @@ internal sealed partial class WorldPeerService : IDisposable
         Task task;
         lock (stateSync) task = backgroundSync ?? Task.CompletedTask;
         return task.WaitAsync(cancellationToken);
+    }
+
+    // Explicit preparation must check its exact world instead of whichever
+    // four groups the background round-robin happens to visit this pass.
+    private async Task SyncWorldAsync(SharedWorldPeerRoot root, CancellationToken cancellationToken)
+    {
+        await refreshGate.WaitAsync(cancellationToken);
+        try
+        {
+            ObjectDisposedException.ThrowIf(peerDisposed, this);
+            await RefreshMembershipsAsync(true, cancellationToken);
+            var group = Find(root.GroupKey);
+            if (group is null || group.Root != root) return;
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            bounded.CancelAfter(TimeSpan.FromSeconds(30));
+            using var key = RetainedLocalKey(group);
+            if (key is null) return;
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            if (KnownRosterRevision(group) >= group.Roster.Revision && Access(group, group.DeviceId, publicKey) is not null)
+            {
+                var advertisement = await BuildAdvertisementAsync(group, bounded.Token);
+                Store(group).Publish(group.DeviceId, key, advertisement.Routes, advertisement.Sessions,
+                    advertisement.Branches, advertisement.AvailableVersionHashes);
+            }
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            // A first reachable peer can teach this PC another member's route.
+            // Recompute after every request while bounding all network work.
+            for (var attempt = 0; attempt < SharedWorldPeerStore.MaximumPeers && !bounded.IsCancellationRequested; attempt++)
+            {
+                group = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
+                var peers = Store(group).Project().Peers.Where(peer => peer.Authorized && !peer.HasConflict && peer.PublicKey != publicKey)
+                    .SelectMany(peer => peer.Routes);
+                var route = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
+                    .GroupBy(RouteKey).Select(routes => routes.First()).FirstOrDefault(route => visited.Add(RouteKey(route)));
+                if (route is null) break;
+                try { await SyncPeerAsync(group, route, bounded.Token); }
+                catch (Exception error) when (PeerFailure(error) || error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                { SetPeerWarning(root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept."); }
+            }
+        }
+        finally { refreshGate.Release(); }
     }
 
     internal async Task SyncNowAsync(CancellationToken cancellationToken)

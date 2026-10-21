@@ -15,6 +15,18 @@ var webJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 var appPath = Path.GetFullPath(args.Length > 0 ? args[0] : "local-data/release/TogetherServer.exe");
 var fixturePath = Path.GetFullPath("src/TogetherServer.Fixture/bin/Release/net10.0/TogetherServer.Fixture.exe");
 var valheimFixturePath = Path.GetFullPath("src/TogetherServer.ValheimFixture/bin/Release/net10.0/valheim_server.exe");
+if (args.Skip(1).Contains("--simple-shared-hosting-journey", StringComparer.OrdinalIgnoreCase))
+{
+    if (!OperatingSystem.IsWindows() || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+        !args.Contains("--allow-interactive-tests", StringComparer.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Simple shared-hosting process checks require an explicitly opted-in hosted Windows runner; never run on the owner's active desktop.");
+    var lanIndex = Array.FindIndex(args, argument => argument.Equals("--lab-lan-address", StringComparison.OrdinalIgnoreCase));
+    if (lanIndex < 0 || lanIndex + 1 >= args.Length || args[lanIndex + 1].StartsWith('-') ||
+        args.Count(argument => argument.Equals("--lab-lan-address", StringComparison.OrdinalIgnoreCase)) != 1)
+        throw new ArgumentException("Simple shared-hosting checks require one explicitly assigned private runner IPv4 address.");
+    await CoreRemoteJourney.RunSimpleSharedHostingAsync(appPath, fixturePath, args[lanIndex + 1]);
+    return 0;
+}
 if (args.Skip(1).Contains("--local-pairing-lab-journey", StringComparer.OrdinalIgnoreCase))
 {
     if (!OperatingSystem.IsWindows() || !args.Contains("--allow-windowless-lab", StringComparer.OrdinalIgnoreCase))

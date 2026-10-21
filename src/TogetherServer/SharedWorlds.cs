@@ -268,7 +268,8 @@ internal sealed partial class SharedWorldService
 
     internal SharedWorldRoster PublishRoster(ServerProfile profile,
         IReadOnlyList<SharedWorldRosterMember> members, bool? ownerOverride = null,
-        bool reviewSourceChange = false, SharedWorldOwnerEdit? ownerEdit = null)
+        bool reviewSourceChange = false, SharedWorldOwnerEdit? ownerEdit = null,
+        bool applyHostingPolicy = false)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
             lock (sync)
@@ -292,6 +293,20 @@ internal sealed partial class SharedWorldService
                         throw new InvalidDataException("Earlier owner edits need sharing review before another change.");
                     var baseline = parent.OwnerLocalBaselineMembers ?? chain.First(profile.Id)!.Members;
                     var mergedMembers = MergeOwnerChanges(parent.Members, baseline, orderedMembers, ownerEdit);
+                    if (applyHostingPolicy)
+                    {
+                        var local = orderedMembers.ToDictionary(item => item.DeviceId);
+                        mergedMembers = mergedMembers.Select(member =>
+                        {
+                            var enabled = profile.SharedSavesEnabled && local.TryGetValue(member.DeviceId, out var current) &&
+                                !current.Revoked && current.Grants is { Receive: true, EligibleHost: true, Reshare: true };
+                            return member with
+                            {
+                                Grants = member.Grants with
+                                { Receive = enabled, EligibleHost = enabled, Reshare = enabled }
+                            };
+                        }).ToArray();
+                    }
                     if (parent.Members.SequenceEqual(mergedMembers) &&
                         baseline.SequenceEqual(orderedMembers) &&
                         parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride)) return parent;
@@ -397,7 +412,8 @@ internal sealed partial class SharedWorldService
                 Receive = before.Grants.Receive != item.Grants.Receive ? item.Grants.Receive : current.Grants.Receive,
                 EligibleHost = before.Grants.EligibleHost != item.Grants.EligibleHost ? item.Grants.EligibleHost : current.Grants.EligibleHost,
                 RecoveryVoter = before.Grants.RecoveryVoter != item.Grants.RecoveryVoter ? item.Grants.RecoveryVoter : current.Grants.RecoveryVoter,
-                ManageSharing = before.Grants.ManageSharing != item.Grants.ManageSharing ? item.Grants.ManageSharing : current.Grants.ManageSharing
+                ManageSharing = before.Grants.ManageSharing != item.Grants.ManageSharing ? item.Grants.ManageSharing : current.Grants.ManageSharing,
+                Reshare = before.Grants.Reshare != item.Grants.Reshare ? item.Grants.Reshare : current.Grants.Reshare
             };
             if (edit?.DeviceId == item.DeviceId)
             {

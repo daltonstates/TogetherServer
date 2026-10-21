@@ -1,5 +1,11 @@
 # Small v1 architecture
 
+Shared hosting now derives Receive, EligibleHost and Reshare together from one
+original-Host policy. The signed fields remain internal authorization details.
+Verified receivers can seed completed copies through outbound pinned requests;
+explicit local hosting checks select one latest descendant and prepare fresh
+storage. See [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+
 `WorldPeerService` identifies a world by its pinned original owner key, profile
 and group, independent of endpoint or successor-local credential ID. Protected
 membership and append-only signed announcements retain directory, session,

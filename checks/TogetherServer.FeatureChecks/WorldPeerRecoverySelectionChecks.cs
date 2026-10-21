@@ -23,10 +23,17 @@ internal static class WorldPeerRecoverySelectionChecks
                 complete.Store.Project().Branches.Count == 2 &&
                 new WorldAuthorityStore(complete.Data).Read(complete.Root.ProfileId).Count == 0,
                 "complete1->2->3 ancestry did not select3 without erasing uncertain metadata or changing authority");
+            var latest = await complete.Service.ResolveLatestRecoverySourceAsync(complete.Root, default);
+            Require(latest.Ok && latest.Source?.Descriptor.Version.VersionHash == complete.Third.VersionHash &&
+                !complete.Data.LoadSettings().CompanionListeningEnabled,
+                "ordinary latest-save preparation required a history/default decision or enabled incoming connections");
         }
         using (var missing = new Fixture(root, "missing-parent", includeSecond: false))
         {
             await RefusesAsync(missing, "a complete payload with missing signed parent2 resolved the lane");
+            var latest = await missing.Service.ResolveLatestRecoverySourceAsync(missing.Root, default);
+            Require(!latest.Ok && latest.Code == "SharedSaveHistoryNeedsReview",
+                "an incomplete newest known history was treated as an unavailable pristine world");
             Require(FriendLink.ReadReceivedLatest(missing.Vault)?.VersionHash == missing.Third.VersionHash,
                 "refused incomplete ancestry erased retained payload evidence");
         }
@@ -63,6 +70,42 @@ internal static class WorldPeerRecoverySelectionChecks
                 SharedWorldService.PayloadDirectory, "world.dat"), "changed");
             await RefusesAsync(corrupt, "signed metadata ancestry selected a candidate with damaged payload bytes");
         }
+        await CheckLatestGraphAsync(root);
+    }
+
+    private static async Task CheckLatestGraphAsync(string root)
+    {
+        using var fixture = new Fixture(root, "latest-graph");
+        var second = fixture.Child(fixture.First, "graph second");
+        var third = fixture.Child(second, "graph third") with { };
+        // All three signed save times are deliberately identical. Only parent
+        // hashes can establish which continuation includes every older head.
+        var versions = new[] { fixture.First, second, third }.ToDictionary(item => item.VersionHash);
+        Task<SharedWorldVersion?> Read(string hash, long number, CancellationToken _) =>
+            Task.FromResult(versions.TryGetValue(hash, out var value) && value.Number == number ? value : null);
+        var selected = await WorldPeerLatestSelection.SelectAsync(fixture.Root,
+            [new(fixture.First), new(third), new(second)], [fixture.First.VersionHash, second.VersionHash],
+            (_, _) => Task.CompletedTask, Read, default);
+        Require(selected == 1, "latest selection depended on candidate order or timestamp instead of ancestry");
+        var fork = fixture.Child(fixture.First, "competing graph second");
+        versions.Add(fork.VersionHash, fork);
+        async Task Refuses(IReadOnlyList<WorldPeerSaveDescriptor> copies, IReadOnlyList<string> claims,
+            Func<int, CancellationToken, Task>? verify = null)
+        {
+            try
+            {
+                await WorldPeerLatestSelection.SelectAsync(fixture.Root, copies, claims,
+                    verify ?? ((_, _) => Task.CompletedTask), Read, default);
+            }
+            catch (InvalidDataException) { return; }
+            throw new InvalidOperationException("an incomplete or divergent latest history selected an older copy");
+        }
+        await Refuses([new(third), new(fork)], []);
+        await Refuses([new(second)], [third.VersionHash]);
+        await Refuses([new(fixture.First), new(third)], [], (index, _) => index == 1
+            ? Task.FromException(new InvalidDataException("synthetic latest payload changed")) : Task.CompletedTask);
+        versions.Remove(second.VersionHash);
+        await Refuses([new(fixture.First), new(third)], []);
     }
 
     private static async Task RefusesAsync(Fixture fixture, string message)

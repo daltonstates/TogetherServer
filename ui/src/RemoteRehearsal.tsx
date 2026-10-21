@@ -56,7 +56,7 @@ export function HostRemoteRehearsal() {
     finally { setBusy(false) }
   }
   return <details className="connection-doctor"><summary>Test with another owned PC</summary>
-    <p>Prepare a temporary server with test files. On the other PC, open TogetherServer DEVELOPMENT and connect with this server's code. Grant Receive on the Host, then turn on Allow saves on this PC on the other PC. This test uses separate development data and no real world.</p>
+    <p>Prepare a temporary server with test files. On the other PC, open TogetherServer DEVELOPMENT and connect with this server's code. Turn on Allow friends to host this server on the Host; approved PCs keep verified copies automatically. This test uses separate development data and no real world.</p>
     <Button className="secondary" disabled={busy} onClick={() => void prepare()}>{busy ? 'Preparing…' : 'Prepare connection test'}</Button>
     {message && <DismissibleNotice as="p" noticeKey={messageResult} role="status">{message}</DismissibleNotice>}
   </details>

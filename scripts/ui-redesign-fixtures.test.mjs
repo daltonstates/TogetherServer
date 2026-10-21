@@ -8,6 +8,7 @@ import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases } from './ui-polish-access-review.mjs';
+import { simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
 const sourceRoot = process.env.TOGETHERSERVER_UI_SOURCE_ROOT
@@ -577,6 +578,7 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   const check = (argv, env, platform = 'win32') => runInNewContext(pureGuard, { process: { argv: ['node', 'renderer', ...argv], env, platform } });
   assert.doesNotThrow(() => check(flags, hosted), 'both flags and the hosted Windows identity pass the pure guard');
   assert.doesNotThrow(() => check(['--list'], {}, 'linux'), 'the exact inventory-only invocation needs no browser authorization');
+  assert.doesNotThrow(() => check(['--list', '--simple-shared-hosting-only'], {}, 'linux'), 'the bounded hosting inventory remains read-only');
   for (const [argv, env, platform] of [
     [[], hosted, 'win32'], [flags, {}, 'win32'],
     [['--list', '--allow-isolated-browser-tests'], {}, 'win32'], [['--list', 'capture'], {}, 'win32'],
@@ -610,6 +612,11 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.equal(focused.plans.length, 35, 'seven move/sharing surfaces each cover five viewport/text variants');
   assert.equal(focused.inventory.length, focused.plans.length);
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
+  const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
+    { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
+  assert.equal(simple.plans.length, 18, 'nine shared-hosting surfaces cover desktop and narrow widths');
+  assert.equal(simple.inventory.length, simple.plans.length);
+  assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
     const plan = plans.find(plan => plan.testCase.id === `host-pc-${item.id}`);
     assert.equal(plan.testCase.section[2], item.label, `Host PC ${item.id} uses the actual sidebar action label`);
@@ -829,4 +836,38 @@ test('focused permission fixtures retain explicit partial grants and zero assign
   assert.deepEqual(unassigned.devices[0].assignedProfileIds, []);
   assert.deepEqual(unassigned.devices[0].serverPermissions, []);
   assert.deepEqual(createFixtureState('host-ready').devices[0].assignedProfileIds, [fixtureIds.primary], 'ordinary fixtures remain assigned');
+});
+
+
+test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
+  const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus } = await import('./simple-shared-hosting-review.mjs');
+  assert.equal(simpleHostingCases.length, 9);
+  assert.equal(simpleHostingVariants.length, 2);
+  assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
+  assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready' });
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  assert.equal(simpleHostingStatus(state, fixtureIds.primary, 'Synthetic').allowed, true);
+  assert.equal(routeFixture(state, { method: 'GET', path: base }).body.readyForManualStart, true);
+  assert.doesNotThrow(() => localHosting.parseLocalHostingStatus(routeFixture(state, { method: 'GET', path: base }).body));
+  const start = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true };
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: start }), null, 'Start requires this exact preparation');
+  const prepare = { allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null };
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/prepare`, body: prepare }).body.readyForManualStart, true);
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: { ...start, branchHash: 'B'.repeat(64) } }), null);
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: start }).body.ok, true);
+  assert.equal(state.simpleHostingStarted, true);
+  assert.doesNotThrow(() => contracts.parseSnapshot(state.host));
+  for (const stage of ['not-allowed', 'missing-server', 'connection', 'conflict']) {
+    const blocked = createFixtureState({ id: 'friend-offline', simpleHosting: stage });
+    const status = routeFixture(blocked, { method: 'GET', path: base }).body;
+    assert.doesNotThrow(() => localHosting.parseLocalHostingStatus(status));
+    assert.equal(status.readyForManualStart, false);
+    assert.equal(status.allowed, stage !== 'not-allowed');
+  }
+  const owner = createFixtureState('host-offline');
+  const ownerBase = `/api/local/profiles/${fixtureIds.primary}/shared-world/hosting`;
+  assert.equal(routeFixture(owner, { method: 'PUT', path: ownerBase, body: { enabled: true } }).body.ok, true);
+  assert.equal(owner.sharingEnabled, true);
+  assert.equal(routeFixture(owner, { method: 'PUT', path: ownerBase, body: { enabled: true, grants: {} } }), null);
 });

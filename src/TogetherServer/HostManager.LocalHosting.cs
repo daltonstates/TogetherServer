@@ -5,40 +5,93 @@ internal sealed record LocalHostingPortPlan(int GamePort, int ControlPort,
 
 public sealed partial class HostManager
 {
-    // The owner's single switch includes backups after safe Stop. Preserve the
-    // current retention/reserve and every per-PC permission; no listener starts.
+    // One server choice authorizes all approved assigned PCs. Keep normal PC
+    // access checks and backup policy; publishing never starts a listener/game.
     internal async Task<SharedWorldResult> SetSimpleSharedHostingAsync(Guid profileId, bool enabled,
         CancellationToken cancellationToken)
     {
-        if (!enabled) return await SetSharedSavesAsync(profileId, false);
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
-            if (profile.WorldLoadRehearsalId is not null || profile.SeparateCopySourceProfileId is not null ||
-                profile.SeparateCopyBranchHash is not null || authority.HasState(profileId))
-                return new(false, "OwnerSharingRequired", "Change shared hosting on the original owner's PC. Keep every saved history.");
-            if (data.HasProtected(PlannedHandoffName(profileId)))
-                return new(false, "PlannedHandoffPending", "Finish or cancel the hosting move before changing shared hosting.");
-            if (SharedAuthorityBlocked(profileId, out var reason)) return new(false, "SharedWorldAuthorityBlocked", reason);
-            if (data.Recovery.LifecycleBlocked) return new(false, "DataRecoveryRequired", "Review this PC's recovery notice before enabling shared hosting.");
-            if (data.HasProtected(SetupRestorePendingName(profileId)))
-                return new(false, "SetupRestoreRecoveryRequired", "Finish the interrupted setup restore first.");
-            if (profile.Kind == GameKinds.Custom || !games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups)
-                return new(false, "SharingUnsupported", "Shared hosting needs a supported built-in game with backups.");
-            var next = System.Text.Json.JsonSerializer.Deserialize<HostSettings>(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(settings)) ??
-                throw new InvalidDataException("The current Host settings could not be copied.");
-            var changed = next.Profiles.Single(item => item.Id == profileId);
-            changed.Backups ??= new();
-            changed.Backups.Enabled = true;
-            changed.SharedSavesEnabled = true;
-            cancellationToken.ThrowIfCancellationRequested();
-            var saved = UpdateSettingsLocked(next);
-            return new(saved.Ok, saved.Code, saved.Ok ?
-                "Shared hosting is on. Backups after safe Stop are on too. Choose which friends can host; each friend still approves keeping a save." : saved.Message);
+            lock (SharedWorldMutationGate.For(data.RootPath))
+            {
+                var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+                if (profile is null) return new(false, "UnknownProfile", "Choose a saved server.");
+                if (profile.WorldLoadRehearsalId is not null || profile.SeparateCopySourceProfileId is not null ||
+                    profile.SeparateCopyBranchHash is not null || authority.HasState(profileId))
+                    return new(false, "OwnerSharingRequired", "Change shared hosting on the original owner's PC. Keep every saved history.");
+                if (data.HasProtected(PlannedHandoffName(profileId)))
+                    return new(false, "PlannedHandoffPending", "Finish or cancel the hosting move before changing shared hosting.");
+                if (enabled && SharedAuthorityBlocked(profileId, out var reason)) return new(false, "SharedWorldAuthorityBlocked", reason);
+                if (enabled && data.Recovery.LifecycleBlocked) return new(false, "DataRecoveryRequired", "Review this PC's recovery notice before enabling shared hosting.");
+                if (enabled && data.HasProtected(SetupRestorePendingName(profileId)))
+                    return new(false, "SetupRestoreRecoveryRequired", "Finish the interrupted setup restore first.");
+                if (enabled && (profile.Kind == GameKinds.Custom || !games.TryGet(profile.Kind, out var driver) || !driver.SupportsBackups))
+                    return new(false, "SharingUnsupported", "Shared hosting needs a supported built-in game with backups.");
+                if (enabled) RequireSimpleSharedHostingIdentity(profile);
+                var next = System.Text.Json.JsonSerializer.Deserialize<HostSettings>(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(settings)) ??
+                    throw new InvalidDataException("The current Host settings could not be copied.");
+                var changed = next.Profiles.Single(item => item.Id == profileId);
+                if (enabled)
+                {
+                    changed.Backups ??= new();
+                    changed.Backups.Enabled = true;
+                }
+                changed.SharedSavesEnabled = enabled;
+                cancellationToken.ThrowIfCancellationRequested();
+                // Durable fencing precedes both settings and pairing writes. Incomplete
+                // publication cannot keep serving an older roster as current authority.
+                pairing.RequireSharedRosterPublication(profileId);
+                var saved = UpdateSettingsLocked(next);
+                if (!saved.Ok) return new(false, saved.Code, saved.Message);
+                pairing.ReconcileSimpleSharedHosting(profileId);
+                var roster = PublishSimpleSharedHostingRosterUnderGate(profileId);
+                pairing.ConfirmSharedRosterPublished(profileId, roster);
+                return new(true, "SharedHostingSaved", enabled ?
+                    "Friends assigned to this server can receive, share and host its verified saves. Backups after safe Stop are on." :
+                    "Shared hosting is off. Friends can no longer receive, share or start hosting this server's saves.");
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or
+            InvalidDataException or System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or ArgumentException)
+        {
+            return new(false, "SharedHostingUnconfirmed",
+                "The shared hosting change needs review. New save sharing and hosting permissions stay blocked until its signed access is confirmed.");
         }
         finally { gate.Release(); }
+    }
+
+    internal async Task<SharedWorldRoster> PublishSimpleSharedHostingRosterAsync(Guid profileId)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            lock (SharedWorldMutationGate.For(data.RootPath))
+                return PublishSimpleSharedHostingRosterUnderGate(profileId);
+        }
+        finally { gate.Release(); }
+    }
+
+    private SharedWorldRoster PublishSimpleSharedHostingRosterUnderGate(Guid profileId)
+    {
+        var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
+            throw new InvalidDataException("Choose a saved server.");
+        if (profile.WorldLoadRehearsalId is not null || profile.SeparateCopySourceProfileId is not null ||
+            profile.SeparateCopyBranchHash is not null || authority.HasState(profileId) ||
+            data.HasProtected(PlannedHandoffName(profileId)) || SharedAuthorityBlocked(profileId, out _))
+            throw new InvalidDataException("Only the original owner can publish the server's current shared hosting choice.");
+        RequireSimpleSharedHostingIdentity(profile);
+        pairing.ReconcileSimpleSharedHosting(profileId);
+        return sharedWorlds.PublishRoster(profile, pairing.SharedRosterMembers(profileId), applyHostingPolicy: true);
+    }
+
+    private void RequireSimpleSharedHostingIdentity(ServerProfile profile)
+    {
+        var roster = sharedWorlds.ReadRoster(profile);
+        var root = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
+        if (roster is null && Directory.Exists(root) &&
+            Directory.EnumerateFileSystemEntries(root).Any(path => Path.GetFileName(path) != "roster-dirty"))
+            throw new InvalidDataException("The earlier sharing identity needs review. Keep its source and signed history.");
     }
 
     internal async Task InvalidateLocalHostingPreparationAsync(Guid sourceId, string branchHash,
@@ -141,7 +194,7 @@ public sealed partial class HostManager
             if (!games.TryGet(version.Game, out var driver))
                 return new(first, settings.CompanionPort, null, false);
             var reserved = new HashSet<int> { settings.CompanionPort };
-            foreach (var saved in settings.Profiles)
+            foreach (var saved in settings.Profiles.Where(saved => runs.Any(run => run.ProfileId == saved.Id)))
                 if (games.TryGet(saved.Kind, out var savedDriver))
                     foreach (var port in savedDriver.Ports(saved)) reserved.Add(port.Port);
             // A bounded search uses every port declared by the actual driver,

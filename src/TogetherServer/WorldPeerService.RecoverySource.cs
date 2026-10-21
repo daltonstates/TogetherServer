@@ -145,7 +145,7 @@ internal sealed partial class WorldPeerService
     // Callers may already hold refreshGate. Only the exact selected source vault
     // is locked here; no discovery, listener, game action or default selection occurs.
     internal async Task<WorldPeerRecoverySource> ResolveRecoverySourceAsync(string groupKey,
-        string? branchHash, CancellationToken cancellationToken)
+        string? branchHash, CancellationToken cancellationToken, string? exactVersionHash = null)
     {
         var group = Find(groupKey) ?? throw new InvalidDataException("Choose a known shared world.");
         if (!await RecoveryAllowedAsync(group, cancellationToken))
@@ -156,7 +156,14 @@ internal sealed partial class WorldPeerService
             !item.Descriptor.TestOnly && item.Descriptor.TestArtifact is null && AuthorizedDescriptor(group, item.Descriptor)).ToArray();
         LocalSave? selected;
         HashSet<string>? reviewedHeads = null;
-        if (branchHash is null)
+        if (exactVersionHash is not null)
+        {
+            if (!SharedWorldPeerTrust.ValidHash(exactVersionHash) || branchHash is null)
+                throw new InvalidDataException("Choose an exact verified source save and history.");
+            selected = local.FirstOrDefault(item => item.Descriptor.Version.VersionHash == exactVersionHash &&
+                (item.Descriptor.Branch is null || item.Descriptor.Branch.BranchHash == branchHash));
+        }
+        else if (branchHash is null)
         {
             // Preserve the ordinary default-source behavior. An explicit history
             // selection never falls back to this branch when its bytes are absent.
@@ -218,7 +225,7 @@ internal sealed partial class WorldPeerService
             }
             var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
             var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
-            if (!await WorldPeerFileTransfer.StageHistoryAsync(group.Root, vault, version, anchor,
+            if (!await WorldPeerFileTransfer.StageDescriptorHistoryAsync(group.Root, vault, descriptor, records,
                 async (hash, number, _) => anchor?.VersionHash == hash && anchor.Number == number ? anchor :
                     selected.Vault is not null ? FriendLink.ReadReceivedManifest(selected.Vault, number, hash) :
                         await manager.PeerPublishedVersionAsync(group.Root, hash, number), cancellationToken))

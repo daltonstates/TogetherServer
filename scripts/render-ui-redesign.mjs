@@ -2,7 +2,7 @@
 // The exact --list invocation emits pure inventory and exits before output writes or capture setup.
 // Keep this guard before imports, filesystem reads, servers, or browser side effects.
 const args = process.argv.slice(2);
-const listOnly = args.length === 1 && args[0] === '--list';
+const listOnly = args.includes('--list') && args.every(arg => ['--list', '--simple-shared-hosting-only'].includes(arg));
 if (!listOnly && (!args.includes('--allow-isolated-browser-tests') ||
     args.indexOf('--hosted-runner') < 0 || args[args.indexOf('--hosted-runner') + 1] !== 'github-actions' ||
     process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_OS !== 'Windows' ||
@@ -20,6 +20,7 @@ const { createHash } = await import('node:crypto');
 const { createFixtureState, routeFixture, fixtureNow, fixtureIds } = await import('./ui-redesign-fixtures.mjs');
 const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.mjs');
 const { extraCases: accessReviewCases } = await import('./ui-polish-access-review.mjs');
+const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'local-data/ui-redesign-visual-review');
 if (!listOnly) await mkdir(output, { recursive: true });
@@ -323,17 +324,18 @@ const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups',
   'dialog-protection', 'dialog-access-access-time', 'host-live-save-acceptance', 'join-peers-conflict',
   ...extraReviewCases.filter(testCase => /deadline|owner-recovery|restore|setup|live-.+-confirmation|^move-hosting-/.test(testCase.id)).map(testCase => testCase.id)]);
 const setupPolishOnly = args.includes('--setup-polish-only');
+const simpleHostingOnly = args.includes('--simple-shared-hosting-only');
 const setupPolishVariants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100, reducedMotion: 'no-preference' },
   { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150, reducedMotion: 'reduce' },
   { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100, reducedMotion: 'reduce' }
 ];
-const reviewCases = setupPolishOnly ? setupPolishCases : args.includes('--move-hosting-only')
+const reviewCases = simpleHostingOnly ? simpleHostingCases : setupPolishOnly ? setupPolishCases : args.includes('--move-hosting-only')
   ? [...cases, ...dialogs].filter(testCase => testCase.id.startsWith('move-hosting-'))
   : args.includes('--sidebar-only') ? [...cases, ...dialogs].filter(testCase => testCase.sidebarReview ||
     ['host-files', 'host-logs', 'host-sessions', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates', 'dialog-protection'].includes(testCase.id))
   : [...cases, ...dialogs];
-const plans = setupPolishOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
+const plans = simpleHostingOnly ? reviewCases.flatMap(testCase => simpleHostingVariants.map(variant => ({ testCase, variant }))) : setupPolishOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) || testCase.sidebarReview ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
   ...(testCase.sidebarReview ? [
@@ -343,9 +345,9 @@ const plans = setupPolishOnly ? reviewCases.flatMap(testCase => setupPolishVaria
   ] : []),
   ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') || testCase.sidebarReview ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
-manifest.coverage = { scope: setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
+manifest.coverage = { scope: simpleHostingOnly ? 'simple-shared-hosting' : setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
   mainPages: reviewCases.filter(testCase => !isDialogReview(testCase)).length,
-  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (setupPolishOnly ? setupPolishVariants : variants).map(item => item.id),
+  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (simpleHostingOnly ? simpleHostingVariants : setupPolishOnly ? setupPolishVariants : variants).map(item => item.id),
   text150Pages: reviewCases.filter(testCase => largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
 manifest.acceptanceBoundaries = [
   'Finite source inventory of pages, reachable dialogs, disclosures and representative states; not every combinatorial data value.',
@@ -1371,6 +1373,7 @@ try {
         }
       }
       await setupPolishEvidence(page, testCase, variant, record);
+      await assertSimpleHostingUi(page, testCase, record, state);
       record.screenBounds = await screen.boundingBox();
       if (!record.screenBounds || record.screenBounds.y >= variant.viewport.height || record.screenBounds.y + record.screenBounds.height <= 0) {
         throw new Error('The named screen is outside the capture viewport');

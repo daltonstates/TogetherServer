@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { FriendSharedWorlds, HostSharedSaves, parseFriendSharedWorldStatus,
-  parseHostSharedWorldStatus, parseLiveOrphanReview, normalizedDirectIpHttpsEndpoint,
+import { FriendSharedWorlds, parseFriendSharedWorldStatus,
+  parseHostSharedWorldStatus, parseLiveOrphanReview,
   parseRecoveryOffer, parseSharingView } from './SharedWorldControls'
 import type { Device } from './contracts'
 
@@ -18,26 +18,9 @@ function reply(value: unknown): Response {
 const noRecovery = { state: 'NoOffer', votes: 0, required: 0, version: null, versionHash: null,
   candidateAddress: null, candidateDeviceId: null, majorityReached: false, separateCopies: 0,
   proposalHash: null, authorityHeadHash: null }
-const noHandoff = { pending: false, code: 'NoPendingHandoff', message: 'No handoff is pending.',
-  successorDeviceId: null, finalVersion: null, receiptConfirmed: false, canComplete: false, canCancel: false }
 const offer = { proposal: { profileId: profile, candidateAddress: 'https://192.0.2.10:5131', candidatePublicKey: 'public-key' },
   version: { number: 3, versionHash: 'A'.repeat(64), captureKind: 'PostStopBackup' },
   candidateReceipt: { deviceId: device.id }, signed: 'signed-by-candidate' }
-
-async function selectHostSharingPane(name: 'People' | 'Save sharing' | 'History & recovery') {
-  const dialog = screen.getByRole('dialog', { name: 'Manage sharing' })
-  const button = within(dialog).getByRole('button', { name })
-  await waitFor(() => expect(button).toBeEnabled())
-  fireEvent.click(button)
-  expect(button).toHaveAttribute('aria-current', 'page')
-}
-
-function openHostSharingDetails(name: string) {
-  const dialog = screen.getByRole('dialog', { name: 'Manage sharing' })
-  const summary = within(dialog).getByText(name, { selector: 'summary' })
-  fireEvent.click(summary)
-  expect(summary.closest('details')).toHaveAttribute('open')
-}
 
 describe('Shared saves controls', () => {
   it('waits for this PC\'s saved consent before enabling the receiving choice', async () => {
@@ -97,44 +80,6 @@ describe('Shared saves controls', () => {
     await waitFor(() => expect(calls).toContain(`/api/local/friend/${profile}/shared-world/recovery/vote`))
     expect(screen.getByText(/Changes since the Host's last completed copy may be missing/)).toBeInTheDocument()
     expect(calls).toHaveLength(2)
-  })
-
-  it('requires explicit Host enablement and a separate per-PC grant', async () => {
-    const calls: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      calls.push(`${init?.method ?? 'GET'} ${url}`)
-      if (url.endsWith('/governance')) return reply({ revision: calls.length, ownerOverride: true })
-      if (url.endsWith('/shared-world') && !init?.method)
-        return reply({ enabled: calls.some(call => call.startsWith('PUT')), latest: null, error: null,
-          liveSave: { available: false, message: 'Share while running is unavailable for this game. Use its hash-verified post-Stop file copy. Game load has not been checked.' } })
-      return reply({ ok: true, code: 'Saved', message: 'Saved' })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    const sharing = await screen.findByLabelText('Allow shared hosting')
-    expect(sharing).not.toBeChecked()
-    fireEvent.click(sharing)
-    await waitFor(() => expect(calls).toContain(`PUT /api/local/profiles/${profile}/shared-world/hosting`))
-    await selectHostSharingPane('People')
-    openHostSharingDetails('Advanced permissions for Friend PC')
-    const grant = await screen.findByRole('checkbox', { name: 'Receive for Friend PC' })
-    fireEvent.click(grant)
-    await waitFor(() => expect(calls).toContain(
-      `PUT /api/local/devices/${device.id}/shared-world/${profile}/grants`))
-    expect(screen.getByLabelText('Can host this save for Friend PC')).not.toBeChecked()
-    expect(screen.getByRole('checkbox', { name: 'Recovery voter for Friend PC' })).not.toBeChecked()
-    expect(screen.getByRole('checkbox', { name: 'Manage sharing for Friend PC' })).not.toBeChecked()
-    await selectHostSharingPane('Save sharing')
-    openHostSharingDetails('How save sharing works')
-    expect(screen.getByText(/Sharing while the game runs needs a passed installation test/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Save and share now' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Review requirements' })).not.toBeInTheDocument()
-    openHostSharingDetails('Advanced: game save proof and review')
-    expect(await screen.findByRole('button', { name: 'Review requirements' })).toBeEnabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Review requirements' }))
-    expect(screen.getByText(/hosting never takes over automatically/i)).toBeInTheDocument()
-    expect(screen.getByText(/Use its hash-verified post-Stop file copy/)).toBeInTheDocument()
   })
 
   it('keeps receiver consent off after warning dismissal until this PC opts in and shows version lag', async () => {
@@ -357,40 +302,6 @@ describe('Shared saves controls', () => {
       .toHaveAttribute('role', 'alert')
   })
 
-  it('shows only the confirmed copy count returned for the latest version', async () => {
-    let captureKind: string | undefined = 'PostStopBackup'
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
-      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
-        reply({ enabled: true, error: null, confirmedCopies: 2,
-          latest: { number: 4, versionHash: 'A'.repeat(64),
-            createdUtc: '2026-10-03T12:00:00Z', captureKind } })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    await screen.findByRole('region', { name: 'Shared saves' })
-    expect(await screen.findByText(/Copied to 2 PCs.*latest save copied after Stop 4/, { selector: 'p' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Shared saves' })).toHaveTextContent('Copied to 2 PCs')
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('Save sharing')
-    openHostSharingDetails('How save sharing works')
-    expect(screen.getByText(/File checks do not prove the game can load or play/)).toBeInTheDocument()
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    expect(screen.getByText(/They do not show who is online now or prove the game can load it/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
-    captureKind = 'LiveSave'
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
-    expect(await screen.findByText(/Copied to 2 PCs.*latest save copied while running 4/, { selector: 'p' })).toBeInTheDocument()
-    captureKind = undefined
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
-    expect(await screen.findByText(/Copied to 2 PCs.*latest verified save copy 4/, { selector: 'p' })).toBeInTheDocument()
-    expect(screen.queryByText(/latest save copied after Stop 4/)).not.toBeInTheDocument()
-    expect(() => parseHostSharedWorldStatus({ enabled: true, latest: null,
-      error: null, confirmedCopies: -1 })).toThrow()
-    expect(() => parseHostSharedWorldStatus({ enabled: true, error: null,
-      latest: { number: 4, versionHash: 'A'.repeat(64), createdUtc: '2026-10-03T12:00:00Z',
-        captureKind: 'Unknown' } })).toThrow('Save capture kind is invalid.')
-  })
-
   it('shows manual Start readiness only after the restored setup checks confirm it', async () => {
     let ready = false
     let conflict = false
@@ -446,27 +357,6 @@ describe('Shared saves controls', () => {
       .toBeInTheDocument()
   })
 
-  it('copies only a normalized direct IP address for the current shared Host', async () => {
-    expect(normalizedDirectIpHttpsEndpoint('https://192.0.2.10:5131/')).toBe('https://192.0.2.10:5131')
-    expect(normalizedDirectIpHttpsEndpoint('https://[2001:db8::1]:5131/')).toBe('https://[2001:db8::1]:5131')
-    for (const invalid of ['https://example.test:5131', 'http://192.0.2.10:5131',
-      'https://127.0.0.1:5131', 'https://192.0.2.10:5131/path',
-      'https://user@192.0.2.10:5131'])
-      expect(normalizedDirectIpHttpsEndpoint(invalid)).toBeNull()
-    const writeText = vi.fn(async () => {})
-    vi.stubGlobal('navigator', { clipboard: { writeText } })
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
-      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
-        reply({ enabled: true, latest: null, error: null })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      currentAddress="https://192.0.2.10:5131/" onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('Save sharing')
-    fireEvent.click(await screen.findByRole('button', { name: 'Share current address' }))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://192.0.2.10:5131'))
-    expect(screen.getByText(/Friends will check the saved Host identity/)).toBeInTheDocument()
-  })
-
   it('opens the saved identity recovery flow for a changed Host address', async () => {
     const openRecovery = vi.fn()
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -480,137 +370,6 @@ describe('Shared saves controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Host address changed?' }))
     expect(openRecovery).toHaveBeenCalledOnce()
     expect(fetch.mock.calls.every(([, init]) => init?.method !== 'PUT')).toBe(true)
-  })
-
-  it('sends owner override changes through the signed governance route', async () => {
-    const bodies: unknown[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/governance')) {
-        if (init?.method === 'PUT') bodies.push(JSON.parse(String(init.body)))
-        return reply({ revision: init?.method === 'PUT' ? 2 : 1,
-          ownerOverride: init?.method !== 'PUT' })
-      }
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    openHostSharingDetails('Owner decision rules')
-    const toggle = await screen.findByRole('checkbox', { name: 'Owner has final say on save conflicts' })
-    await waitFor(() => expect(toggle).toBeEnabled())
-    expect(screen.getByText("Owner's final say: On.")).toBeInTheDocument()
-    fireEvent.click(toggle)
-    await waitFor(() => expect(bodies).toEqual([{ ownerOverride: false }]))
-    expect(toggle).not.toBeChecked()
-    expect(screen.getByText("Owner's final say: Off.")).toBeInTheDocument()
-  })
-
-  it('shows successor sharing permissions as read only', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/governance')
-      ? reply({ revision: 3, ownerOverride: true })
-      : reply({ enabled: true, latest: null, error: null, canManageSharing: false })))
-    render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    expect(await screen.findByText(/Change shared hosting on the original owner's PC/)).toBeInTheDocument()
-    expect(screen.getByLabelText('Allow shared hosting')).toBeDisabled()
-    openHostSharingDetails('Owner decision rules')
-    expect(screen.getByRole('checkbox', { name: 'Owner has final say on save conflicts' })).toBeDisabled()
-    expect(screen.getByRole('checkbox', { name: 'Can host this save for Friend PC' })).toBeDisabled()
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    expect(screen.queryByRole('button', { name: 'Retry signed permissions' })).not.toBeInTheDocument()
-  })
-
-  it('lets the owner review a changed source without changing the override choice', async () => {
-    const bodies: unknown[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/governance')) {
-        if (init?.method === 'PUT') bodies.push(JSON.parse(String(init.body)))
-        return reply({ revision: 4, ownerOverride: false })
-      }
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
-    await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
-    await selectHostSharingPane('People')
-    openHostSharingDetails('Owner decision rules')
-    expect(screen.getByRole('checkbox', { name: 'Owner has final say on save conflicts' })).not.toBeChecked()
-  })
-
-  it('hides a locally revoked PC and its count while a signed roster update is pending', async () => {
-    const grants = { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false }
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/governance') ?
-      reply({ revision: 7, ownerOverride: true, members: [{ deviceId: device.id, grants, revoked: false, accessExpiresUtc: null }] }) :
-      reply({ enabled: true, latest: null, error: null })))
-    render(<HostSharedSaves profileId={profile} devices={[{ ...device, revoked: true }]}
-      rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    openHostSharingDetails('Owner decision rules')
-    expect(await screen.findByText(/Verified sharing list: 0 active PCs, revision 7/)).toBeInTheDocument()
-    expect(screen.queryByLabelText('Receive for Friend PC')).not.toBeInTheDocument()
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    openHostSharingDetails('Signed member records')
-    expect(screen.queryByText(new RegExp(device.id))).not.toBeInTheDocument()
-  })
-
-  it('uses the current signed roster before the owner changes one grant', async () => {
-    const bodies: unknown[] = []
-    const signedGrants = { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false }
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/governance')) return reply({ revision: 7, ownerOverride: true,
-        members: [{ deviceId: device.id, grants: signedGrants, revoked: false, accessExpiresUtc: null }] })
-      if (url.endsWith('/grants')) {
-        bodies.push(JSON.parse(String(init?.body)))
-        return reply({ ok: true, code: 'Saved', message: 'Saved' })
-      }
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[{ ...device, sharedWorldGrants: {
-      [profile]: { receive: false, eligibleHost: false, recoveryVoter: false, manageSharing: false }
-    } }]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    openHostSharingDetails('Owner decision rules')
-    expect(await screen.findByText(/Verified sharing list: 1 active PCs, revision 7/)).toBeInTheDocument()
-    expect(screen.getByRole('checkbox', { name: 'Can host this save for Friend PC' })).toBeChecked()
-    openHostSharingDetails('Advanced permissions for Friend PC')
-    expect(screen.getByRole('checkbox', { name: 'Receive for Friend PC' })).toBeChecked()
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Manage sharing for Friend PC' }))
-    await waitFor(() => expect(bodies).toEqual([{ grants: {
-      receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: true, reshare: false
-    } }]))
-  })
-
-  it('keeps forwarding off for older rosters and changes only its owner-controlled grant', async () => {
-    let forwarding: boolean | undefined
-    const bodies: unknown[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/governance')) return reply({ revision: 7, ownerOverride: true,
-        members: [{ deviceId: device.id, grants: { receive: true, eligibleHost: false,
-          recoveryVoter: true, manageSharing: false, ...(forwarding === undefined ? {} : { reshare: forwarding }) },
-          revoked: false, accessExpiresUtc: null }] })
-      if (url.endsWith('/grants')) {
-        const body = JSON.parse(String(init?.body)) as { grants: { reshare: boolean } }
-        bodies.push(body); forwarding = body.grants.reshare
-        return reply({ ok: true, code: 'Saved', message: 'Forwarding grant saved.' })
-      }
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[device]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    openHostSharingDetails('Advanced permissions for Friend PC')
-    const grant = await screen.findByRole('checkbox', { name: 'Forward verified saves for Friend PC' })
-    expect(grant).not.toBeChecked()
-    fireEvent.click(grant)
-    await waitFor(() => expect(grant).toBeChecked())
-    expect(bodies).toEqual([{ grants: { receive: true, eligibleHost: false, recoveryVoter: true, manageSharing: false, reshare: true } }])
-    expect(screen.getByLabelText('Can host this save for Friend PC')).not.toBeChecked()
   })
 
   it('lets a Manage sharing Friend edit another PC without Receive consent', async () => {
@@ -679,24 +438,6 @@ describe('Shared saves controls', () => {
         revoked: false, accessExpiresUtc: null }] })).toThrow()
   })
 
-  it('keeps source review available after a settings change disables sharing', async () => {
-    const bodies: unknown[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/governance')) {
-        if (init?.method === 'PUT') bodies.push(JSON.parse(String(init.body)))
-        return reply({ revision: 5, ownerOverride: true })
-      }
-      return reply({ enabled: false, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    fireEvent.click(await screen.findByRole('button', { name: 'Review changed world source' }))
-    await waitFor(() => expect(bodies).toEqual([{ reviewSourceChange: true }]))
-  })
-
   it('explains how to review a changed Host source without comparing group version numbers', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => reply({ consented: true, hostVersion: 1,
       thisPcVersion: 8, state: 'Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here.',
@@ -705,30 +446,6 @@ describe('Shared saves controls', () => {
     await screen.findByRole('region', { name: 'Shared worlds' })
     expect(await screen.findByRole('alert')).toHaveTextContent('Earlier verified copies stay here')
     expect(screen.queryByText(/version\(s\) behind/)).not.toBeInTheDocument()
-  })
-
-  it('requests an eligible paired PC without collecting an HTTPS address', async () => {
-    const requests: { url: string; body?: unknown }[] = []
-    const successor = { ...device, sharedWorldKeyEnrolled: true,
-      sharedWorldGrants: { [profile]: { receive: true, eligibleHost: true, recoveryVoter: false, manageSharing: false } } }
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === 'POST') {
-        requests.push({ url, body: init.body ? JSON.parse(String(init.body)) : undefined })
-        return reply({ ok: true, code: 'WaitingForRecipient', message: 'Request sent.' })
-      }
-      if (url.endsWith('/governance')) return reply({ revision: 1, ownerOverride: true })
-      if (url.endsWith('/handoff')) return reply(noHandoff)
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[successor]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Move hosting' }))
-    const send = await screen.findByRole('button', { name: 'Send hosting request' })
-    expect(send).toBeDisabled()
-    fireEvent.change(screen.getByLabelText('Next host PC'), { target: { value: device.id } })
-    expect(screen.queryByLabelText("Next PC's HTTPS address and port")).not.toBeInTheDocument()
-    fireEvent.click(send)
-    await waitFor(() => expect(requests).toEqual([{ url: `/api/local/profiles/${profile}/shared-world/handoff/request`,
-      body: { successorDeviceId: device.id } }]))
   })
 
   it('stages only a signed Friend offer and keeps hosting setup pending', async () => {
@@ -748,147 +465,6 @@ describe('Shared saves controls', () => {
     await waitFor(() => expect(calls).toContain(`POST /api/local/friend/${profile}/shared-world/handoff/stage`))
     expect(await screen.findByText(/Server setup, sharing identity and connections still need checking/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
-  })
-
-  it('restores pending receipt state after reopening and keeps completion gated', async () => {
-    let receipt = false
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.endsWith('/governance')) return reply({ revision: 1, ownerOverride: true })
-      if (url.endsWith('/handoff')) return reply({ ...noHandoff, pending: true,
-        code: receipt ? 'ReadyToComplete' : 'WaitingForSuccessorCopy',
-        message: receipt ? 'The exact copy is confirmed.' : 'The successor has not confirmed the exact final save yet.',
-        successorDeviceId: device.id, finalVersion: 7, receiptConfirmed: receipt,
-        canComplete: receipt, canCancel: true })
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: /^(Move hosting|Continue transfer|Review transfer)$/ }))
-    expect((await screen.findAllByText(/successor has not confirmed/))[0]).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Finish handoff' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Close Move hosting' }))
-    receipt = true
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
-    await screen.findByText('The next PC confirmed the final save.')
-    fireEvent.click(screen.getByRole('button', { name: 'Continue transfer' }))
-    expect(await screen.findByText('The exact copy is confirmed.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Finish handoff' })).toBeEnabled()
-  })
-
-  it('does not infer a signed fence from NoPendingHandoff after reopen', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => reply(url.endsWith('/handoff') ? noHandoff :
-      url.endsWith('/governance') ? { revision: 1, ownerOverride: true } :
-        { enabled: true, latest: null, error: null })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Move hosting' }))
-    expect(await screen.findByText('Who should host next?')).toBeInTheDocument()
-    expect(screen.queryByText(/Handoff signed/)).not.toBeInTheDocument()
-  })
-
-  it('shows the verified old-Host fence and labels the retained save as this PC\'s copy', async () => {
-    const head = { groupId: profile, epoch: 2, recordHash: 'B'.repeat(64),
-      versionHash: 'C'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
-      hostAddress: 'https://192.0.2.10:5131' }
-    let state = 'NoTakeover'
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
-      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
-        reply({ enabled: true, canManageSharing: state === 'NoTakeover', confirmedCopies: 1,
-          latest: { number: 3, versionHash: 'A'.repeat(64), createdUtc: '2026-10-03T12:00:00Z' },
-          error: null, authority: { state, message: state === 'OldHostFenced'
-            ? 'Hosting moved to another PC. This PC cannot start or share this world.' :
-              'No takeover is recorded for this world.',
-          head: state === 'OldHostFenced' ? head : null, competingHeads: null,
-          exactManagedProcessRunning: state === 'OldHostFenced' } })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      currentAddress="https://192.0.2.10:5131" onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: /^(Move hosting|Continue transfer|Review transfer)$/ }))
-    await screen.findByText('Who should host next?')
-    fireEvent.click(screen.getByRole('button', { name: 'Close Move hosting' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
-    state = 'OldHostFenced'
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
-    expect(await screen.findByRole('heading', { name: 'Hosting moved to another PC' })).toBeInTheDocument()
-    expect(screen.getByText(/Preserved version 3 on this PC/)).toBeInTheDocument()
-    expect(screen.queryByText(/latest saved version 3/)).not.toBeInTheDocument()
-    expect(screen.getByText(/game server on this PC is still running/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    expect(screen.getByLabelText('Allow shared hosting')).toBeDisabled()
-    await selectHostSharingPane('Save sharing')
-    expect(screen.queryByRole('button', { name: 'Share current address' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
-    await selectHostSharingPane('History & recovery')
-    const technical = screen.getByText('Transfer confirmations and checks').closest('details')!
-    expect(technical).not.toHaveAttribute('open')
-    openHostSharingDetails('Transfer confirmations and checks')
-    openHostSharingDetails('Verified hosting history')
-    expect(within(technical).getByText(/Verified head:/)).toBeVisible()
-    expect(technical).toHaveTextContent(head.hostAddress)
-    expect(technical).toHaveTextContent(head.versionHash)
-  })
-
-  it('reserves latest for the verified current local Host', async () => {
-    const head = { groupId: profile, epoch: 2, recordHash: 'B'.repeat(64),
-      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
-      hostAddress: 'https://192.0.2.10:5131' }
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
-      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
-        reply({ enabled: true, latest: { number: 4, versionHash: head.versionHash,
-          createdUtc: '2026-10-03T12:00:00Z', captureKind: 'PostStopBackup' }, confirmedCopies: 2,
-          canManageSharing: false, error: null, authority: { state: 'ThisPcHost',
-            message: 'This PC holds hosting authority for this world.', head,
-            competingHeads: null, exactManagedProcessRunning: false } })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    await screen.findByRole('region', { name: 'Shared saves' })
-    expect(await screen.findByText(/Copied to 2 PCs · latest save copied after Stop 4/, { selector: 'p' })).toBeInTheDocument()
-    expect(screen.getByText('This PC is the approved Host.')).toBeInTheDocument()
-    expect(screen.queryByText(/Preserved version/)).not.toBeInTheDocument()
-  })
-
-  it('keeps competing verified heads and damaged history in review', async () => {
-    const head = { groupId: profile, epoch: 1, recordHash: 'B'.repeat(64),
-      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
-      hostAddress: 'https://192.0.2.10:5131' }
-    let state: 'CompetingHistories' | 'ReviewRequired' = 'CompetingHistories'
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
-      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) :
-        reply({ enabled: true, latest: null, canManageSharing: false, error: null,
-          authority: { state, message: 'Keep this world offline.', head: null,
-            competingHeads: state === 'CompetingHistories' ? [head, { ...head, recordHash: 'C'.repeat(64) }] : null,
-            exactManagedProcessRunning: false } })))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    expect(await screen.findByText('Conflicting hosting decisions need review')).toBeInTheDocument()
-    expect(screen.getByText(/Preserved local copy on this PC/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    expect(screen.getByLabelText('Allow shared hosting')).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
-    state = 'ReviewRequired'
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh shared save' }))
-    expect(await screen.findByText('Hosting decision needs review')).toBeInTheDocument()
-    expect(screen.queryByText('Ready to host')).not.toBeInTheDocument()
-  })
-
-  it('rechecks authority while the Host panel stays open', async () => {
-    let reads = 0
-    const head = { groupId: profile, epoch: 1, recordHash: 'B'.repeat(64),
-      versionHash: 'A'.repeat(64), hostDeviceId: device.id, hostPublicKey: 'hosting-key',
-      hostAddress: 'https://192.0.2.10:5131' }
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/handoff') ? reply(noHandoff) :
-      url.endsWith('/governance') ? reply({ revision: 1, ownerOverride: true }) : (() => {
-        reads++
-        const fenced = reads > 2
-        return reply({ enabled: true, latest: null, canManageSharing: !fenced, error: null,
-          authority: { state: fenced ? 'OldHostFenced' : 'NoTakeover',
-            message: fenced ? 'Hosting moved to another PC.' : 'No takeover is recorded.',
-            head: fenced ? head : null, competingHeads: null, exactManagedProcessRunning: false } })
-      })()))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await screen.findByText(/Review the hosting decision before changing sharing/, {}, { timeout: 4000 })
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
-    expect(await screen.findByRole('heading', { name: 'Hosting moved to another PC' },
-      { timeout: 4000 })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Manage sharing' }))
-    expect(screen.getByLabelText('Allow shared hosting')).toBeDisabled()
   })
 
   it('restores an armed recovery offer, rejects malformed code, and submits the reviewed vote', async () => {
@@ -1144,21 +720,6 @@ describe('Shared saves controls', () => {
       `POST /api/local/friend/${profile}/shared-world/resolution/vote/${'C'.repeat(64)}`))
   })
 
-  it('keeps owner resolution approval disabled when the signed roster turns it off', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.endsWith('/governance')) return reply({ revision: 3, ownerOverride: false })
-      if (url.endsWith('/resolution/offers')) return reply([{
-        proposalHash: 'A'.repeat(64), selectedVersion: 2, competingBranches: 2 }])
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('History & recovery')
-    fireEvent.click(await screen.findByRole('button', { name: 'Check owner decisions' }))
-    expect(await screen.findByRole('button', { name: 'Approve selected copy' })).toBeDisabled()
-  })
-
   it('accepts only a consistent exact-hash interrupted-copy status', () => {
     const versionHash = 'A'.repeat(64)
     expect(parseLiveOrphanReview({ code: 'Verified', versionHash,
@@ -1171,83 +732,5 @@ describe('Shared saves controls', () => {
       { code: 'ReviewRequired', versionHash: null, message: '' },
       { code: 'Verified', versionHash, message: 'Extra field', path: 'C:/world' }
     ]) expect(() => parseLiveOrphanReview(invalid)).toThrow()
-  })
-
-  it('shows only a verified copy under Technical details and refreshes after quarantine', async () => {
-    const versionHash = 'A'.repeat(64)
-    let quarantined = false
-    const posts: unknown[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/live-orphan/quarantine')) {
-        posts.push(JSON.parse(String(init?.body)))
-        quarantined = true
-        return reply({ ok: true, code: 'LiveSaveOrphanQuarantined',
-          message: 'The signed unpublished file copy was preserved for review.' })
-      }
-      if (url.endsWith('/live-orphan')) return reply(quarantined ?
-        { code: 'None', versionHash: null, message: 'No interrupted live file copy needs review.' } :
-        { code: 'Verified', versionHash, message: 'A signed interrupted live file copy is verified.' })
-      if (url.endsWith('/shared-world/handoff')) return reply(noHandoff)
-      if (url.endsWith('/shared-world/governance')) return reply(null)
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('History & recovery')
-    expect(screen.queryByRole('button', { name: 'Set aside for review' })).not.toBeInTheDocument()
-    openHostSharingDetails('Transfer confirmations and checks')
-    expect(await screen.findByText(versionHash)).toBeInTheDocument()
-    expect(screen.getByText(/Its signed files are kept/)).toBeInTheDocument()
-    expect(screen.getByText(/It will not be shared or used for recovery/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Set aside for review' }))
-    await waitFor(() => expect(posts).toEqual([{ versionHash }]))
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Set aside for review' })).not.toBeInTheDocument())
-    expect(screen.getByText('No interrupted live file copy needs review.')).toBeInTheDocument()
-  })
-
-  it('offers no quarantine action for an unverified copy and shows the review warning', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (url.endsWith('/live-orphan')) return reply({ code: 'ReviewRequired', versionHash: null,
-        message: 'An interrupted file copy could not be verified. Keep sharing blocked.' })
-      if (url.endsWith('/shared-world/handoff')) return reply(noHandoff)
-      if (url.endsWith('/shared-world/governance')) return reply(null)
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    expect(await screen.findByText(/An interrupted file copy could not be verified/)).toHaveAttribute('role', 'alert')
-    expect(screen.queryByRole('button', { name: 'Set aside for review' })).not.toBeInTheDocument()
-  })
-
-  it('keeps an action error visible until the owner refreshes the review', async () => {
-    const versionHash = 'B'.repeat(64)
-    let cleared = false
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/live-orphan/quarantine') && init?.method === 'POST') return reply({
-        ok: false, code: 'LiveSaveOrphanQuarantineDenied',
-        message: 'The interrupted file copy could not be quarantined safely.' })
-      if (url.endsWith('/live-orphan')) return reply(cleared ?
-        { code: 'None', versionHash: null, message: 'No interrupted live file copy needs review.' } :
-        { code: 'Verified', versionHash, message: 'A signed interrupted live file copy is verified.' })
-      if (url.endsWith('/shared-world/handoff')) return reply(noHandoff)
-      if (url.endsWith('/shared-world/governance')) return reply(null)
-      return reply({ enabled: true, latest: null, error: null })
-    }))
-    render(<HostSharedSaves profileId={profile} devices={[]} rollingBackupEnabled
-      onGrantChanged={async () => {}} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Manage sharing' }))
-    await selectHostSharingPane('History & recovery')
-    openHostSharingDetails('Transfer confirmations and checks')
-    fireEvent.click(await screen.findByRole('button', { name: 'Set aside for review' }))
-    expect(await screen.findByText('The interrupted file copy could not be quarantined safely.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Set aside for review' })).toBeEnabled()
-    cleared = true
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh interrupted copy' }))
-    expect(await screen.findByText('No interrupted live file copy needs review.')).toBeInTheDocument()
-    expect(screen.queryByText('The interrupted file copy could not be quarantined safely.')).not.toBeInTheDocument()
   })
 })
