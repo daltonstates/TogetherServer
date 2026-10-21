@@ -292,37 +292,45 @@ internal static partial class CoreRemoteJourney
                     var devices = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
                     LabRequire(devices.All(device => !device.CanViewPassword &&
                         (device.SaveReceiveProfileIds?.Count ?? 0) == 0 &&
-                        !(device.SharedWorldGrants?.Values.Any(grants => grants.Receive || grants.EligibleHost) ?? false)), "GrantsDefaultedOn");
+                        !(device.SharedWorldGrants?.Values.Any(grants => grants.Receive || grants.EligibleHost || grants.Reshare ||
+                            grants.RecoveryVoter || grants.ManageSharing) ?? false)), "GrantsDefaultedOn");
                     LabRequire((await PutAsync<object, SharedWorldResult>(owner,
                         $"/api/local/profiles/{profile.Id}/shared-world/hosting", new { enabled = true })).Ok, "OwnerSharingRejected");
+                    var initialRoster = await PairingLabGetAsync<SharedWorldRoster>(owner,
+                        $"/api/local/profiles/{profile.Id}/shared-world/governance");
+                    LabRequire(SharedWorldRosterTrust.Verify(initialRoster), "InitialSignedRosterRequired");
+                    groupKey = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId).GroupKey;
                     var clients = new[] { (Id: deviceA, Client: first), (Id: deviceB, Client: second) };
                     foreach (var pc in clients)
                     {
-                        LabRequire((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                            $"/api/local/devices/{pc.Id}/shared-world/{profile.Id}", new(true))).Ok, "ReceiveGrantRejected");
-                        var before = await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client, $"/api/local/friend/{profile.Id}/shared-world");
-                        LabRequire(!before.Consented, "RemoteGrantImpliedLocalConsent");
-                        LabRequire((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(pc.Client,
-                            $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok, "LocalConsentRejected");
-                        await PairingLabWaitAsync(async () =>
-                        {
-                            _ = await PostAsync<object, ReceivedSharedWorldResult>(pc.Client,
-                                $"/api/local/friend/{profile.Id}/shared-world/check", new { });
-                            using var response = await owner.GetAsync($"/api/local/profiles/{profile.Id}/shared-world/governance");
-                            if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return false;
-                            response.EnsureSuccessStatusCode();
-                            var roster = await response.Content.ReadFromJsonAsync<SharedWorldRoster>(Json);
-                            return roster?.Members.Any(member => member.DeviceId == pc.Id && !string.IsNullOrWhiteSpace(member.PublicKey)) == true;
-                        }, "SigningEnrollmentNotObserved");
+                        // Ordinary peer refresh strictly enrolls this identity;
+                        // the server choice supplies all three save permissions.
+                        await SyncPeersAsync(pc.Client);
+                        var enrolledRoster = await PairingLabGetAsync<SharedWorldRoster>(owner,
+                            $"/api/local/profiles/{profile.Id}/shared-world/governance");
+                        LabRequire(SharedWorldRosterTrust.Verify(enrolledRoster) && enrolledRoster.Members.Any(member =>
+                            member.DeviceId == pc.Id && !member.Revoked && !string.IsNullOrWhiteSpace(member.PublicKey) &&
+                            member.Grants is { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
+                            "AutomaticSignedGrantsMissing");
+                        LabRequire((await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client,
+                            $"/api/local/friend/{profile.Id}/shared-world")).Consented, "AutomaticReceivingMissing");
+                        var receiveEdit = await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
+                            $"/api/local/devices/{pc.Id}/shared-world/{profile.Id}", new(false));
+                        LabRequire(!receiveEdit.Ok && receiveEdit.Code == "ServerHostingSettingRequired", "PerPcReceiveOverrodeServerChoice");
                     }
-                    LabRequire((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
-                        $"/api/local/devices/{deviceA}/shared-world/{profile.Id}/grants", new(new(Receive: true, EligibleHost: true)))).Ok, "EligibleHostGrantRejected");
+                    var grantEdit = await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
+                        $"/api/local/devices/{deviceA}/shared-world/{profile.Id}/grants", new(new(Receive: true, EligibleHost: true)));
+                    LabRequire(!grantEdit.Ok && grantEdit.Code == "ServerHostingSettingRequired", "PerPcGrantsOverrodeServerChoice");
                     var current = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
-                    LabRequire(current.Single(device => device.Id == deviceA).SharedWorldGrants?.GetValueOrDefault(profile.Id)?.EligibleHost == true &&
-                        current.Single(device => device.Id == deviceB).SharedWorldGrants?.GetValueOrDefault(profile.Id)?.EligibleHost != true &&
-                        current.All(device => !device.CanViewPassword), "IndependentGrantScopeLost");
+                    LabRequire(current.Count == 2 && current.All(device => !device.CanViewPassword &&
+                        device.SharedWorldGrants?.GetValueOrDefault(profile.Id) is
+                            { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
+                        "AutomaticGrantScopeLost");
                     signedRoster = await PairingLabGetAsync<SharedWorldRoster>(owner, $"/api/local/profiles/{profile.Id}/shared-world/governance");
-                    LabRequire(SharedWorldRosterTrust.Verify(signedRoster), "CurrentSignedRosterRequired");
+                    LabRequire(SharedWorldRosterTrust.Verify(signedRoster) && signedRoster.Members.Count == 2 &&
+                        signedRoster.Members.All(member => !member.Revoked && member.Grants is
+                            { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
+                        "CurrentSignedRosterRequired");
                     groupKey = new SharedWorldPeerRoot(signedRoster.OwnerPublicKey, profile.Id, signedRoster.GroupId).GroupKey;
                     return null;
                 });

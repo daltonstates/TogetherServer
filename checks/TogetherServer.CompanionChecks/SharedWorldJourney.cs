@@ -108,26 +108,11 @@ internal static partial class SharedWorldJourney
             var aConnectionId = firstAPoll.ConnectionId;
             var bConnectionId = firstBPoll.ConnectionId;
             Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
                 "owner could not enable sharing");
-            foreach (var id in devices)
-                Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                    $"/api/local/devices/{id}/shared-world/{profile.Id}", new(true))).Ok,
-                    "owner could not grant Receive separately to both PCs");
-            var beforeConsent = await PostAsync<object, ReceivedSharedWorldResult>(bLocal,
-                $"/api/local/friend/{profile.Id}/shared-world/check", new { });
-            Require(!beforeConsent.Ok && beforeConsent.Code == "ConsentRequired",
-                "a Friend accepted signed sharing before this PC consented");
+            await RequireAutomaticSharingAsync(owner, profile.Id, (aLocal, deviceA), (bLocal, deviceB));
             foreach (var client in new[] { aLocal, bLocal })
-            {
-                Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(client,
-                    $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
-                    "a Friend PC could not consent to receiving");
-                // Initial key enrollment publishes a new signed roster. Finish
-                // it before the next PC's automatic catch-up can enroll against
-                // the deliberately blocked, unpublished membership change.
                 await RequireNoPublishedSharedSaveAsync(owner, client, profile.Id);
-            }
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "first verified fixture change");
             await StartAndStopAsync(owner, profile.Id);
@@ -185,9 +170,9 @@ internal static partial class SharedWorldJourney
             await WaitForAsync(() => File.Exists(partial) &&
                 new FileInfo(partial).Length >= SharedWorldService.ChunkBytes,
                 "Friend A did not retain one bounded chunk before interruption", 15000);
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceA}/shared-world/{profile.Id}", new(false))).Ok,
-                "owner could not revoke Receive while a chunk was pending");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+                "owner could not disable shared hosting while a chunk was pending");
             await Task.Delay(3500);
             var revoked = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world");
@@ -195,9 +180,9 @@ internal static partial class SharedWorldJourney
                 "revocation committed the pending save or removed resumable data");
             StopApp(friendA);
             friendA = null;
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceA}/shared-world/{profile.Id}", new(true))).Ok,
-                "owner could not deliberately restore Receive");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
+                "owner could not deliberately restore shared hosting");
             friendA = StartApp(appPath, "--friend", friendAPort, friendAData,
                 beforeChunkDelayMs: 3000);
             await WaitLocalAsync(friendAPort);
@@ -331,6 +316,12 @@ internal static partial class SharedWorldJourney
             await PollAsync(aLocal);
             await WaitVersionAsync(aLocal, profile.Id, 2);
 
+            // Preserve legacy voter-only migration coverage while the global
+            // hosting policy is paused. Enabling it later supplies the core
+            // grants to every approved assigned PC without changing voters.
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+                "owner could not pause shared hosting for the legacy voter fixture");
             friendC = StartApp(appPath, "--friend", friendCPort, friendCData);
             await WaitLocalAsync(friendCPort);
             WindowsListenerOwners.RequireTogetherServerOwner(friendCPort, friendC);
@@ -355,15 +346,28 @@ internal static partial class SharedWorldJourney
                 !(await GetAsync<ReceivedSharedWorldStatus>(cLocal,
                     $"/api/local/friend/{profile.Id}/shared-world")).Consented,
                 "voter-only review accidentally granted Receive consent");
+            var voterOnlyRoster = await GetAsync<SharedWorldRoster>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/governance");
+            Require(SharedWorldRosterTrust.Verify(voterOnlyRoster) &&
+                voterOnlyRoster.Members.Single(member => member.DeviceId == deviceC).Grants is
+                    { Receive: false, EligibleHost: false, Reshare: false, RecoveryVoter: true },
+                "voter-only history review changed the signed receiving or hosting permissions");
             StopApp(friendC);
             friendC = null;
 
             foreach (var id in devices)
                 Require((await PutAsync<SharedWorldDeviceGrantsRequest, PairingDecision>(owner,
                     $"/api/local/devices/{id}/shared-world/{profile.Id}/grants",
-                    new(new SharedWorldGrants(Receive: true, EligibleHost: true,
-                        RecoveryVoter: true)))).Ok,
-                    "owner could not appoint two independent recovery voters");
+                    new(new SharedWorldGrants(RecoveryVoter: true)))).Ok,
+                    "owner could not preserve two independent legacy recovery voters");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
+                "owner could not restore automatic shared hosting after the legacy voter setup");
+            await RequireAutomaticSharingAsync(owner, profile.Id, (aLocal, deviceA), (bLocal, deviceB));
+            var recoveryRoster = await GetAsync<SharedWorldRoster>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/governance");
+            Require(recoveryRoster.Members.Count == 3 && recoveryRoster.Members.All(member => member.Grants.RecoveryVoter),
+                "the global hosting policy changed the three independently designated legacy voters");
             foreach (var client in new[] { aLocal, bLocal })
                 Require((await PostAsync<object, ReceivedSharedWorldResult>(client,
                     $"/api/local/friend/{profile.Id}/shared-world/check", new { })).Ok,
@@ -768,8 +772,20 @@ internal static partial class SharedWorldJourney
             roster.GroupId == credentials.ApprovedSharedWorldGroups.GetValueOrDefault(profileId),
             "the hosting preflight did not retain its pinned owner and world");
         using var receiving = new LocalData(receivingRoot);
-        Require(credentials.ConsentedSharedWorldProfiles.Contains(profileId),
-            "the recipient had not consented to keep the shared save");
+        var privateKey = receiving.LoadProtected($"shared-world-pc-signing-{credentials.DeviceId:N}.protected") ??
+            throw new Exception("the disposable recipient's enrolled signing key was missing");
+        using var key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(privateKey, out _);
+        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        Require(roster.Members.Single(member => member.DeviceId == credentials.DeviceId).PublicKey == publicKey,
+            "the receiving PC's local key did not match its enrolled identity");
+        var sourceRoot = new SharedWorldPeerRoot(roster.OwnerPublicKey, profileId, roster.GroupId);
+        var automaticConsent = roster.Members.Any(member => member.DeviceId == credentials.DeviceId &&
+            member.PublicKey == publicKey && !member.Revoked &&
+            member.Grants is { Receive: true, EligibleHost: true, Reshare: true });
+        Require(new WorldPeerReceiveConsentStore(receiving).Effective(sourceRoot, credentials.DeviceId,
+            credentials.ConsentedSharedWorldProfiles.Contains(profileId) || automaticConsent),
+            "the recipient's current signed hosting policy or local consent did not allow keeping the save");
         var vault = ReceiverRoot(receivingRoot, credentials.DeviceId, profileId);
         var copied = FriendLink.ReadReceivedLatest(vault);
         Require(copied?.VersionHash == expectedVersion.VersionHash &&
@@ -785,13 +801,6 @@ internal static partial class SharedWorldJourney
             setup, new(true, true, true, true, true, true), roster.OwnerPublicKey, roster.GroupId,
             requiredCopies: 3, authorityRecords: new WorldAuthorityStore(receiving).Read(profileId));
         Require(preflight.Ready, "the disposable recipient's local preflight failed: " + string.Join(" ", preflight.Reasons));
-        var privateKey = receiving.LoadProtected($"shared-world-pc-signing-{credentials.DeviceId:N}.protected") ??
-            throw new Exception("the disposable recipient's enrolled signing key was missing");
-        using var key = ECDsa.Create();
-        key.ImportPkcs8PrivateKey(privateKey, out _);
-        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
-        Require(roster.Members.Single(member => member.DeviceId == credentials.DeviceId).PublicKey == publicKey,
-            "the receiving PC's local key did not match its enrolled identity");
         // A repeated preflight must attest with the same saved receipt. A new
         // receipt identity at the same roster revision is correctly rejected as
         // a replay, even when it was signed by this enrolled PC.
@@ -939,6 +948,34 @@ internal static partial class SharedWorldJourney
             await Task.Delay(250);
         }
         throw new Exception($"Friend did not reconnect: {latest?.State} {latest?.ConnectionCode}");
+    }
+
+    internal static async Task RequireAutomaticSharingAsync(HttpClient owner, Guid profileId,
+        params (HttpClient Client, Guid DeviceId)[] receivers)
+    {
+        var initialRoster = await GetAsync<SharedWorldRoster>(owner,
+            $"/api/local/profiles/{profileId}/shared-world/governance");
+        Require(SharedWorldRosterTrust.Verify(initialRoster) && initialRoster.ProfileId == profileId,
+            "the automatic hosting roster was not signed for the exact server");
+        var root = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profileId, initialRoster.GroupId);
+        foreach (var (client, _) in receivers)
+            Require((await PostAsync<object, WorldPeerActionResult>(client,
+                $"/api/local/world-peers/{root.GroupKey}/sync", new { })).Ok,
+                "an approved Friend could not automatically enroll and refresh its shared hosting membership");
+        var roster = await GetAsync<SharedWorldRoster>(owner,
+            $"/api/local/profiles/{profileId}/shared-world/governance");
+        Require(SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == root.ProfileId &&
+            roster.OwnerPublicKey == root.OwnerPublicKey && roster.GroupId == root.GroupId,
+            "automatic enrollment changed the pinned signed world");
+        foreach (var (client, deviceId) in receivers)
+        {
+            Require(roster.Members.SingleOrDefault(member => member.DeviceId == deviceId) is
+                { Revoked: false, Grants: { Receive: true, EligibleHost: true, Reshare: true } },
+                "the server's one hosting choice did not automatically grant Receive, Host and Reshare");
+            Require((await GetAsync<ReceivedSharedWorldStatus>(client,
+                $"/api/local/friend/{profileId}/shared-world")).Consented,
+                "the approved Friend did not automatically allow the server's completed saves");
+        }
     }
 
     private static async Task RequireNoPublishedSharedSaveAsync(HttpClient owner,

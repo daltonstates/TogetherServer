@@ -61,14 +61,31 @@ internal static partial class CoreRemoteJourney
             report.RootElement.TryGetProperty("stages", out var stages) && stages.GetArrayLength() == 10 &&
             stages.EnumerateArray().All(stage => stage.TryGetProperty("passed", out var passed) && passed.ValueKind == JsonValueKind.True) &&
             report.RootElement.TryGetProperty("guidedHosting", out var guided) &&
+            guided.GetProperty("prepareRequests").GetInt32() == 1 &&
             guided.GetProperty("startRequests").GetInt32() == 1 && guided.GetProperty("successfulStartResponses").GetInt32() == 1 &&
+            guided.GetProperty("missingServerBlocked").ValueKind == JsonValueKind.True &&
+            guided.GetProperty("singleNetworkConfirmation").ValueKind == JsonValueKind.True &&
+            report.RootElement.TryGetProperty("automaticSharing", out var automatic) &&
+            automatic.GetProperty("ownerSwitches").GetInt32() == 1 &&
+            automatic.GetProperty("unauthorizedActionHidden").ValueKind == JsonValueKind.True &&
+            automatic.GetProperty("automaticReceiving").ValueKind == JsonValueKind.True &&
+            report.RootElement.TryGetProperty("copyIntegrity", out var copies) &&
+            copies.GetProperty("filesChecked").GetInt32() == 1 &&
+            copies.GetProperty("automaticReceipt").ValueKind == JsonValueKind.True &&
+            copies.GetProperty("receivedHashesMatch").ValueKind == JsonValueKind.True &&
+            copies.GetProperty("hostedHashesMatch").ValueKind == JsonValueKind.True &&
+            copies.GetProperty("freshDestination").ValueKind == JsonValueKind.True &&
+            copies.GetProperty("originalUnchangedAfterCandidateStop").ValueKind == JsonValueKind.True &&
             report.RootElement.TryGetProperty("signedDiscovery", out var discovery) &&
             discovery.GetProperty("exactCandidateSession").ValueKind == JsonValueKind.True &&
             discovery.GetProperty("exactAdvertisedEndpoint").ValueKind == JsonValueKind.True &&
             discovery.GetProperty("exactConnectSelection").ValueKind == JsonValueKind.True &&
             report.RootElement.TryGetProperty("failurePathCoverage", out var failures) &&
             failures.GetProperty("hostingGrantWithdrawal").ValueKind == JsonValueKind.True &&
-            failures.GetProperty("localConsentAndCancel").ValueKind == JsonValueKind.True,
+            failures.GetProperty("localConsentAndCancel").ValueKind == JsonValueKind.True &&
+            failures.GetProperty("serverPolicyWithdrawal").ValueKind == JsonValueKind.True &&
+            failures.GetProperty("staleConfirmationDisabled").ValueKind == JsonValueKind.True &&
+            failures.GetProperty("networkConfirmationAndCancel").ValueKind == JsonValueKind.True,
             "UxReportDidNotPass");
     }
 }

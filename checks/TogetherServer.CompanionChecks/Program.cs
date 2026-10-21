@@ -910,18 +910,17 @@ try
         new BackupOptions { Enabled = true, MinimumFreeSpaceMb = 0 };
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "shared-world rolling backup setup failed");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([joinProfile.Id]))).Ok,
+        "the shared-save denial fixture could not remove Friend B's server assignment");
+    _ = await OwnerPost<object, FriendView>(bLocal, "/api/local/friend/poll", new { });
     var enabledSharing = await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
-        $"/api/local/profiles/{profile.Id}/shared-world", new(true));
+        $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true));
     Require(enabledSharing.Ok, "owner could not opt in to shared saves");
     var deniedGrant = await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
         $"/api/local/devices/{deviceAId}/shared-world/{joinProfile.Id}", new(true));
     Require(!deniedGrant.Ok, "an unassigned profile received a save grant");
-    var grantA = await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
-        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(true));
-    Require(grantA.Ok, "owner save grant failed");
-    var consentA = await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,
-        $"/api/local/friend/{profile.Id}/shared-world/consent", new(true));
-    Require(consentA.Ok, "Friend PC consent failed");
+    await SharedWorldJourney.RequireAutomaticSharingAsync(owner, profile.Id, (aLocal, deviceAId));
     var beforeStop = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
     Require(!beforeStop.Ok, "a Friend received a save before a graceful Stop");
@@ -1009,17 +1008,17 @@ try
     await FriendAction(aLocal, profile.Id, "stop");
     Require(responsive.Elapsed < TimeSpan.FromSeconds(2),
         "heartbeat or remote Stop waited behind the slow shared-save transfer");
-    Require((await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
-        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(false))).Ok,
-        "fixture grant withdrawal failed during transfer");
+    Require((await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+        "fixture shared-hosting withdrawal failed during transfer");
     await Task.Delay(3500);
     Require((await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world")).ThisPcVersion == 1 &&
         File.Exists(partial) && new FileInfo(partial).Length >= SharedWorldService.ChunkBytes,
         "revocation advanced the receipt or removed resumable chunks");
-    Require((await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
-        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(true))).Ok,
-        "fixture grant could not be restored");
+    Require((await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
+        "fixture shared hosting could not be restored");
     ReceivedSharedWorldStatus resumed = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world");
     for (var attempt = 0; attempt < 100 && resumed.ThisPcVersion != 2; attempt++)
@@ -1084,19 +1083,17 @@ try
     Require((await OwnerGetJson<SharedWorldStatus>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 1,
         "new source did not receive a fresh copy confirmation");
-    var consentB = await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(bLocal,
-        $"/api/local/friend/{profile.Id}/shared-world/consent", new(true));
     var deniedB = await OwnerPost<object, ReceivedSharedWorldResult>(bLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
-    Require(consentB.Ok && !deniedB.Ok &&
+    Require(!deniedB.Ok &&
         !Directory.Exists(Path.Combine(friendBData, "received-shared-worlds", deviceBId.ToString("N"))),
-        "an ungranted paired PC received a shared save");
-    var removedGrant = await OwnerPut<SharedWorldGrantRequest, PairingDecision>(owner,
-        $"/api/local/devices/{deviceAId}/shared-world/{profile.Id}", new(false));
-    Require(removedGrant.Ok && !(await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        "an unassigned paired PC received a shared save");
+    var disabledSharing = await OwnerPut<SharedWorldConsentRequest, SharedWorldResult>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false));
+    Require(disabledSharing.Ok && !(await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { })).Ok,
-        "removing a save grant did not deny a new transfer");
-    Console.WriteLine("PASS pinned HTTPS automatic receipt, interrupted resume, grant revocation, and slow-transfer controls"); passes++;
+        "disabling shared hosting did not deny a new transfer");
+    Console.WriteLine("PASS pinned HTTPS automatic receipt, interrupted resume, shared-hosting withdrawal, unassigned-PC denial, and slow-transfer controls"); passes++;
     if (args.Skip(1).Contains("--shared-worlds-only", StringComparer.OrdinalIgnoreCase))
     {
         Console.WriteLine($"Shared-world HTTPS checks: {passes} groups passed, 0 failed. Data: {root}");
@@ -1106,6 +1103,9 @@ try
     settings.Profiles.Single(item => item.Id == profile.Id).Backups = new BackupOptions();
     Require((await OwnerPut<HostSettings, ActionResult>(owner, "/api/local/settings", settings)).Ok,
         "companion fixture settings could not be restored after shared-world coverage");
+    Require((await OwnerPut<DeviceServerAccessRequest, PairingDecision>(owner,
+        $"/api/local/devices/{deviceBId}/servers", new([profile.Id, joinProfile.Id]))).Ok,
+        "Friend B's multiple server assignments could not be restored after shared-save denial coverage");
 
     using var publicClient = PinnedClient(endpoint, inviteA.Fingerprint);
     using var invalid = new HttpRequestMessage(HttpMethod.Get, "/api/companion/status");

@@ -30,6 +30,9 @@ internal static partial class CoreRemoteJourney
             var profileId = prepared.ProfileId!.Value;
             var repeated = await PostAsync<object, RemoteRehearsalSetup>(owner, "/api/local/rehearsal/prepare", new { });
             Require(repeated.Ok && repeated.ProfileId == profileId, "prepare retry created another profile");
+            Require((await PutAsync<object, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profileId}/shared-world/hosting", new { enabled = false })).Ok,
+                "rehearsal shared hosting could not be disabled");
             var snapshot = await owner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot") ?? throw new Exception("no Host snapshot");
             snapshot.Settings.CompanionBindAddress = "127.0.0.1";
             snapshot.Settings.CompanionPort = companionPort;
@@ -47,13 +50,34 @@ internal static partial class CoreRemoteJourney
             var devices = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
             var deviceId = devices.GetProperty("devices").EnumerateArray().Single().GetProperty("id").GetGuid();
             var request = new RemoteRehearsalRequest(Guid.NewGuid(), "SeparateNetwork");
-            var noConsent = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
+            var sharingOff = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", request);
-            Require(noConsent.Stages.Single(stage => stage.Id == "transfer").State != "Passed", "Receive consent was silently granted");
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceId}/shared-world/{profileId}", new(true))).Ok, "owner Receive grant failed");
-            Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(test,
-                $"/api/local/friend/{profileId}/shared-world/consent", new(true))).Ok, "local Receive consent failed");
+            Require(sharingOff.Stages.Single(stage => stage.Id == "transfer").State != "Passed", "disabled shared hosting allowed a transfer");
+            Require((await PutAsync<object, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profileId}/shared-world/hosting", new { enabled = true })).Ok,
+                "rehearsal shared hosting choice failed");
+            var initialRoster = await RehearsalOwnerGetAsync<SharedWorldRoster>(owner,
+                $"/api/local/profiles/{profileId}/shared-world/governance");
+            Require(SharedWorldRosterTrust.Verify(initialRoster), "initial rehearsal roster was not signed");
+            var groupKey = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profileId, initialRoster.GroupId).GroupKey;
+            // Enroll through the ordinary peer refresh, without per-PC grant or
+            // receiving choices. The verified server policy supplies both.
+            using (var syncClient = LocalClient(friendPort))
+            {
+                syncClient.Timeout = TimeSpan.FromSeconds(65);
+                var enrolled = await PostAsync<object, WorldPeerActionResult>(syncClient,
+                    $"/api/local/world-peers/{groupKey}/sync", new { });
+                Require(enrolled.Ok && enrolled.Code == "WorldPeersChecked", "rehearsal signing enrollment failed");
+            }
+            var roster = await RehearsalOwnerGetAsync<SharedWorldRoster>(owner,
+                $"/api/local/profiles/{profileId}/shared-world/governance");
+            Require(SharedWorldRosterTrust.Verify(roster) && roster.Members.Count == 1 &&
+                roster.Members.Single() is { Revoked: false } member && member.DeviceId == deviceId &&
+                !string.IsNullOrWhiteSpace(member.PublicKey) && member.Grants is
+                    { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false },
+                "rehearsal automatic signed permissions were missing");
+            Require((await RehearsalOwnerGetAsync<ReceivedSharedWorldStatus>(test,
+                $"/api/local/friend/{profileId}/shared-world")).Consented, "rehearsal automatic receiving was missing");
             var report = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{profileId}/rehearsal", request);
             await AssertRehearsalAsync(report, "initial", owner, test, profileId, deviceId, connected);
@@ -79,7 +103,7 @@ internal static partial class CoreRemoteJourney
             Require(!serialized.Contains(deviceId.ToString()) && !serialized.Contains(profileId.ToString()) &&
                 !serialized.Contains(hostData) && !serialized.Contains("127.0.0.1") &&
                 !serialized.Contains(shared!.Latest!.VersionHash), "rehearsal report leaked private setup or copy identity");
-            Console.WriteLine("PASS packaged staging rehearsal: normal pairing/Receive, two-way signed chat, multi-chunk hashes and exact-copy receipt; retry and redaction");
+            Console.WriteLine("PASS packaged staging rehearsal: one server choice authorizes paired Friends, two-way signed chat, multi-chunk hashes and exact-copy receipt; retry and redaction");
             var wrong = await PostAsync<RemoteRehearsalRequest, RemoteRehearsalReport>(test,
                 $"/api/local/friend/{Guid.NewGuid()}/rehearsal", request);
             Require(wrong.Stages.All(stage => stage.State != "Passed"), "wrong saved profile was accepted");

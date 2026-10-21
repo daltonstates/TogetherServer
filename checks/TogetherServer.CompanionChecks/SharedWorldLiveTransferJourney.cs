@@ -73,14 +73,9 @@ internal static partial class SharedWorldJourney
             Require((await WaitConnectedAsync(friendLocal)).ConnectionId != Guid.Empty,
                 "fixture Friend did not authenticate over pinned HTTPS");
             Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world", new(true))).Ok,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
                 "owner could not enable fixture sharing");
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceId}/shared-world/{profile.Id}", new(true))).Ok,
-                "owner could not grant fixture Receive");
-            Require((await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(friendLocal,
-                $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
-                "fixture Friend could not consent");
+            await RequireAutomaticSharingAsync(owner, profile.Id, (friendLocal, deviceId));
             var payload = new byte[4 * SharedWorldService.ChunkBytes + 37];
             RandomNumberGenerator.Fill(payload);
             File.WriteAllBytes(Path.Combine(profile.WorldDirectory, "world.dat"), payload);
@@ -184,9 +179,9 @@ internal static partial class SharedWorldJourney
             Console.WriteLine("PASS packaged Friend persists a bounded pending chunk before interruption");
             passed++;
 
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceId}/shared-world/{profile.Id}", new(false))).Ok,
-                "owner could not revoke Receive during the pending transfer");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+                "owner could not disable shared hosting during the pending transfer");
             friend = StartApp(appPath, "--friend", friendPort, friendData);
             await WaitLocalAsync(friendPort);
             await WaitConnectedAsync(friendLocal);
@@ -199,10 +194,10 @@ internal static partial class SharedWorldJourney
                 "revoked Receive completed or discarded the pending fixture copy");
             StopApp(friend);
             friend = null;
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceId}/shared-world/{profile.Id}", new(true))).Ok,
-                "owner could not restore fixture Receive");
-            Console.WriteLine("PASS revoked Receive denies the pending transfer and leaves its resumable bytes intact");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(true))).Ok,
+                "owner could not restore fixture shared hosting");
+            Console.WriteLine("PASS disabling shared hosting denies the pending transfer and leaves its resumable bytes intact");
             passed++;
 
             friend = StartApp(appPath, "--friend", friendPort, friendData,
@@ -231,9 +226,9 @@ internal static partial class SharedWorldJourney
             Console.WriteLine("PASS actual pending state resumes through pinned authenticated HTTPS; signed receipt confirms the hash-verified copy on Host");
             passed++;
 
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
-                $"/api/local/devices/{deviceId}/shared-world/{profile.Id}", new(false))).Ok,
-                "owner could not revoke the confirmed copy");
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+                "owner could not disable shared hosting after the confirmed copy");
             await WaitCopiesAsync(owner, profile.Id, 0);
             Require(File.Exists(received), "revocation removed a previously verified local copy");
             using (var stream = new FileStream(received, FileMode.Open, FileAccess.Write))
@@ -251,12 +246,12 @@ internal static partial class SharedWorldJourney
                         games: new GameServerRegistry(data, includeFixture: true)));
                 var roster = shared.ReadRoster(data.LoadSettings().Profiles.Single(item => item.Id == profile.Id));
                 var member = roster?.Members.SingleOrDefault(item => item.DeviceId == deviceId);
-                Require(member is { Grants.Receive: false } && receipt is not null &&
+                Require(member is { Grants: { Receive: false, EligibleHost: false, Reshare: false } } && receipt is not null &&
                     SharedWorldReceiptTrust.Verify(receipt, member.PublicKey) &&
                     receipt.RosterRevision < roster!.Revision,
                     "the Friend receipt was not signed by its enrolled device key");
             }
-            Console.WriteLine("PASS revocation removes Host confirmation, and tampering invalidates the Friend copy while its receipt remains signed");
+            Console.WriteLine("PASS disabling shared hosting removes Host confirmation; tampering invalidates the Friend copy while its receipt remains signed");
             passed++;
             Console.WriteLine($"Shared LiveSave transfer journey: {passed} groups passed, 0 failed. Disposable data: {root}");
         }

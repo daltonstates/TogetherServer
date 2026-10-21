@@ -38,7 +38,7 @@ internal static partial class CoreRemoteJourney
             Require((await PutAsync<HostSettings, ActionResult>(owner, "/api/local/settings", new()
             { Profiles = [profile], CompanionPort = companionPort, CompanionBindAddress = "127.0.0.1", CompanionEndpoint = $"https://127.0.0.1:{companionPort}" })).Ok,
                 "live staging settings failed");
-            Require((await PutAsync<object, SharedWorldResult>(owner, $"/api/local/profiles/{profile.Id}/shared-world", new { enabled = true })).Ok,
+            Require((await PutAsync<object, SharedWorldResult>(owner, $"/api/local/profiles/{profile.Id}/shared-world/hosting", new { enabled = true })).Ok,
                 "normal shared-save opt-in failed");
             var invite = await PostAsync<ServerInviteRequest, JsonElement>(owner, $"/api/local/servers/{profile.Id}/invite", new(false, false, true));
             Require(invite.GetProperty("ok").GetBoolean() && (await PostAsync<FriendPairRequest, FriendActionResult>(test,
@@ -46,9 +46,7 @@ internal static partial class CoreRemoteJourney
             await WaitForConnectedAsync(test, allowDisabled: true);
             var devices = await owner.GetFromJsonAsync<JsonElement>("/api/local/companion");
             var deviceId = devices.GetProperty("devices").EnumerateArray().Single().GetProperty("id").GetGuid();
-            Require((await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner, $"/api/local/devices/{deviceId}/shared-world/{profile.Id}", new(true))).Ok &&
-                (await PutAsync<SharedWorldConsentRequest, ReceivedSharedWorldResult>(test, $"/api/local/friend/{profile.Id}/shared-world/consent", new(true))).Ok,
-                "normal Receive grant and consent failed");
+            await SharedWorldJourney.RequireAutomaticSharingAsync(owner, profile.Id, (test, deviceId));
             Require((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { })).Ok, "managed live fixture Start failed");
             Require(!(await PostAsync<LiveSaveRequest, LiveSaveActionResult>(test,
                 $"/api/local/profiles/{profile.Id}/shared-world/live/save", new(Guid.NewGuid()))).Ok, "Friend mode submitted a capture action");

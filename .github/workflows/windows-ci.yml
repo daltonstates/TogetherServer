@@ -36,12 +36,28 @@ jobs:
         shell: pwsh
         run: ./scripts/build.ps1 -ReleaseName release-candidate
 
+      - name: Bind source identity and verify the static bundled package
+        shell: pwsh
+        run: |
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
+          $productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion
+          if ($productVersion -ne "$version+$env:GITHUB_SHA") { throw 'Candidate source identity mismatch.' }
+          python scripts/verify-demo-package.py --app $candidate --assembly src/TogetherServer/bin/Release/net10.0-windows/win-x64/TogetherServer.dll --ui ui/dist --output local-data/release-candidate/package-evidence.json
+          if ($LASTEXITCODE -ne 0) { throw 'Static candidate package verification failed.' }
+          @{ source = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; version = $version;
+            sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant();
+            productVersion = $productVersion; authenticode = [string](Get-AuthenticodeSignature -LiteralPath $candidate).Status } |
+            ConvertTo-Json | Set-Content local-data/release-candidate/candidate.json
+
       - name: Share the exact candidate with isolated test runners
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-candidate
           path: |
             local-data/release-candidate/TogetherServer.exe
+            local-data/release-candidate/candidate.json
+            local-data/release-candidate/package-evidence.json
             src/TogetherServer.Fixture/bin/Release/net10.0/
             src/TogetherServer.ValheimFixture/bin/Release/net10.0/
             src/TogetherServer.MinecraftFixture/bin/Release/net10.0/
@@ -222,7 +238,7 @@ jobs:
                 $uxReportPath = Join-Path $uxRoot 'report.json'
                 if (!(Test-Path -LiteralPath $uxReportPath) -or (Get-Item -LiteralPath $uxReportPath).Length -gt 262144) { throw 'The bounded UX report is missing or too large.' }
                 $uxReport = Get-Content -LiteralPath $uxReportPath -Raw | ConvertFrom-Json
-                $uxReport | Select-Object ok, stages, errors, failedRequests, canceledRequests, controlPolicyChanges, boundaries, guidedHosting, signedDiscovery, failurePathCoverage, failure |
+                $uxReport | Select-Object ok, stages, errors, failedRequests, canceledRequests, controlPolicyChanges, boundaries, guidedHosting, signedDiscovery, automaticSharing, copyIntegrity, failurePathCoverage, failure |
                   ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'ux-report.json') -Encoding utf8
                 $pictures = @(Get-ChildItem -LiteralPath $uxRoot -File -Filter '*.png')
                 if ($pictures.Count -gt 64) { throw 'The masked UX screenshot count exceeds its bound.' }
@@ -281,6 +297,69 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
+  shared-hosting:
+    needs: candidate
+    name: Verify automatic shared hosting
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the same source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install the pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Retrieve the immutable candidate and fixtures
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-candidate
+          path: .
+      - name: Compile only the dispatcher
+        shell: pwsh
+        run: |
+          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Shared hosting dispatcher restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Shared hosting dispatcher compilation failed.' }
+      - name: Verify two ordinary handoffs against the downloaded candidate
+        shell: pwsh
+        run: |
+          # Explicit isolated hosted opt-in; never run on the owner's active desktop.
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $identity = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          if ($identity.source -ne $env:GITHUB_SHA -or $identity.runId -ne $env:GITHUB_RUN_ID -or
+              (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $identity.sha256 -or
+              (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne $identity.productVersion) { throw 'Shared hosting candidate identity mismatch.' }
+          $addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+            $_.AddressState.ToString() -eq 'Preferred' -and $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
+          } | Sort-Object InterfaceIndex, IPAddress)
+          if ($addresses.Count -eq 0) { throw 'No assigned private runner IPv4 address is available.' }
+          $runnerAddress = $addresses[0].IPAddress
+          New-Item -ItemType Directory -Force local-data/local-pairing-lab | Out-Null
+          $identity | ConvertTo-Json | Set-Content local-data/local-pairing-lab/simple-hosting-candidate.json
+          $env:TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS = '0'
+          $normalFailed = $false
+          for ($attempt = 1; $attempt -le 2; $attempt++) {
+            dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+            if ($LASTEXITCODE -ne 0) { $normalFailed = $true; break }
+          }
+          if ($normalFailed) {
+            $env:TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS = '1'
+            dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+            throw 'An ordinary shared hosting journey failed; a diagnostic retry is separate evidence.'
+          }
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $identity.sha256) { throw 'Shared hosting candidate bytes changed.' }
+      - name: Retain bounded shared hosting evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: automatic-shared-hosting-evidence
+          path: |
+            local-data/local-pairing-lab/simple-hosting-candidate.json
+            local-data/local-pairing-lab/simple-hosting-*/report.json
+          if-no-files-found: warn
+          retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
+
   mixed-version:
     needs: candidate
     strategy:
@@ -297,6 +376,8 @@ jobs:
             legacy-sha256: FC636DB139C61CB71A3CF0CB0B9DFDB38B61E15DF9EE06B736E218B0FC78A7EE
           - legacy-version: '0.3.2.2'
             legacy-sha256: 273E97AAF0C402B84CAD4930F3D3C5DE43F8A1A87FE77608F2E3E18B9A81D265
+          - legacy-version: '0.3.3'
+            legacy-sha256: C09A4D086145475FF94DEF32CA7AA95AA1AD260D8EDF074E3EB83D36E03280CB
     name: Verify ${{ matrix.legacy-version }} compatibility
     runs-on: windows-latest
     timeout-minutes: 20
@@ -356,7 +437,7 @@ jobs:
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   package:
-    needs: [verify, mixed-version, local-pairing]
+    needs: [verify, mixed-version, local-pairing, shared-hosting]
     name: Package verified release
     runs-on: windows-latest
     timeout-minutes: 20
@@ -404,7 +485,7 @@ jobs:
             Set-Content -LiteralPath ($file.FullName + '.sha256') -Value "$hash  $name" -Encoding ascii
             $assets += @{name=$name; sha256=$hash; bytes=$file.Length; authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
           }
-          @{version=$version; sourceRevision=$env:GITHUB_SHA; candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets; acceptance='All Windows verification suites, local pairing and actual Host/Friend UX, mixed-version directions, installer smoke and three actual wizard choices passed on dedicated runners.'} |
+          @{version=$version; sourceRevision=$env:GITHUB_SHA; candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets; acceptance='All Windows verification suites, local pairing and actual Host/Friend UX, two automatic shared-hosting handoffs, mixed-version directions, installer smoke and three actual wizard choices passed on dedicated runners.'} |
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
 
       - name: Preserve bounded actual installer wizard UI evidence

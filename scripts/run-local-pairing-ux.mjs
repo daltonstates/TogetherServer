@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import readline from 'node:readline';
+import { createHash } from 'node:crypto';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(repo, 'ui', 'package.json'));
@@ -33,7 +34,10 @@ const report = { ok: false, stages: [], errors: [], failedRequests: [], canceled
 let browser;
 let currentStage = 'launch';
 let candidate;
+let completedSave;
+let friendDeviceId;
 let hostingStartRequests = 0;
+let hostingPrepareRequests = 0;
 const hostingStartResults = [];
 const privateText = new Set();
 const pages = [];
@@ -91,6 +95,23 @@ async function choice(page, name, enabled, savePath) {
   await until(() => control.isChecked(), value => value === enabled, 'saved checkbox choice');
 }
 const checked = (page, name, savePath) => choice(page, name, true, savePath);
+async function verifyOwnedPayload(directory, files, owner) {
+  const ownerRoot = path.join(runRoot, owner);
+  for (const entry of files) {
+    if (typeof entry.path !== 'string' || !entry.path || entry.path.includes('\\')
+      || entry.path.split('/').some(part => !part || part === '.' || part === '..')
+      || !/^[0-9a-f]{64}$/i.test(entry.sha256) || !Number.isSafeInteger(entry.length) || entry.length < 0 || entry.length > 16 * 1024 * 1024)
+      throw new Error('The synthetic completed-save manifest is invalid or exceeds its fixed bound');
+    const file = path.resolve(directory, entry.path);
+    const relative = path.relative(ownerRoot, file);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Synthetic copy escaped its exact owned app root');
+    const info = await fs.lstat(file);
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== entry.length
+      || (await fs.realpath(file)).toLowerCase() !== file.toLowerCase()) throw new Error('Synthetic copy has a linked, missing or changed file');
+    const actual = createHash('sha256').update(await fs.readFile(file)).digest('hex');
+    if (actual !== entry.sha256.toLowerCase()) throw new Error('Synthetic copy differs from the exact completed-save hash');
+  }
+}
 async function read(page, suffix = '/api/local/snapshot') {
   return page.evaluate(async endpoint => {
     const response = await fetch(endpoint, { credentials: 'same-origin', headers: { 'X-TogetherServer-Local': '1' } });
@@ -164,9 +185,7 @@ async function access(page) {
 }
 async function sharedSaves(page) {
   await nav(page, 'Shared saves');
-  const section = page.locator('details.local-hosting-advanced').filter({ hasText: 'Shared saves & people' });
-  await section.waitFor({ state: 'visible', timeout });
-  if (!await section.evaluate(element => element.open)) await section.locator('summary').click();
+  await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'visible', timeout });
 }
 async function stop(page) {
   await button(page, 'Stop server');
@@ -196,6 +215,8 @@ try {
     page.on('request', request => {
       if (request.method() === 'POST' && new URL(request.url()).pathname ===
         `/api/local/friend/${input.profileId}/shared-world/hosting/start`) hostingStartRequests++;
+      if (request.method() === 'POST' && new URL(request.url()).pathname ===
+        `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`) hostingPrepareRequests++;
     });
     page.on('pageerror', () => { if (report.errors.length < 20) report.errors.push({ stage: currentStage, kind: 'pageerror' }); });
     page.on('requestfailed', request => {
@@ -252,30 +273,56 @@ try {
     await access(host);
     await button(host, 'Approve this PC');
     await until(() => read(friend), snapshot => ['Connected', 'Disabled'].includes(snapshot.state) && snapshot.profiles?.length === 1, 'approved assigned server');
-    await shot(host, '02-owner-approval'); await shot(friend, '02-paired-friend');
-  });
-  await stage('shared hosting grant and private-copy consent', async () => {
-    await ownerOverview(host); await nav(host, 'Backups'); await nav(host, 'Sharing & hosting');
-    await checked(host, 'Allow shared hosting');
-    await checked(host, /^Can host this save for /);
-    await sharedSaves(friend);
-    await checked(friend, /Allow saves on this PC/);
-    await shot(host, '03-host-sharing'); await shot(friend, '03-friend-consent');
-  });
-  await stage('hosting permission withdrawal blocks the action', async () => {
-    const grantPath = new RegExp(`^/api/local/devices/[0-9a-f-]{36}/shared-world/${input.profileId}/grants$`, 'i');
-    await choice(host, /^Can host this save for /, false, grantPath);
     await nav(friend, 'Play');
     await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
-      value => !value.allowed && !value.readyForManualStart && !value.running, 'withdrawn hosting permission');
-    await until(() => visible(friend.getByRole('button', { name: 'Host on this PC', exact: true })).count(),
+      value => !value.allowed && !value.readyForManualStart && !value.running, 'sharing initially off');
+    if (await visible(friend.getByRole('button', { name: 'Host locally', exact: true })).count()
+      || hostingStartRequests || hostingPrepareRequests) throw new Error('A Friend without shared-hosting permission can invoke local hosting');
+    await shot(host, '02-owner-approval'); await shot(friend, '02-paired-friend');
+  });
+  await stage('one server choice automatically authorizes verified receiving', async () => {
+    await ownerOverview(host); await nav(host, 'Backups'); await nav(host, 'Sharing & hosting');
+    const workspace = host.getByRole('region', { name: 'Shared hosting', exact: true });
+    await workspace.waitFor({ state: 'visible', timeout });
+    if (await workspace.getByRole('checkbox').count() !== 1) throw new Error('Shared hosting must have one owner switch');
+    await checked(host, 'Allow friends to host this server', new RegExp(`^/api/local/profiles/${input.profileId}/shared-world/hosting$`, 'i'));
+    await sharedSaves(friend);
+    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world`),
+      value => value.consented === true, 'automatic approved-PC receiving');
+    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
+      value => value.allowed && value.consented, 'automatic signed hosting grant');
+    const devices = (await read(host, '/api/local/companion')).devices.filter(device => device.paired && !device.revoked);
+    if (devices.length !== 1 || !/^[0-9a-f-]{36}$/i.test(devices[0].id)) throw new Error('The lab did not retain one separate approved PC identity');
+    friendDeviceId = devices[0].id;
+    const roster = await read(host, `/api/local/profiles/${input.profileId}/shared-world/governance`);
+    const member = roster.members?.find(item => item.deviceId === friendDeviceId);
+    if (member?.revoked || !member?.grants?.receive || !member.grants.eligibleHost || !member.grants.reshare
+      || member.grants.recoveryVoter || member.grants.manageSharing || !roster.signature)
+      throw new Error('The owner switch did not publish the exact automatic signed sharing permissions');
+    report.automaticSharing = { ownerSwitches: 1, unauthorizedActionHidden: true, automaticReceiving: true };
+    await shot(host, '03-host-sharing'); await shot(friend, '03-friend-automatic-receiving');
+  });
+  await stage('server policy withdrawal blocks stale hosting intent', async () => {
+    const policyPath = new RegExp(`^/api/local/profiles/${input.profileId}/shared-world/hosting$`, 'i');
+    await nav(friend, 'Play'); await button(friend, 'Host locally');
+    const dialog = friend.getByRole('dialog', { name: 'Host locally', exact: true });
+    await dialog.waitFor({ state: 'visible', timeout });
+    await choice(host, 'Allow friends to host this server', false, policyPath);
+    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
+      value => !value.allowed && !value.readyForManualStart && !value.running, 'withdrawn server hosting policy');
+    await until(() => dialog.getByRole('button', { name: 'Host locally', exact: true }).isEnabled(),
+      enabled => !enabled, 'stale hosting confirmation disabled');
+    await dialog.getByRole('button', { name: 'Close Host locally', exact: true }).click();
+    await nav(friend, 'Play');
+    await until(() => visible(friend.getByRole('button', { name: 'Host locally', exact: true })).count(),
       count => count === 0, 'removed hosting action');
-    if (hostingStartRequests) throw new Error('Removing hosting permission dispatched Start');
+    if (hostingStartRequests || hostingPrepareRequests) throw new Error('Withdrawing the server policy dispatched hosting');
     report.failurePathCoverage = { hostingGrantWithdrawal: false, grantWithdrawalObserved: true,
       grantRestoredByOwner: false, authenticatedRecovery: false, signedGrantRefreshed: false,
-      recoveryStep: 'restoring-owner-grant', automaticRecoveryBudgetMs: timeout, explicitRecoveryUsed: false };
+      serverPolicyWithdrawal: true, staleConfirmationDisabled: true,
+      recoveryStep: 'restoring-owner-policy', automaticRecoveryBudgetMs: timeout, explicitRecoveryUsed: false };
     await shot(friend, '03-hosting-permission-removed');
-    await checked(host, /^Can host this save for /, grantPath);
+    await checked(host, 'Allow friends to host this server', policyPath);
     report.failurePathCoverage.grantRestoredByOwner = true;
     report.failurePathCoverage.recoveryStep = 'waiting-for-automatic-connection';
     await until(async () => {
@@ -286,15 +333,6 @@ try {
         connection.profiles?.some(profile => profile.id === input.profileId);
     }, Boolean, 'automatic fresh assigned connection after restored grant');
     report.failurePathCoverage.authenticatedRecovery = true;
-    // Keep the status surface mounted until its read and automatic signed-roster
-    // catchup finish. Immediate navigation used to abort this observation.
-    report.failurePathCoverage.recoveryStep = 'waiting-for-shared-save-read';
-    const refreshed = friend.waitForResponse(response => response.request().method() === 'GET' &&
-      new URL(response.url()).pathname === `/api/local/friend/${input.profileId}/shared-world`, { timeout });
-    await sharedSaves(friend);
-    const refreshedResponse = await refreshed;
-    const result = await refreshedResponse.json();
-    if (!refreshedResponse.ok() || result.consented !== true) throw new Error('Restoring the grant lost the saved local consent');
     report.failurePathCoverage.recoveryStep = 'waiting-for-automatic-authenticated-grant';
     await until(async () => {
       const connection = await read(friend);
@@ -313,25 +351,24 @@ try {
     await nav(friend, 'Play');
     await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`),
       value => value.allowed && value.consented, 'restored hosting permission without losing consent');
+    if (hostingStartRequests || hostingPrepareRequests) throw new Error('Restoring the policy replayed canceled hosting intent');
     report.failurePathCoverage.hostingGrantWithdrawal = true;
     report.failurePathCoverage.recoveryStep = 'complete';
   });
-  await stage('local save consent is required and cancel starts nothing', async () => {
-    await sharedSaves(friend);
-    await choice(friend, /Allow saves on this PC/, false);
-    await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world`),
-      value => value.consented === false, 'local save consent withdrawn');
-    await nav(friend, 'Play'); await button(friend, 'Host on this PC');
-    const dialog = friend.getByRole('dialog', { name: 'Host on this PC', exact: true });
+  await stage('network confirmation and cancel never prepare or Start', async () => {
+    await nav(friend, 'Play'); await button(friend, 'Host locally');
+    const dialog = friend.getByRole('dialog', { name: 'Host locally', exact: true });
     await dialog.waitFor({ state: 'visible', timeout });
-    const consent = dialog.getByRole('checkbox', { name: /Keep this save on my PC and host my own copy/ });
-    if (await consent.isChecked() || await dialog.getByRole('button', { name: 'Continue and start', exact: true }).isEnabled())
-      throw new Error('Hosting did not require this PC\'s explicit save consent');
-    await shot(friend, '03-explicit-local-consent-required');
-    await dialog.getByRole('button', { name: 'Close Host on this PC', exact: true }).click();
-    if (hostingStartRequests) throw new Error('Canceling local consent dispatched Start');
-    await sharedSaves(friend); await checked(friend, /Allow saves on this PC/);
+    if (await dialog.locator('.local-hosting-warning').count() !== 1 || await dialog.getByRole('checkbox').count()
+      || hostingPrepareRequests || hostingStartRequests) throw new Error('Opening hosting did not preserve its single network confirmation');
+    await shot(friend, '03-explicit-network-confirmation');
+    await dialog.getByRole('button', { name: 'Close Host locally', exact: true }).click();
+    const status = await read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`);
+    if (hostingStartRequests || hostingPrepareRequests || status.running || status.localProfileId)
+      throw new Error('Canceling network confirmation prepared or started a local server');
+    // Retained report key denotes local network consent, not a removed save toggle.
     report.failurePathCoverage.localConsentAndCancel = true;
+    report.failurePathCoverage.networkConfirmationAndCancel = true;
   });
   await stage('bidirectional signed chat and mute', async () => {
     await chat(host, 'Local UI owner message');
@@ -359,64 +396,82 @@ try {
     await ownerOverview(host); await button(host, 'Start server');
     await until(() => read(host), snapshot => snapshot.runs.some(run => run.profileId === input.profileId && run.state === 'Process running'), 'truthful fixture running');
     await shot(host, '05-owner-running'); await stop(host);
+    const originalProfile = (await read(host)).settings.profiles.find(profile => profile.id === input.profileId);
+    const shared = await read(host, `/api/local/profiles/${input.profileId}/shared-world`);
+    if (!originalProfile || shared.latest?.profileId !== input.profileId || shared.latest.number !== 1
+      || !/^[0-9a-f]{64}$/i.test(shared.latest.versionHash) || !shared.latest.signature
+      || !Array.isArray(shared.latest.files) || shared.latest.files.length !== 1 || shared.latest.files[0].path !== 'world.dat')
+      throw new Error('Graceful Stop did not publish the exact synthetic completed-save manifest');
+    completedSave = { version: shared.latest, originalDirectory: originalProfile.worldDirectory,
+      receiverDirectory: path.join(runRoot, 'friend-a', 'received-shared-worlds', friendDeviceId.replaceAll('-', ''),
+        input.profileId.replaceAll('-', ''), shared.latest.versionHash, 'payload') };
     await sharedSaves(friend);
-    await optional(friend, 'Check latest');
-    const getSave = visible(friend.getByRole('button', { name: 'Get latest save', exact: true }));
-    if (await getSave.count() && await getSave.isEnabled()) await getSave.click();
     await until(() => read(friend, `/api/local/friend/${input.profileId}/shared-world`),
-      value => value.consented === true && value.thisPcVersion >= 1 && value.receiptConfirmed === true, 'verified received copy ground truth');
+      value => value.consented === true && value.thisPcVersion === completedSave.version.number && value.receiptConfirmed === true,
+      'automatically verified received copy ground truth');
+    await verifyOwnedPayload(completedSave.originalDirectory, completedSave.version.files, 'host');
+    await verifyOwnedPayload(completedSave.receiverDirectory, completedSave.version.files, 'friend-a');
+    report.copyIntegrity = { latestVersion: completedSave.version.number, filesChecked: completedSave.version.files.length,
+      automaticReceipt: true, receivedHashesMatch: true, originalUnchanged: true };
     await shot(friend, '05-verified-copy');
   });
-  await stage('guided hosting connection repair and single explicit Start', async () => {
-    await nav(friend, 'Play'); await button(friend, 'Host on this PC');
-    let dialog = friend.getByRole('dialog', { name: 'Host on this PC', exact: true });
-    await dialog.waitFor();
-    const server = dialog.getByLabel('Installed server file', { exact: true });
-    if (await server.count()) await server.fill(input.fixturePath);
-    const consent = dialog.getByRole('checkbox', { name: /Keep this save on my PC and host my own copy/ });
-    if (await consent.count()) await consent.check();
-    const firstCheck = friend.waitForResponse(response => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`);
-    await button(friend, 'Continue and start');
-    const blocked = await (await firstCheck).json();
-    if (blocked.ok || blocked.code !== 'LocalConnectionSetupRequired' || blocked.remedy?.kind !== 'Connection')
-      throw new Error('The disabled incoming connection did not produce its exact actionable repair');
-    const repair = dialog.getByRole('button', { name: 'Connection help', exact: true });
-    await repair.waitFor({ timeout });
-    await until(() => repair.isEnabled(), Boolean, 'connection repair ready to use');
-    if (hostingStartRequests !== 0) throw new Error('Connection repair dispatched Start before its checks passed');
-    await shot(friend, '06-actionable-connection-repair');
-    await button(friend, 'Connection help');
-    await button(friend, 'Manage access'); await checked(friend, /Allow Friend app connections/);
-    await nav(friend, 'Join'); await nav(friend, 'Play'); await button(friend, 'Host on this PC');
-    dialog = friend.getByRole('dialog', { name: 'Host on this PC', exact: true });
+  await stage('missing server blocks then one confirmation prepares and Starts', async () => {
+    await nav(friend, 'Play'); await button(friend, 'Host locally');
+    const dialog = friend.getByRole('dialog', { name: 'Host locally', exact: true });
     await dialog.waitFor({ state: 'visible', timeout });
-    {
-      const file = dialog.getByLabel('Installed server file', { exact: true });
-      await file.waitFor({ state: 'visible', timeout });
-      await file.fill(input.fixturePath);
-      const allow = dialog.getByRole('checkbox', { name: /Keep this save on my PC and host my own copy/ });
-      if (await allow.count()) await allow.check();
-      await button(friend, 'Continue and start');
-    }
+    const server = dialog.getByLabel('Installed server file', { exact: true });
+    await server.waitFor({ state: 'visible', timeout });
+    const missing = await read(friend, `/api/local/friend/${input.profileId}/shared-world/hosting`);
+    if (!missing.allowed || !missing.consented || !missing.needsServerFile || missing.readyForManualStart || missing.running
+      || await dialog.getByRole('button', { name: 'Host locally', exact: true }).isEnabled()
+      || hostingPrepareRequests || hostingStartRequests) throw new Error('A missing installed server did not block local hosting');
+    await shot(friend, '06-installed-server-required');
+    await server.fill(input.fixturePath);
+    const confirm = dialog.getByRole('button', { name: 'Host locally', exact: true });
+    await until(() => confirm.isEnabled(), Boolean, 'explicit network confirmation enabled after choosing server');
+    // Product preparation allows 120 seconds and Start another 30. One shared
+    // 165-second deadline covers their automatic sequence without another click.
+    const hostingDeadline = Date.now() + 165000;
+    const remainingHostingTime = () => Math.max(1, hostingDeadline - Date.now());
+    const firstCheck = friend.waitForResponse(response => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`, { timeout: remainingHostingTime() });
+    await confirm.click();
+    const prepared = await (await firstCheck).json();
+    if (!prepared.ok || !prepared.allowed || !prepared.consented || !prepared.readyForManualStart
+      || !prepared.localProfileId || !prepared.branchHash || prepared.running)
+      throw new Error('The single network confirmation did not prepare the exact verified copy');
     const active = await until(() => read(friend), snapshot => {
       const running = snapshot.runs?.filter(run => ['Starting', 'Process running', 'Listening', 'Ready'].includes(run.state));
       return running?.length === 1 && running[0].state === 'Process running' && running[0].runOperationId;
-    }, 'one candidate fixture with exact running identity');
+    }, 'one candidate fixture with exact running identity', remainingHostingTime());
     const run = active.runs.find(item => item.state === 'Process running');
     const profile = active.settings.profiles.find(item => item.id === run.profileId);
     if (!profile || profile.separateCopySourceProfileId !== input.profileId || !profile.separateCopyBranchHash ||
-      run.playerCountTrusted || run.onlinePlayers != null) throw new Error('Candidate run lost its separate source or truthful occupancy');
+      run.playerCountTrusted || run.onlinePlayers != null || !active.settings.companionListeningEnabled)
+      throw new Error('Candidate run lost its separate source, confirmed connection or truthful occupancy');
+    await verifyOwnedPayload(profile.worldDirectory, completedSave.version.files, 'friend-a');
+    await verifyOwnedPayload(completedSave.originalDirectory, completedSave.version.files, 'host');
+    report.copyIntegrity.hostedHashesMatch = true;
+    report.copyIntegrity.freshDestination = path.resolve(profile.worldDirectory).toLowerCase() !== path.resolve(completedSave.originalDirectory).toLowerCase();
+    if (!report.copyIntegrity.freshDestination) throw new Error('Hosting reused the original world directory');
     const localGroups = await until(() => read(friend, '/api/local/world-peers'), groups => groups.some(group =>
-      group.profileId === input.profileId && group.canHost && group.receiveConsented), 'candidate authorized world membership');
+      group.profileId === input.profileId && group.canHost && group.receiveConsented && group.state.branches.some(item =>
+        item.branch.branchHash === profile.separateCopyBranchHash && item.deviceId === group.selfDeviceId
+        && item.authorized && !item.hasConflict && item.branch.baseVersionHash === completedSave.version.versionHash)),
+      'candidate authorized world membership and exact selected save', remainingHostingTime());
     const group = localGroups.find(item => item.profileId === input.profileId);
+    const selected = group.state.branches.find(item => item.branch.branchHash === profile.separateCopyBranchHash
+      && item.deviceId === group.selfDeviceId && item.authorized && !item.hasConflict);
+    if (selected?.branch.baseVersionHash !== completedSave.version.versionHash)
+      throw new Error('Hosting selected a different completed save');
     candidate = { profileId: profile.id, runId: run.runOperationId, branchHash: profile.separateCopyBranchHash,
       deviceId: group.selfDeviceId, groupKey: group.groupKey, root: group.state.root,
       endpoint: active.settings.companionEndpoint.replace(/\/$/, '') };
     await until(async () => hostingStartResults, results => results.length === 1 && results[0].ok && results[0].status < 400,
-      'one successful guided Start response');
-    if (hostingStartRequests !== 1) throw new Error('Guided hosting dispatched duplicate Start requests');
+      'one successful guided Start response', remainingHostingTime());
+    if (hostingPrepareRequests !== 1 || hostingStartRequests !== 1) throw new Error('The single confirmation dispatched duplicate preparation or Start requests');
     report.guidedHosting = { exactRunningSession: true, separateBranch: true, truthfulUnknownPlayers: true,
+      missingServerBlocked: true, singleNetworkConfirmation: true, prepareRequests: hostingPrepareRequests,
       startRequests: hostingStartRequests, successfulStartResponses: hostingStartResults.filter(result => result.ok).length };
     await nav(friend, 'Overview');
     if (active.runs.filter(run => run.state === 'Ready').length) throw new Error('Fixture falsely reports game readiness');
@@ -462,6 +517,10 @@ try {
   await stage('candidate owner Stop', async () => {
     await nav(friend, 'Host'); await optional(friend, 'Return to selected server'); await nav(friend, 'Overview');
     await stop(friend); await shot(friend, '08-candidate-stopped');
+    await verifyOwnedPayload(completedSave.originalDirectory, completedSave.version.files, 'host');
+    await verifyOwnedPayload(completedSave.receiverDirectory, completedSave.version.files, 'friend-a');
+    if (hostingStartRequests !== 1 || hostingPrepareRequests !== 1) throw new Error('Discovery, polling or Stop repeated hosting intent');
+    report.copyIntegrity.originalUnchangedAfterCandidateStop = true;
   });
   if (report.errors.length || report.failedRequests.length) throw new Error('Browser errors, failed requests or forbidden native interactions were observed');
   report.ok = true;

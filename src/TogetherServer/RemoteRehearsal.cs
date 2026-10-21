@@ -73,7 +73,7 @@ internal static class RemoteRehearsal
 public sealed partial class HostManager
 {
     // This fixed owner action creates only synthetic app-owned data. Pairing,
-    // room membership, Receive grants and Friend consent remain separate actions.
+    // assignment and the server's sharing policy still control access.
     public async Task<RemoteRehearsalSetup> PrepareRemoteRehearsalAsync(bool staging)
     {
         if (!staging) return new(false, "StagingRequired", "Open the development Host to prepare a rehearsal.");
@@ -140,7 +140,7 @@ public sealed partial class HostManager
             AdvanceReadModel();
             Volatile.Write(ref lastOwnerSnapshot, Snapshot());
             return new(true, "RehearsalPrepared",
-                "Pair the test PC to Connection rehearsal, grant Receive, and allow saves on that PC. No game world is used.", profile.Id);
+                "Pair the test PC with Connection rehearsal. Its test save is shared automatically. No game world is used.", profile.Id);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
             CryptographicException or JsonException or ArgumentException)
