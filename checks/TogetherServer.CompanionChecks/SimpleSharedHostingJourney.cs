@@ -121,8 +121,7 @@ internal static partial class CoreRemoteJourney
                 var previousHash = initialVersion?.VersionHash;
                 var originalStart = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
                 LabRequire(originalStart.Ok, "SimpleOriginalStartRejected");
-                TrackFixture(originalStart.Snapshot.Runs.Single(item => item.ProfileId == profile.Id));
-                _ = await WaitForRunStateAsync(owner, profile.Id, "Process running");
+                await TrackFixtureAsync(originalStart.Snapshot.Runs.Single(item => item.ProfileId == profile.Id), owner);
                 LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
                     "SimpleOriginalStopRejected");
                 initialVersion = (await PairingLabGetAsync<SharedWorldStatus>(owner,
@@ -157,8 +156,14 @@ internal static partial class CoreRemoteJourney
                 LabRequire(result.Ok || result.Code == "LatestSaveChanged", "SimpleFriendStartRejected-" + result.Code);
                 return result.Ok;
             }, "SimpleFriendStartDidNotStabilize", TimeSpan.FromSeconds(45));
-            var candidateSnapshot = await SnapshotInHostModeAsync(first);
-            TrackFixture(candidateSnapshot.Runs.Single(item => item.ProfileId == prepared.LocalProfileId));
+            HostSnapshot candidateSnapshot;
+            await ModeAsync(first, hostMode: true);
+            try
+            {
+                candidateSnapshot = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
+                await TrackFixtureAsync(candidateSnapshot.Runs.Single(item => item.ProfileId == prepared.LocalProfileId), first);
+            }
+            finally { await ModeAsync(first, hostMode: false); }
             await SyncAsync(first);
             await SyncAsync(owner);
             await SyncAsync(second);
@@ -225,7 +230,7 @@ internal static partial class CoreRemoteJourney
             }, "SimpleReturningOwnerStartDidNotStabilize", TimeSpan.FromSeconds(45));
             var returned = returnedStart ?? throw new PairingLabFailure("SimpleReturningOwnerResultMissing");
             var returnedRun = returned.Snapshot.Runs.Single(item => item.ProcessId is not null);
-            TrackFixture(returnedRun);
+            await TrackFixtureAsync(returnedRun, owner);
             var returnedProfile = returned.Snapshot.Settings.Profiles.Single(item => item.Id == returnedRun.ProfileId);
             LabRequire(returnedProfile.SeparateCopySourceProfileId == profile.Id && returnedProfile.Id != profile.Id &&
                 AppInstance.ContainsPath(hostData, returnedProfile.WorldDirectory) &&
@@ -315,10 +320,35 @@ internal static partial class CoreRemoteJourney
             LabRequire(owned.Matches(), "SimpleAppIdentityMismatch-" + owned.Role);
             WindowsListenerOwners.RequireTogetherServerOwner(port, owned.Process);
         }
-        void TrackFixture(RunView run)
+        async Task TrackFixtureAsync(RunView initial, HttpClient client)
         {
-            LabRequire(run.ProcessId is not null && run.RunOperationId is not null, "SimpleFixtureIdentityMissing");
-            var owned = new PairingLabProcess(Process.GetProcessById(run.ProcessId!.Value), "fixture", fixturePath);
+            LabRequire(initial.ProcessId is not null, "SimpleFixtureIdentityMissing");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            RunView? matched = null;
+            try
+            {
+                // Start may return before Windows exposes MainModule. Observe
+                // only its exact run; no Start or replacement PID is accepted.
+                while (matched is null)
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get, "/api/local/snapshot");
+                    request.Headers.Add("X-TogetherServer-Local", "1");
+                    using var response = await client.SendAsync(request, deadline.Token);
+                    response.EnsureSuccessStatusCode();
+                    var snapshot = await response.Content.ReadFromJsonAsync<HostSnapshot>(Json, deadline.Token);
+                    var run = snapshot?.Runs.SingleOrDefault(item => item.ProfileId == initial.ProfileId);
+                    LabRequire(run is not null && run.ProcessId == initial.ProcessId &&
+                        (initial.RunOperationId is null || run.RunOperationId is null || run.RunOperationId == initial.RunOperationId),
+                        "SimpleFixtureIdentityChanged");
+                    LabRequire(run.State != "Failed", "SimpleFixtureExited");
+                    if (run.State == "Process running" && run.RunOperationId is { } operationId && operationId != Guid.Empty)
+                        matched = run;
+                    else await Task.Delay(100, deadline.Token);
+                }
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            { throw new PairingLabFailure("SimpleFixtureIdentityNotObserved"); }
+            var owned = new PairingLabProcess(Process.GetProcessById(matched.ProcessId!.Value), "fixture", fixturePath);
             processes.Add(owned);
             LabRequire(owned.Matches(), "SimpleFixtureIdentityMismatch");
         }
