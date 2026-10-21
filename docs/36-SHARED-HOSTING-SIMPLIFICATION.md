@@ -69,12 +69,13 @@ stops a game.
 
 ## Acceptance and remaining checks
 
-The complete code-only gate passes after correcting an incomplete-vault
-inventory race and a separate older-history retention gap. Earlier hosted
-checks include both a diagnostic-enabled pass and ordinary failures; the
-expanded final packaged journey and final directory rendering remain pending.
-Earlier failed results remain failed and do not establish acceptance for a
-later candidate.
+The complete code-only gate, 1,342-test UI suite and final 20-case hosted
+rendering pass after correcting an incomplete-vault inventory race and a
+separate older-history retention gap. The final immutable packaged candidate
+passes the expanded eight-stage journey twice with diagnostics off. Earlier
+failed results remain failed and do not establish acceptance for a later
+candidate. Hosted evidence uses synthetic games and private addresses on one
+runner; real-PC, outside routing and real-game acceptance remain open.
 
 Local automated work is code-only. No app, game, console fixture, browser,
 installer or native dialog is launched on the owner's active desktop.
@@ -101,8 +102,8 @@ Local verification on 2026-10-21:
 | Hosted-renderer source checks | PASS: 31 fixture/guard/inventory tests, script syntax, workflow YAML and all ten workflow PowerShell blocks; expanded to 20 bounded render plans |
 | Production React bundle | PASS: existing JavaScript chunk-size advisory above 500 kB |
 | Normal app build embedding the current bundle | PASS: zero warnings/errors |
-| Packaged three-app private-address journey | One diagnostic run passed; following ordinary run and diagnostic retry failed; source corrections pass locally, expanded final hosted check pending |
-| Desktop/narrow rendered UI | Final switch-first view passes 18/18, zero layout findings/errors; desktop and narrow screenshots inspected |
+| Packaged three-app private-address journey | PASS: final immutable candidate passes two ordinary diagnostic-disabled eight-stage journeys, original v2 to Friend v3 to returning owner; original world preserved and owned processes cleaned up |
+| Desktop/narrow rendered UI | Final logical-server view passes 20/20, zero layout findings/errors; desktop and narrow screenshots inspected |
 | Physical PCs, outside game route and real saved game | Not executed; external acceptance remains open |
 
 One source symbolic-link subcase is explicitly SKIPPED because this account
@@ -314,7 +315,17 @@ is checking immutable source `2cf8814580e237fa9a627622a2e40240bc318ff6`.
 Render job `119436115605` includes the returning-owner continuation at both
 widths. Packaged job `119436115261` requires two ordinary diagnostic-disabled
 journeys against one executable, including two linked original publications
-before the Friend's descendant and outbound-only relay. Its result is pending.
+before the Friend's descendant and outbound-only relay. Both pass all eight
+stages in 150,454 ms and 155,932 ms. Each records source version 2 and descendant
+version 3, one Friend Start attempt, one owner Start attempt, no diagnostic
+report, empty owned jobs at cleanup and no process identity-review flags.
+The original world's bytes remain unchanged, and signed global withdrawal
+passes. This is same-runner private-address synthetic evidence.
+
+Candidate SHA-256:
+`88468dd7abb91ecbb5037ffd1b37c2df97b66d7973e8589b202730b24ae1a175`.
+Hash-verified journey artifact `12375331637` has ZIP SHA-256
+`fe6e1553a4b19b10ea47b151b973c437262f80a0d42dd96c773d5b3d9873cf65`.
 
 Render job `119436115605` failed only the two new returning-owner cases; 18/20
 passed with zero layout, JavaScript, console or fatal errors. The assertion
@@ -331,3 +342,41 @@ the corrected hosted check passes.
 
 Hash-verified render artifact `12373028771` has ZIP SHA-256
 `54f62dd91bdac424fc535e936de201548170394ec99578431965ffca40a35ef9`.
+
+### Corrected final UI check
+
+[Run 39662205609](https://github.com/daltonstates/TogetherServer/actions/runs/39662205609)
+checks source `67f66591453544fffa183d13d815b278dc0af0d5`, with no product changes
+after the combined candidate. Render job `119437881698` passes all 20 cases,
+54 screenshots, zero skips, layout findings, JavaScript, console and fatal
+errors. The final returning-owner desktop/narrow screens and narrow Friend
+network confirmation were visually inspected. The single local server row,
+original sharing switch and one-confirmation Friend action are unobstructed.
+
+Hash-verified render artifact `12375755731` has ZIP SHA-256
+`8d9aac8ea993fcaace4c724afe33701e6653347a25f1625a8ed516d0b73d4e66`.
+Its built index SHA-256 is
+`6daccc7ea4d02a3d42cc5a9184cc19060d5997a9f6125afa7e83bbf66936a8e1`.
+Packaged job `119437882319` passes both ordinary diagnostic-disabled journeys
+in 174,908 ms and 174,573 ms. Each passes all eight stages with original version
+2 and Friend descendant version 3, including listener-less receipt, outbound
+relay with the producer offline and normal returning-owner Start. Each Friend
+and owner Start succeeds on its first attempt. Original bytes remain unchanged,
+global disable withdraws signed rights, cleanup reports `jobEmpty: true`, all
+owned processes are gone and no identity-review flags remain. Neither run
+records a diagnostic report; no diagnostic retry ran.
+
+Final candidate SHA-256:
+`d4a78b2f66b06e0d9a079a8956d509ed6184a8ad135cc51149014847094dd958`.
+Product version: `0.3.3+67f66591453544fffa183d13d815b278dc0af0d5`.
+Hash-verified journey artifact `12375691958` has ZIP SHA-256
+`69c6770d866b72fc7af196296ff89f4e8e471195acd3bb1a423b569f228c5547`.
+Its candidate record binds the same source revision and run ID as the final
+render evidence. The two raw reports and candidate record were inspected after
+artifact hash verification. Ignored downloaded evidence is under
+`local-data/simple-hosting-hosted-67f6659/`.
+
+The following documentation-only commit records this evidence without changing
+the tested product or harness. No release, tag, production installation, public
+network change or real-world access was performed. The real-PC and real-game
+acceptance boundaries above remain unchanged.
