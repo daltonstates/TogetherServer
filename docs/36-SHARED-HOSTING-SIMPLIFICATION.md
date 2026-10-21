@@ -380,3 +380,25 @@ The following documentation-only commit records this evidence without changing
 the tested product or harness. No release, tag, production installation, public
 network change or real-world access was performed. The real-PC and real-game
 acceptance boundaries above remain unchanged.
+
+### Production EXE handoff, 2026-10-21
+
+Owner-requested production artifact:
+`local-data/shared-hosting-production-20261021-9a4d32b/TogetherServer.exe`.
+Source `9a4d32b2710bdd565d4c731d1b254b492093c404` differs from the hosted
+validated source only in this delivery document. This is a fresh local build,
+separate from the immutable hosted candidate recorded above.
+
+Pinned Node 24.14.1 and .NET SDK 10.0.301 were verified. The production React
+bundle, locked app restore and Release publish passed. Static package inspection
+confirmed Windows GUI subsystem 2, the matching current assembly and all seven
+embedded UI assets byte-for-byte. The existing React chunk-size advisory remains.
+
+The self-contained Windows x64 single-file EXE is 66,131,749 bytes, file version
+`0.3.3.0`, product version
+`0.3.3+9a4d32b2710bdd565d4c731d1b254b492093c404`, Authenticode `NotSigned`.
+SHA-256:
+`f2f71239aa5514b11105ac0b096d781504c34e4ce16d92207985cf727d47a6fe`.
+Its checksum, `build-info.json` and `package-evidence.json` are beside the EXE
+in ignored local output. It was not launched, installed or used to replace the
+running app. No new runtime/game/network acceptance is claimed for this build.
