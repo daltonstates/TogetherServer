@@ -306,3 +306,28 @@ warnings/errors. A new desktop/narrow hosted case starts from
 a current continuation, original and older retained copy, and checks the one
 logical row, original policy request and absence of a guest label. The bounded
 render plan now contains 20 cases.
+
+### Final combined candidate
+
+[Run 39661708341](https://github.com/daltonstates/TogetherServer/actions/runs/39661708341)
+is checking immutable source `2cf8814580e237fa9a627622a2e40240bc318ff6`.
+Render job `119436115605` includes the returning-owner continuation at both
+widths. Packaged job `119436115261` requires two ordinary diagnostic-disabled
+journeys against one executable, including two linked original publications
+before the Friend's descendant and outbound-only relay. Its result is pending.
+
+Render job `119436115605` failed only the two new returning-owner cases; 18/20
+passed with zero layout, JavaScript, console or fatal errors. The assertion
+incorrectly treated the active continuation's earlier Overview save-status
+read as a policy-editor read. The captured request trace contains the correct
+original status and governance requests when Sharing opens. The corrected
+check identifies the policy editor by its governance read, still requires its
+paired original status read, and rejects any child governance request. All 31
+renderer source checks pass, including this exact trace and a wrong-policy
+counterexample. No product code changed. Desktop and narrow failure screenshots
+were inspected: one local server row, the original switch checked and enabled,
+and no guest label or layout obstruction. They remain failure evidence until
+the corrected hosted check passes.
+
+Hash-verified render artifact `12373028771` has ZIP SHA-256
+`54f62dd91bdac424fc535e936de201548170394ec99578431965ffca40a35ef9`.

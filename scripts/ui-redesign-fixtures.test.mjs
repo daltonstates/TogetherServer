@@ -901,4 +901,21 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   };
   await assertSimpleHostingUi(page, ownerOn, { assertions: [] }, { requests: [{ method: 'PUT', path: ownerBase }] });
   assert.equal(waited, true);
+  const continuation = simpleHostingCases.find(item => item.id === 'simple-hosting-owner-continuation');
+  const continuationPage = {
+    locator: selector => selector === '.shared-world-workspace' ? workspace : selector === '.server-directory'
+      ? { getByRole: () => ({ count: async () => 0 }) }
+      : { count: async () => Number(selector.includes('Open Weekend Valheim on this PC')) },
+    waitForFunction: async () => {}
+  };
+  returnedOwner.requests = [
+    { method: 'GET', path: `/api/local/profiles/${current.id}/shared-world` },
+    { method: 'GET', path: `/api/local/profiles/${original.id}/shared-world` },
+    { method: 'GET', path: `/api/local/profiles/${original.id}/shared-world/governance` }
+  ];
+  await assertSimpleHostingUi(continuationPage, continuation, { assertions: [] }, returnedOwner);
+  returnedOwner.requests[2].path = `/api/local/profiles/${current.id}/shared-world/governance`;
+  await assert.rejects(assertSimpleHostingUi(continuationPage, continuation, { assertions: [] }, returnedOwner),
+    /Owner continuation sharing must use its exact original policy/u,
+    'reading active save status is valid, but editing the child policy remains rejected');
 });

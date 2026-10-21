@@ -65,9 +65,13 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       throw new Error('Host switch did not retain the exact requested state');
     if (testCase.fixture?.ownerContinuations) {
       const original = state.host.settings.profiles.find(profile => !profile.separateCopySourceProfileId);
+      // Overview may read the active continuation's own saved status before
+      // Sharing opens. The policy editor is identified by its roster read.
       const policyReads = state.requests.filter(request => request.method === 'GET' &&
-        /\/shared-world(?:\/governance)?$/u.test(request.path));
-      if (!original || !policyReads.length || policyReads.some(request => !request.path.startsWith(`/api/local/profiles/${original.id}/`)))
+        request.path.endsWith('/shared-world/governance'));
+      const policyBase = original && `/api/local/profiles/${original.id}/shared-world`;
+      if (!policyBase || !policyReads.length || policyReads.some(request => request.path !== `${policyBase}/governance`) ||
+          !state.requests.some(request => request.method === 'GET' && request.path === policyBase))
         throw new Error('Owner continuation sharing must use its exact original policy');
       if (await page.locator('.server-directory button[aria-label="Open Weekend Valheim on this PC"]').count() !== 1 ||
           await page.locator('.server-directory').getByRole('heading', { name: 'Hosting for friends', exact: true }).count() ||
