@@ -1056,8 +1056,20 @@ internal static partial class CoreRemoteJourney
         if (!value) throw new PairingLabFailure(code);
     }
 
-    private static async Task<T> PairingLabGetAsync<T>(HttpClient client, string path) =>
-        await client.GetFromJsonAsync<T>(path, Json) ?? throw new PairingLabFailure("LocalResponseMissing");
+    private static async Task<T> PairingLabGetAsync<T>(HttpClient client, string path,
+        [System.Runtime.CompilerServices.CallerLineNumber] int sourceLine = 0)
+    {
+        try
+        {
+            return await client.GetFromJsonAsync<T>(path, Json) ?? throw new PairingLabFailure("LocalResponseMissing");
+        }
+        catch (HttpRequestException error)
+        {
+            // Export only the status and this public check's source line.
+            // A URL, response body or raw exception can contain pairing data.
+            throw new PairingLabFailure($"LocalGet{(int?)error.StatusCode ?? 0}At{sourceLine}");
+        }
+    }
 
     private static async Task PairingLabWaitAsync(Func<Task<bool>> check, string code, TimeSpan? timeout = null)
     {

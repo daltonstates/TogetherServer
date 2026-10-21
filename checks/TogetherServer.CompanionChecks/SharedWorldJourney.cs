@@ -564,7 +564,9 @@ internal static partial class SharedWorldJourney
                 splitVersion.GroupId.ToString("N"), splitVersion.Number.ToString());
             var retainedManifest = JsonSerializer.Deserialize<SharedWorldVersion>(
                 File.ReadAllText(Path.Combine(retainedRoot, "version.json")), Json);
-            Require(!blockedStart.Ok && blockedStart.Code == "SharedWorldAuthorityBlocked" &&
+            // Ordinary Start checks latest shared history before the lifecycle
+            // authority fence. Either exact guard must refuse these signed heads.
+            Require(!blockedStart.Ok && blockedStart.Code is ("SharedSaveHistoryNeedsReview" or "SharedWorldAuthorityBlocked") &&
                 !blockedSharing.Ok && blockedSharing.Code == "SuccessorRosterReadOnly" &&
                 manifest.StatusCode == HttpStatusCode.Forbidden &&
                 chunk.StatusCode == HttpStatusCode.Forbidden &&

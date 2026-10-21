@@ -14,7 +14,7 @@ jobs:
   existing:
     name: Complete Existing acceptance
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     defaults:
       run:
         shell: pwsh
@@ -27,31 +27,86 @@ jobs:
       uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
       with:
         global-json-file: global.json
-    - name: Install the pinned Node runtime
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-      with:
-        node-version-file: .node-version
-        cache: npm
-        cache-dependency-path: ui/package-lock.json
     - name: Verify prior results and retrieve the unchanged candidate
       env:
         GH_TOKEN: ${{ github.token }}
       run: ./scripts/receive-release-0331-candidate.ps1
-    - name: Install locked UI test dependencies
-      working-directory: ui
+    - name: Retain only the seventeen completed Existing passes
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: ./scripts/verify-release-0331-prior.ps1 -Scope Existing
+    - name: Compile only the remaining check dispatcher
       run: |
-        npm ci --ignore-scripts --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw 'Locked UI installation failed.' }
-    - name: Complete the Existing suite with the immutable candidate
+        dotnet restore TogetherServer.slnx --locked-mode
+        if ($LASTEXITCODE -ne 0) { throw 'Locked verification restore failed.' }
+        dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+        if ($LASTEXITCODE -ne 0) { throw 'Remaining dispatcher compilation failed.' }
+    - name: Complete all ten remaining Existing stages
       run: |
-        # Explicit hosted unattended Windows opt-in, synthetic data only.
-        ./scripts/verify-release.ps1 -AppPath local-data/release-candidate/TogetherServer.exe -CandidateSourceRevision $env:CANDIDATE_SOURCE_REVISION -Suite Existing -AllowInteractiveTests
+        # Explicit dedicated unattended Windows opt-in. Disposable data only.
+        $ErrorActionPreference = 'Stop'
+        $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+        $harness = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
+        $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/existing-remainder -Force
+        $checks = [Collections.Generic.List[object]]::new()
+        $expected = @(
+          @{name='Shared Worlds packaged journey';run={dotnet $harness $candidate --shared-world-journey}},
+          @{name='Staging LiveSave owner action';run={dotnet $harness $candidate --live-save-action}},
+          @{name='Shared LiveSave packaged transfer journey';run={dotnet $harness $candidate --shared-live-transfer-journey}},
+          @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate}},
+          @{name='Solution formatting';run={dotnet format TogetherServer.slnx --verify-no-changes --no-restore}},
+          @{name='Packaged served smoke';run={./checks/served-smoke.ps1 -AppPath $candidate}},
+          @{name='Production plus staging isolation smoke';run={./checks/staging-smoke.ps1 -AppPath $candidate}},
+          @{name='Packaged hidden desktop smoke';run={./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests}},
+          @{name='Packaged interactive desktop smoke';run={./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests}},
+          @{name='Update handoff smoke';run={./checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests}}
+        )
+        try {
+          foreach ($check in $expected) {
+            $started = [DateTime]::UtcNow
+            Write-Host "== $($check.name) =="
+            try {
+              $global:LASTEXITCODE = 0
+              & $check.run
+              if ($LASTEXITCODE -ne 0) { throw "The remaining stage failed: $($check.name)." }
+              $checks.Add(@{name=$check.name;outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+            } catch {
+              $checks.Add(@{name=$check.name;outcome='failed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+              throw
+            }
+          }
+          if ($checks.Count -ne 10) { throw 'Remaining Existing stage inventory changed.' }
+        } finally {
+          $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{suite='ExistingContinuation';sourceRevision=$env:CANDIDATE_SOURCE_REVISION;candidateSha256=$hash;
+            verificationRevision=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;
+            retainedRunId=39677264616;retainedJobId=119490251587;retainedPassedChecks=17;
+            checks=@($checks.ToArray());expectedChecks=10;nativeNotificationVerified=$false} |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'report.json') -Encoding utf8
+          if ($hash -ne $env:CANDIDATE_SHA256) { throw 'The immutable candidate changed during remaining Existing checks.' }
+        }
     - name: Retain bounded verification evidence
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
-        name: continued-existing-evidence
-        path: local-data/ci-evidence/
+        name: retained-existing-evidence
+        path: local-data/ci-evidence/retained-existing/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Retain bounded verification evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: existing-continuation-context
+        path: local-data/ci-evidence/continuation/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Retain bounded verification evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: continued-existing-remainder-evidence
+        path: local-data/ci-evidence/existing-remainder/
         if-no-files-found: error
         retention-days: 7
   local-pairing:
@@ -117,7 +172,7 @@ jobs:
         if ($lan.Count -ne 1) { throw 'The hosted local pairing lane requires one assigned preferred private IPv4 address.' }
         $labRoot = Join-Path (Get-Location) 'local-data/local-pairing-lab'
         try {
-          foreach ($mode in @('loopback', 'lan-api', 'ux')) {
+          foreach ($mode in @('lan-api', 'ux', 'loopback')) {
             $before = @(if (Test-Path -LiteralPath $labRoot) { Get-ChildItem -LiteralPath $labRoot -Directory | ForEach-Object Name })
             $labArguments = @($harness, $candidate, '--local-pairing-lab-journey', '--allow-windowless-lab')
             if ($mode -ne 'loopback') { $labArguments += @('--lab-lan-address', $lan[0].IPAddress) }
@@ -232,7 +287,7 @@ jobs:
         git merge-base --is-ancestor $verifiedSource HEAD
         if ($LASTEXITCODE -ne 0) { throw 'Stable verification source is not an ancestor.' }
         $changedChecks = @(git diff --name-only $verifiedSource HEAD -- checks/TogetherServer.CompanionChecks checks/update-handoff-smoke.ps1)
-        if ($LASTEXITCODE -ne 0 -or @($changedChecks | Where-Object { $_ -ne 'checks/TogetherServer.CompanionChecks/LocalPairingLabJourney.cs' }).Count) {
+        if ($LASTEXITCODE -ne 0 -or @($changedChecks | Where-Object { $_ -notin @('checks/TogetherServer.CompanionChecks/LocalPairingLabJourney.cs','checks/TogetherServer.CompanionChecks/SharedWorldJourney.cs') }).Count) {
           throw 'Stable compatibility or update check source changed after its successful run.'
         }
         $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/mixed-version -Force
@@ -308,64 +363,19 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: ./scripts/receive-release-0331-candidate.ps1
-    - name: Install the pinned installer compiler on this dedicated runner
-      shell: pwsh
-      run: |
-        $compilerSetup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
-        Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $compilerSetup
-        if ((Get-FileHash -LiteralPath $compilerSetup -Algorithm SHA256).Hash -ne '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732') { throw 'Pinned installer compiler digest mismatch.' }
-        $signature = Get-AuthenticodeSignature -LiteralPath $compilerSetup
-        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Pyrsys B\.V\.') { throw 'Installer compiler publisher verification failed.' }
-        $compilerRoot = Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6'
-        $installArguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', "/DIR=`"$compilerRoot`"")
-        $setup = Start-Process -FilePath $compilerSetup -ArgumentList $installArguments -WindowStyle Hidden -Wait -PassThru
-        if ($setup.ExitCode -ne 0 -or !(Test-Path -LiteralPath (Join-Path $compilerRoot 'ISCC.exe'))) { throw 'Installer compiler installation failed.' }
-    - name: Build and test the installer around the verified bytes
-      shell: pwsh
-      run: |
-        $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-        $hashBefore = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash
-        $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
-        if ((Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -ne "$version+$env:CANDIDATE_SOURCE_REVISION") { throw 'Candidate source identity mismatch.' }
-        ./scripts/build-installer.ps1 -AppPath $candidate -OutputDirectory local-data/release-assets -CompilerPath (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe')
-        if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-        ./checks/installer-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
-        if ($LASTEXITCODE -ne 0) { throw 'Installer acceptance failed.' }
-        ./checks/installer-ui-smoke.ps1 -InstallerPath local-data/release-assets/TogetherServer-Setup-win-x64.exe -ExpectedAppPath $candidate -AllowInteractiveTests
-        if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hashBefore) { throw 'Verified candidate bytes changed during packaging.' }
-        Copy-Item -LiteralPath $candidate -Destination local-data/release-assets/TogetherServer-win-x64.exe
-        $assets = @()
-        foreach ($name in @('TogetherServer-win-x64.exe', 'TogetherServer-Setup-win-x64.exe')) {
-          $file = Get-Item -LiteralPath (Join-Path 'local-data/release-assets' $name)
-          $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content -LiteralPath ($file.FullName + '.sha256') -Value "$hash  $name" -Encoding ascii
-          $assets += @{name=$name; sha256=$hash; bytes=$file.Length; authenticode=[string](Get-AuthenticodeSignature -LiteralPath $file.FullName).Status}
-        }
-        @{version=$version; sourceRevision=$env:CANDIDATE_SOURCE_REVISION; verificationRevision=$env:GITHUB_SHA;
-          candidateSha256=$hashBefore.ToLowerInvariant(); assets=$assets; fullyAccepted=$false; reviewOnly=$true;
-          acceptanceScope='Installer and unchanged portable bytes';functionalGatesCheckedAtPackaging=$false;
-          candidateRunId=39669799182; candidateJobId=119464350297; candidateArtifactId=12379945602;
-          candidateArtifactZipSha256='4bf29ea3be0a2eaf3bed3db31eddf82853376538b77c85ee947db575954fc276';
-          verificationRunId=$env:GITHUB_RUN_ID; verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT; packageJob=$env:GITHUB_JOB;
-          stableVerificationSource='ed2241894c80b3bc0dde1dde0c0abe257266bf81';stableRunId=39673344825;stableJobId=119476671653;
-          stableEvidenceArtifactId=12381051907;stableEvidenceZipSha256='3ba56edc45a1bd8bdfcf2c39c2e53a05a612a112788e42912ee0cdb1008e2d46';
-          nativeNotificationVerified=$false; nativeRequiredCases=13; nativePassedCases=12; nativeBlockedCases=1;
-          nativeJobId=119465829361; nativeEvidenceArtifactId=12379591472;
-          nativeEvidenceZipSha256='eb6cef28fed144aceaa9aba6cf949633776c8415f840dd532e7a6924353c06d2';
-          knownLimitations=@('OS QuietTime blocked actual notification delivery/click. The original Desktop job remains failed.',
-            'Physical second-PC, WAN, real game join/save/load/graceful Stop/restart acceptance remains open.',
-            'Unsigned EXEs have no Authenticode publisher identity or SmartScreen trust claim.');
-          acceptance='This job passed installer smoke, all three wizard choices and unchanged portable-byte verification. Functional jobs execute independently; publication must separately verify successful Existing, loopback/LAN/ten-stage UX and exact retained stable evidence for this run. Native notification remains blocked, so full native acceptance is not claimed.'} |
-          ConvertTo-Json -Depth 6 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
-    - name: Preserve bounded actual installer wizard UI evidence
+    - name: Retain the exact tested installer and portable assets
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: ./scripts/verify-release-0331-prior.ps1 -Scope Package
+    - name: Retain bounded verification evidence
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
-        name: installer-ui-evidence
-        path: local-data/ci-evidence/installer-ui/
+        name: retained-package-evidence
+        path: local-data/ci-evidence/retained-package/
         if-no-files-found: error
         retention-days: 7
-    - name: Preserve the verified portable and installer assets
+    - name: Preserve the unchanged tested release assets
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: windows-release-assets

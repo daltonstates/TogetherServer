@@ -9,7 +9,7 @@ git merge-base --is-ancestor $revision HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Verification source does not descend from the candidate.' }
 $changed = @(git diff --no-renames --name-only $revision HEAD)
 if ($LASTEXITCODE -ne 0) { throw 'Could not compare verification inputs.' }
-$allowed = '^(docs/|checks/TogetherServer\.Checks/(Program|SharedSaveReceiptRetryChecks)\.cs$|checks/TogetherServer\.CompanionChecks/LocalPairingLabJourney\.cs$|checks/update-handoff-smoke\.ps1$|ui/src/ServerFilesPanel\.test\.tsx$|scripts/(verify-release|receive-release-0331-candidate)\.ps1$|\.github/workflows/release-0331-continuation\.yml$)'
+$allowed = '^(docs/|checks/TogetherServer\.Checks/(Program|SharedSaveReceiptRetryChecks)\.cs$|checks/TogetherServer\.CompanionChecks/(LocalPairingLabJourney|SharedWorldJourney)\.cs$|checks/update-handoff-smoke\.ps1$|ui/src/ServerFilesPanel\.test\.tsx$|scripts/(verify-release|receive-release-0331-candidate|verify-release-0331-prior)\.ps1$|\.github/workflows/release-0331-continuation\.yml$)'
 if (@($changed | Where-Object { $_ -notmatch $allowed }).Count) { throw 'Product or unrelated inputs changed after candidate compilation.' }
 $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/continuation -Force
 $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
