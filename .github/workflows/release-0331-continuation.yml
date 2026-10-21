@@ -210,7 +210,7 @@ jobs:
   stable:
     name: Complete stable 0.3.3 compatibility and update
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     defaults:
       run:
         shell: pwsh
@@ -219,49 +219,70 @@ jobs:
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       with:
         fetch-depth: 0
-    - name: Install the pinned .NET SDK
-      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-      with:
-        global-json-file: global.json
     - name: Verify prior results and retrieve the unchanged candidate
       env:
         GH_TOKEN: ${{ github.token }}
       run: ./scripts/receive-release-0331-candidate.ps1
-    - name: Fetch and verify the exact published legacy app
-      shell: pwsh
+    - name: Retain exact completed stable compatibility and update evidence
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        $legacyVersion = '0.3.3'
-        $legacyRoot = New-Item -ItemType Directory -Path "local-data/compatibility/$legacyVersion" -Force
-        $legacy = Join-Path $legacyRoot.FullName 'TogetherServer.exe'
-        Invoke-WebRequest -Uri "https://github.com/daltonstates/TogetherServer/releases/download/v$legacyVersion/TogetherServer-win-x64.exe" -OutFile $legacy
-        $expected = 'c09a4d086145475ff94def32ca7aa95aa1ad260d8edf074e3eb83d36e03280cb'
-        if ((Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -ne $expected) { throw "Published $legacyVersion digest mismatch." }
-        $parsedLegacyVersion = [Version]$legacyVersion
-        $expectedLegacyFileVersion = [Version]::new($parsedLegacyVersion.Major, $parsedLegacyVersion.Minor,
-          $parsedLegacyVersion.Build, [Math]::Max(0, $parsedLegacyVersion.Revision))
-        if ([Version](Get-Item -LiteralPath $legacy).VersionInfo.FileVersion -ne $expectedLegacyFileVersion) { throw 'Legacy app version mismatch.' }
-    - name: Test both old and new Host/Friend role directions
-      shell: pwsh
-      run: |
+        $ErrorActionPreference = 'Stop'
+        $verifiedSource = 'ed2241894c80b3bc0dde1dde0c0abe257266bf81'
+        git merge-base --is-ancestor $verifiedSource HEAD
+        if ($LASTEXITCODE -ne 0) { throw 'Stable verification source is not an ancestor.' }
+        $changedChecks = @(git diff --name-only $verifiedSource HEAD -- checks/TogetherServer.CompanionChecks checks/update-handoff-smoke.ps1)
+        if ($LASTEXITCODE -ne 0 -or @($changedChecks | Where-Object { $_ -ne 'checks/TogetherServer.CompanionChecks/LocalPairingLabJourney.cs' }).Count) {
+          throw 'Stable compatibility or update check source changed after its successful run.'
+        }
         $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/mixed-version -Force
-        $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-        $legacy = (Resolve-Path 'local-data/compatibility/0.3.3/TogetherServer.exe').Path
-        dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $candidate --mixed-version-journey --legacy-app-path $legacy --allow-interactive-tests 2>&1 | Tee-Object -FilePath (Join-Path $evidence.FullName 'journey.log')
-        if ($LASTEXITCODE -ne 0) { throw 'Mixed-version compatibility failed.' }
-    - name: Verify the published legacy app can update to this exact candidate
-      shell: pwsh
-      run: |
-        $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-        $legacy = (Resolve-Path 'local-data/compatibility/0.3.3/TogetherServer.exe').Path
-        ./checks/update-handoff-smoke.ps1 -AppPath $candidate -LegacyAppPath $legacy -AllowInteractiveTests 2>&1 | Tee-Object -FilePath local-data/ci-evidence/mixed-version/update-handoff.log
-        # The PowerShell smoke throws on failure; unlike dotnet it does not set LASTEXITCODE.
-    - name: Preserve mixed-version evidence
+        $api = 'https://api.github.com/repos/daltonstates/TogetherServer'
+        $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+        try {
+          $prior = Invoke-RestMethod -Uri "$api/actions/jobs/119476671653" -Headers $headers
+          if ($prior.id -ne 119476671653 -or $prior.run_id -ne 39673344825 -or $prior.run_attempt -ne 1 -or
+              $prior.head_sha -ne $verifiedSource -or $prior.name -ne 'Complete stable 0.3.3 compatibility and update' -or
+              $prior.status -ne 'completed' -or $prior.conclusion -ne 'success') { throw 'Completed stable job identity mismatch.' }
+          foreach ($name in @('Test both old and new Host/Friend role directions','Verify the published legacy app can update to this exact candidate')) {
+            $step = @($prior.steps | Where-Object name -eq $name)
+            if ($step.Count -ne 1 -or $step[0].conclusion -ne 'success') { throw 'Stable acceptance step did not pass.' }
+          }
+          $artifact = Invoke-RestMethod -Uri "$api/actions/artifacts/12381051907" -Headers $headers
+          if ($artifact.name -ne 'continued-stable-033-evidence' -or $artifact.expired -ne $false -or
+              $artifact.workflow_run.id -ne 39673344825 -or $artifact.workflow_run.head_sha -ne $verifiedSource -or
+              $artifact.digest -ne 'sha256:3ba56edc45a1bd8bdfcf2c39c2e53a05a612a112788e42912ee0cdb1008e2d46') { throw 'Stable report artifact identity mismatch.' }
+          $zip = Join-Path $env:RUNNER_TEMP 'stable-033-accepted.zip'
+          Invoke-WebRequest -Uri "$api/actions/artifacts/12381051907/zip" -Headers $headers -OutFile $zip
+          $log = Join-Path $env:RUNNER_TEMP 'stable-033-job.log'
+          Invoke-WebRequest -Uri "$api/actions/jobs/119476671653/logs" -Headers $headers -OutFile $log
+        } finally { $headers.Clear() }
+        if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne '3BA56EDC45A1BD8BDFCF2C39C2E53A05A612A112788E42912EE0CDB1008E2D46') { throw 'Stable report ZIP digest mismatch.' }
+        Expand-Archive -LiteralPath $zip -DestinationPath $evidence.FullName
+        $journey = Get-Content -LiteralPath (Join-Path $evidence.FullName 'journey.log') -Raw
+        if (!$journey.Contains('both 0.3.3/0.3.3.1 role directions passed')) { throw 'Stable directions report is incomplete.' }
+        if ((Get-Item -LiteralPath $log).Length -gt 512KB) { throw 'Stable job log exceeds the fixed evidence bound.' }
+        $text = Get-Content -LiteralPath $log -Raw
+        foreach ($required in @('PASS SHA-256-verified updater helper rechecked the local-state checkpoint',
+            'PASS isolated EXE replacement kept the old file and installed the verified payload',
+            'PASS actual 0.3.3 to 0.3.3.1 handoff preserved settings, verified schema 5 to 5',
+            'PASS updated EXE relaunched and quit through its guarded local API')) {
+          if (!$text.Contains($required)) { throw 'Stable update evidence is incomplete.' }
+        }
+        @{sourceRevision=$env:CANDIDATE_SOURCE_REVISION;candidateSha256=$env:CANDIDATE_SHA256;
+          verificationRevision=$verifiedSource;runId=39673344825;runAttempt=1;jobId=119476671653;
+          artifactId=12381051907;artifactZipSha256='3ba56edc45a1bd8bdfcf2c39c2e53a05a612a112788e42912ee0cdb1008e2d46';
+          jobLogSha256=(Get-FileHash -LiteralPath $log -Algorithm SHA256).Hash.ToLowerInvariant();
+          currentVerificationRevision=$env:GITHUB_SHA;currentRunId=$env:GITHUB_RUN_ID;
+          result='Passed in the pinned prior job, retained without rerunning unchanged stable checks.'} |
+          ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $evidence.FullName 'accepted-stable-context.json') -Encoding utf8
+        Write-Host 'PASS exact completed stable 0.3.3 role directions and actual update handoff retained.'
+    - name: Retain bounded verification evidence
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
-        name: continued-stable-033-evidence
+        name: retained-stable-033-evidence
         path: local-data/ci-evidence/mixed-version/
-        if-no-files-found: ignore
+        if-no-files-found: error
         retention-days: 7
     - name: Retain bounded verification evidence
       if: always()
@@ -325,13 +346,15 @@ jobs:
           candidateRunId=39669799182; candidateJobId=119464350297; candidateArtifactId=12379945602;
           candidateArtifactZipSha256='4bf29ea3be0a2eaf3bed3db31eddf82853376538b77c85ee947db575954fc276';
           verificationRunId=$env:GITHUB_RUN_ID; verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT; packageJob=$env:GITHUB_JOB;
+          stableVerificationSource='ed2241894c80b3bc0dde1dde0c0abe257266bf81';stableRunId=39673344825;stableJobId=119476671653;
+          stableEvidenceArtifactId=12381051907;stableEvidenceZipSha256='3ba56edc45a1bd8bdfcf2c39c2e53a05a612a112788e42912ee0cdb1008e2d46';
           nativeNotificationVerified=$false; nativeRequiredCases=13; nativePassedCases=12; nativeBlockedCases=1;
           nativeJobId=119465829361; nativeEvidenceArtifactId=12379591472;
           nativeEvidenceZipSha256='eb6cef28fed144aceaa9aba6cf949633776c8415f840dd532e7a6924353c06d2';
           knownLimitations=@('OS QuietTime blocked actual notification delivery/click. The original Desktop job remains failed.',
             'Physical second-PC, WAN, real game join/save/load/graceful Stop/restart acceptance remains open.',
             'Unsigned EXEs have no Authenticode publisher identity or SmartScreen trust claim.');
-          acceptance='Original candidate Browser, QolApi, Rehearsal, two automatic handoffs and five older compatibility lanes passed. Continuation passed Existing, loopback/LAN/ten-stage UX, stable 0.3.3 compatibility/update, installer smoke and all three wizard choices. Native notification remains blocked, so full native acceptance is not claimed.'} |
+          acceptance='Original candidate Browser, QolApi, Rehearsal, two automatic handoffs and five older compatibility lanes passed. Prior pinned continuation passed stable 0.3.3 compatibility/update; unchanged checks and exact job/report are verified again. Final continuation passed Existing, loopback/LAN/ten-stage UX, installer smoke and all three wizard choices. Native notification remains blocked, so full native acceptance is not claimed.'} |
           ConvertTo-Json -Depth 6 | Set-Content -LiteralPath local-data/release-assets/release-manifest.json -Encoding utf8
     - name: Preserve bounded actual installer wizard UI evidence
       if: always()

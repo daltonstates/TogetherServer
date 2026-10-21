@@ -9442,12 +9442,36 @@ await Check("guided server changes pause Friend controls before a zero-player St
     Require((await manager.FinishServerChangeAsync(profile.Id, true)).Code == "ServerNotReady",
         "maintenance ended before the game reported Ready");
     Require((await manager.StartAsync(profile.Id)).Ok, "guided-change fixture did not restart");
+    var restartedRun = data.LoadRuns().Single(run => run.ProfileId == profile.Id);
+    RunView? ready = null;
+    // Process.Start can precede Windows exposing a verifiable module identity.
+    // Wait for fresh Ready evidence from this exact operation before finishing;
+    // never retry Start or Finish, and never treat Unknown as readiness.
+    for (var attempt = 0; attempt < 40; attempt++)
+    {
+        await manager.RefreshObservationsAsync();
+        ready = (await manager.SnapshotAsync()).Runs.Single(run => run.ProfileId == profile.Id);
+        if (ready is { State: "Ready", PlayerCountTrusted: true, OnlinePlayers: 0 } &&
+            ready.RunOperationId == restartedRun.OperationId && ready.ProcessId == restartedRun.ProcessId) break;
+        Require(ready.State != "Failed" &&
+            data.LoadRuns().Single(run => run.ProfileId == profile.Id).OperationId == restartedRun.OperationId,
+            "the guided-change fixture exited or changed operation before its fresh readiness check");
+        await Task.Delay(50);
+    }
+    Require(ready is { State: "Ready", PlayerCountTrusted: true, OnlinePlayers: 0 } &&
+        ready.RunOperationId == restartedRun.OperationId && ready.ProcessId == restartedRun.ProcessId &&
+        data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled,
+        $"guided-change readiness did not settle for the exact restarted operation: state={ready?.State}, " +
+        $"sameOperation={ready?.RunOperationId == restartedRun.OperationId}");
     Require((await manager.FinishServerChangeAsync(profile.Id, false)).Code == "GameJoinNotConfirmed" &&
         data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled,
         "maintenance ended without an explicit real-join confirmation");
-    Require((await manager.FinishServerChangeAsync(profile.Id, true)).Ok &&
-        !data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled,
-        "guided change did not end maintenance after readiness and owner confirmation");
+    var finished = await manager.FinishServerChangeAsync(profile.Id, true);
+    var maintenanceAfterFinish = data.LoadSettings().Profiles.Single(item => item.Id == profile.Id).Maintenance.Enabled;
+    Require(finished.Ok && !maintenanceAfterFinish,
+        $"guided change did not end maintenance after readiness and owner confirmation: code={finished.Code}, " +
+        $"observedState={ready?.State}, finalState={finished.Snapshot.Runs.SingleOrDefault(run => run.ProfileId == profile.Id)?.State}, " +
+        $"maintenance={maintenanceAfterFinish}");
     Require((await manager.StopAsync(profile.Id)).Ok, "guided-change fixture did not stop");
 });
 

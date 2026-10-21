@@ -149,6 +149,25 @@ internal static partial class CoreRemoteJourney
             runOperations.Add(run.RunOperationId!.Value);
         }
 
+        async Task<RunView> WaitForFixtureIdentityAsync(RunView initial, Func<Task<HostSnapshot>> snapshot)
+        {
+            LabRequire(initial.ProcessId is not null, "FixtureRunIdentityMissing");
+            RunView? matched = null;
+            // Start can return a PID before Windows exposes its main module.
+            // Poll only this run; never repeat Start or adopt a replacement PID.
+            await PairingLabWaitAsync(async () =>
+            {
+                var run = (await snapshot()).Runs.Single(item => item.ProfileId == initial.ProfileId);
+                LabRequire(run.ProcessId == initial.ProcessId &&
+                    (initial.RunOperationId is null || run.RunOperationId is null || run.RunOperationId == initial.RunOperationId),
+                    "FixtureRunIdentityChanged");
+                if (run.State != "Process running" || run.RunOperationId is not { } operationId || operationId == Guid.Empty) return false;
+                matched = run;
+                return true;
+            }, "FixtureRunIdentityNotObserved", TimeSpan.FromSeconds(10));
+            return matched!;
+        }
+
         async Task SampleAsync()
         {
             try
@@ -361,10 +380,10 @@ internal static partial class CoreRemoteJourney
                     var seed = "Synthetic fixture payload " + runId.ToString("N");
                     await File.WriteAllTextAsync(Path.Combine(profile.WorldDirectory, "world.dat"), seed);
                     var start = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-                    var run = start.Snapshot.Runs.Single(item => item.ProfileId == profile.Id);
-                    if (run.ProcessId is not null) TrackRun(run);
                     LabRequire(start.Ok, "FixtureStartRejected");
-                    _ = await WaitForRunStateAsync(owner, profile.Id, "Process running");
+                    var run = await WaitForFixtureIdentityAsync(start.Snapshot.Runs.Single(item => item.ProfileId == profile.Id),
+                        () => PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot"));
+                    TrackRun(run);
                     LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok, "FixturePipeStopRejected");
                     _ = await WaitForRunStateAsync(owner, profile.Id, "Offline");
                     var shared = await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world");
@@ -464,14 +483,13 @@ internal static partial class CoreRemoteJourney
                     }
                     else
                     {
-                        var run = after.Runs.Single(item => item.ProfileId == exactLocalProfile);
-                        if (run.ProcessId is not null) TrackRun(run);
-                        LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted" &&
-                            run.ProcessId is not null && run.RunOperationId is not null, "GuidedLanStartRejected");
+                        LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted",
+                            "GuidedLanStartRejected");
+                        var run = await WaitForFixtureIdentityAsync(after.Runs.Single(item => item.ProfileId == exactLocalProfile),
+                            CandidateSnapshotAsync);
+                        TrackRun(run);
                         candidateSessionId = run.RunOperationId;
                         hostedCopy = true;
-                        await PairingLabWaitAsync(async () => (await CandidateSnapshotAsync()).Runs
-                            .Single(item => item.ProfileId == exactLocalProfile).State == "Process running", "GuidedFixtureHealthNotObserved");
                     }
                     return null;
                 });
@@ -495,13 +513,13 @@ internal static partial class CoreRemoteJourney
                     LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "LocalCopyHostModeRejected");
                     var started = await PostAsync<object, ActionResult>(first,
                         $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared!.BranchHash, acceptSplitWarning = true });
-                    var run = started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId);
-                    if (run.ProcessId is not null) TrackRun(run);
                     LabRequire(started.Ok, "ExplicitLocalCopyStartRejected");
-                    _ = await WaitForRunStateAsync(first, localProfileId!.Value, "Process running");
+                    var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId),
+                        () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
+                    TrackRun(run);
                     hostedCopy = true;
                     LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok, "LocalCopyPipeStopRejected");
-                    _ = await WaitForRunStateAsync(first, localProfileId.Value, "Offline");
+                    _ = await WaitForRunStateAsync(first, run.ProfileId, "Offline");
                     return null;
                 });
                 if (lanAddress is not null) await Stage("new-host-notice", async () =>
@@ -700,7 +718,8 @@ internal static partial class CoreRemoteJourney
                         var started = await PostAsync<object, ActionResult>(first,
                             $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared.BranchHash, acceptSplitWarning = true });
                         LabRequire(started.Ok, "RestartExplicitCandidateStartRejected");
-                        var run = await WaitForRunStateAsync(first, localProfileId!.Value, "Process running");
+                        var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId),
+                            () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
                         TrackRun(run);
                         LabRequire(run.RunOperationId != oldSession && run.RunOperationId is not null && !run.PlayerCountTrusted && run.OnlinePlayers is null,
                             "RestartReusedRunIdentityOrClaimedReadiness");
@@ -760,7 +779,8 @@ internal static partial class CoreRemoteJourney
                 {
                     var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
                     LabRequire(started.Ok, "CleanupFaultFixtureStartRejected");
-                    var run = started.Snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+                    var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == profile.Id),
+                        () => PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot"));
                     LabRequire(run.ProcessId is not null && run.RunOperationId is not null, "CleanupFaultFixtureIdentityMissing");
                     // Deliberately do not add this child to processes, just as when
                     // Start succeeds but its HTTP response never reaches tracking.
