@@ -6,6 +6,12 @@ show the checks without a disclosure, keep the Play action stable after closing
 the dialog, and align the removed-access checkbox. Publish `v0.3.3.3` as a
 GitHub prerelease after implementation and validation.
 
+Published [v0.3.3.3](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.3)
+on 2026-10-22. All required functional checks pass. Windows notification
+acceptance remains blocked by the runner's QuietTime; physical Friend-PC,
+WAN and real-game save/load acceptance remain separate. Stable/latest stays
+`v0.3.3`. The publication record below identifies the unchanged release bytes.
+
 ## Delivered interface
 
 - Host locally keeps all five checks visible from its first read. Each check
@@ -65,8 +71,8 @@ remain blocked; no floor is lowered to make a check pass.
 ## Validation checkpoint
 
 The first focused component run passed 130 tests in FriendLocalHosting,
-LocalHostingGuide, ServerDirectory and HostingMove. The final full UI suite
-passes **1,410 tests in 108 files**. The first full UI run found
+LocalHostingGuide, ServerDirectory and HostingMove. The full UI suite at this
+local checkpoint passes **1,410 tests in 108 files**. The first full UI run found
 two demo expectations that required the selected file field to disappear; the
 updated assertions require the chosen file to remain visible instead. A
 guide-copy correction passed its focused rerun. A composed demo click now
@@ -388,3 +394,146 @@ compilation pass; its index is
 `1229ba9e472f98d9033a57b887949d9afc4b9562c3d3cc7f4ae8ea639f9778af`.
 The existing Vite large-chunk advisory remains. A fresh immutable candidate and
 hosted acceptance are pending.
+
+## Replacement immutable release candidate
+
+Final compiled source is `f17b02a994fd88557151430d7ac78847a8a0d284`.
+[Windows CI 39828066495](https://github.com/daltonstates/TogetherServer/actions/runs/39828066495),
+attempt 1, candidate job `119996548499`, passes the build and static bundle
+gate. Candidate artifact `12446564179` is 61,020,299 bytes, ZIP SHA-256
+`3b1b1f3efc3c07edd2f921fe814ddfcb402f4d8ac54f1c3860147a03ddf62ac5`.
+Independent downloaded-byte inspection verifies GUI subsystem 2, bundled
+assembly SHA-256
+`9afa2c87328b5e32d09718d32ee503f9f0e7d39f6fcb1ec4cd389459eaa20de4`
+and all seven embedded UI files against the same-source local UI build.
+
+Package job `119997976902` passes all six installer smoke cases and actual
+Host, Friend and Decide later wizard choices. Release artifact `12447602159`
+is 120,264,910 bytes, ZIP SHA-256
+`1bb4af81d4c4a4479875ca1cfd985740946a1c45a104e95d7e55c72a9adcf354`.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer-win-x64.exe` | 66,143,164 | `d963736148a6fce58c2f7c49a8e8b1498154db63ccf41cec058d773a326f3bec` |
+| `TogetherServer-Setup-win-x64.exe` | 60,604,925 | `ebb50fdedcfa7ce4b235e368e8773efc8856255df16aac7b635169e8315fa632` |
+
+Independent asset checks confirm numeric version `0.3.3.3`, portable source
+version `0.3.3.3+f17b02a994fd88557151430d7ac78847a8a0d284`, sizes, both
+adjacent checksum contents and `NotSigned` for both executables. The package
+manifest SHA-256 is
+`11c9560c81a6e0e9d494a49a1c6793475748b7d7031bac0cd5dc169b6036e9cd`.
+It deliberately remains `fullyAccepted=false`, `reviewOnly=true` and does not
+claim functional or native notification acceptance.
+
+[UI review 39828076596](https://github.com/daltonstates/TogetherServer/actions/runs/39828076596),
+render job `119996582501`, passes all **60 plans**, zero failed/skipped plans
+and zero layout findings, with 328 captures. Its same-source rebuilt index
+matches the frozen candidate and local build:
+`1229ba9e472f98d9033a57b887949d9afc4b9562c3d3cc7f4ae8ea639f9778af`.
+Representative final captures of the permission checks and aligned directory
+were visually inspected. Artifact `12446639426` is 18,290,187 bytes, ZIP
+SHA-256 `539c90dee803a04b37f32fadcd1ea5b6e55cc249ccab8f7e88ce9b7e97e9d304`.
+This is a source-built fixture capture; the exact retained-byte replay above
+belongs to the superseded candidate and is not relabeled as this candidate.
+
+The replacement browser and packaged rehearsal jobs pass. Functional hosting,
+source, Existing and compatibility outcomes are still being collected.
+Replacement Desktop job `119997976757` again passes the native chrome checks
+and 12 required QoL cases while notification acceptance stays blocked by
+Windows `QuietTime`. That failed job remains failed; physical notification
+delivery/click/navigation and full native acceptance remain unproven.
+
+## Replacement functional results
+
+All six compatibility jobs pass: 0.3.0, 0.3.1, 0.3.2, 0.3.2.1, 0.3.2.2 and
+0.3.3, including both Host/Friend directions and update handoff. QolApi job
+`119997976507` passes all **63 source groups with no skips** and the packaged
+API journey on the exact candidate. Artifact `12447337952` is 690 bytes, ZIP
+SHA-256 `ae827036c213e63e8ceda86de06ef57f5778592931a61d6c559d1dc25d134470`.
+The source run covers the new temporary-error, retained-row, exact-history and
+voter-only review regressions.
+
+Local pairing job `119997977287` passes every planned stage, with no skips:
+**18 LAN API stages**, the wrapper's three UX stages and all **10 actual
+two-ended UI stages**, then **11 loopback stages**. Every mode observes zero
+visible owned windows and confirms zero remaining owned processes. Candidate
+hashes match before and after. Artifact `12447468171` is 1,268,653 bytes, ZIP
+SHA-256 `f1283715e8f1756391ab46074774203a84c463a32157ef1c256f14757cb7a384`.
+
+The UI performs exactly one preparation and one Start after one deliberate
+network confirmation. Preparation completes in 4,049 ms with
+`LocalHostingPrepared`; Start completes in 7,702 ms with `SeparateCopyStarted`.
+Missing server files block Start, owner withdrawal cancels stale intent,
+restoration does not replay it and cancellation performs no hosting mutation.
+The synthetic completed-save hashes match the received and hosted copies;
+the original remains unchanged after candidate Stop and destination storage
+is separate. Signed discovery, Connect, permission isolation and cleanup also
+pass. These are same-PC synthetic processes, not physical Friend-PC or game
+acceptance.
+
+Automatic shared-hosting job `119997976069` passes both ordinary eight-stage
+handoff runs against the frozen candidate, with one Friend Start and one owner
+Start per run, exact descendant saves and empty owned-process jobs at cleanup.
+Artifact `12447398528` is 2,717 bytes, ZIP SHA-256
+`bff5e6796050c9dfb2e73443d9cb0762d266f418b45c16361ea7ae64e7e9a1cf`.
+The independent same-source packaged hosting review job `119996582988` also
+passes. Its separately built app is not substituted for the release bytes.
+
+The native chrome result contains 14 successful cases. The QoL native report
+requires 13 cases: 12 pass and one is blocked by `QuietTime`; cleanup and all
+other native cases complete. Retained Desktop artifact `12447327690` is
+309,333 bytes, ZIP SHA-256
+`296e9cfbcbef3f4b8e6292e4640b43833153c5a6c9873df6ba11e6668e38b8c1`.
+Existing job `119997976449` passes all **27 serial stages** against the frozen
+candidate, whose hash remains unchanged. This includes **1,411 UI tests in 108
+files**, **114 core checks**, Custom six, Valheim 11, Factorio five, Terraria
+two, Minecraft 12, Minecraft setup five, update 15 and Companion 46. Shared
+history, core remote, world-load, served package, staging isolation, hidden and
+visible desktop and update handoff also pass. The full Shared Worlds journey
+passes all **11 groups**, including legacy voter-only review, owner override
+Off, typed majority resolution and both timed host-loss recovery scenarios,
+with **zero failed or skipped recovery scenarios**. LiveSave owner action and
+transfer pass three and five groups respectively; real-game acceptance remains
+false.
+
+Existing artifact `12450150312` is 1,116 bytes, ZIP SHA-256
+`a0a98938ef0f555b472c562ca485da3f620f15061e98a40618b6bd1cdcb03719`.
+Its downloaded report binds source, version and candidate hash and has no
+failed or skipped stage. Across the replacement Windows workflow, 14 jobs pass
+and the one Desktop job remains failed solely for the recorded notification
+blocker. All required functional hosting checks are complete. Publication uses
+the retained package bytes above and keeps the notification limitation visible.
+
+## Published prerelease and anonymous verification
+
+Release `421068086` is published at
+[v0.3.3.3](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.3)
+at `2026-10-22T18:36:57Z`, with `draft=false`, `prerelease=true` and
+`make_latest=false`. Annotated tag object
+`fc67f82b395a0acb04a83b4eff6e32a21fd74036` points to compiled source
+`f17b02a994fd88557151430d7ac78847a8a0d284`. This later evidence-only commit
+does not move the tag or rebuild the release assets.
+
+| Public asset | Asset ID | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer-win-x64.exe` | 666726433 | `d963736148a6fce58c2f7c49a8e8b1498154db63ccf41cec058d773a326f3bec` |
+| `TogetherServer-win-x64.exe.sha256` | 666726968 | `f3b30375e90feadfc97b7f64df1fcb368099b1cb74a0eb414887db4c7d20698e` |
+| `TogetherServer-Setup-win-x64.exe` | 666727015 | `ebb50fdedcfa7ce4b235e368e8773efc8856255df16aac7b635169e8315fa632` |
+| `TogetherServer-Setup-win-x64.exe.sha256` | 666727481 | `680d576ff4f25ec6cab422ef6d3cd9816299b8c7e46ffb9d288d1b98c3d4c2e0` |
+
+Anonymous public verification completes at
+`2026-10-22T18:37:09.7755743Z`. All four browser-download URLs return bytes
+matching the uploaded asset IDs, API digests, sizes, frozen package manifest
+and adjacent checksum files. Both executables have numeric version `0.3.3.3`
+and remain `NotSigned`; the portable source version matches the tag. No asset
+is launched during this check. The public tag and release classifications
+match. Stable/latest remains release `418702775`, tag `v0.3.3`. The flags,
+inventories and exact asset metadata of `v0.3.3.2`, `v0.3.3.1`, `v0.3.3` and
+`v0.3.2.2` remain unchanged.
+
+Release notes describe all six requested changes, ask users to update both
+owner and Friend PCs, explain preview enrollment and unsigned Windows builds,
+link the validation runs and retain the native notification and real-machine
+acceptance limits. Local working files and downloaded binaries remain ignored
+under `local-data/release-0.3.3.3/replacement/`. The owner's running app, game,
+worlds, desktop, networking and settings were not changed.
