@@ -19,6 +19,10 @@ export type LocalHostingStatus = {
   remedy?: { kind: HostingRemedyKind; title: string; message: string } | null
 }
 export type LocalHostingPermission = { allowed: boolean; code: string; message: string }
+function confirmedHostingDenial(permission: LocalHostingPermission | null): boolean {
+  return permission?.allowed === false && ['HostingPermissionRequired', 'HostingPermissionDenied', 'EnrollmentDenied',
+    'Revoked', 'AccessExpired', 'ApprovalPending', 'NotPaired'].includes(permission.code)
+}
 const remedyKinds = ['Permission', 'Respond', 'ChooseHistory', 'Terms', 'ChooseServer', 'GameSetup', 'Ports', 'Connection', 'Review', 'ConfirmCopy', 'GetSave'] as const
 type HostingRemedyKind = typeof remedyKinds[number]
 
@@ -76,10 +80,12 @@ const checkLabels: Record<CheckKey, string> = {
 export function localHostingAttention(status: LocalHostingStatus | null, acceptedTerms = false, selectedFile = ''): LocalHostingStatus['remedy'] {
   if (!status) return { kind: 'Review', title: 'Retry the hosting checks', message: 'This PC could not check hosting. Retry before starting.' }
   if (status.running) return null
-  if (!status.allowed) return { kind: 'Permission', title: 'Ask the owner to allow hosting', message: status.message }
   if (['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'SharedSaveHistoryNeedsReview'].includes(status.code) || status.remedy?.kind === 'ChooseHistory')
     return { kind: 'ChooseHistory', title: 'This server has two different save histories',
       message: 'Ask the owner to resolve the conflicting saves before hosting here. All existing saves are kept.' }
+  if (!status.allowed) return confirmedHostingDenial(status)
+    ? { kind: 'Permission', title: 'Ask the owner to allow hosting', message: status.message }
+    : { kind: 'Review', title: 'Check hosting again', message: status.message }
   if (status.needsServerFile && !selectedFile.trim())
     return { kind: 'ChooseServer', title: 'Install or find the game server', message: 'This PC needs the matching dedicated server. Choose its installed file or open game setup.' }
   if (['MinecraftJava', 'MinecraftBedrock'].includes(status.game ?? '') && !acceptedTerms && !status.readyForManualStart && !status.localProfileId)
@@ -453,8 +459,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const requestOffered = handoff?.recipientState === 'Requested'
   const waitingForHost = handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
   const minecraftTerms = ['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && !status?.readyForManualStart && !status?.localProfileId
+  const denied = confirmedHostingDenial(permission)
   const attention = !status && permission?.allowed === false
-    ? { kind: 'Permission' as const, title: 'Ask the owner to allow hosting', message: permission.message }
+    ? { kind: denied ? 'Permission' as const : 'Review' as const,
+      title: denied ? 'Ask the owner to allow hosting' : 'Check hosting on this PC', message: permission.message }
     : localHostingAttention(status, acceptedTerms, serverFile)
   const historyChoice = attention?.kind === 'ChooseHistory'
   const pause = () => {
@@ -471,7 +479,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     pause(); onOpenGameSetup(status.game, status.localProfileId ?? undefined)
   }
   const trigger = () => {
-    if (disabled || busy || permission?.allowed === false) return
+    if (disabled || busy || denied) return
     if (status?.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setOpen(true); setNetworkConfirmed(false); setError(''); setActionMessage('')
     void refresh()
@@ -479,9 +487,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const canContinue = allowed && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
-  if (permission?.allowed === false && !open) return null
+  if (denied && !open) return null
   return <>
-    {permission?.allowed !== false && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
+    {!denied && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
       <Icon name="server" size={24} /><div><h3>Host locally</h3>
         <p>{status?.running ? 'This server is already hosted on this PC.' : 'Use the latest available save to host this server on your PC.'}</p></div>
       <Button className="secondary" disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>

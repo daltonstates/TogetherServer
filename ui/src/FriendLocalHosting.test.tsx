@@ -92,6 +92,23 @@ it('keeps a failed permission lookup recoverable through Host locally', async ()
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled()
 })
 
+it.each(['RosterUnavailable', 'SharingReviewRequired'])('keeps %s recoverable through the hosting flow', async code => {
+  let restored = false
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.endsWith('/access')
+    ? { allowed: false, code, message: 'The saved hosting information needs checking.' }
+    : restored ? initial : { ...initial, allowed: false, code, message: 'The saved hosting information needs checking.' })))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  const dialog = await openHosting()
+  expect(dialog.getByText(/Hosting lets other players connect/)).toBeInTheDocument()
+  expect(dialog.getByRole('heading', { name: 'Check hosting again' })).toBeInTheDocument()
+  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+  restored = true
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await waitFor(() => expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled())
+})
+
 it('cancels preparation when the pending permission lookup returns an explicit denial', async () => {
   let finishPermission!: (value: Response) => void
   let finishPreparation!: (value: Response) => void
@@ -153,7 +170,7 @@ it('rechecks and prepares an existing copy after the network confirmation', asyn
 })
 
 it.each(['action', 'card'] as const)('hides the %s affordance when permission is denied', async presentation => {
-  const fetcher = vi.fn(async () => response({ ...initial, allowed: false }))
+  const fetcher = vi.fn(async () => response({ ...initial, allowed: false, code: 'HostingPermissionRequired' }))
   vi.stubGlobal('fetch', fetcher)
   const view = render(<FriendLocalHosting {...props} presentation={presentation} />)
   await waitFor(() => expect(fetcher).toHaveBeenCalledOnce())

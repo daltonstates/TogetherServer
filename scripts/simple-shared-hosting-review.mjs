@@ -97,10 +97,16 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     if (testCase.id.endsWith('-play-ready')) {
       const open = await playRegion.getByRole('button', { name: 'Open game', exact: true }).boundingBox();
       const stop = await playRegion.getByRole('button', { name: 'Stop server', exact: true }).boundingBox();
+      const styles = {};
+      for (const name of ['Open game', 'Stop server']) styles[name] = await playRegion.getByRole('button', { name, exact: true }).evaluate(element => {
+        const style = getComputedStyle(element);
+        return { classes: element.className, minHeight: style.minHeight, minBlockSize: style.minBlockSize,
+          fontSize: style.fontSize, padding: style.padding, transform: style.transform };
+      });
+      record.assertions.push({ playActionSizes: { open, stop }, styles });
       if (!open || !stop || Math.abs(open.width - stop.width) > 1 || Math.abs(open.height - stop.height) > 1 ||
           await playRegion.getByText('Asks Steam to open an installed game. Join the server from the game.', { exact: true }).count())
         throw new Error('Open game and Stop server must have equal dimensions without the intervening helper text');
-      record.assertions.push({ playActionSizes: { open, stop } });
     }
   } else if (testCase.id.endsWith('-starting')) {
     if (!state.simpleHostingStarted || writes.length !== 2 || !writes[0].path.endsWith('/prepare') || !writes[1].path.endsWith('/start'))

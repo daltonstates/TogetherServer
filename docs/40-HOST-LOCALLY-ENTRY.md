@@ -44,14 +44,24 @@ denial before asserting that hosting is hidden. Serial followups passed all
 141 cases in the two affected files except those five fixture/selection cases;
 the corrected five cases and a new pending-denial/cancel regression then all
 passed. All 1,348 UI cases passed across these runs. Deadlines and safety
-assertions are unchanged. Lint, TypeScript and production bundling pass; the
-existing large-chunk advisory remains.
+assertions are unchanged. Followup recovery cases also cover typed unavailable
+rosters and damaged sharing metadata without hiding the entry or enabling
+Start; after a successful retry the action becomes available. The final focused
+run passed 119 component/demo cases and all 25 Friend shell cases. Lint,
+TypeScript and production bundling pass; the existing large-chunk advisory
+remains.
 
 All 31 pure renderer checks pass. The hosted visual inventory now covers 26
 desktop/narrow cases, including the visible entry before preparation, entry
 with no server installed, and measured equality of Open game/Stop server.
 Hosted Windows rendering, actual permission-GET/packaged handoffs and the exact
-production EXE are pending. No app, fixture, listener, game, browser, installer
+production EXE are pending. The first hosted review of source `4778d90` passed
+25 of 26 views with no layout findings, but the measured desktop Stop button
+was 38 pixels high rather than 44. A more specific shared physical/logical
+minimum size corrects the inherited styling; the failed view remains failed.
+That source passed both packaged eight-stage handoffs, including the real
+permission endpoint before the first save. A fresh candidate and visual review
+will verify the final UI-only correction. No app, fixture, listener, game, browser, installer
 or native dialog has been launched on the owner's active desktop.
 
 The published `v0.3.3.1` assets remain immutable. This correction has not been
