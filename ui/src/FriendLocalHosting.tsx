@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { changeJson, errorMessage, getLocalJson } from './api'
 import { Button, Input } from './Controls'
 import { parseBasicResult } from './contracts'
 import { Icon } from './Icon'
 import { SettingsDialog } from './SettingsPresentation'
 import { parsePlannedHandoffStatus, type PlannedHandoffStatus } from './plannedHandoff'
+import { LocalHostingGuide } from './LocalHostingGuide'
 import './FriendLocalHosting.css'
 
 const stepKeys = ['permission', 'server', 'save', 'ports', 'connection'] as const
@@ -74,6 +75,12 @@ const checkLabels: Record<CheckKey, string> = {
   permission: 'Permission to host', server: 'Server app and tools', save: 'Save file checks',
   ports: 'Local game ports', connection: 'Connections from other PCs'
 }
+const checkIcons = { permission: 'shield', server: 'server', save: 'archive', ports: 'plug', connection: 'users' } as const
+
+function checkedAgo(checkedAt: number, now: number) {
+  const seconds = Math.max(0, Math.floor((now - checkedAt) / 1000))
+  return seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`
+}
 
 // These are fixed local actions. A peer's message never becomes a URL or a
 // navigation destination. Older status responses retain the same safe stops.
@@ -122,14 +129,23 @@ export type FriendLocalHostingProps = {
 }
 
 export function FriendLocalHosting({ profileId, connectionId, worldName, available, accessBlocked = false,
-  disabled = false, presentation = 'action', onBrowseServerFile, onOpenHost, onOpenConnectionHelp, onOpenGameSetup }: FriendLocalHostingProps) {
+  disabled = false, presentation = 'action', onBrowseServerFile, onOpenHost, onOpenConnectionHelp, onOpenGameSetup, onReviewSharedSave }: FriendLocalHostingProps) {
   const base = `/api/local/friend/${profileId}/shared-world`
+  const resultsId = useId()
   const scope = JSON.stringify([connectionId, profileId])
   const request = useRef(0)
   const mutation = useRef(false)
   const [permission, setPermission] = useState<LocalHostingPermission | null>(null)
   const [status, setStatus] = useState<LocalHostingStatus | null>(null)
+  const [checksCurrent, setChecksCurrent] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
+  const [now, setNow] = useState(Date.now)
+  const [guideStep, setGuideStep] = useState<{ key: CheckKey; request: number } | null>(null)
   const [open, setOpen] = useState(false)
+  const dialogOpen = useRef(open)
+  dialogOpen.current = open
+  const serverField = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [serverFile, setServerFile] = useState('')
@@ -156,6 +172,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     currentStatus.current = next
     setPermission({ allowed: next.allowed, code: next.code, message: next.message })
     setStatus(next)
+    setChecksCurrent(true); setLastCheckedAt(Date.now()); setNow(Date.now())
   }, [])
   const controller = useRef<AbortController | null>(null)
   const invalidate = useCallback(() => { ++request.current; controller.current?.abort() }, [])
@@ -165,6 +182,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     startIntent.current = null
     setPermission(null)
     setStatus(null); setOpen(false); setBusy(false); setError(''); setAcceptedTerms(false)
+    setChecksCurrent(false); setChecking(false); setLastCheckedAt(null); setGuideStep(null)
     setServerFile(''); setPassword(''); setActionMessage('')
     setNetworkConfirmed(false)
     setPlannedOperation(null); plannedAttempt.current = ''
@@ -174,12 +192,13 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     let currentRead: AbortController | null = null
     let timeout: number | undefined
     const read = async () => {
-      if (!mutation.current) {
+      if (!mutation.current && !dialogOpen.current) {
         const abort = new AbortController()
         currentRead = abort
         timeout = window.setTimeout(() => {
           if (active) {
             setPermission(null)
+            setChecksCurrent(false)
             startIntent.current = null
           }
           abort.abort()
@@ -190,13 +209,15 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             setPermission(next)
             if (!next.allowed) {
               startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
-              invalidate(); mutation.current = false; setBusy(false); setStatus(null)
+              invalidate(); mutation.current = false; setBusy(false); setChecking(false); setChecksCurrent(false)
+              if (dialogOpen.current) setError(next.message)
             }
           }
         } catch {
           // Keep the entry point available for guided recovery, never a Start intent.
           if (active && !abort.signal.aborted) {
             setPermission(null)
+            setChecksCurrent(false)
             startIntent.current = null
           }
         } finally { window.clearTimeout(timeout) }
@@ -218,9 +239,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         const sequence = ++request.current
         const abort = new AbortController()
         currentRead = abort
+        setChecking(true); setChecksCurrent(false)
         timeout = window.setTimeout(() => {
           if (active && sequence === request.current) {
-            setStatus(null); plannedAuthorization.current = null; setPlannedOperation(null)
+            setChecksCurrent(false); setChecking(false); plannedAuthorization.current = null; setPlannedOperation(null)
             startIntent.current = null; ++request.current
             setError('Hosting checks timed out. Retry the checks.')
           }
@@ -231,16 +253,25 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           if (active && sequence === request.current && !abort.signal.aborted) acceptStatus(next)
         } catch (cause) {
           if (active && sequence === request.current && !abort.signal.aborted) {
-            setStatus(null); plannedAuthorization.current = null; setPlannedOperation(null)
+            setChecksCurrent(false); plannedAuthorization.current = null; setPlannedOperation(null)
             startIntent.current = null; setError(errorMessage(cause))
           }
-        } finally { window.clearTimeout(timeout) }
+        } finally {
+          window.clearTimeout(timeout)
+          if (active && sequence === request.current) setChecking(false)
+        }
       }
       if (active) timer = window.setTimeout(() => void read(), 10000)
     }
     timer = window.setTimeout(() => void read(), 10000)
     return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout) }
   }, [scope, base, open, available, accessBlocked, acceptStatus])
+
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [open])
 
   useEffect(() => {
     if (disabled || accessBlocked) startIntent.current = null
@@ -253,21 +284,21 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const sequence = ++request.current
     const abort = new AbortController()
     controller.current = abort
-    setBusy(true); setError('')
+    setBusy(true); setChecking(true); setChecksCurrent(false); setError('')
     const timeout = window.setTimeout(() => {
       abort.abort()
-      if (sequence === request.current) { startIntent.current = null; setStatus(null); setError('Hosting checks timed out. Retry the checks.'); setBusy(false); mutation.current = false; ++request.current }
+      if (sequence === request.current) { startIntent.current = null; setChecksCurrent(false); setChecking(false); setError('Hosting checks timed out. Retry the checks.'); setBusy(false); mutation.current = false; ++request.current }
     }, 15000)
     try {
       const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
       if (sequence === request.current && !abort.signal.aborted) acceptStatus(next)
     } catch (cause) {
       if (sequence === request.current && !abort.signal.aborted) {
-        setStatus(null); startIntent.current = null; setError(errorMessage(cause))
+        setChecksCurrent(false); startIntent.current = null; setError(errorMessage(cause))
       }
     } finally {
       window.clearTimeout(timeout)
-      if (sequence === request.current) { mutation.current = false; setBusy(false) }
+      if (sequence === request.current) { mutation.current = false; setBusy(false); setChecking(false) }
     }
   }
   const prepareStatus = useCallback(async (target: LocalHostingStatus, authorization: typeof plannedOperation) => {
@@ -283,7 +314,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const timeout = window.setTimeout(() => {
       if (sequence !== request.current || authorization && plannedAuthorization.current !== authorization) return
       abort.abort(); ++request.current; mutation.current = false; setBusy(false)
-      plannedAuthorization.current = null; setPlannedOperation(null); setStatus(null)
+      plannedAuthorization.current = null; setPlannedOperation(null); setChecksCurrent(false)
       startIntent.current = null; setOpen(true)
       setError('Preparation did not finish checking in time. Recheck the hosting request before continuing. Existing saves were kept.')
     }, Math.min(120000, Math.max(0, (authorization?.until ?? Date.now() + 120000) - Date.now())))
@@ -307,7 +338,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     } catch (cause) {
       if (sequence === request.current && !abort.signal.aborted) {
         setError(errorMessage(cause)); plannedAuthorization.current = null; setPlannedOperation(null)
-        startIntent.current = null; setOpen(true)
+        startIntent.current = null; setChecksCurrent(false); setOpen(true)
       }
     } finally {
       window.clearTimeout(timeout)
@@ -372,14 +403,14 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const timeout = window.setTimeout(() => {
       plannedAuthorization.current = null; setPlannedOperation(null)
       startIntent.current = null
-      if (mutation.current) { controller.current?.abort(); ++request.current; mutation.current = false; setBusy(false); setStatus(null) }
+      if (mutation.current) { controller.current?.abort(); ++request.current; mutation.current = false; setBusy(false); setChecking(false); setChecksCurrent(false) }
       setActionMessage('Preparation is paused. Choose Continue and start when you want to resume this move.')
     }, Math.max(0, plannedOperation.until - Date.now()))
     return () => window.clearTimeout(timeout)
   }, [plannedOperation])
   const startPrepared = useCallback(async (target: LocalHostingStatus) => {
     const intent = startIntent.current
-    if (mutation.current || disabled || !intent || intent.scope !== scope || intent.until <= Date.now()
+    if (mutation.current || disabled || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
       || !target.allowed || !target.readyForManualStart || target.running || !target.localProfileId
       || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)) return
     startIntent.current = null // consume before the request; no poll/error retry can repeat Start
@@ -391,7 +422,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const localProfileId = target.localProfileId
     const timeout = window.setTimeout(() => {
       if (sequence !== request.current) return
-      abort.abort(); ++request.current; mutation.current = false; setBusy(false); setOpen(true); setStatus(null)
+      abort.abort(); ++request.current; mutation.current = false; setBusy(false); setOpen(true); setChecksCurrent(false)
       setError('The Start result could not be checked in time. Open local servers to check this PC before trying again.')
     }, 120000)
     try {
@@ -409,21 +440,21 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           code: result.code, message: result.message, readyForManualStart: false, remedy: null })
       }
     } catch (cause) {
-      if (sequence === request.current && !abort.signal.aborted) setError(errorMessage(cause))
+      if (sequence === request.current && !abort.signal.aborted) { setError(errorMessage(cause)); setChecksCurrent(false) }
       if (sequence === request.current) setOpen(true)
     } finally {
       window.clearTimeout(timeout)
       if (sequence === request.current) { mutation.current = false; setBusy(false) }
     }
-  }, [base, scope, disabled, onOpenHost, acceptStatus])
+  }, [base, scope, disabled, checksCurrent, onOpenHost, acceptStatus])
   useEffect(() => {
-    if (busy || disabled || !status?.readyForManualStart || !startIntent.current) return
+    if (busy || checking || disabled || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
     if (localHostingAttention(status, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
     void startPrepared(status)
-  }, [status, busy, disabled, acceptedTerms, serverFile, startPrepared])
+  }, [status, busy, checking, disabled, checksCurrent, acceptedTerms, serverFile, startPrepared])
 
   const host = () => {
-    if (mutation.current || disabled || !status?.allowed) return
+    if (mutation.current || disabled || !checksCurrent || checking || !status?.allowed) return
     if (status.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setError(''); setActionMessage('')
     const attention = localHostingAttention(status, acceptedTerms, serverFile)
@@ -442,7 +473,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     prepare()
   }
   const browse = async () => {
-    if (!status?.game || !onBrowseServerFile || mutation.current || disabled) return
+    if (!status?.game || !onBrowseServerFile || mutation.current || checking || disabled) return
     mutation.current = true
     const sequence = ++request.current
     setError(''); setBusy(true)
@@ -460,7 +491,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const waitingForHost = handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
   const minecraftTerms = ['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && !status?.readyForManualStart && !status?.localProfileId
   const denied = confirmedHostingDenial(permission)
-  const attention = !status && permission?.allowed === false
+  const guidanceStatus = checksCurrent ? status : status && permission?.allowed === false ? {
+    ...status, allowed: false, readyForManualStart: false, code: permission.code, message: permission.message,
+    steps: status.steps.map(step => ({ ...step, state: step.key === 'permission' && denied ? 'ActionRequired' as const : 'Unknown' as const,
+      message: step.key === 'permission' ? permission.message : step.message }))
+  } : null
+  const attention = (!status || !checksCurrent) && permission?.allowed === false
     ? { kind: denied ? 'Permission' as const : 'Review' as const,
       title: denied ? 'Ask the owner to allow hosting' : 'Check hosting on this PC', message: permission.message }
     : localHostingAttention(status, acceptedTerms, serverFile)
@@ -468,11 +504,11 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const pause = () => {
     startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
     setNetworkConfirmed(false)
-    invalidate(); mutation.current = false; setBusy(false); setOpen(false)
+    invalidate(); mutation.current = false; setBusy(false); setChecking(false); setOpen(false)
   }
   const connectionHelp = () => {
-    if (!onOpenConnectionHelp || !status) return
-    pause(); onOpenConnectionHelp(status.localProfileId ?? profileId)
+    if (!onOpenConnectionHelp) return
+    pause(); onOpenConnectionHelp(status?.localProfileId ?? profileId)
   }
   const gameSetup = () => {
     if (!onOpenGameSetup || !status?.game) return
@@ -484,7 +520,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setOpen(true); setNetworkConfirmed(false); setError(''); setActionMessage('')
     void refresh()
   }
-  const canContinue = allowed && !busy && !disabled && !historyChoice
+  const canContinue = allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
   if (denied && !open) return null
@@ -508,14 +544,14 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             waitingForHost ? <p role="status">Waiting for the current Host to finish the latest save.</p> :
             status?.running ? <p>This server is already hosted on this PC.</p> : attention &&
             <section className="local-hosting-next" aria-label="Next hosting step"><h3>{attention.title}</h3><p>{attention.message}</p></section>}
-          {attention?.kind === 'ChooseServer' && <div className="local-hosting-fix">
+          {(attention?.kind === 'ChooseServer' || status?.needsServerFile) && <div className="local-hosting-fix">
             {status?.game === 'Valheim' && <a href="steam://install/896660">Install Valheim Dedicated Server in Steam</a>}
             {['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && <a href="https://www.minecraft.net/en-us/download/server" target="_blank" rel="noreferrer">Get the official Minecraft server</a>}
             {onOpenGameSetup && status?.localProfileId && <Button className="secondary" disabled={busy || disabled} onClick={gameSetup}><Icon name="server" />Open game setup</Button>}
-            <label>Installed server file<div className="field-with-button"><Input aria-label="Installed server file" value={serverFile} disabled={busy}
+            <label>Installed server file<div className="field-with-button"><Input ref={serverField} aria-label="Installed server file" value={serverFile} disabled={busy}
               placeholder={status?.game === 'MinecraftJava' ? 'Choose the installed server.jar' : 'Choose the installed dedicated server'}
               onChange={event => setServerFile(event.target.value)} />
-              {onBrowseServerFile && <Button className="secondary" disabled={busy || !status?.game} onClick={() => void browse()}><Icon name="folder" />Browse</Button>}</div></label>
+              {onBrowseServerFile && <Button className="secondary" disabled={busy || checking || !status?.game} onClick={() => void browse()}><Icon name="folder" />Browse</Button>}</div></label>
             <p className="helper-text">Install the same game version as this save, then choose its server file. Accept the game's terms yourself. Existing worlds are kept.</p>
           </div>}
           {status?.needsPassword && !status.readyForManualStart && <label>New game password<Input type="password"
@@ -533,14 +569,32 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             {onOpenGameSetup && status?.localProfileId && <Button className="secondary" disabled={busy || disabled} onClick={gameSetup}>Open game setup</Button>}
           </div>}
           {attention?.kind === 'GameSetup' && status?.localProfileId && onOpenGameSetup && <Button className="secondary" disabled={busy || disabled} onClick={gameSetup}>Open game setup</Button>}
-          <details className="local-hosting-results"><summary>Automatically checked results</summary>
-            {status ? <ol className="local-hosting-checks" aria-label="Local hosting checks">{status.steps.map(step => <li key={step.key} data-state={step.state}>
-              <Icon name={step.state === 'Ready' ? 'check' : step.state === 'ActionRequired' ? 'warning' : 'plug'} />
-              <div><strong>{checkLabels[step.key]}</strong><p>{step.message}</p></div>
-              <span>{step.state === 'Ready' ? 'Checked' : step.state === 'ActionRequired' ? 'Needs attention' : 'Unverified'}</span>
-            </li>)}</ol> : <p role="alert">Hosting checks are unavailable. Retry before starting.</p>}
+          <section className="local-hosting-results" aria-labelledby={resultsId}>
+            <div className="local-hosting-results-heading"><h3 id={resultsId}>Automatically checked results</h3>
+              <p className="local-hosting-check-time">{checking ? 'Checking again… ' : ''}{lastCheckedAt !== null
+                ? <time dateTime={new Date(lastCheckedAt).toISOString()} title={new Date(lastCheckedAt).toLocaleTimeString()}>Last checked {checkedAgo(lastCheckedAt, now)}</time>
+                : 'Waiting for the first check'}</p></div>
+            {!checksCurrent && status && <p className="local-hosting-stale" role="status">{checking
+              ? 'Showing the previous results while these checks run.'
+              : 'Showing the last results. Retry the checks before starting.'}</p>}
+            <ol className="local-hosting-checks" aria-label="Local hosting checks">{(status?.steps ?? stepKeys.map(key => ({ key, state: 'Unknown' as const,
+              message: checking ? 'Checking this PC…' : 'This check has not finished. Retry to check it.' }))).map(step => <li key={step.key} data-state={step.state}>
+              <span className="local-hosting-check-icon"><Icon name={checkIcons[step.key]} size={20} /></span>
+              <div className="local-hosting-check-description"><strong>{checkLabels[step.key]}</strong><p>{step.message}</p>
+                <Button className="text-button local-hosting-check-help" disabled={busy}
+                  aria-label={`${step.state === 'Ready' ? 'Review' : 'Set up'} ${checkLabels[step.key]}`}
+                  onClick={() => setGuideStep(previous => ({ key: step.key, request: (previous?.request ?? 0) + 1 }))}>{step.state === 'Ready' ? 'Review check' : 'Show setup steps'}<Icon name="chevronRight" /></Button></div>
+              <span className="local-hosting-check-state"><Icon name={step.state === 'Ready' ? 'check' : step.state === 'ActionRequired' ? 'warning' : 'clock'} size={14} />
+                {step.state === 'Ready' ? 'Checked' : step.state === 'ActionRequired' ? 'Needs attention' : 'Unverified'}</span>
+            </li>)}</ol>
             <p className="helper-text">These results cover only the checks described. Loading and saving in the real game and a friend joining from another network require separate testing.</p>
-          </details>
+          </section>
+          <LocalHostingGuide key={guideStep?.request ?? 0} status={guidanceStatus} selectedStep={guideStep?.key} busy={busy || checking || disabled}
+            onRetry={() => void refresh()} onChooseServer={status?.needsServerFile ? () => serverField.current?.focus() : undefined}
+            onConnectionHelp={onOpenConnectionHelp ? connectionHelp : undefined}
+            onGameSetup={onOpenGameSetup && status?.localProfileId ? gameSetup : undefined}
+            onOpenLocalServer={status?.localProfileId ? () => { pause(); onOpenHost(status.localProfileId!) } : undefined}
+            onReviewSharedSave={onReviewSharedSave ? () => { pause(); onReviewSharedSave() } : undefined} />
           <div className="local-hosting-secondary-actions"><Button className="text-button" disabled={busy || disabled} onClick={() => void refresh()}><Icon name="refresh" />Retry automatic checks</Button>
             {status?.localProfileId && <Button className="text-button" disabled={busy || disabled}
               onClick={() => { pause(); onOpenHost(status.localProfileId!) }}>Local server &amp; connection details</Button>}

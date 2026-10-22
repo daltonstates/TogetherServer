@@ -182,10 +182,16 @@ internal sealed partial class WorldPeerService : IDisposable
         foreach (var roster in rosters)
         {
             if (chain.Contains(group.Root.ProfileId, roster)) continue;
+            // A returning legacy PC may retain an intermediate owner snapshot
+            // omitted by this journal. Ignore only a verified snapshot strictly
+            // between retained legacy counters; current membership still decides
+            // whether any metadata or operation is authorized below.
+            if (chain.SupersededLegacySnapshot(group.Root.ProfileId, roster)) continue;
             var heads = chain.Heads(group.Root.ProfileId);
             if (heads.Count > 1) throw new InvalidDataException("Competing signed roster histories need review.");
             if (heads.Count == 0 && roster.Schema == 3 && (roster.Revision != 1 || roster.PreviousRosterHash is not null) ||
-                heads.Count == 1 && heads[0].Revision < long.MaxValue && roster.Revision > heads[0].Revision + 1)
+                heads.Count == 1 && heads[0].Revision < long.MaxValue && roster.Revision > heads[0].Revision + 1 &&
+                    !SharedWorldRosterChainStore.LegacyOwnerAdvance(roster, heads[0]))
                 break;
             chain.Append(roster, group.Root.OwnerPublicKey);
         }
@@ -376,9 +382,7 @@ internal sealed partial class WorldPeerService : IDisposable
         }
         else
         {
-            var rosterOffset = request.KnownRosterRevision < first.Revision ? 0 :
-                request.KnownRosterRevision - first.Revision + 1;
-            rosters = chain.ReadPage(group.Root.ProfileId, rosterOffset).Take(8).ToArray();
+            rosters = chain.ReadAfterRevision(group.Root.ProfileId, request.KnownRosterRevision).Take(8).ToArray();
             rosterTotal = chain.Count(group.Root.ProfileId);
         }
         var records = ScopedAuthority(group);
@@ -446,8 +450,7 @@ internal sealed partial class WorldPeerService : IDisposable
         {
             if (first.GroupId != group.Root.GroupId || first.OwnerPublicKey != group.Root.OwnerPublicKey)
                 throw new InvalidDataException("The challenge roster journal belongs to another world.");
-            var offset = knownRemoteRevision < first.Revision ? 0 : knownRemoteRevision - first.Revision + 1;
-            page = offset >= chain.Count(group.Root.ProfileId) ? [] : chain.ReadPage(group.Root.ProfileId, offset).Take(8).ToArray();
+            page = chain.ReadAfterRevision(group.Root.ProfileId, knownRemoteRevision).Take(8).ToArray();
         }
         while (page.Count > 0 && JsonSerializer.SerializeToUtf8Bytes(page, SharedWorldPeerTrust.Json).Length > 1024 * 1024)
             page = page.Take(page.Count - 1).ToArray();
@@ -476,7 +479,9 @@ internal sealed partial class WorldPeerService : IDisposable
             if (roster.ProfileId != group.Root.ProfileId || roster.GroupId != group.Root.GroupId ||
                 roster.OwnerPublicKey != group.Root.OwnerPublicKey || !SharedWorldRosterTrust.VerifySignature(roster))
                 throw new InvalidDataException("The signed peer roster crossed a world boundary.");
-            if (!chain.Contains(group.Root.ProfileId, roster)) chain.Append(roster, group.Root.OwnerPublicKey);
+            if (!chain.Contains(group.Root.ProfileId, roster) &&
+                !chain.SupersededLegacySnapshot(group.Root.ProfileId, roster))
+                chain.Append(roster, group.Root.OwnerPublicKey);
         }
         var heads = chain.Heads(group.Root.ProfileId);
         if (heads.Count > 1) throw new InvalidDataException("Competing signed roster histories need review.");

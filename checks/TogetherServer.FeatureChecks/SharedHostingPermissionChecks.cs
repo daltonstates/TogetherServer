@@ -17,6 +17,7 @@ internal static class SharedHostingPermissionChecks
     {
         await LateEnrollmentAfterUnassignmentAsync(root);
         await SimpleServerPolicyAsync(root);
+        await LegacyJournalRepairAsync(root);
         using (var fixture = new Fixture(root, "current-settings"))
         {
             Require(fixture.Pairing.SetSharedWorldGrants(fixture.DeviceId, fixture.ProfileId,
@@ -421,8 +422,7 @@ internal static class SharedHostingPermissionChecks
             Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
                 "could not seed the interrupted disable check");
             var roster = (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!;
-            var path = Path.Combine(fixture.Data.RootPath, "shared-worlds", fixture.ProfileId.ToString("N"),
-                roster.GroupId.ToString("N") + ".roster.json");
+            var path = Path.Combine(fixture.Data.RootPath, $"shared-roster-chain-{fixture.ProfileId:N}.protected");
             SharedWorldResult result;
             using (var hold = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 result = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, false, CancellationToken.None);
@@ -436,6 +436,105 @@ internal static class SharedHostingPermissionChecks
                 !fixture.Pairing.SharedRosterDirty(fixture.ProfileId) && fixture.Driver.Actions == 0,
                 "repair of an interrupted disable resumed hosting or kept stale signed authority");
         }
+    }
+
+    private static async Task LegacyJournalRepairAsync(string root)
+    {
+        using var fixture = new Fixture(root, "legacy-journal-repair", profile =>
+        { profile.SharedSavesEnabled = true; profile.Backups.Enabled = true; });
+        fixture.Pairing.ReconcileSimpleSharedHosting(fixture.ProfileId);
+        var profile = fixture.Current().Profiles[0];
+        var service = new SharedWorldService(fixture.Data, new WorldBackupService(fixture.Data, fixture.Clock));
+        var owner = service.LocalAuthorityPublicKey();
+        using var key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(fixture.Data.LoadProtected("shared-world-signing-key.protected")!, out _);
+        SharedWorldRoster Sign(SharedWorldRoster draft) => draft with
+        { Signature = Convert.ToBase64String(key.SignData(SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+        var old = Sign(new(2, Guid.NewGuid(), profile.Id, 1, 1, true, owner,
+            fixture.Pairing.SharedRosterMembers(profile.Id).Select(member => member with { Grants = new() }).ToArray(), ""));
+        var latest = Sign(old with { Epoch = 3, Revision = 3, Members = fixture.Pairing.SharedRosterMembers(profile.Id) });
+        var directory = Path.Combine(fixture.Data.RootPath, "shared-worlds", profile.Id.ToString("N"));
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory, "source.json"), JsonSerializer.SerializeToUtf8Bytes(new
+        { directory = profile.WorldDirectory, game = profile.Kind, worldId = profile.WorldId, groupId = old.GroupId }));
+        var snapshotPath = Path.Combine(directory, old.GroupId.ToString("N") + ".roster.json");
+        void SaveSnapshot(SharedWorldRoster roster) => File.WriteAllBytes(snapshotPath,
+            JsonSerializer.SerializeToUtf8Bytes(roster, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        SaveSnapshot(latest);
+        var chain = new SharedWorldRosterChainStore(fixture.Data);
+        // This is the installed-state race: the legacy owner exposed revision 3,
+        // then a stale peer registry seeded the journal with revision 1.
+        chain.Append(old, owner);
+        Require(chain.Heads(profile.Id).Single().Signature == old.Signature &&
+            chain.Count(profile.Id) == 1 && old.Members.All(member => !member.Grants.EligibleHost),
+            "the existing-state regression did not start with stale signed hosting rights");
+
+        foreach (var fault in new[] { "same-epoch", "same-revision", "sibling", "wrong-group", "wrong-profile", "wrong-owner", "bad-signature" })
+        {
+            using var wrong = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var candidate = Sign(fault switch
+            {
+                "same-epoch" => latest with { Epoch = old.Epoch },
+                "same-revision" => latest with { Revision = old.Revision },
+                "sibling" => old with { OwnerOverride = !old.OwnerOverride },
+                "wrong-group" => latest with { GroupId = Guid.NewGuid() },
+                "wrong-profile" => latest with { ProfileId = Guid.NewGuid() },
+                "wrong-owner" => latest with { OwnerPublicKey = Convert.ToBase64String(wrong.ExportSubjectPublicKeyInfo()) },
+                _ => latest
+            });
+            if (fault == "bad-signature") candidate = candidate with { Signature = new string('A', 88) };
+            SaveSnapshot(candidate);
+            var rejected = false;
+            try { _ = await fixture.Manager.SharedWorldRosterAsync(profile.Id); }
+            catch (Exception error) when (error is InvalidDataException or CryptographicException) { rejected = true; }
+            Require(rejected && chain.Count(profile.Id) == 1 &&
+                chain.Heads(profile.Id).Single().Signature == old.Signature,
+                "ambiguous legacy state changed a protected journal: " + fault);
+        }
+
+        SaveSnapshot(latest);
+        var repaired = await fixture.Manager.SharedWorldRosterAsync(profile.Id);
+        Require(repaired?.Signature == latest.Signature && chain.Count(profile.Id) == 2 &&
+            chain.Read(profile.Id).Select(item => item.Signature).SequenceEqual([old.Signature, latest.Signature]) &&
+            chain.ContainsFloor(profile.Id, new(old.GroupId, old.Epoch, old.Revision, old.Signature)) &&
+            chain.ContainsFloor(profile.Id, new(latest.GroupId, latest.Epoch, latest.Revision, latest.Signature)),
+            "the same owner's newer legacy snapshot was not retained alongside its earlier floor");
+        Require((await fixture.Manager.SharedWorldRosterAsync(profile.Id))!.Signature == latest.Signature &&
+            chain.Count(profile.Id) == 2, "legacy repair replay appended or re-signed an accepted snapshot");
+        Require((await fixture.Manager.SetSimpleSharedHostingAsync(profile.Id, true, CancellationToken.None)).Ok,
+            "the current original-owner policy could not continue repaired legacy history");
+        var child = (await fixture.Manager.SharedWorldRosterAsync(profile.Id))!;
+        Require(child.Schema == 3 && child.Revision == latest.Revision + 1 &&
+            SharedWorldRosterTrust.VerifyRevision(child, latest, owner, fixture.Clock.GetUtcNow(), true) &&
+            child.Members.All(member => member.Grants.Receive && member.Grants.EligibleHost && member.Grants.Reshare) &&
+            chain.ReadAfter(profile.Id, SharedWorldRosterTrust.Hash(old))!.Select(item => item.Signature)
+                .SequenceEqual([latest.Signature, child.Signature]) &&
+            chain.ReadAfter(profile.Id, SharedWorldRosterTrust.Hash(latest))!.Single().Signature == child.Signature &&
+            chain.ReadAfter(profile.Id, SharedWorldRosterTrust.Hash(child))!.Count == 0 &&
+            chain.ReadAfter(profile.Id, new string('A', 64)) is null &&
+            chain.ReadAfterRevision(profile.Id, 1).Select(item => item.Signature).SequenceEqual([latest.Signature, child.Signature]) &&
+            chain.ReadAfterRevision(profile.Id, 2).Select(item => item.Signature).SequenceEqual([latest.Signature, child.Signature]) &&
+            chain.ReadAfterRevision(profile.Id, latest.Revision).Single().Signature == child.Signature &&
+            chain.ReadAfterRevision(profile.Id, child.Revision).Count == 0,
+            "repaired owner history lost its exact signed parent or protected anchor positions");
+        Require((await fixture.Manager.SetSimpleSharedHostingAsync(profile.Id, true, CancellationToken.None)).Ok &&
+            (await fixture.Manager.SharedWorldRosterAsync(profile.Id))!.Signature == child.Signature && chain.Count(profile.Id) == 3,
+            "repeating the same policy after a lost response changed its signed history");
+        var lateLegacy = Sign(latest with { Epoch = 100, Revision = 100 });
+        var refused = false;
+        try { chain.Append(lateLegacy, owner); }
+        catch (InvalidDataException) { refused = true; }
+        Require(refused && chain.Count(profile.Id) == 3 && chain.Heads(profile.Id).Single().Signature == child.Signature,
+            "a standalone snapshot replaced an exact-parent schema-3 history");
+        SaveSnapshot(lateLegacy);
+        Require((await fixture.Manager.SharedWorldRosterAsync(profile.Id))!.Signature == child.Signature,
+            "an obsolete legacy file overrode the schema-3 journal");
+        Require((await fixture.Manager.SetSimpleSharedHostingAsync(profile.Id, false, CancellationToken.None)).Ok &&
+            (await fixture.Manager.SharedWorldRosterAsync(profile.Id))!.Members.All(member =>
+                !member.Grants.Receive && !member.Grants.EligibleHost && !member.Grants.Reshare) &&
+            File.ReadAllBytes(snapshotPath).AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(lateLegacy,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web))) && fixture.Driver.Actions == 0,
+            "repair lost signed evidence, invoked a process or prevented immediate policy withdrawal");
     }
 
     private static async Task WithdrawDelegatedHostingAsync(string root)

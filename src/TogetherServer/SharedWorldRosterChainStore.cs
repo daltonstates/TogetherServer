@@ -3,6 +3,12 @@ using System.Text.Json;
 
 namespace TogetherServer;
 
+internal static class SharedWorldRosterProtocol
+{
+    internal const string AfterHeader = "X-TogetherServer-Roster-After";
+    internal const string AnchorHeader = "X-TogetherServer-Roster-Anchor";
+}
+
 // Protected index pages commit to 32 immutable revision files apiece. The
 // protected floor has constant size regardless of the length of the journal.
 internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? clock = null)
@@ -125,8 +131,19 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             throw new InvalidDataException("Protected roster lookup disagrees with the journal.");
         return true;
     }
+    // Legacy owners signed complete snapshots without a parent field. Retain
+    // those exact signed snapshots in order, rather than replacing an earlier
+    // protected floor. This exception ends when the first schema-3 child exists.
+    internal static bool LegacyOwnerAdvance(SharedWorldRoster next, SharedWorldRoster prior) =>
+        prior.Schema is 1 or 2 && next.Schema == 2 &&
+        next.ProfileId == prior.ProfileId && next.GroupId == prior.GroupId &&
+        next.OwnerPublicKey == prior.OwnerPublicKey && next.Epoch > prior.Epoch &&
+        next.Revision > prior.Revision && SharedWorldRosterTrust.Verify(prior) &&
+        SharedWorldRosterTrust.Verify(next);
+
     private static string[] NextHeads(IReadOnlyList<string> heads, SharedWorldRoster roster, string hash) =>
-        heads.Count == 0 ? [hash] : heads[0] == roster.PreviousRosterHash ? [hash] : [heads[0], hash];
+        heads.Count == 0 || roster.Schema == 2 || heads[0] == roster.PreviousRosterHash
+            ? [hash] : [heads[0], hash];
     private void ValidateNext(SharedWorldRoster roster, Floor floor, bool firstAcceptance)
     {
         if (roster.ProfileId != floor.ProfileId || roster.GroupId != floor.GroupId ||
@@ -140,9 +157,12 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 throw new InvalidDataException("Roster chain has no owner-signed root.");
             return;
         }
-        if (floor.Heads is null || floor.Heads.Count != 1 || !ValidHash(roster.PreviousRosterHash))
+        if (floor.Heads is null || floor.Heads.Count != 1)
             throw new InvalidDataException("Competing roster revisions require owner review.");
         var head = LoadRevision(roster.ProfileId, floor.Heads[0]);
+        if (LegacyOwnerAdvance(roster, head)) return;
+        if (!ValidHash(roster.PreviousRosterHash))
+            throw new InvalidDataException("Roster revision is not authorized by its exact parent.");
         SharedWorldRoster? parent = null;
         if (roster.PreviousRosterHash == floor.Heads[0]) parent = head;
         else if (head.PreviousRosterHash == roster.PreviousRosterHash &&
@@ -377,6 +397,74 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 result.Add(roster);
             }
             return result;
+        }
+    }
+    internal IReadOnlyList<SharedWorldRoster>? ReadAfter(Guid id, string hash)
+    {
+        lock (sync)
+        {
+            if (!ValidHash(hash)) throw new InvalidDataException("Roster anchor is invalid.");
+            var floor = Ready(id);
+            if (!HasLookup(id, floor, hash)) return null;
+            var lookup = JsonSerializer.Deserialize<Lookup>(data.LoadProtected(LookupName(id, hash))!, Json)!;
+            _ = LoadRevision(id, hash);
+            return ReadPage(id, checked(lookup.Position + 1));
+        }
+    }
+    internal IReadOnlyList<SharedWorldRoster> ReadAfterRevision(Guid id, long revision)
+    {
+        lock (sync)
+        {
+            if (revision < 0) throw new InvalidDataException("Roster revision cursor is invalid.");
+            var floor = Ready(id);
+            if (floor.Heads!.Count > 1)
+                throw new InvalidDataException("Competing roster revisions require owner review.");
+            return ReadPage(id, PositionAfterRevision(id, floor, revision));
+        }
+    }
+    private SharedWorldRoster RevisionAt(Guid id, Floor floor, long position)
+    {
+        var index = LoadIndex(id, position / IndexSize);
+        if (index.Hashes.Count != Math.Min(IndexSize, floor.Count - index.Offset))
+            throw new InvalidDataException("Roster index was truncated.");
+        var hash = index.Hashes[(int)(position % IndexSize)];
+        if (!HasLookup(id, floor, hash))
+            throw new InvalidDataException("Protected roster lookup is missing.");
+        var item = LoadRevision(id, hash);
+        if (item.ProfileId != id || item.GroupId != floor.GroupId || item.OwnerPublicKey != floor.OwnerPublicKey)
+            throw new InvalidDataException("Roster revision crossed a world boundary.");
+        return item;
+    }
+    private long PositionAfterRevision(Guid id, Floor floor, long revision)
+    {
+        // Legacy snapshot numbers can jump. Locate their protected journal
+        // positions instead of treating a signed revision as a file offset.
+        long lower = 0, upper = floor.Count;
+        while (lower < upper)
+        {
+            var position = lower + (upper - lower) / 2;
+            var item = RevisionAt(id, floor, position);
+            if (item.Revision <= revision) lower = position + 1;
+            else upper = position;
+        }
+        return lower;
+    }
+    internal bool SupersededLegacySnapshot(Guid id, SharedWorldRoster snapshot)
+    {
+        lock (sync)
+        {
+            if (snapshot.Schema is not (1 or 2) || !SharedWorldRosterTrust.Verify(snapshot)) return false;
+            var floor = Ready(id);
+            if (floor.Heads!.Count != 1) return false;
+            var position = PositionAfterRevision(id, floor, snapshot.Revision);
+            if (position >= floor.Count || !LegacyOwnerAdvance(RevisionAt(id, floor, position), snapshot)) return false;
+            // A same-counter sibling is a fork, not redundant old metadata.
+            if (position > 0)
+            {
+                var previous = RevisionAt(id, floor, position - 1);
+                if (previous.Epoch >= snapshot.Epoch || previous.Revision >= snapshot.Revision) return false;
+            }
+            return true;
         }
     }
     internal IReadOnlyList<SharedWorldRoster> Read(Guid id)

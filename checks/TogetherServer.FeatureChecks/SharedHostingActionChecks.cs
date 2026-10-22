@@ -43,6 +43,15 @@ internal static class SharedHostingActionChecks
         var unavailable = FriendLocalHostingService.Unavailable("PermissionDenied", "Ask the owner to allow hosting.");
         Require(FriendLocalHostingService.WithRemedy(unavailable).Remedy?.Kind == "Permission",
             "a denied host grant did not lead to its owner permission remedy");
+        foreach (var code in new[] { "SharingPermissionUnknown", "RosterUnavailable", "RosterCatchUpPending",
+            "RosterRejected", "RosterRollback", "SharingReviewRequired", "HostingIdentityRequired" })
+        {
+            var unknown = FriendLocalHostingService.Unavailable(code, "Check the current sharing permission.");
+            Require(unknown.Steps.Count == 5 && unknown.Steps.Single(step => step.Key == "permission").State == "Unknown" &&
+                FriendLocalHostingService.WithRemedy(unknown).Remedy?.Kind == "Review" &&
+                !unknown.ReadyForManualStart && !unknown.Running,
+                "unverified sharing was presented as an owner permission denial: " + code);
+        }
         var baseStatus = unavailable with
         {
             Allowed = true,

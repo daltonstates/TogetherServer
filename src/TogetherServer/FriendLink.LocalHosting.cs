@@ -16,7 +16,7 @@ internal sealed partial class FriendLink
     // local signing key and current revocation fence have all been verified.
     internal async Task<LocalHostingAccess> LocalHostingAccessAsync(Guid profileId,
         bool refresh, CancellationToken cancellationToken, bool verifyFiles = false,
-        bool permissionOnly = false)
+        bool permissionOnly = false, bool refreshDisconnected = false)
     {
         if (!TryRetain()) return new(false, false, "Shared server", null, null,
             false, "ConnectionClosed", "This saved Host connection is closing.");
@@ -25,7 +25,10 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             try
             {
-                if (refresh && config is not null && view.State is "Connected" or "Disabled")
+                if (refresh && config is { KnownRevoked: false } &&
+                    view.ConnectionCode is not ("Revoked" or "AccessExpired" or "ApprovalPending") &&
+                    (view.State is "Connected" or "Disabled" ||
+                        refreshDisconnected && !HasCurrentCachedHostingPermission(profileId)))
                 {
                     try
                     {
@@ -52,6 +55,14 @@ internal sealed partial class FriendLink
         finally { ReleaseRetained(); }
     }
 
+    private bool HasCurrentCachedHostingPermission(Guid profileId)
+    {
+        try { return ReadLocalHostingAccess(profileId, verifyFiles: false, permissionOnly: true).Allowed; }
+        catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+            CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return false; }
+    }
+
     private LocalHostingAccess ReadLocalHostingAccess(Guid profileId, bool verifyFiles, bool permissionOnly = false)
     {
         var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId) ??
@@ -61,8 +72,14 @@ internal sealed partial class FriendLink
         var consented = HasSharedWorldReceiveConsent(profileId);
         LocalHostingAccess Denied(string code, string message) => new(false, consented,
             name, profile?.GameKind ?? profile?.Kind, null, false, code, message);
-        if (config is null || config.KnownRevoked || view.ConnectionCode is "Revoked" or "AccessExpired" or "ApprovalPending")
-            return Denied("HostingPermissionRequired", "The owner must grant Can host this save to this PC.");
+        if (config is null)
+            return Denied("NotPaired", "Choose a saved Host connection first.");
+        if (config.KnownRevoked || view.ConnectionCode == "Revoked")
+            return Denied("Revoked", "The owner removed this PC's saved access. Ask them for a new server code.");
+        if (view.ConnectionCode == "AccessExpired")
+            return Denied("AccessExpired", "The owner ended this PC's access. Ask them to extend or clear its deadline.");
+        if (view.ConnectionCode == "ApprovalPending")
+            return Denied("ApprovalPending", "The owner needs to approve this PC before it can host this server.");
         if (config.PendingSharedWorldGroups?.ContainsKey(profileId) == true ||
             config.SharedWorldConflicts?.Contains(profileId) == true)
             return Denied("WorldHistoryReviewRequired", "Choose and review the shared save history before preparing hosting.");
@@ -70,22 +87,30 @@ internal sealed partial class FriendLink
         var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
         if (floor is null || owner is null ||
             config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != floor.GroupId)
-            return Denied("HostingPermissionRequired", "Check the owner's Can host this save permission first.");
+            return Denied("SharingPermissionUnknown", "This PC has not verified the current sharing permission. Check again while connected to the Host.");
         var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{profileId:N}.protected");
         var roster = bytes is { Length: > 0 } && bytes.LongLength <= SharedWorldService.MaximumManifestBytes
             ? JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json) : null;
+        if (roster is null)
+            return Denied("SharingPermissionUnknown", "This PC has not verified the current sharing permission. Check again while connected to the Host.");
         var keyBytes = data.LoadProtected($"shared-world-pc-signing-{SharedWorldDeviceId:N}.protected");
         if (keyBytes is null) return Denied("HostingIdentityRequired", "Check this PC's sharing identity with the Host first.");
         using var key = ECDsa.Create();
         key.ImportPkcs8PrivateKey(keyBytes, out _);
-        if (roster is null || !SharedWorldRosterTrust.Verify(roster) ||
-            roster.OwnerPublicKey != owner || roster.ProfileId != profileId ||
+        if (!SharedWorldRosterTrust.Verify(roster) || roster.ProfileId != profileId ||
             roster.GroupId != floor.GroupId || roster.Epoch != floor.Epoch ||
             roster.Revision != floor.Revision || roster.Signature != floor.Signature ||
-            !new WorldAuthorityStore(data).TrustsCurrentRoster(roster) ||
-            !SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId,
-                Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), grants => grants.Receive && grants.EligibleHost))
-            return Denied("HostingPermissionRequired", "The owner must grant Can host this save to this PC.");
+            !new WorldAuthorityStore(data).TrustsCurrentRoster(roster))
+            return Denied("SharingReviewRequired", "The saved sharing permission or world history needs review. Check again to verify the current signed history.");
+        if (roster.OwnerPublicKey != owner)
+            return Denied("SigningIdentityChanged", "The Host's world identity changed. Ask the owner to review it.");
+        var member = roster.Members.SingleOrDefault(item => item.DeviceId == SharedWorldDeviceId);
+        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        if (member is not null && member.PublicKey != publicKey)
+            return Denied("HostingIdentityRequired", "Check this PC's sharing identity with the Host first.");
+        if (!SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId, publicKey,
+                grants => grants.Receive && grants.EligibleHost))
+            return Denied("HostingPermissionRequired", "The owner has not allowed this PC to host this server. Ask them to review shared hosting and this PC's access.");
         // The primary action depends only on current signed authorization.
         // Save selection and verification belong to the explicit hosting flow.
         if (permissionOnly)

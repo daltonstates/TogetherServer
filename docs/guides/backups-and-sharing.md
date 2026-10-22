@@ -79,6 +79,13 @@ connection. It prepares the world and starts when the checks pass. If something
 needs your action, such as installing the server or fixing its connection,
 the dialog explains it and lets you continue. Game terms remain your choice.
 
+The five hosting checks stay visible while they refresh. **Last checked** shows
+the age of the displayed results. If a retry fails, the previous results stay
+visible and starting waits for a successful recheck. Choose **Show setup steps**
+beside a check to open its part of the guide. The guide explains what to do on
+this PC and which changes need the original owner. A sharing-history or
+verification error needs review; it does not mean the owner turned sharing off.
+
 Hosting requires a configured incoming connection. Confirmation can enable
 that saved app connection; TogetherServer never changes Windows Firewall,
 router forwards or DNS. Local port and outside TCP checks do not prove that a

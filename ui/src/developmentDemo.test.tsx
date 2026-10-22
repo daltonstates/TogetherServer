@@ -263,7 +263,7 @@ it('lets the missing-install flow select a fake file and continue into hosting w
   await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
   expect(within(dialog).getByRole('button', { name: 'Host locally' })).toBeDisabled()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Browse' }))
-  await waitFor(() => expect(within(dialog).queryByRole('textbox', { name: 'Installed server file' })).not.toBeInTheDocument())
+  await waitFor(() => expect((within(dialog).getByRole('textbox', { name: 'Installed server file' }) as HTMLInputElement).value).toMatch(/valheim_server\.exe$/i))
   fireEvent.change(within(dialog).getByLabelText('New game password'), { target: { value: 'demo-only' } })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Host locally' }))
   await waitFor(() => expect(openHost).toHaveBeenCalledExactlyOnceWith(local))

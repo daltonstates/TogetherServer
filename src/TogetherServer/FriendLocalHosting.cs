@@ -27,6 +27,13 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
         JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;
 
+    internal static bool ConfirmedHostingDenial(string code) => code is
+        "HostingPermissionRequired" or "PermissionDenied" or "HostingNotAllowed" or
+        "Revoked" or "AccessExpired" or "ApprovalPending";
+
+    private static string HostingPermissionState(bool allowed, string code) =>
+        allowed ? "Ready" : ConfirmedHostingDenial(code) ? "ActionRequired" : "Unknown";
+
     internal async Task<LocalHostingPermission> PermissionAsync(Guid profileId,
         CancellationToken cancellationToken = default)
     {
@@ -94,19 +101,23 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     }
 
     private async Task<LocalHostingStatus> StatusForRetainedConnectionAsync(FriendService.LocalHostingConnection connection,
-        Guid profileId, CancellationToken cancellationToken, string? selectedFile = null)
+        Guid profileId, CancellationToken cancellationToken, string? selectedFile = null,
+        LocalHostingAccess? checkedAccess = null)
     {
+        var access = checkedAccess ?? await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken,
+            refreshDisconnected: true);
         var handoff = await connection.Link.HandoffRequestAsync(profileId, cancellationToken) ??
             await LocalCompletedHandoffAsync(connection, profileId, cancellationToken);
         return handoff?.RequestId is not null && handoff.RecipientState is "Requested" or "Accepted" or "Prepared" or "Completed" ?
-            await PlannedStatusAsync(connection, profileId, handoff, cancellationToken) :
-            (await StatusForConnectionAsync(connection, profileId, cancellationToken, selectedFile)) with { HandoffRequest = handoff };
+            await PlannedStatusAsync(connection, profileId, handoff, cancellationToken, access) :
+            (await StatusForConnectionAsync(connection, profileId, cancellationToken, selectedFile, access)) with { HandoffRequest = handoff };
     }
 
     private async Task<LocalHostingStatus> StatusForConnectionAsync(FriendService.LocalHostingConnection connection,
-        Guid profileId, CancellationToken cancellationToken, string? selectedFile = null)
+        Guid profileId, CancellationToken cancellationToken, string? selectedFile = null,
+        LocalHostingAccess? checkedAccess = null)
     {
-        var access = await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
+        var access = checkedAccess ?? await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
         var snapshot = await manager.CompanionSnapshotAsync();
         var branches = connection.Link.SeparateCopyBranches(profileId);
         var restored = snapshot.Settings.Profiles.Where(profile => profile.SeparateCopySourceProfileId == profileId &&
@@ -169,7 +180,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             access.Name, version is not null && serverFile is null && !manualSetup, false, serverFile, gameVersion,
             ports.GamePort, ports.ControlPort, existing?.Id ?? (hosted?.Restored == true ? hosted.LocalProfileId : null), branch?.BranchHash,
             ready, running,
-            [new("permission", access.Allowed ? "Ready" : "ActionRequired", access.Message),
+            [new("permission", HostingPermissionState(access.Allowed, access.Code), access.Message),
              new("server", serverFile is not null && !manualSetup ? "Ready" : "ActionRequired", serverMessage),
              new("save", saveReady ? "Ready" : "ActionRequired", ambiguous ? "Choose an exact shared history before continuing." :
                 saveReady ? "Preparation verified this retained signed save. Start repeats current checks; existing local progress is preserved." :
@@ -185,7 +196,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
 
     internal static LocalHostingStatus Unavailable(string code, string message) => new(false, code, message,
         false, false, null, "Shared server", false, false, null, null, 2456, 5131, null, null, false, false,
-        [new("permission", "ActionRequired", message), new("server", "Unknown", "Check this PC's server setup."),
+        [new("permission", HostingPermissionState(false, code), message), new("server", "Unknown", "Check this PC's server setup."),
          new("save", "Unknown", "No save was selected."), new("ports", "Unknown", "Local ports have not been checked."),
          new("connection", "Unknown", "Incoming connections and game joins have not been checked.")]);
 
@@ -243,7 +254,8 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             }
             access = await link.LocalHostingAccessAsync(profileId, false, cancellationToken, verifyFiles: status.LocalProfileId is null);
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
-            if (!access.Allowed || !access.Consented) return await Result("HostingPermissionChanged", "Sharing permission or local consent changed. Review this server again.");
+            if (!access.Allowed) return await Result(access.Code, access.Message);
+            if (!access.Consented) return await Result("LocalConsentRequired", "Allow shared saves on this PC before hosting.");
             status = await Status();
             WorldPeerRecoverySource? selectedSource = null;
             var createBranch = status.BranchHash is null;

@@ -12,6 +12,7 @@ internal static class SharedRosterBootstrapChecks
 
     public static async Task RunAsync(string root)
     {
+        await RepairedLegacyCatchUpAsync(root);
         using (var fixture = new Fixture(root))
         {
             fixture.Current = fixture.Legacy;
@@ -118,6 +119,129 @@ internal static class SharedRosterBootstrapChecks
         }
     }
 
+    private static async Task RepairedLegacyCatchUpAsync(string root)
+    {
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Trusted = fixture.Bootstrap;
+            fixture.SaveCache(fixture.Bootstrap);
+            fixture.Current = fixture.Sign(fixture.Bootstrap with { Epoch = 3, Revision = 3 });
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Current];
+            Require((await fixture.CheckAsync()).Available && fixture.Chain.Count(fixture.ProfileId) == 2 &&
+                fixture.Chain.ContainsFloor(fixture.ProfileId, new(fixture.Bootstrap.GroupId,
+                    fixture.Bootstrap.Epoch, fixture.Bootstrap.Revision, fixture.Bootstrap.Signature)),
+                "a retained legacy journal omitted the exact cached pre-journal floor");
+        }
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Trusted = fixture.Bootstrap;
+            fixture.SaveCache(fixture.Bootstrap);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Child(fixture.Bootstrap);
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+            fixture.PageFailures = 1;
+            var interrupted = await fixture.CheckAsync();
+            Require(!interrupted.Available && interrupted.Code == "RosterUnavailable" &&
+                fixture.Chain.Count(fixture.ProfileId) == 2,
+                "a lost page response did not preserve the exact newer legacy floor in the older journal");
+            fixture.AssertFloor(fixture.Bootstrap);
+            var recovered = await fixture.CheckAsync();
+            Require(recovered.Available && recovered.Revision == fixture.Current.Revision &&
+                fixture.Chain.Count(fixture.ProfileId) == 3 &&
+                fixture.LastAnchor == SharedWorldRosterTrust.Hash(fixture.Bootstrap),
+                "a retry could not resume repaired legacy history from its protected signed anchor");
+            fixture.AssertFloor(fixture.Current);
+            Require((await fixture.CheckAsync()).Available && fixture.Chain.Count(fixture.ProfileId) == 3,
+                "an idempotent retry duplicated repaired roster history");
+        }
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Trusted = fixture.Bootstrap;
+            fixture.SaveCache(fixture.Bootstrap);
+            fixture.Chain.Append(fixture.Bootstrap, fixture.Bootstrap.OwnerPublicKey);
+            fixture.Current = fixture.Child(fixture.Bootstrap);
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+            Require((await fixture.CheckAsync()).Available && fixture.LastOffset == 1 &&
+                fixture.LastAnchor == SharedWorldRosterTrust.Hash(fixture.Bootstrap) &&
+                fixture.Chain.Count(fixture.ProfileId) == 2,
+                "different legacy root positions were treated as equal remote offsets");
+        }
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Child(fixture.Bootstrap);
+            fixture.RemoteHistory = [fixture.Bootstrap, fixture.Current];
+            Require((await fixture.CheckAsync()).Available && fixture.RootFallbacks == 1 &&
+                fixture.Chain.Count(fixture.ProfileId) == 3 &&
+                fixture.Chain.ContainsFloor(fixture.ProfileId, new(fixture.Legacy.GroupId,
+                    fixture.Legacy.Epoch, fixture.Legacy.Revision, fixture.Legacy.Signature)),
+                "an unknown remote legacy anchor could not catch up without discarding the saved floor");
+        }
+        foreach (var fault in new[] { "none", "no-journal", "bad-signature", "wrong-group", "wrong-profile", "wrong-owner", "schema3", "equal-epoch", "equal-revision", "sibling" })
+        {
+            using var fixture = new Fixture(root);
+            fixture.Trusted = fixture.Bootstrap;
+            fixture.SaveCache(fixture.Bootstrap);
+            if (fault != "no-journal") fixture.Chain.Append(fixture.Bootstrap, fixture.Bootstrap.OwnerPublicKey);
+            var nextLegacy = fixture.Sign(fixture.Bootstrap with { Epoch = 3, Revision = 3 });
+            fixture.Current = fixture.Child(nextLegacy);
+            var older = fault switch
+            {
+                "bad-signature" => fixture.Legacy with { Signature = new string('A', 88) },
+                "wrong-group" => fixture.Sign(fixture.Legacy with { GroupId = Guid.NewGuid() }),
+                "wrong-profile" => fixture.Sign(fixture.Legacy with { ProfileId = Guid.NewGuid() }),
+                "wrong-owner" => fixture.OtherOwnerRoster(fixture.Legacy),
+                "schema3" => fixture.Sign(fixture.Legacy with
+                {
+                    Schema = 3,
+                    SignerDeviceId = Guid.Empty,
+                    SignerPublicKey = fixture.Legacy.OwnerPublicKey
+                }),
+                "equal-epoch" => fixture.Sign(fixture.Legacy with { Epoch = fixture.Bootstrap.Epoch }),
+                "equal-revision" => fixture.Sign(fixture.Legacy with { Revision = fixture.Bootstrap.Revision }),
+                "sibling" => fixture.Sign(fixture.Bootstrap with { OwnerOverride = !fixture.Bootstrap.OwnerOverride }),
+                _ => fixture.Legacy
+            };
+            fixture.RemoteHistory = [older, nextLegacy, fixture.Current];
+            var result = await fixture.CheckAsync();
+            Require(fixture.RootFallbacks == 1 && (fault is "none" or "no-journal"
+                ? result.Available && fixture.Chain.Count(fixture.ProfileId) == 3 &&
+                    fixture.Chain.ContainsFloor(fixture.ProfileId, new(fixture.Bootstrap.GroupId,
+                        fixture.Bootstrap.Epoch, fixture.Bootstrap.Revision, fixture.Bootstrap.Signature))
+                : !result.Available && result.Code == "RosterRejected" && fixture.Chain.Count(fixture.ProfileId) == 1),
+                "legacy root fallback skipped an unverified/forked revision or lost its exact floor: " + fault);
+            if (fault is not ("none" or "no-journal")) fixture.AssertFloor(fixture.Bootstrap);
+        }
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            var child = fixture.Child(fixture.Bootstrap);
+            fixture.Current = fixture.Bootstrap;
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, child];
+            var raced = await fixture.CheckAsync();
+            Require(!raced.Available && raced.Code == "RosterCatchUpPending" &&
+                fixture.Chain.Count(fixture.ProfileId) == 3,
+                "a valid signed change during current/page reads became a rollback or permission denial");
+            fixture.AssertFloor(fixture.Legacy);
+            fixture.Current = child;
+            Require((await fixture.CheckAsync()).Available && fixture.Chain.Count(fixture.ProfileId) == 3,
+                "the next matching current response could not resume after a signed page race");
+        }
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Trusted = fixture.Bootstrap;
+            fixture.SaveCache(fixture.Bootstrap);
+            fixture.Chain.Append(fixture.Bootstrap, fixture.Bootstrap.OwnerPublicKey);
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            var rolledBack = await fixture.CheckAsync();
+            Require(!rolledBack.Available && rolledBack.Code == "RosterRollback" &&
+                fixture.Chain.Count(fixture.ProfileId) == 1 && fixture.LastOffset == -1,
+                "a genuine Host rollback crossed the newer exact saved floor");
+            fixture.AssertFloor(fixture.Bootstrap);
+        }
+    }
+
     private sealed class Fixture : HttpMessageHandler
     {
         private readonly ECDsa owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -131,7 +255,12 @@ internal static class SharedRosterBootstrapChecks
         public SharedWorldRoster Legacy { get; set; }
         public SharedWorldRoster Bootstrap { get; set; }
         public SharedWorldRoster Current { get; set; }
+        public SharedWorldRoster? Trusted { get; set; }
         public IReadOnlyList<SharedWorldRoster> Page { get; set; } = [];
+        public IReadOnlyList<SharedWorldRoster>? RemoteHistory { get; set; }
+        public int PageFailures { get; set; }
+        public int RootFallbacks { get; private set; }
+        public string? LastAnchor { get; private set; }
         public long LastOffset { get; private set; } = -1;
         public string CacheName => $"shared-world-roster-{deviceId:N}-{ProfileId:N}.protected";
 
@@ -189,6 +318,7 @@ internal static class SharedRosterBootstrapChecks
             if (link is null)
             {
                 const string endpoint = "https://127.0.0.1:5131";
+                var trusted = Trusted ?? Legacy;
                 Data.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
                 {
                     DeviceId = deviceId,
@@ -198,7 +328,7 @@ internal static class SharedRosterBootstrapChecks
                     Credential = credential,
                     CredentialExpiresUtc = DateTimeOffset.UtcNow.AddDays(90),
                     SharedWorldSigningKeys = new() { [ProfileId] = Legacy.OwnerPublicKey },
-                    SharedRosterFloors = new() { [ProfileId] = new(Legacy.GroupId, Legacy.Epoch, Legacy.Revision, Legacy.Signature) }
+                    SharedRosterFloors = new() { [ProfileId] = new(trusted.GroupId, trusted.Epoch, trusted.Revision, trusted.Signature) }
                 }, Json));
                 link = new FriendLink(Data, "friend.protected", (address, pins) =>
                 {
@@ -236,7 +366,22 @@ internal static class SharedRosterBootstrapChecks
             {
                 Require(long.TryParse(request.RequestUri.Query.AsSpan("?offset=".Length), out var offset), "invalid offset");
                 LastOffset = offset;
-                body = Page;
+                LastAnchor = request.Headers.TryGetValues(SharedWorldRosterProtocol.AfterHeader, out var anchors)
+                    ? anchors.Single() : null;
+                if (PageFailures > 0) { PageFailures--; throw new HttpRequestException("synthetic lost roster response"); }
+                if (RemoteHistory is not null && LastAnchor is not null)
+                {
+                    var position = Array.FindIndex(RemoteHistory.ToArray(), item => SharedWorldRosterTrust.Hash(item) == LastAnchor);
+                    var response = new HttpResponseMessage(position < 0 ? HttpStatusCode.Conflict : HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(position < 0 ? [] :
+                        RemoteHistory.Skip(position + 1).Take(SharedWorldRosterChainStore.PageSize).ToArray(), Json))
+                    };
+                    response.Headers.Add(SharedWorldRosterProtocol.AnchorHeader, LastAnchor);
+                    if (position < 0) RootFallbacks++;
+                    return Task.FromResult(response);
+                }
+                body = RemoteHistory is null ? Page : RemoteHistory.Skip(checked((int)offset)).Take(SharedWorldRosterChainStore.PageSize).ToArray();
             }
             else throw new InvalidOperationException("Unexpected synthetic roster request: " + path);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

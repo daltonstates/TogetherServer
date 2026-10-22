@@ -629,6 +629,23 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    internal async Task<IReadOnlyList<SharedWorldRoster>?> SharedWorldRosterHistoryAfterAsync(
+        Guid profileId, string hash)
+    {
+        await gate.WaitAsync();
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
+            if (profile is null || SharedAuthorityBlocked(profileId, out _)) return null;
+            var current = sharedWorlds.ReadRoster(profile);
+            if (current is null) return null;
+            var chain = new SharedWorldRosterChainStore(data);
+            return chain.HasState(profileId) ? chain.ReadAfter(profileId, hash) :
+                SharedWorldRosterTrust.Hash(current) == hash ? [] : null;
+        }
+        finally { gate.Release(); }
+    }
+
     // Review data remains readable after fencing. This path never supplies a save
     // manifest, chunk, receipt, or hosting authority to the caller.
     internal async Task<SharedWorldRoster?> SharedWorldReviewRosterAsync(Guid profileId)

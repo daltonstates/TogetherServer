@@ -93,6 +93,7 @@ use the document title to identify the topic.
 - [Plain-language audit](34-PLAIN-LANGUAGE-AUDIT.md)
 - [Workspace and window controls](35-WORKSPACE-AND-WINDOW-CHROME.md)
 - [Documentation refresh](37-DOCUMENTATION-REFRESH.md)
+- [Friend hosting checks and guided fixes](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md)
 
 ## Release evidence
 
@@ -105,6 +106,7 @@ use the document title to identify the topic.
 | 0.3.3 | [Stable release delivery and evidence](38-0.3.3-RELEASE.md) |
 | 0.3.3.1 preview | [Prerelease delivery](39-0.3.3.1-PRERELEASE.md) |
 | 0.3.3.2 preview | [Prerelease delivery](41-0.3.3.2-PRERELEASE.md) |
+| 0.3.3.3 preview | [Friend hosting fixes and prerelease delivery](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).

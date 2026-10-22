@@ -198,9 +198,10 @@ internal static class WorldPeerTransportChecks
         await CheckRosterBootstrapAsync(Path.Combine(prefix, "intermediate-expiry"), BootstrapCase.InactiveResponder);
         await CheckRosterBootstrapAsync(Path.Combine(prefix, "requester-extension"), BootstrapCase.ExpiredRequester);
         await CheckRosterBootstrapAsync(Path.Combine(prefix, "outsider-contact"), BootstrapCase.OutsiderContact);
+        await CheckRosterBootstrapAsync(Path.Combine(prefix, "legacy-number-gaps"), BootstrapCase.LegacyNumberGaps);
     }
 
-    private enum BootstrapCase { NewResponder, InactiveResponder, ExpiredRequester, OutsiderContact }
+    private enum BootstrapCase { NewResponder, InactiveResponder, ExpiredRequester, OutsiderContact, LegacyNumberGaps }
 
     private static async Task CheckRosterBootstrapAsync(string rootPath, BootstrapCase scenario)
     {
@@ -225,7 +226,9 @@ internal static class WorldPeerTransportChecks
             IReadOnlyList<SharedWorldRosterMember> members = scenario == BootstrapCase.InactiveResponder && revision < 19
                 ? [responder] : (scenario is BootstrapCase.NewResponder or BootstrapCase.OutsiderContact) && revision < 19
                     ? [requester] : [requester, responder];
-            var draft = new SharedWorldRoster(3, root.GroupId, root.ProfileId, revision, revision, true,
+            var number = scenario == BootstrapCase.LegacyNumberGaps && revision > 1 ? revision + 1 : revision;
+            var schema = scenario == BootstrapCase.LegacyNumberGaps && revision <= 2 ? 2 : 3;
+            var draft = new SharedWorldRoster(schema, root.GroupId, root.ProfileId, number, number, true,
                 root.OwnerPublicKey, members, "", revision == 1 ? null : SharedWorldRosterTrust.Hash(history[^1]),
                 Guid.Empty, root.OwnerPublicKey, members);
             history.Add(draft with
@@ -286,7 +289,7 @@ internal static class WorldPeerTransportChecks
                 "an inactive responder published an advertisement while only roster catchup was permitted");
         }
         else Require(requestChain.Heads(root.ProfileId).Single().Revision ==
-                (scenario == BootstrapCase.OutsiderContact ? 1 : 17),
+                (scenario == BootstrapCase.OutsiderContact ? 1 : scenario == BootstrapCase.LegacyNumberGaps ? 18 : 17),
             "bounded valid proof progress was lost, or a forged owner roster advanced the protected floor");
         handler.RewriteChallenge = null;
         for (var attempt = 0; attempt < 3; attempt++) await requesterService.SyncNowAsync(CancellationToken.None);
@@ -307,6 +310,84 @@ internal static class WorldPeerTransportChecks
         Require(handler.Operations.Count > 0 && handler.Operations.All(value => value == WorldPeerOperations.Metadata) &&
             requesterService.Views().Single().State.Peers.Any(value => value.PublicKey == Public(responderKey) && value.Authorized),
             "a returning metadata-only PC did not authenticate its new or regranted Host after full roster catchup");
+        if (scenario == BootstrapCase.LegacyNumberGaps)
+        {
+            SharedWorldRoster SignRoster(SharedWorldRoster draft) => draft with
+            { Signature = Convert.ToBase64String(owner.SignData(SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            // This returning PC accepted B2 between the responder's retained A1
+            // and C3 legacy snapshots. Its old grants are not current authority.
+            var intermediate = SignRoster(history[0] with
+            {
+                Epoch = 2,
+                Revision = 2,
+                Members = history[0].Members.Select(member => member.DeviceId == requesterId ? member with
+                { Grants = new(Receive: true, EligibleHost: true, Reshare: true) } : member).ToArray()
+            });
+            var before = responseChain.Count(root.ProfileId);
+            var catchUp = responderService.PrepareChallenge(root.GroupKey,
+                WorldPeerService.SignChallengeRequest(root, requesterId, requesterKey,
+                    route.CertificateSha256, 2, [intermediate]), route.CertificateSha256);
+            Require(catchUp.Challenge is null && catchUp.RosterRevisions?.FirstOrDefault()?.Signature == history[1].Signature &&
+                responseChain.Count(root.ProfileId) == before && responseChain.Heads(root.ProfileId).Single().Signature == latest.Signature,
+                "a superseded legacy proof replaced current membership or blocked bounded peer catchup");
+            var active = responderService.PrepareChallenge(root.GroupKey,
+                WorldPeerService.SignChallengeRequest(root, requesterId, requesterKey,
+                    route.CertificateSha256, latest.Revision, [intermediate]), route.CertificateSha256);
+            Require(active.Challenge is not null, "current metadata membership was not used after ignoring redundant legacy proof");
+            var chunk = WorldPeerProtocol.Sign(active.Challenge, WorldPeerOperations.Chunk, requesterKey,
+                versionHash: new string('A', 64), fileIndex: 0, chunkOffset: 0);
+            var payloadDenied = false;
+            try { _ = await responderService.ExchangeAsync(root.GroupKey, chunk, [], CancellationToken.None, route.CertificateSha256); }
+            catch (InvalidDataException error) { payloadDenied = error.Message == "Save access is not enabled for this peer."; }
+            Require(payloadDenied && responseChain.Heads(root.ProfileId).Single().Members.Single(member =>
+                member.DeviceId == requesterId).Grants == new SharedWorldGrants(),
+                "a redundant legacy proof restored withdrawn save access");
+            foreach (var fault in new[] { "invalid-signature", "wrong-group", "wrong-profile", "schema3", "same-epoch", "same-revision", "sibling" })
+            {
+                var candidate = SignRoster(fault switch
+                {
+                    "wrong-group" => intermediate with { GroupId = Guid.NewGuid() },
+                    "wrong-profile" => intermediate with { ProfileId = Guid.NewGuid() },
+                    "schema3" => intermediate with
+                    {
+                        Schema = 3,
+                        SignerDeviceId = Guid.Empty,
+                        SignerPublicKey = root.OwnerPublicKey,
+                        PreviousRosterHash = SharedWorldRosterTrust.Hash(history[0])
+                    },
+                    "same-epoch" => intermediate with { Epoch = 1 },
+                    "same-revision" => intermediate with { Revision = 1 },
+                    "sibling" => history[0] with { OwnerOverride = !history[0].OwnerOverride },
+                    _ => intermediate
+                });
+                if (fault == "invalid-signature") candidate = candidate with { Signature = new string('A', 88) };
+                Invalid(() => responderService.PrepareChallenge(root.GroupKey,
+                    WorldPeerService.SignChallengeRequest(root, requesterId, requesterKey,
+                        route.CertificateSha256, 2, [candidate]), route.CertificateSha256),
+                    "an unverified, forked or exact-parent proof was ignored: " + fault);
+                Require(responseChain.Count(root.ProfileId) == before &&
+                    responseChain.Heads(root.ProfileId).Single().Signature == latest.Signature,
+                    "rejected redundant metadata changed the protected journal");
+            }
+            var removedMembers = latest.Members.Select(member => member.DeviceId == requesterId ? member with { Revoked = true } : member).ToArray();
+            var revokedRoster = SignRoster(latest with
+            {
+                Epoch = latest.Epoch + 1,
+                Revision = latest.Revision + 1,
+                PreviousRosterHash = SharedWorldRosterTrust.Hash(latest),
+                Members = removedMembers,
+                OwnerLocalBaselineMembers = removedMembers
+            });
+            responseChain.Append(revokedRoster, root.OwnerPublicKey);
+            SaveMembership(responderData, root, revokedRoster, responderId, true, null);
+            var revokedChallenge = responderService.PrepareChallenge(root.GroupKey,
+                WorldPeerService.SignChallengeRequest(root, requesterId, requesterKey,
+                    route.CertificateSha256, 2, [intermediate]), route.CertificateSha256);
+            Require(revokedChallenge.Challenge is null && (revokedChallenge.RosterRevisions is null or { Count: 0 }) &&
+                responseChain.Heads(root.ProfileId).Single().Signature == revokedRoster.Signature,
+                "a superseded legacy proof restored a currently revoked PC");
+            return;
+        }
         if (scenario == BootstrapCase.NewResponder)
             Require(handler.Challenges.Take(2).All(value => value.RosterRevisions is null or { Count: 0 }),
                 "an unproved new contact obtained the requester's roster before its enrollment was known");

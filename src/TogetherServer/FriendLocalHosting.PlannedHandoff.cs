@@ -48,9 +48,10 @@ internal sealed partial class FriendLocalHostingService
     }
 
     private async Task<LocalHostingStatus> PlannedStatusAsync(FriendService.LocalHostingConnection connection,
-        Guid profileId, PlannedHandoffStatus request, CancellationToken cancellationToken)
+        Guid profileId, PlannedHandoffStatus request, CancellationToken cancellationToken,
+        LocalHostingAccess? checkedAccess = null)
     {
-        var access = await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
+        var access = checkedAccess ?? await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
         var snapshot = await manager.CompanionSnapshotAsync();
         var local = ReadPlannedLocal(profileId, request.RequestId!.Value);
         var restored = request.RecipientState == "Completed" ?
@@ -82,7 +83,7 @@ internal sealed partial class FriendLocalHostingService
             ReadyForManualStart = ready,
             Running = running,
             HandoffRequest = request,
-            Steps = [new("permission", access.Allowed ? "Ready" : "ActionRequired", access.Message),
+            Steps = [new("permission", HostingPermissionState(access.Allowed, access.Code), access.Message),
                 new("server", local?.Prepared == true ? "Ready" : "ActionRequired", local?.Prepared == true ?
                     "This PC's installed game setup passed preparation. Current files are checked again before restore and Start." :
                     server is null ? "Install or select the matching dedicated server on this PC, then prepare again." :

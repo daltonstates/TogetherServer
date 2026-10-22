@@ -245,6 +245,25 @@ internal sealed partial class SharedWorldService
                     chainSuccessor is not null &&
                     SharedWorldRosterTrust.Hash(heads[0]) != SharedWorldRosterTrust.Hash(chainSuccessor.Roster))
                     throw new InvalidDataException("Shared roster revisions need owner review.");
+                if (chainSuccessor is null && heads[0].Schema is 1 or 2)
+                {
+                    // An older peer cache could have started this journal after
+                    // the owner had already published a newer standalone snapshot.
+                    // Import only that same owner's strictly newer legacy state;
+                    // retain both exact signatures and never cross a schema-3 head.
+                    var standalone = ReadRosterForBinding(profile, binding);
+                    if (standalone is not null && SharedWorldRosterTrust.Hash(standalone) !=
+                        SharedWorldRosterTrust.Hash(heads[0]))
+                    {
+                        if (SharedWorldRosterChainStore.LegacyOwnerAdvance(standalone, heads[0]))
+                        {
+                            chain.Append(standalone, chainOwner);
+                            return standalone;
+                        }
+                        if (standalone.Epoch >= heads[0].Epoch || standalone.Revision >= heads[0].Revision)
+                            throw new InvalidDataException("The legacy sharing snapshots disagree. Keep both for owner review.");
+                    }
+                }
                 return heads[0];
             }
             var path = binding is not null && File.Exists(GroupRosterPath(profile.Id, binding.GroupId))
@@ -280,6 +299,16 @@ internal sealed partial class SharedWorldService
                 if (Authority.HasState(profile.Id))
                     throw new InvalidDataException("Only the original owner can change this shared world's signed membership. Sharing management is unavailable on a successor PC.");
                 var chain = new SharedWorldRosterChainStore(data);
+                if (!chain.HasState(profile.Id) && !reviewSourceChange)
+                {
+                    var existingBinding = ReadBinding(profile.Id);
+                    if (existingBinding is not null && BindingMatches(existingBinding, profile))
+                    {
+                        var existing = ReadRosterForBinding(profile, existingBinding) ??
+                            throw new InvalidDataException("The previous signed roster is missing; sharing history cannot be advanced safely.");
+                        chain.Append(existing, existing.OwnerPublicKey);
+                    }
+                }
                 if (chain.HasState(profile.Id))
                 {
                     var parent = ReadRoster(profile) ??
@@ -382,6 +411,10 @@ internal sealed partial class SharedWorldService
                     File.WriteAllBytes(bindingStage, JsonSerializer.SerializeToUtf8Bytes(binding, Json));
                     File.Move(bindingStage, bindingPath, true);
                 }
+                // Publish the protected anchor with the first snapshot. A peer
+                // holding an older registry entry can no longer replace it by
+                // starting a journal later. Subsequent changes use exact parents.
+                chain.Append(roster, roster.OwnerPublicKey);
                 return roster;
             }
     }

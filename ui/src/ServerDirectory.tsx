@@ -198,6 +198,6 @@ export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, 
       {!host.servers.length && <Button className="server-directory-row" disabled={busy} onClick={() => onSelect({ kind: 'friend', connectionId: host.connectionId, profileId: '' })}>
         Open {host.connectionName}<small>{host.state} · No assigned servers</small></Button>}</div>)}
       {!friends.length && <p className="server-directory-empty">{query ? 'No matching friends.' : 'Connect using a friend’s server code.'}</p>}</div>
-    {view.friendHosts.some(removed) && <label className="server-directory-removed"><Input type="checkbox" checked={showRemoved} onChange={event => setShowRemoved(event.target.checked)} />Show removed access</label>}
+    {view.friendHosts.some(removed) && <label className="server-directory-removed"><Input type="checkbox" checked={showRemoved} onChange={event => setShowRemoved(event.target.checked)} /><span>Show removed access</span></label>}
   </section>
 }

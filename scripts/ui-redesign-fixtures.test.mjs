@@ -614,7 +614,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 26, 'thirteen shared-hosting surfaces cover desktop and narrow widths');
+  assert.equal(simple.plans.length, 60, 'twenty shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -841,10 +841,11 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 13);
-  assert.equal(simpleHostingVariants.length, 2);
+  assert.equal(simpleHostingCases.length, 20);
+  assert.equal(simpleHostingVariants.length, 3);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
+  assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390 && item.scale === 150));
   const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready' });
   const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
   assert.deepEqual(Object.keys(routeFixture(state, { method: 'GET', path: `${base}/access` }).body).sort(), ['allowed', 'code', 'message']);
@@ -920,4 +921,68 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   await assert.rejects(assertSimpleHostingUi(continuationPage, continuation, { assertions: [] }, returnedOwner),
     /Owner continuation sharing must use its exact original policy/u,
     'reading active save status is valid, but editing the child policy remains rejected');
+});
+
+test('hosting review distinguishes unavailable permission, review and an access change after entry', async () => {
+  const { simpleHostingPermission, simpleHostingStatus } = await import('./simple-shared-hosting-review.mjs');
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  for (const [stage, code] of [['permission-unknown', 'RosterUnavailable'], ['permission-review', 'RosterRollback'],
+    ['permission-denied', 'HostingPermissionRequired']]) {
+    const state = createFixtureState({ id: 'friend-offline', simpleHosting: stage });
+    const access = routeFixture(state, { method: 'GET', path: `${base}/access` }).body;
+    assert.deepEqual(access, simpleHostingPermission(state, access.message));
+    assert.equal(access.allowed, stage === 'permission-denied', 'only the explicit permission-change case allows the entry lookup');
+    const status = routeFixture(state, { method: 'GET', path: base }).body;
+    assert.deepEqual(status, simpleHostingStatus(state, fixtureIds.primary, status.message));
+    assert.equal(status.code, code);
+    assert.equal(status.allowed, false);
+    assert.equal(status.readyForManualStart, false);
+    assert.equal(status.steps[0].state, stage === 'permission-denied' ? 'ActionRequired' : 'Unknown');
+    assert.doesNotThrow(() => localHosting.parseLocalHostingStatus(status));
+    assert.equal(state.requests.some(request => request.method !== 'GET'), false);
+  }
+  const ports = createFixtureState({ id: 'friend-offline', simpleHosting: 'ports' });
+  const status = routeFixture(ports, { method: 'GET', path: base }).body;
+  assert.equal(status.code, 'PortConflict');
+  assert.equal(status.readyForManualStart, false);
+  assert.equal(status.steps.find(step => step.key === 'ports').state, 'ActionRequired');
+});
+
+test('automatic hosting check failures and recovery stay explicit synthetic reads', () => {
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'prepare' });
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const first = routeFixture(state, { method: 'GET', path });
+  assert.equal(first.status, 200);
+  state.simpleHostingReadFailure = true;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const failed = routeFixture(state, { method: 'GET', path });
+    assert.equal(failed.status, 503);
+    assert.match(failed.deliberateFailure, /Hosting automatic checks/u);
+    assert.equal(failed.body.code, 'SyntheticFixtureUnavailable');
+  }
+  state.simpleHostingReadFailure = false;
+  assert.deepEqual(routeFixture(state, { method: 'GET', path }), first);
+  assert.equal(state.simpleHostingPrepared, false);
+  assert.equal(state.simpleHostingStarted, false);
+  assert.ok(state.requests.every(request => request.method === 'GET'));
+});
+
+test('removed-access review uses separate saved connections and rejects stacked or undersized label geometry', async () => {
+  const { assertRemovedAccessBounds } = await import('./simple-shared-hosting-review.mjs');
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'prepare', removedHost: true });
+  assert.doesNotThrow(() => contracts.parseSnapshot(state.friend));
+  const directory = routeFixture(state, { method: 'GET', path: '/api/local/servers' }).body;
+  assert.equal(directory.friendHosts.length, 2);
+  assert.notEqual(directory.friendHosts[0].connectionId, directory.friendHosts[1].connectionId);
+  assert.equal(directory.friendHosts[0].state, 'Connected');
+  assert.equal(directory.friendHosts[1].state, 'Revoked');
+  assert.equal(directory.friendHosts[1].connectionCode, 'Revoked');
+  assert.equal(directory.friendHosts[1].hostProfileName, 'Removed friend');
+  assert.deepEqual(directory.friendHosts[1].servers, []);
+  const bounds = { label: { x: 0, y: 0, width: 200, height: 36 }, checkbox: { x: 0, y: 9, width: 17, height: 17 },
+    text: { x: 25, y: 9, width: 150, height: 17 }, display: 'flex' };
+  assert.doesNotThrow(() => assertRemovedAccessBounds(bounds));
+  for (const changed of [{ display: 'grid' }, { label: { ...bounds.label, height: 20 } },
+    { text: { ...bounds.text, y: 40 } }, { text: { ...bounds.text, x: 10 } }, { checkbox: null }])
+    assert.throws(() => assertRemovedAccessBounds({ ...bounds, ...changed }), /inline row with a full-height label/u);
 });

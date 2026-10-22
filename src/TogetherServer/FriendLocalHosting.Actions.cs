@@ -14,17 +14,23 @@ internal sealed partial class FriendLocalHostingService
     {
         LocalHostingRemedy? remedy = status switch
         {
-            { Allowed: false } => new("Permission", "Ask the owner to allow hosting", status.Message),
+            { Allowed: false } when ConfirmedHostingDenial(status.Code) =>
+                new("Permission", "Ask the owner to review this PC's access", status.Message),
             { HandoffRequest.RecipientState: "Requested" } => new("Respond", "Review the hosting request", "Accept or decline the move before preparing this PC."),
             { Code: "HostingHistoryChoiceRequired" or "WorldHistoryReviewRequired" or "SharedSaveHistoryNeedsReview" } =>
                 new("ChooseHistory", "Different progress needs review", "Two sessions have different progress. Every save is protected. Review the copies before hosting again."),
+            {
+                Code: "LocalHostingReviewRequired" or "SharingReviewRequired" or "HandoffReviewRequired" or
+                "RosterRollback" or "RosterRejected" or "SigningIdentityChanged" or "HostingIdentityRequired"
+            } =>
+                new("Review", "Review the saved sharing history", status.Message),
+            { Allowed: false } => new("Review", "Check the current sharing permission", status.Message),
             { Code: "MinecraftTermsRequired" } => new("Terms", "Review Minecraft's terms", status.Message),
             { Code: "SharedSaveRequired" or "WaitingForSuccessorCopy" or "SharedSaveUnavailable" } => new("GetSave", "Get a completed save", "Keep an approved PC with the save reachable. If no completed save has been shared, ask the current Host to stop the server safely, then retry."),
             { NeedsServerFile: true } => new("ChooseServer", "Find the game server on this PC", "Install the matching dedicated server or choose its installed file, then continue. Existing worlds stay intact."),
             { Code: "LocalServerSetupRequired" } => new("GameSetup", "Finish this PC's game setup", status.Message),
             { Code: "LocalPortsRequired" or "GamePortInUse" or "PortInUse" or "PortConflict" } => new("Ports", "Free this PC's game ports", "Another app may be using a needed game port. Open local servers, stop the app using it if it is yours, or change this server's port in Setup. Then retry."),
             { Code: "LocalConnectionSetupRequired" or "RecipientConnectionRequired" or "PeerDiscoveryRequired" } => new("Connection", "Set up connections to this PC", status.Message),
-            { Code: "LocalHostingReviewRequired" or "SharingReviewRequired" or "HandoffReviewRequired" } => new("Review", "Review the saved setup", status.Message),
             { Running: false, Consented: false } => new("ConfirmCopy", "Confirm local hosting", "Hosting keeps the latest verified save on this PC so approved friends can continue later."),
             { Running: false, BranchHash: null, HandoffRequest: null } => new("ConfirmCopy", "Confirm local hosting", "Other players will connect to this PC. The app checks the server, save and connection before starting."),
             _ => null
@@ -69,9 +75,12 @@ internal sealed partial class FriendLocalHostingService
         static LocalHostingActionResult Basic(ActionResult result) => new(result.Ok, result.Code, result.Message);
         if (connection is null) return Refused("NotPaired", "Choose the saved Host connection first.");
         var access = await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken);
-        if (!access.Allowed || !access.Consented || !friend.CurrentLocalHostingConnection(connection))
-            return Refused("HostingPermissionChanged", "Hosting permission or the selected connection changed. Review this server again.");
-        var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken));
+        if (!friend.CurrentLocalHostingConnection(connection))
+            return Refused("ConnectionChanged", "The selected Host changed. Review this server again.");
+        if (!access.Allowed) return Refused(access.Code, access.Message);
+        if (!access.Consented) return Refused("LocalConsentRequired", "Allow shared saves on this PC before hosting.");
+        var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken,
+            checkedAccess: access));
         if (!status.ReadyForManualStart || status.Running || status.LocalProfileId != input.LocalProfileId ||
             !friend.CurrentLocalHostingConnection(connection))
             return Refused("LocalHostingPreparationRequired", "Repeat this PC's automatic hosting checks before starting.");

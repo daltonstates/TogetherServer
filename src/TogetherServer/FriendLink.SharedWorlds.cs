@@ -147,31 +147,73 @@ internal sealed partial class FriendLink
             var hasChain = chain.HasState(profileId);
             var count = hasChain ? chain.Count(profileId) : 0;
             var floorSeen = floor is null;
+            if (floor is not null && (floor.GroupId != current.GroupId ||
+                floor.Revision > current.Revision || floor.Epoch > current.Epoch ||
+                floor.Revision == current.Revision && floor.Signature != current.Signature))
+                return SharedFailure("RosterRollback", "The Host's sharing list is older or changed unexpectedly.");
+            if (!hasChain && count == 0 && current.Schema == 3 &&
+                floor is not null && current.Epoch > floor.Epoch && current.Revision > floor.Revision &&
+                CachedLegacyRosterFloor(profileId, pinned, floor) is { } legacyFloor)
+            {
+                // A protected connection floor can predate peer journaling.
+                // Keep its exact verified legacy snapshot even when the Host's
+                // retained legacy journal began elsewhere.
+                chain.Append(legacyFloor, current.OwnerPublicKey);
+                hasChain = true;
+                count = chain.Count(profileId);
+            }
             if (count > 0)
             {
                 var local = chain.Heads(profileId);
                 if (local.Count != 1 || local[0].GroupId != current.GroupId ||
-                    local[0].OwnerPublicKey != current.OwnerPublicKey ||
-                    floor is not null && (floor.GroupId != local[0].GroupId ||
-                        floor.Revision > local[0].Revision || floor.Epoch > local[0].Epoch ||
-                        floor.Revision == local[0].Revision && floor.Signature != local[0].Signature))
+                    local[0].OwnerPublicKey != current.OwnerPublicKey)
                     return SharedFailure("RosterRollback", "The saved sharing history changed unexpectedly.");
+                if (floor is not null && (floor.GroupId != local[0].GroupId ||
+                    floor.Revision > local[0].Revision || floor.Epoch > local[0].Epoch ||
+                    floor.Revision == local[0].Revision && floor.Signature != local[0].Signature))
+                {
+                    var cachedFloor = CachedLegacyRosterFloor(profileId, pinned, floor);
+                    if (cachedFloor is null || !SharedWorldRosterChainStore.LegacyOwnerAdvance(cachedFloor, local[0]))
+                        return SharedFailure("RosterRollback", "The saved sharing history changed unexpectedly.");
+                    // A peer may have anchored an older legacy snapshot after
+                    // this connection accepted a newer signed standalone floor.
+                    // Preserve that exact floor in the journal before proceeding.
+                    chain.Append(cachedFloor, current.OwnerPublicKey);
+                    local = chain.Heads(profileId);
+                }
+                if (SharedWorldRosterChainStore.LegacyOwnerAdvance(current, local[0]))
+                {
+                    chain.Append(current, current.OwnerPublicKey);
+                    local = chain.Heads(profileId);
+                }
+                count = chain.Count(profileId);
                 floorSeen = floor is null || local[0].GroupId == floor.GroupId &&
                     local[0].Epoch == floor.Epoch && local[0].Revision == floor.Revision &&
                     local[0].Signature == floor.Signature;
             }
-            else if (floor is not null && (floor.GroupId != current.GroupId ||
-                floor.Revision > current.Revision || floor.Epoch > current.Epoch ||
-                floor.Revision == current.Revision && floor.Signature != current.Signature))
-                return SharedFailure("RosterRollback", "The Host's sharing list is older or changed unexpectedly.");
             var fullLastPage = false;
+            var useAnchor = true;
             for (var pageNumber = 0; pageNumber < 4; pageNumber++)
             {
-                using var response = await client.GetAsync(
-                    $"api/companion/servers/{profileId}/shared-world/roster/revisions?offset={count}",
+                using var request = new HttpRequestMessage(HttpMethod.Get,
+                    $"api/companion/servers/{profileId}/shared-world/roster/revisions?offset={count}");
+                var localHeads = useAnchor ? chain.Heads(profileId) : [];
+                var anchor = localHeads.Count == 1 ? SharedWorldRosterTrust.Hash(localHeads[0]) : null;
+                if (anchor is not null) request.Headers.Add(SharedWorldRosterProtocol.AfterHeader, anchor);
+                using var response = await client.SendAsync(request,
                     HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 var bytes = await ReadBoundedSharedAsync(response.Content, 4 * 1024 * 1024,
                     cancellationToken);
+                // Counts are local positions, not remote positions: two valid
+                // legacy journals may begin at different signed snapshots.
+                if (anchor is not null && response.StatusCode == System.Net.HttpStatusCode.Conflict &&
+                    response.Headers.TryGetValues(SharedWorldRosterProtocol.AnchorHeader, out var echoed) &&
+                    echoed.SequenceEqual([anchor]))
+                {
+                    useAnchor = false;
+                    count = 0;
+                    continue;
+                }
                 if (!response.IsSuccessStatusCode || bytes is null)
                     return SharedFailure("RosterUnavailable", "The signed sharing history is unavailable.");
                 List<SharedWorldRoster>? page;
@@ -179,7 +221,9 @@ internal sealed partial class FriendLink
                 catch (JsonException)
                 { return SharedFailure("RosterRejected", "The signed sharing page is invalid."); }
                 if (page is null || page.Count > SharedWorldRosterChainStore.PageSize ||
-                    page.Any(item => item is null))
+                    page.Any(item => item is null || item.ProfileId != profileId ||
+                        item.GroupId != current.GroupId || item.OwnerPublicKey != current.OwnerPublicKey ||
+                        !SharedWorldRosterTrust.VerifySignature(item)))
                     return SharedFailure("RosterRejected", "The signed sharing page is invalid.");
                 // Legacy Hosts can replace their standalone roster between the current
                 // and page requests. Do not strand an older saved floor behind that
@@ -203,12 +247,34 @@ internal sealed partial class FriendLink
                       page[0].Epoch > floor.Epoch && page[0].Revision > floor.Revision &&
                       HasCachedLegacyRosterFloor(profileId, pinned, floor))))
                     return null;
+                if (!hasChain && count == 0 && page.Count > 1 && floor is not null &&
+                    current.Epoch > floor.Epoch && current.Revision > floor.Revision &&
+                    CachedLegacyRosterFloor(profileId, pinned, floor) is { } retainedFloor)
+                {
+                    // Unlike a replaceable legacy singleton, a retained journal
+                    // can start before this connection's accepted snapshot.
+                    // Preserve the exact cached floor before importing that page.
+                    chain.Append(retainedFloor, current.OwnerPublicKey);
+                    hasChain = true;
+                    floorSeen = true;
+                    useAnchor = false;
+                }
                 foreach (var revision in page)
                 {
                     if (floor is not null && revision.GroupId == floor.GroupId &&
                         revision.Epoch == floor.Epoch && revision.Revision == floor.Revision &&
                         revision.Signature == floor.Signature) floorSeen = true;
-                    chain.Append(revision, pinned ?? current.OwnerPublicKey);
+                    if (!chain.Contains(profileId, revision))
+                    {
+                        var retained = !useAnchor ? chain.Heads(profileId) : [];
+                        // Different legacy journals can omit one another's
+                        // standalone snapshots. A root fallback may pass an older
+                        // verified snapshot, but never replace our exact floor,
+                        // skip a fork, or skip any schema-3 parent revision.
+                        if (retained.Count == 1 &&
+                            SharedWorldRosterChainStore.LegacyOwnerAdvance(retained[0], revision)) continue;
+                        chain.Append(revision, pinned ?? current.OwnerPublicKey);
+                    }
                 }
                 count += page.Count;
                 fullLastPage = page.Count == SharedWorldRosterChainStore.PageSize;
@@ -221,7 +287,12 @@ internal sealed partial class FriendLink
                     "This PC is still checking the signed sharing history. Check again to continue.");
             if (heads.Count != 1 || SharedWorldRosterTrust.Hash(heads[0]) !=
                 SharedWorldRosterTrust.Hash(current))
+            {
+                if (heads.Count == 1 && chain.Contains(profileId, current))
+                    return SharedFailure("RosterCatchUpPending",
+                        "The Host updated sharing during this check. Check again to continue.");
                 return SharedFailure("RosterRejected", "The Host omitted a signed sharing revision.");
+            }
             if (!floorSeen && floor is not null &&
                 !(hasChain && chain.ContainsFloor(profileId, floor)) &&
                 !(HasCachedLegacyRosterFloor(profileId, pinned, floor) &&
@@ -236,16 +307,19 @@ internal sealed partial class FriendLink
         { return SharedFailure("RosterRejected", "The signed sharing history failed verification."); }
     }
 
-    private bool HasCachedLegacyRosterFloor(Guid profileId, string? pinned, SharedRosterFloor? floor)
+    private bool HasCachedLegacyRosterFloor(Guid profileId, string? pinned, SharedRosterFloor? floor) =>
+        CachedLegacyRosterFloor(profileId, pinned, floor) is not null;
+
+    private SharedWorldRoster? CachedLegacyRosterFloor(Guid profileId, string? pinned, SharedRosterFloor? floor)
     {
-        if (floor is null || pinned is null) return false;
+        if (floor is null || pinned is null) return null;
         var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{profileId:N}.protected");
-        if (bytes is null || bytes.Length > SharedWorldService.MaximumManifestBytes) return false;
+        if (bytes is null || bytes.Length > SharedWorldService.MaximumManifestBytes) return null;
         var cached = JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json);
         return cached is { Schema: 1 or 2 } && cached.ProfileId == profileId &&
             cached.GroupId == floor.GroupId && cached.OwnerPublicKey == pinned &&
             cached.Epoch == floor.Epoch && cached.Revision == floor.Revision &&
-            cached.Signature == floor.Signature && SharedWorldRosterTrust.Verify(cached);
+            cached.Signature == floor.Signature && SharedWorldRosterTrust.Verify(cached) ? cached : null;
     }
 
     private static bool HasLegacyRosterBootstrap(Guid profileId, SharedWorldRosterChainStore chain,

@@ -45,6 +45,8 @@ $windowGeometry = [Collections.Generic.List[object]]::new()
 $app = $null
 $failure = $null
 $requiredScopeCompleted = $false
+$startupReadiness = [ordered]@{ deadlineSeconds = 25; elapsedMilliseconds = 0; polls = 0;
+    lastRequestErrorKind = $null; lastWindow = $null }
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -392,13 +394,43 @@ function Capture-DesktopFailure([string]$Name = 'failure-desktop') {
 
 try {
     $app = Start-App
-    Wait-Until {
-        if ($app.HasExited) { throw 'Disposable native app exited before rendering.' }
-        try {
-            $window = Invoke-RestMethod "$baseUrl/api/local/window" -TimeoutSec 2
-            return $window.available -and $window.customChrome -and $window.visible -and $window.rendered
-        } catch { return $false }
-    } 'Disposable custom native window did not render.'
+    # First-run WebView creation has a 15-second product deadline after Shown.
+    # Give startup its own bounded elapsed-time budget; later chrome waits stay unchanged.
+    $startupWait = [Diagnostics.Stopwatch]::StartNew()
+    $startupReady = $false
+    try {
+        while ($startupWait.Elapsed.TotalSeconds -lt $startupReadiness.deadlineSeconds) {
+            if ($app.HasExited) { throw 'Disposable native app exited before rendering.' }
+            $startupReadiness.polls++
+            $window = $null
+            try {
+                $window = Invoke-RestMethod "$baseUrl/api/local/window" -TimeoutSec 2
+                $startupReadiness.lastRequestErrorKind = $null
+            } catch { $startupReadiness.lastRequestErrorKind = $_.Exception.GetType().Name }
+            if ($null -ne $window) {
+                $startupReadiness.lastWindow = [ordered]@{ available = $window.available; customChrome = $window.customChrome;
+                    visible = $window.visible; rendered = $window.rendered; loadState = $window.loadState;
+                    loadErrorCode = $window.loadErrorCode; loadFailureKind = $window.loadFailureKind;
+                    loadFailureHResult = $window.loadFailureHResult }
+                if ($window.loadState -eq 'Failed') {
+                    throw "Disposable native WebView failed: loadState=$($window.loadState), loadErrorCode=$($window.loadErrorCode), loadFailureKind=$($window.loadFailureKind), loadFailureHResult=$($window.loadFailureHResult)."
+                }
+                if ($startupWait.Elapsed.TotalSeconds -lt $startupReadiness.deadlineSeconds -and
+                    $window.available -eq $true -and $window.customChrome -eq $true -and
+                    $window.visible -eq $true -and $window.rendered -eq $true -and $window.loadState -eq 'Rendered' -and
+                    !$window.loadErrorCode -and !$window.loadFailureKind -and !$window.loadFailureHResult) {
+                    $startupReady = $true
+                    break
+                }
+            }
+            $remainingMilliseconds = $startupReadiness.deadlineSeconds * 1000 - $startupWait.ElapsedMilliseconds
+            if ($remainingMilliseconds -gt 0) { Start-Sleep -Milliseconds ([int][Math]::Min(100, $remainingMilliseconds)) }
+        }
+        Require $startupReady 'Disposable custom native window did not render within the 25-second startup deadline.'
+    } finally {
+        $startupReadiness.elapsedMilliseconds = $startupWait.ElapsedMilliseconds
+        Write-Host ('Startup readiness: ' + ($startupReadiness | ConvertTo-Json -Depth 3 -Compress))
+    }
     $instance = Invoke-RestMethod "$baseUrl/api/local/instance" -TimeoutSec 2
     Require ($instance.isStaging -and [IO.Path]::GetFullPath($instance.dataRoot) -eq $dataRoot) 'Disposable staging identity/data mismatch.'
     $handle = App-Handle
@@ -550,7 +582,8 @@ try {
     [ordered]@{ candidateSha256 = $candidateHash; candidate = $candidate; caseId = $caseId;
         source = 'Approved separate Windows desktop only'; results = $results; shellObservations = $shellObservations; windowGeometry = $windowGeometry;
         requiredScope = 'Physical titlebar double-click, taskbar, caption, ShowAsync and single-instance normal/maximized restoration';
-        requiredScopeCompleted = $requiredScopeCompleted; skipped = @($results | Where-Object status -eq 'SKIP').Count; passed = $null -eq $failure } |
+        requiredScopeCompleted = $requiredScopeCompleted; startupReadiness = $startupReadiness;
+        skipped = @($results | Where-Object status -eq 'SKIP').Count; passed = $null -eq $failure } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidenceRoot 'result.json') -Encoding UTF8
     Write-Host "Window chrome evidence: $evidenceRoot"
 }

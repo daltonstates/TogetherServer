@@ -15,7 +15,11 @@
 .server-directory-host h4 { margin: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--color-text-muted); }
 .server-directory-host h4 small { display: block; }
 .server-directory-empty { margin: 4px 10px; color: var(--color-text-muted); font-size: 12px; }
-.server-directory-removed { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-muted); }
+/* This inline toggle takes precedence over the shared sidebar field-label grid. */
+.server-directory > label.server-directory-removed,
+.app-shell .server-directory > label.server-directory-removed { display: flex; align-items: center; gap: 8px; min-height: 36px; margin: 0; padding: 4px 0; font-size: calc(12px * var(--qol-text-scale, 1)); line-height: 1.4; color: var(--color-text-muted); cursor: pointer; }
+.server-directory-removed > .ui-input { flex: none; width: 17px; height: 17px; margin: 0; padding: 0; cursor: inherit; }
+.server-directory-removed > span { min-width: 0; overflow-wrap: anywhere; }
 .guest-hosting-label { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--color-border); background: var(--color-accent-soft); border-radius: 8px; color: var(--color-accent-text); }
 .guest-hosting-label span { display: grid; gap: 3px; }
 .guest-hosting-label small { color: var(--color-text-muted); }

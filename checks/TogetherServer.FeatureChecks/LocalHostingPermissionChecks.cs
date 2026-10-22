@@ -19,6 +19,7 @@ internal static class LocalHostingPermissionChecks
     {
         await PermissionBeforePreparationAsync(root);
         await RefreshSignedPermissionAsync(root);
+        await RefreshStatusWithoutHeartbeatAsync(root);
         await ConnectionAndCancellationAsync(root);
         foreach (var fault in new[] { "missing-grant", "receive-only", "revoked-member", "expired-member",
             "known-revoked", "owner-expired", "pending-approval", "missing-floor", "stale-floor", "missing-owner",
@@ -33,16 +34,19 @@ internal static class LocalHostingPermissionChecks
                 case "receive-only": fixture.ReplaceMember(member => member with { Grants = new(Receive: true) }); break;
                 case "revoked-member": fixture.ReplaceMember(member => member with { Revoked = true }); break;
                 case "expired-member": fixture.ReplaceMember(member => member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }); break;
-                case "known-revoked": fixture.Config.KnownRevoked = true; break;
-                case "owner-expired": fixture.SetViewCode("AccessExpired"); break;
-                case "pending-approval": fixture.SetViewCode("ApprovalPending"); break;
-                case "missing-floor": fixture.Config.SharedRosterFloors.Clear(); break;
+                case "known-revoked": fixture.Config.KnownRevoked = true; expected = "Revoked"; break;
+                case "owner-expired": fixture.SetViewCode("AccessExpired"); expected = "AccessExpired"; break;
+                case "pending-approval": fixture.SetViewCode("ApprovalPending"); expected = "ApprovalPending"; break;
+                case "missing-floor": fixture.Config.SharedRosterFloors.Clear(); expected = "SharingPermissionUnknown"; break;
                 case "stale-floor":
                     fixture.Config.SharedRosterFloors[fixture.ProfileId] =
-                    fixture.Config.SharedRosterFloors[fixture.ProfileId] with { Revision = 2 }; break;
-                case "missing-owner": fixture.Config.SharedWorldSigningKeys.Clear(); break;
-                case "wrong-owner": fixture.Config.SharedWorldSigningKeys[fixture.ProfileId] = fixture.MemberPublicKey; break;
-                case "missing-group": fixture.Config.ApprovedSharedWorldGroups.Clear(); break;
+                    fixture.Config.SharedRosterFloors[fixture.ProfileId] with { Revision = 2 };
+                    expected = "SharingReviewRequired"; break;
+                case "missing-owner": fixture.Config.SharedWorldSigningKeys.Clear(); expected = "SharingPermissionUnknown"; break;
+                case "wrong-owner":
+                    fixture.Config.SharedWorldSigningKeys[fixture.ProfileId] = fixture.MemberPublicKey;
+                    expected = "SigningIdentityChanged"; break;
+                case "missing-group": fixture.Config.ApprovedSharedWorldGroups.Clear(); expected = "SharingPermissionUnknown"; break;
                 case "pending-group":
                     fixture.Config.PendingSharedWorldGroups[fixture.ProfileId] = Guid.NewGuid();
                     expected = "WorldHistoryReviewRequired"; break;
@@ -55,14 +59,18 @@ internal static class LocalHostingPermissionChecks
                 case "wrong-key":
                     using (var wrong = ECDsa.Create(ECCurve.NamedCurves.nistP256))
                         fixture.Data.SaveProtected(fixture.KeyName, wrong.ExportPkcs8PrivateKey());
+                    expected = "HostingIdentityRequired";
                     break;
-                case "missing-roster": fixture.Data.DeleteProtected(fixture.RosterName); break;
-                case "damaged-signature": fixture.SaveRoster(fixture.Roster with { Signature = new string('A', 88) }); break;
+                case "missing-roster": fixture.Data.DeleteProtected(fixture.RosterName); expected = "SharingPermissionUnknown"; break;
+                case "damaged-signature":
+                    fixture.SaveRoster(fixture.Roster with { Signature = new string('A', 88) });
+                    expected = "SharingReviewRequired"; break;
                 case "authority-fence":
                     var chain = new SharedWorldRosterChainStore(fixture.Data);
                     chain.Append(fixture.Roster, fixture.Roster.OwnerPublicKey);
                     fixture.AdvanceRoster(Hosting);
                     chain.Append(fixture.Roster, fixture.Roster.OwnerPublicKey);
+                    expected = "SharingReviewRequired";
                     break;
             }
             var result = await fixture.Service.PermissionAsync(fixture.ProfileId);
@@ -153,6 +161,44 @@ internal static class LocalHostingPermissionChecks
                 removed.Config.SharedRosterFloors[removed.ProfileId].Revision == 2,
                 "a newly withdrawn signed grant retained hosting permission");
         }
+    }
+
+    private static async Task RefreshStatusWithoutHeartbeatAsync(string root)
+    {
+        using var fixture = new Fixture(root);
+        fixture.Config.SharedRosterFloors.Clear();
+        fixture.Config.SharedWorldSigningKeys.Clear();
+        fixture.Config.ApprovedSharedWorldGroups.Clear();
+        fixture.Data.DeleteProtected(fixture.RosterName);
+        fixture.Connect();
+        var statusService = new FriendLocalHostingService(fixture.Data, fixture.Friends, fixture.Manager, _ => []);
+        fixture.TransportOffline = true;
+        var unknown = await statusService.StatusAsync(fixture.ProfileId);
+        Require(!unknown.Allowed && unknown.Code == "SharingPermissionUnknown" &&
+            unknown.Steps.Single(step => step.Key == "permission").State == "Unknown" && !unknown.ReadyForManualStart,
+            "an unavailable first status read fabricated an owner denial");
+        fixture.TransportOffline = false;
+        fixture.Disconnect();
+        var refreshed = await statusService.StatusAsync(fixture.ProfileId);
+        Require(refreshed.Allowed && refreshed.Steps.Single(step => step.Key == "permission").State == "Ready" &&
+            fixture.Config.SharedRosterFloors[fixture.ProfileId].Signature == fixture.Roster.Signature &&
+            !refreshed.ReadyForManualStart,
+            $"dialog Retry did not acquire current signed permission without a heartbeat or prepare: code={refreshed.Code}, allowed={refreshed.Allowed}, permission={refreshed.Steps.Single(step => step.Key == "permission").State}, floor={fixture.Config.SharedRosterFloors.GetValueOrDefault(fixture.ProfileId)?.Revision}, requests={fixture.Requests}");
+        var requests = fixture.Requests;
+        fixture.TransportOffline = true;
+        var retained = await statusService.StatusAsync(fixture.ProfileId);
+        Require(retained.Allowed && retained.Steps.Single(step => step.Key == "permission").State == "Ready" &&
+            fixture.Requests == requests && !retained.ReadyForManualStart,
+            "a disconnected status projection contacted the Host despite a current verified signed grant");
+        fixture.TransportOffline = false;
+        fixture.Connect();
+        fixture.AdvanceRoster(new());
+        var withdrawn = await statusService.StatusAsync(fixture.ProfileId);
+        Require(!withdrawn.Allowed && withdrawn.Code == "HostingPermissionRequired" &&
+            withdrawn.Steps.Single(step => step.Key == "permission").State == "ActionRequired" &&
+            fixture.Config.SharedRosterFloors[fixture.ProfileId].Revision == 2 && !withdrawn.ReadyForManualStart,
+            "a full status read did not enforce a freshly signed hosting withdrawal");
+        fixture.AssertNoPreparation();
     }
 
     private static async Task ConnectionAndCancellationAsync(string root)
@@ -254,6 +300,7 @@ internal static class LocalHostingPermissionChecks
 
         internal void Connect() => SetField(Link, "view", Link.View() with
         { State = "Connected", Profiles = Config.CachedProfiles!, HostCapabilities = [CompanionProtocol.SharedWorldsCapability] });
+        internal void Disconnect() => SetField(Link, "view", Link.View() with { State = "Disconnected/Unknown" });
         internal void SetViewCode(string code) => SetField(Link, "view", Link.View() with { ConnectionCode = code });
         internal void SaveRoster(SharedWorldRoster roster) => Data.SaveProtected(RosterName,
             JsonSerializer.SerializeToUtf8Bytes(roster, Json));
@@ -317,6 +364,8 @@ internal static class LocalHostingPermissionChecks
                 "permission refresh lost device authentication");
             var path = request.RequestUri!.AbsolutePath;
             var prefix = $"/api/companion/servers/{ProfileId}/shared-world";
+            if (path == prefix + "/handoff/request")
+                return new(HttpStatusCode.NotFound) { Content = new ByteArrayContent([]) };
             object body;
             if (path == prefix + "/enrollment")
             {

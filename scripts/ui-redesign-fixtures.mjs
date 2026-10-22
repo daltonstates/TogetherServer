@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import * as worldReview from './ui-polish-world-review.mjs';
 import * as accessReview from './ui-polish-access-review.mjs';
-import { simpleHostingStatus } from './simple-shared-hosting-review.mjs';
+import { simpleHostingPermission, simpleHostingStatus } from './simple-shared-hosting-review.mjs';
 
 const contract = JSON.parse(readFileSync(new URL('../contracts/host-snapshot.v1.json', import.meta.url), 'utf8'));
 export const fixtureNow = '2026-10-10T16:00:00Z';
@@ -211,6 +211,10 @@ export function createFixtureState(scenario = 'host-ready') {
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
       releaseNotes: '', releaseNotesUrl: null, snoozedUntilUtc: null, promptSnoozed: false, versionSkipped: false },
     requests: [] };
+  if (options.removedHost === true) friend.connections = [{ ...clone(friend), connections: null },
+    { ...clone(friend), connectionId: ids.otherDevice, hostId: ids.otherDevice, connections: null,
+      connectionName: 'Removed Host', hostProfileName: 'Removed friend', state: 'Revoked', connectionCode: 'Revoked',
+      lastConnectedUtc: null, profiles: [], chatProfiles: [], canStart: false, canStop: false }];
   if (/no-devices/.test(preset)) state.devices = [];
   if (options.permissions === 'unassigned') Object.assign(state.devices[0], { assignedProfileIds: [], serverPermissions: [] });
   if (options.permissions === 'partial') Object.assign(state.devices[0], {
@@ -516,11 +520,14 @@ export function routeFixture(state, request) {
       return reply(result({ code: 'SharedHostingSaved', message: 'Friends can host this synthetic server.' }));
     }
     if (!host && suffix === 'shared-world/hosting/access' && method === 'GET') {
-      const allowed = state.simpleHosting ? state.simpleHosting !== 'not-allowed' : !!state.hostingRemedy;
+      if (state.simpleHosting) return reply(simpleHostingPermission(state, boundary));
+      const allowed = !!state.hostingRemedy;
       return reply({ allowed, code: allowed ? 'HostingAllowed' : 'HostingPermissionRequired', message: boundary });
     }
-    if (state.simpleHosting && !host && suffix === 'shared-world/hosting' && method === 'GET')
+    if (state.simpleHosting && !host && suffix === 'shared-world/hosting' && method === 'GET') {
+      if (state.simpleHostingReadFailure) return unavailable('Hosting automatic checks');
       return reply(simpleHostingStatus(state, id, boundary));
+    }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting/prepare' && method === 'POST') {
       if (Object.keys(body).sort().join(',') !== 'acceptSplitWarning,allowReceiving,gamePassword,requirePeerConnection,serverFile' ||
           body.allowReceiving !== true || body.acceptSplitWarning !== true || body.requirePeerConnection !== true ||

@@ -4,6 +4,8 @@ import fixture from '../../contracts/host-snapshot.v1.json'
 import { parseSnapshot, type FriendSnapshot } from './contracts'
 import { directoryWithSnapshot, GuestHostingLabel, ordinaryLocalServers, parseServerDirectory, ServerDirectory,
   type DirectoryHost, type DirectoryServer, type ServerDirectoryView } from './ServerDirectory'
+import directoryCss from './ServerDirectory.css?inline'
+import redesignCss from './redesign.css?inline'
 
 const now = Date.parse('2026-10-19T12:00:00Z')
 const ids = { local: '11111111-1111-4111-8111-111111111111', guest: '22222222-2222-4222-8222-222222222222',
@@ -137,6 +139,34 @@ describe('one grouped server list', () => {
     expect(screen.queryByText('Removed owner')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Show removed access' }))
     expect(screen.getByRole('button', { name: /Open Removed PC/ })).toHaveTextContent('No assigned servers')
+  })
+
+  it.each(['context-sidebar', 'workspace-sidebar'])('keeps the removed-access checkbox beside its clickable label in a %s', sidebar => {
+    const styles = document.createElement('style')
+    styles.textContent = `${directoryCss}\n${redesignCss}`
+    document.head.append(styles)
+    try {
+      render(<div className="app-shell"><aside className={sidebar}><ServerDirectory
+        view={{ localServers: [], friendHosts: [host({ state: 'Revoked', connectionCode: 'Revoked', servers: [] })] }}
+        selection={null} nowMs={now} busy={false} onRetry={vi.fn()} onSelect={vi.fn()} onAddLocal={vi.fn()} onConnect={vi.fn()} />
+      </aside></div>)
+      const checkbox = screen.getByRole('checkbox', { name: 'Show removed access' })
+      const label = checkbox.closest('label')!
+      expect(getComputedStyle(label).display).toBe('flex')
+      expect(getComputedStyle(label).alignItems).toBe('center')
+      expect(getComputedStyle(label).minHeight).toBe('36px')
+      expect(getComputedStyle(checkbox).width).toBe('17px')
+      expect(checkbox).not.toBeChecked()
+      expect(screen.queryByRole('button', { name: /Open Morgan/ })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByText('Show removed access'))
+      expect(checkbox).toBeChecked()
+      expect(screen.getByRole('button', { name: /Open Morgan/ })).toBeInTheDocument()
+      fireEvent.click(screen.getByText('Show removed access'))
+      expect(checkbox).not.toBeChecked()
+      expect(screen.queryByRole('button', { name: /Open Morgan/ })).not.toBeInTheDocument()
+    } finally {
+      styles.remove()
+    }
   })
 
   it('keeps pending, first and repeated unavailable counts stable without loading labels or warnings', () => {

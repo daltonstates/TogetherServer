@@ -854,12 +854,24 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 !long.TryParse(rawOffset[0], System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out offset))
                 return Results.BadRequest(new { code = "InvalidRosterOffset" });
+            var rawAnchor = context.Request.Headers[SharedWorldRosterProtocol.AfterHeader];
+            var anchor = rawAnchor.Count == 1 ? rawAnchor[0] : null;
+            if (rawAnchor.Count > 1 || rawAnchor.Count == 1 &&
+                (anchor is not { Length: 64 } || !anchor.All(ch => char.IsAsciiHexDigit(ch) && !char.IsLower(ch))))
+                return Results.BadRequest(new { code = "InvalidRosterAnchor" });
             try
             {
-                var revisions = await manager.SharedWorldRosterHistoryAsync(profileId, offset);
+                var revisions = anchor is null
+                    ? await manager.SharedWorldRosterHistoryAsync(profileId, offset)
+                    : await manager.SharedWorldRosterHistoryAfterAsync(profileId, anchor);
                 if (!Reauthorize(device, out var current, out decision) ||
                     !pairing.CanAccess(current!, profileId))
                     return Results.StatusCode(403);
+                if (anchor is not null)
+                {
+                    context.Response.Headers[SharedWorldRosterProtocol.AnchorHeader] = anchor;
+                    if (revisions is null) return Results.Conflict(new { code = "RosterAnchorUnknown" });
+                }
                 return revisions is null ? Results.NotFound() : Results.Json(revisions);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
