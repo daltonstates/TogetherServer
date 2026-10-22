@@ -181,6 +181,7 @@ internal sealed partial class FriendLink
                     chain.Append(cachedFloor, current.OwnerPublicKey);
                     local = chain.Heads(profileId);
                 }
+                var currentWasKnown = SharedWorldRosterTrust.Hash(local[0]) == SharedWorldRosterTrust.Hash(current);
                 if (SharedWorldRosterChainStore.LegacyOwnerAdvance(current, local[0]))
                 {
                     chain.Append(current, current.OwnerPublicKey);
@@ -190,6 +191,11 @@ internal sealed partial class FriendLink
                 floorSeen = floor is null || local[0].GroupId == floor.GroupId &&
                     local[0].Epoch == floor.Epoch && local[0].Revision == floor.Revision &&
                     local[0].Signature == floor.Signature;
+                // The fresh signed current response already proves an unchanged
+                // verified tip. Fetch history only when a revision is missing.
+                if (currentWasKnown &&
+                    (floorSeen || floor is not null && chain.ContainsFloor(profileId, floor)))
+                    return null;
             }
             var fullLastPage = false;
             var useAnchor = true;
@@ -343,7 +349,8 @@ internal sealed partial class FriendLink
         try
         {
             if (config is null) return new(false, "NotPaired", "Choose a saved Host connection.");
-            var group = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
+            Guid? group = config.ApprovedSharedWorldGroups?.TryGetValue(profileId,
+                out var approvedGroup) == true ? approvedGroup : null;
             var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
             var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
             if (floor is not null && group is not null && floor.GroupId != group)
@@ -977,6 +984,9 @@ internal sealed partial class FriendLink
     private static SharedWorldSharingView SharingFailure(Guid self, string code, string message) =>
         new(false, false, self, null, code, message, []);
 
+    private static bool TemporarySharingLookupFailure(System.Net.HttpStatusCode status) =>
+        status == System.Net.HttpStatusCode.TooManyRequests || (int)status is >= 500 and <= 599;
+
     private async Task<(SharedWorldRoster? Roster, SharedWorldSharingView View)> SyncSharingRosterAsync(
         Guid profileId, CancellationToken cancellationToken)
     {
@@ -1003,6 +1013,9 @@ internal sealed partial class FriendLink
         try
         {
             using var challengeResponse = await client.GetAsync(path + "/enrollment", cancellationToken);
+            if (TemporarySharingLookupFailure(challengeResponse.StatusCode))
+                return (null, SharingFailure(selfId, "RosterUnavailable",
+                    "The Host's sharing permission check is temporarily unavailable. Retry the check."));
             if (!challengeResponse.IsSuccessStatusCode)
                 return (null, SharingFailure(selfId, "EnrollmentDenied", "The Host has not approved this PC for the world."));
             var challengeBytes = await ReadBoundedSharedAsync(challengeResponse.Content, 512, cancellationToken);
@@ -1015,6 +1028,9 @@ internal sealed partial class FriendLink
                     selfId, challenge.Nonce, publicKey), HashAlgorithmName.SHA256)));
             using var enrollment = await client.PostAsJsonAsync(path + "/enrollment",
                 proof, Json, cancellationToken);
+            if (TemporarySharingLookupFailure(enrollment.StatusCode))
+                return (null, SharingFailure(selfId, "RosterUnavailable",
+                    "The Host's sharing permission check is temporarily unavailable. Retry the check."));
             if (!enrollment.IsSuccessStatusCode)
                 return (null, SharingFailure(selfId, "KeyReviewRequired",
                     "The owner needs to review this PC's sharing identity."));
@@ -1037,10 +1053,12 @@ internal sealed partial class FriendLink
         config.SharedWorldSigningKeys[profileId] = roster.OwnerPublicKey;
         config.SharedRosterFloors[profileId] = new(roster.GroupId, roster.Epoch,
             roster.Revision, roster.Signature);
-        // Following signed hosting information is independent of storing saves.
+        // Receive members can follow their first signed group without storing
+        // saves. Voter-only members still review its owner and group explicitly.
         // A changed source group still requires the existing explicit review.
         config.ApprovedSharedWorldGroups ??= [];
-        if (!config.ApprovedSharedWorldGroups.ContainsKey(profileId) &&
+        if (SharedWorldRosterTrust.HasRole(roster, selfId, publicKey, grants => grants.Receive) &&
+            !config.ApprovedSharedWorldGroups.ContainsKey(profileId) &&
             (floor is null || floor.GroupId == roster.GroupId) &&
             config.PendingSharedWorldGroups?.ContainsKey(profileId) != true)
             config.ApprovedSharedWorldGroups[profileId] = roster.GroupId;

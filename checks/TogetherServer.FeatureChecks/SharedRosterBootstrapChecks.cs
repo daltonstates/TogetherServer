@@ -13,6 +13,8 @@ internal static class SharedRosterBootstrapChecks
     public static async Task RunAsync(string root)
     {
         await RepairedLegacyCatchUpAsync(root);
+        await ExactCurrentHeadAsync(root);
+        await InitialGroupReviewAsync(root);
         using (var fixture = new Fixture(root))
         {
             fixture.Current = fixture.Legacy;
@@ -117,6 +119,85 @@ internal static class SharedRosterBootstrapChecks
             Require((await fixture.CheckAsync()).Available,
                 "an exact signed trusted floor acquired a cache dependency");
         }
+    }
+
+    private static async Task InitialGroupReviewAsync(string root)
+    {
+        using (var fixture = new Fixture(root, new(RecoveryVoter: true)))
+        {
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            for (var refresh = 0; refresh < 2; refresh++)
+            {
+                Require((await fixture.CheckAsync()).Available &&
+                    !fixture.SavedConfiguration.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId) &&
+                    !fixture.ReceiveStatus.Consented,
+                    "background metadata refresh approved a voter-only group or granted save consent");
+                fixture.AssertFloor(fixture.Legacy);
+            }
+
+            var pending = await fixture.ReviewAsync();
+            Require(!pending.Ok && pending.Code == "GroupReviewRequired" &&
+                pending.GroupId == fixture.Current.GroupId && pending.OwnerPublicKey == fixture.Current.OwnerPublicKey,
+                "a refreshed voter-only member lost explicit signed group and owner review: " + pending.Code);
+            var wrongGroup = await fixture.ReviewAsync(new(Guid.NewGuid(), pending.OwnerPublicKey));
+            var wrongOwner = await fixture.ReviewAsync(new(pending.GroupId, "another owner"));
+            Require(!wrongGroup.Ok && wrongGroup.Code == "GroupReviewRequired" &&
+                !wrongOwner.Ok && wrongOwner.Code == "GroupReviewRequired" &&
+                !fixture.SavedConfiguration.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId),
+                "wrong voter-only owner or group confirmation approved the signed group");
+            var reviewed = await fixture.ReviewAsync(new(pending.GroupId, pending.OwnerPublicKey));
+            Require(reviewed is { Ok: true, Code: "HistoryReviewed" } &&
+                fixture.SavedConfiguration.ApprovedSharedWorldGroups.GetValueOrDefault(fixture.ProfileId) == fixture.Current.GroupId &&
+                !fixture.ReceiveStatus.Consented && fixture.SavedConfiguration.ConsentedSharedWorldProfiles.Count == 0 &&
+                fixture.Current.Members.Single().Grants is
+                { Receive: false, EligibleHost: false, Reshare: false, RecoveryVoter: true, ManageSharing: false },
+                "exact voter-only review changed receiving consent or core signed grants");
+        }
+
+        foreach (var grants in new[] { new SharedWorldGrants(Receive: true),
+            new SharedWorldGrants(Receive: true, EligibleHost: true, Reshare: true) })
+        {
+            using var fixture = new Fixture(root, grants);
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            Require((await fixture.CheckAsync()).Available &&
+                fixture.SavedConfiguration.ApprovedSharedWorldGroups.GetValueOrDefault(fixture.ProfileId) == fixture.Current.GroupId,
+                "an active signed Receive member no longer followed its first verified group automatically");
+        }
+    }
+
+    private static async Task ExactCurrentHeadAsync(string root)
+    {
+        using var fixture = new Fixture(root);
+        fixture.Bootstrap = fixture.Sign(fixture.Bootstrap with
+        {
+            Members = fixture.Bootstrap.Members.Select(member => member with
+            { Grants = new(Receive: true, EligibleHost: true, ManageSharing: true) }).ToArray()
+        });
+        fixture.Current = fixture.Bootstrap;
+        fixture.Trusted = fixture.Bootstrap;
+        fixture.SaveCache(fixture.Bootstrap);
+        fixture.Chain.Append(fixture.Bootstrap, fixture.Bootstrap.OwnerPublicKey);
+        fixture.RemoteHistory = [fixture.Bootstrap];
+        var current = await fixture.CheckAsync();
+        Require(current.Available && current.CanManage && fixture.CurrentRequests == 1 && fixture.PageRequests == 0,
+            "an exact verified current head fetched an empty history page");
+        Require((await fixture.CheckAsync()).CanManage && fixture.CurrentRequests == 2 && fixture.PageRequests == 0,
+            "an unchanged check skipped the fresh signed current response or requested empty history");
+
+        fixture.Current = fixture.Sign(fixture.Child(fixture.Bootstrap) with
+        {
+            Members = fixture.Bootstrap.Members.Select(member => member with { Grants = new(Receive: true) }).ToArray()
+        });
+        fixture.RemoteHistory = [fixture.Bootstrap, fixture.Current];
+        var withdrawn = await fixture.CheckHostingAsync();
+        Require(!withdrawn.Allowed && withdrawn.Code == "HostingPermissionRequired" &&
+            fixture.CurrentRequests == 3 && fixture.PageRequests == 1 && fixture.Chain.Count(fixture.ProfileId) == 2,
+            "a fresh signed withdrawal reused the older head or skipped normal history catch-up");
+        fixture.AssertFloor(fixture.Current);
+        Require(!(await fixture.CheckHostingAsync()).Allowed && fixture.CurrentRequests == 4 && fixture.PageRequests == 1,
+            "an exact withdrawn head restored hosting or repeated empty history");
     }
 
     private static async Task RepairedLegacyCatchUpAsync(string root)
@@ -259,18 +340,24 @@ internal static class SharedRosterBootstrapChecks
         public IReadOnlyList<SharedWorldRoster> Page { get; set; } = [];
         public IReadOnlyList<SharedWorldRoster>? RemoteHistory { get; set; }
         public int PageFailures { get; set; }
+        public int CurrentRequests { get; private set; }
+        public int PageRequests { get; private set; }
         public int RootFallbacks { get; private set; }
         public string? LastAnchor { get; private set; }
         public long LastOffset { get; private set; } = -1;
         public string CacheName => $"shared-world-roster-{deviceId:N}-{ProfileId:N}.protected";
+        public FriendConfiguration SavedConfiguration => JsonSerializer.Deserialize<FriendConfiguration>(
+            Data.LoadProtected("friend.protected")!, Json)!;
+        public ReceivedSharedWorldStatus ReceiveStatus =>
+            (link ?? throw new InvalidOperationException("Check the synthetic connection first.")).SharedWorldStatus(ProfileId);
 
-        public Fixture(string root)
+        public Fixture(string root, SharedWorldGrants? grants = null)
         {
             Data = new LocalData(Path.Combine(root, "roster-bootstrap-" + Guid.NewGuid().ToString("N")));
             Chain = new(Data);
             Legacy = Sign(new(2, Guid.NewGuid(), ProfileId, 1, 1, false,
                 Convert.ToBase64String(owner.ExportSubjectPublicKeyInfo()),
-                [new(deviceId, Convert.ToBase64String(device.ExportSubjectPublicKeyInfo()), new(Receive: true), false)], ""));
+                [new(deviceId, Convert.ToBase64String(device.ExportSubjectPublicKeyInfo()), grants ?? new(Receive: true), false)], ""));
             Bootstrap = Sign(Legacy with { Epoch = 2, Revision = 2 });
             Current = Bootstrap;
             SaveCache(Legacy);
@@ -340,6 +427,14 @@ internal static class SharedRosterBootstrapChecks
             return await link.CheckSharedWorldSharingAsync(ProfileId);
         }
 
+        public Task<LocalHostingAccess> CheckHostingAsync() =>
+            (link ?? throw new InvalidOperationException("Check the synthetic connection first."))
+                .LocalHostingAccessAsync(ProfileId, true, CancellationToken.None, permissionOnly: true);
+
+        public Task<WorldHistoryReviewResult> ReviewAsync(WorldHistoryReviewRequest? request = null) =>
+            (link ?? throw new InvalidOperationException("Check the synthetic connection first."))
+                .ReviewSharedHistoryAsync(ProfileId, request);
+
         public void AssertFloor(SharedWorldRoster expected)
         {
             var saved = JsonSerializer.Deserialize<FriendConfiguration>(Data.LoadProtected("friend.protected")!, Json)!;
@@ -361,9 +456,16 @@ internal static class SharedRosterBootstrapChecks
                     [CompanionProtocol.SharedWorldsCapability]));
             else if (path.EndsWith("/enrollment", StringComparison.Ordinal))
                 body = request.Method == HttpMethod.Get ? new SharedWorldEnrollmentChallenge(new string('N', 44)) : new { ok = true };
-            else if (path.EndsWith("/revisions/current", StringComparison.Ordinal)) body = Current;
+            else if (path.EndsWith("/roster", StringComparison.Ordinal)) body = Current;
+            else if (path.EndsWith("/authority", StringComparison.Ordinal)) body = Array.Empty<WorldAuthorityRecord>();
+            else if (path.EndsWith("/revisions/current", StringComparison.Ordinal))
+            {
+                CurrentRequests++;
+                body = Current;
+            }
             else if (path.EndsWith("/revisions", StringComparison.Ordinal))
             {
+                PageRequests++;
                 Require(long.TryParse(request.RequestUri.Query.AsSpan("?offset=".Length), out var offset), "invalid offset");
                 LastOffset = offset;
                 LastAnchor = request.Headers.TryGetValues(SharedWorldRosterProtocol.AfterHeader, out var anchors)

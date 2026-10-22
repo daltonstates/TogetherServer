@@ -281,3 +281,110 @@ the frozen candidate's index is
 `0093ec5af1464d59502ea0ced4cd208dd68919fcb9697ce5490de9f44436b48f`.
 The difference is recorded rather than treating a rebuilt fixture as the
 release package. An exact retained-byte replay is prepared.
+
+## Exact retained UI replay
+
+[UI review 39824097608](https://github.com/daltonstates/TogetherServer/actions/runs/39824097608),
+render job `119982673185`, uses verification source
+`d901b13307b27b6c711204b823fa3caf8e8625c8`. It receives the original pinned
+candidate artifact, checks the app and all seven packaged UI assets and serves
+those files without rebuilding the UI or launching the app. All **60 of 60
+plans** capture successfully: zero failed or skipped plans and zero layout
+findings. There are 328 screenshots; 51 intentional unavailable/error fixture
+cases remain explicitly identified.
+
+Artifact `12444684947` is 18,290,598 bytes, ZIP SHA-256
+`31a9f4f8abb0b4880052073c62eb311f1edabafd682437b80c413440b4693202`.
+The independently downloaded proof confirms the exact candidate hash and index
+`0093ec5af1464d59502ea0ced4cd208dd68919fcb9697ce5490de9f44436b48f`,
+all seven unchanged asset hashes, `rebuilt=false` and `appLaunched=false`.
+Representative desktop and 150% narrow captures were visually inspected for
+the permission guide, retained stale checks, port instructions and aligned
+removed-access checkbox. These fixtures do not establish a real Friend-PC,
+network, game, save or native acceptance result.
+
+[Remaining-check continuation 39824093930](https://github.com/daltonstates/TogetherServer/actions/runs/39824093930)
+uses the same verification source and immutable candidate. It retains the
+original 12 Existing passes and 18 LAN stages, attempts the 15 remaining
+Existing stages and runs UX plus loopback. Its outcomes are pending.
+
+## Hosted interruption diagnosed and repaired
+
+Continuation pairing job `119982660292` preserves the original UX failure and
+passes all **11 loopback stages**, with zero observed windows and exact cleanup.
+Its new UX attempt fails in preparation. Artifact `12444959826` is 2,287,752
+bytes, ZIP SHA-256
+`6f2362613aeeb79ae2ca11ddc652902dc7b40920e25556f3c0f2a925a99073b1`.
+The sanitized trace identifies a product failure rather than a slow Start:
+preparation is aborted after **4,373 ms**, before browser cleanup. At 59,713 ms
+the heartbeat reports `HostBusy`, clears the assigned profiles and unmounts the
+hosting article/dialog. At 68,754 ms the connection and profile recover, but
+the dialog is closed and the deliberate hosting action was canceled.
+
+The Friend now keeps its last known assigned rows for HTTP 429 and 5xx while
+reporting Disconnected/Unknown and disabling remote Start/Stop/control flags.
+An authenticated empty assignment still removes the row. Revocation, expiry,
+approval and credential-denial branches retain their existing behavior.
+Synthetic pinned-heartbeat checks exercise retained rows, disabled authority,
+recovery and actual assignment withdrawal.
+
+Enrollment GET/POST also previously classified any unsuccessful response as
+owner approval or signing-key denial. Only 429 and 5xx now return
+`RosterUnavailable` and retry guidance. Full-status tests cover both methods
+under 429/503, exact unchanged saved roster/floor, successful explicit retry,
+fresh signed hosting withdrawal, 401/403 and no-network known revocation.
+Both focused groups pass without starting any app or listener locally.
+
+Settled permission refresh previously made four companion calls, including an
+empty history page after reading an already verified current roster. The
+history request is skipped only when the fresh authenticated signed current
+roster's hash already equals the verified single local head and the protected
+floor is proven. The comparison occurs before importing any newer legacy
+snapshot. Fresh roster reads, enrollment, root/signature/floor checks and
+normal newer-history catch-up remain mandatory. Focused checks require a
+fresh current read each time, no empty history request for an unchanged head,
+and normal page catch-up and denial for a new signed hosting withdrawal.
+
+Compiled source `7d6ab87a0d92f3a1e4c6f403a37a898e4807fa1d` and its
+portable/installer bytes are therefore superseded and will not be published.
+The UI source is unchanged by these backend repairs. A replacement immutable
+candidate and hosted hosting acceptance are required before publication.
+
+The complete 63-group source run for the transient-response and history-read
+repairs passes, with the same single symbolic-link capability skip. Compilation
+has zero warnings/errors and focused whitespace verification passes.
+
+Existing continuation job `119982660990` passes **14 of its 15 stages**,
+including the corrected Custom runner, SharedHistory, Update, Core remote,
+world-load rehearsal, LiveSave action and transfer, all 46 Companion groups,
+formatting, served/staging, hidden and visible desktop, and update handoff.
+Together with the original 12 passes, 26 of the 27 Existing stages pass.
+Artifact `12446966314` is 4,135 bytes, ZIP SHA-256
+`825067ba8e9441cedb9f71b61e427dc18c91b3029433b9507d965dd33c02fd50`.
+The sole failure is Shared Worlds after 10 passed groups: a recovery-voter-only
+PC returns `HistoryReviewed` before its required first owner/group confirmation.
+The assertion and fixture timing remain unchanged.
+
+Background signed membership refresh was automatically approving every first
+group, including a member without Receive access. Automatic first-group
+following now requires an active matching signed Receive grant. A voter-only
+member still confirms the exact owner and group through the existing review
+action. New fake-HTTP checks perform repeated background-equivalent refreshes,
+require the initial owner/group prompt, reject incorrect confirmations and
+accept the exact one without granting Receive consent or hosting/forwarding
+rights. Ordinary Receive and automatic-host members still follow their first
+signed group. The new focused check exposed a second edge case: an absent
+approved-group dictionary entry was read as a non-null empty ID and rejected
+as a conflicting approval. The lookup now preserves absence as null; an actual
+saved mismatch still returns `TrustRequired`.
+
+The final source compiles with zero warnings/errors. The bootstrap/floor and
+local-hosting permission groups pass after that correction; the final revocation,
+offline-owner catch-up and saved-peer groups also pass. The complete 63-group
+run immediately before the voter-review addition passes, with the same single
+symbolic-link capability skip. The replacement candidate's normal hosted source
+gate will run all 63 groups again. The production UI rebuild and TypeScript
+compilation pass; its index is
+`1229ba9e472f98d9033a57b887949d9afc4b9562c3d3cc7f4ae8ea639f9778af`.
+The existing Vite large-chunk advisory remains. A fresh immutable candidate and
+hosted acceptance are pending.

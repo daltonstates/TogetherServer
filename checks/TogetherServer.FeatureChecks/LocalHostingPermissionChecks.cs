@@ -19,6 +19,7 @@ internal static class LocalHostingPermissionChecks
     {
         await PermissionBeforePreparationAsync(root);
         await RefreshSignedPermissionAsync(root);
+        await TransientEnrollmentStatusAsync(root);
         await RefreshStatusWithoutHeartbeatAsync(root);
         await ConnectionAndCancellationAsync(root);
         foreach (var fault in new[] { "missing-grant", "receive-only", "revoked-member", "expired-member",
@@ -163,6 +164,64 @@ internal static class LocalHostingPermissionChecks
         }
     }
 
+    private static async Task TransientEnrollmentStatusAsync(string root)
+    {
+        foreach (var method in new[] { HttpMethod.Get, HttpMethod.Post })
+            foreach (var failure in new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.ServiceUnavailable })
+            {
+                using var fixture = new Fixture(root);
+                fixture.Connect();
+                var service = new FriendLocalHostingService(fixture.Data, fixture.Friends, fixture.Manager, _ => []);
+                var floor = fixture.Config.SharedRosterFloors[fixture.ProfileId];
+                var saved = fixture.Data.LoadProtected(fixture.RosterName)!;
+                fixture.EnrollmentFailureMethod = method;
+                fixture.EnrollmentFailureStatus = failure;
+                var unavailable = FriendLocalHostingService.WithRemedy(
+                    await service.StatusAsync(fixture.ProfileId).WaitAsync(Watchdog));
+                Require(!unavailable.Ok && !unavailable.Allowed && unavailable.Code == "RosterUnavailable" &&
+                    unavailable.Steps.Single(step => step.Key == "permission").State == "Unknown" &&
+                    unavailable.Remedy?.Kind == "Review" && !unavailable.ReadyForManualStart &&
+                    fixture.Config.SharedRosterFloors[fixture.ProfileId] == floor &&
+                    fixture.Data.LoadProtected(fixture.RosterName)!.SequenceEqual(saved),
+                    $"enrollment {method} {(int)failure} became an owner denial or changed the signed cache: {unavailable.Code}");
+                fixture.EnrollmentFailureStatus = null;
+                var requests = fixture.Requests;
+                var retried = await service.StatusAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(retried.Allowed && retried.Steps.Single(step => step.Key == "permission").State == "Ready" &&
+                    fixture.Requests >= requests + 4 && !retried.ReadyForManualStart &&
+                    fixture.Config.SharedRosterFloors[fixture.ProfileId] == floor &&
+                    fixture.Data.LoadProtected(fixture.RosterName)!.SequenceEqual(saved),
+                    $"enrollment {method} {(int)failure} did not recover through an explicit full status retry");
+                fixture.AdvanceRoster(new());
+                var withdrawn = FriendLocalHostingService.WithRemedy(
+                    await service.StatusAsync(fixture.ProfileId).WaitAsync(Watchdog));
+                Require(!withdrawn.Allowed && withdrawn.Code == "HostingPermissionRequired" &&
+                    withdrawn.Steps.Single(step => step.Key == "permission").State == "ActionRequired" &&
+                    withdrawn.Remedy?.Kind == "Permission" && fixture.Config.SharedRosterFloors[fixture.ProfileId].Revision == 2,
+                    $"enrollment {method} {(int)failure} recovery bypassed a new signed withdrawal");
+                fixture.AssertNoPreparation();
+            }
+        foreach (var method in new[] { HttpMethod.Get, HttpMethod.Post })
+            foreach (var failure in new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden })
+            {
+                using var fixture = new Fixture(root);
+                fixture.Connect();
+                fixture.EnrollmentFailureMethod = method;
+                fixture.EnrollmentFailureStatus = failure;
+                var floor = fixture.Config.SharedRosterFloors[fixture.ProfileId];
+                var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(!result.Allowed && result.Code == (method == HttpMethod.Get ? "EnrollmentDenied" : "KeyReviewRequired") &&
+                    fixture.Config.SharedRosterFloors[fixture.ProfileId] == floor,
+                    $"enrollment {method} {(int)failure} stopped enforcing the existing access denial");
+                fixture.Config.KnownRevoked = true;
+                var requests = fixture.Requests;
+                var revoked = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(!revoked.Allowed && revoked.Code == "Revoked" && fixture.Requests == requests,
+                    "a transient enrollment retry bypassed known revocation");
+                fixture.AssertNoPreparation();
+            }
+    }
+
     private static async Task RefreshStatusWithoutHeartbeatAsync(string root)
     {
         using var fixture = new Fixture(root);
@@ -259,6 +318,8 @@ internal static class LocalHostingPermissionChecks
         internal string RosterName => $"shared-world-roster-{deviceId:N}-{ProfileId:N}.protected";
         internal int Requests { get; private set; }
         internal bool TransportOffline, EnrollmentDenied, EnrollFreshIdentity;
+        internal HttpMethod? EnrollmentFailureMethod;
+        internal HttpStatusCode? EnrollmentFailureStatus;
         internal Action? BeforeCurrentRoster;
 
         internal Fixture(string root)
@@ -369,6 +430,8 @@ internal static class LocalHostingPermissionChecks
             object body;
             if (path == prefix + "/enrollment")
             {
+                if (request.Method == EnrollmentFailureMethod && EnrollmentFailureStatus is { } failure)
+                    return new(failure) { Content = new ByteArrayContent([]) };
                 if (EnrollmentDenied) return new(HttpStatusCode.Forbidden);
                 if (request.Method == HttpMethod.Get) body = new SharedWorldEnrollmentChallenge(new string('N', 44));
                 else

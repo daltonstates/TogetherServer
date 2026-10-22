@@ -487,7 +487,11 @@ internal sealed partial class FriendLink : IDisposable
                         RemoteControlsEnabled = false,
                         CanStart = false,
                         CanStop = false,
-                        Profiles = []
+                        // A busy or temporarily failed Host does not withdraw
+                        // its assigned servers. Keep their last known rows so
+                        // an open local-hosting check is not unmounted.
+                        Profiles = response.StatusCode == HttpStatusCode.TooManyRequests ||
+                            (int)response.StatusCode is >= 500 and <= 599 ? ProfilesWithPendingOperations() : []
                     };
                     return view;
                 }
