@@ -200,15 +200,14 @@ internal static partial class SharedWorldJourney
             Console.WriteLine("PASS disabling shared hosting denies the pending transfer and leaves its resumable bytes intact");
             passed++;
 
+            Require(File.Exists(partial) && new FileInfo(partial).Length >= pendingBytes,
+                "resumed transfer restarted from an empty pending file");
             friend = StartApp(appPath, "--friend", friendPort, friendData,
                 beforeChunkDelayMs: 2000);
             await WaitLocalAsync(friendPort);
             WindowsListenerOwners.RequireTogetherServerOwner(friendPort, friend);
             await WaitConnectedAsync(friendLocal);
-            await WaitSharedStateAsync(friendLocal, profile.Id, "Receiving", pendingBytes);
-            Require(File.Exists(partial) && new FileInfo(partial).Length >= pendingBytes,
-                "resumed transfer restarted from an empty pending file");
-            await WaitVersionAsync(friendLocal, profile.Id, version.Number);
+            await WaitResumedLiveVersionAsync(friendLocal, profile.Id, version.Number, partial, pendingBytes);
             await WaitCopiesAsync(owner, profile.Id, 1);
             var received = Path.Combine(receivedRoot, version.VersionHash, "payload", "world.dat");
             var receiptPath = Path.Combine(receivedRoot, version.VersionHash, "receipt.json");
@@ -230,6 +229,7 @@ internal static partial class SharedWorldJourney
                 $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
                 "owner could not disable shared hosting after the confirmed copy");
             await WaitCopiesAsync(owner, profile.Id, 0);
+            await PollAsync(friendLocal);
             await WaitSharedStateAsync(friendLocal, profile.Id, "Consent off");
             var withdrawn = await GetAsync<ReceivedSharedWorldStatus>(friendLocal,
                 $"/api/local/friend/{profile.Id}/shared-world");
@@ -297,6 +297,28 @@ internal static partial class SharedWorldJourney
             if (liveRun is not null) await StopExactFixtureAsync(liveRun, fixturePath);
             fixture?.Dispose();
         }
+    }
+
+    private static async Task WaitResumedLiveVersionAsync(HttpClient friend, Guid profileId,
+        long expected, string partialPath, long minimumPendingBytes)
+    {
+        ReceivedSharedWorldStatus? latest = null;
+        // Match WaitVersionAsync's budget and ordinary poll cadence. A complete
+        // transfer can move its partial before any "Receiving" status is sampled.
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var partial = new FileInfo(partialPath);
+            partial.Refresh();
+            if (partial.Exists)
+                Require(partial.Length >= minimumPendingBytes,
+                    "resumed transfer discarded previously persisted pending bytes");
+            latest = await GetAsync<ReceivedSharedWorldStatus>(friend,
+                $"/api/local/friend/{profileId}/shared-world");
+            if (latest.ThisPcVersion == expected) return;
+            if (attempt % 10 == 9) await PollAsync(friend);
+            await Task.Delay(250);
+        }
+        throw new Exception($"Friend did not verify resumed version {expected}: {latest?.State} {latest?.Error}");
     }
 
     private static bool ExactFixtureProcess(ManagedRun run, string fixturePath)
