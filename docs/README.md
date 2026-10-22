@@ -95,6 +95,7 @@ use the document title to identify the topic.
 - [Documentation refresh](37-DOCUMENTATION-REFRESH.md)
 - [Friend hosting checks and guided fixes](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md)
 - [Valheim shared-save publication and backup retry](43-VALHEIM-SHARED-SAVE-PUBLICATION-AND-0.3.3.4.md)
+- [Shared-hosting history repair and action feedback](44-SHARED-HOSTING-HISTORY-AND-FEEDBACK.md)
 
 ## Release evidence
 

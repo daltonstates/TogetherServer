@@ -15,6 +15,8 @@ internal static class SharedRosterBootstrapChecks
         await RepairedLegacyCatchUpAsync(root);
         await ExactCurrentHeadAsync(root);
         await InitialGroupReviewAsync(root);
+        await ReviewedSchema3FloorAsync(root);
+        await RecoveredFloorReceivesSaveAsync(root);
         using (var fixture = new Fixture(root))
         {
             fixture.Current = fixture.Legacy;
@@ -165,6 +167,185 @@ internal static class SharedRosterBootstrapChecks
                 fixture.SavedConfiguration.ApprovedSharedWorldGroups.GetValueOrDefault(fixture.ProfileId) == fixture.Current.GroupId,
                 "an active signed Receive member no longer followed its first verified group automatically");
         }
+
+        foreach (var keepOldJournal in new[] { false, true })
+        {
+            using var fixture = new Fixture(root);
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            Require((await fixture.CheckAsync()).Available, "initial group check failed");
+            if (keepOldJournal) fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Sign(fixture.Legacy with { GroupId = Guid.NewGuid(), Epoch = 2, Revision = 2 });
+            fixture.RemoteHistory = [fixture.Current];
+            Require((await fixture.ReviewAsync()).Code == "GroupReviewRequired",
+                "a changed source group skipped explicit owner and group review");
+            var reviewed = await fixture.ReviewAsync(new(fixture.Current.GroupId, fixture.Current.OwnerPublicKey));
+            if (keepOldJournal)
+            {
+                Require(!reviewed.Ok && fixture.Chain.Count(fixture.ProfileId) == 1,
+                    "new-group review cleared the earlier group's retained journal");
+                fixture.AssertFloor(fixture.Legacy);
+            }
+            else
+            {
+                Require(reviewed.Ok && (await fixture.CheckAsync()).Available,
+                    "confirmed legacy source rotation without a journal acquired an old-group rollback");
+                fixture.AssertFloor(fixture.Current);
+            }
+        }
+    }
+
+    private static async Task ReviewedSchema3FloorAsync(string root)
+    {
+        using (var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true)))
+        {
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            Require((await fixture.CheckAsync()).Available, "initial sharing check failed");
+            fixture.Current = fixture.Child(fixture.Legacy);
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Current];
+            var reviewed = await fixture.ReviewAsync();
+            Require(reviewed is { Ok: true, Code: "HistoryReviewed" } &&
+                fixture.Chain.Count(fixture.ProfileId) == 2 &&
+                fixture.Chain.Contains(fixture.ProfileId, fixture.Current),
+                "history review advanced its protected floor without retaining the exact signed revision");
+            fixture.AssertFloor(fixture.Current);
+            Require((await fixture.CheckAsync()).Available && fixture.PageRequests == 1,
+                "a reviewed schema-3 permission became a saved-history rollback on the next hosting check");
+            Require((await fixture.CheckHostingAsync()).Allowed,
+                "the reviewed schema-3 grant did not permit local hosting access");
+        }
+
+        // Older builds could persist the newer floor/cache during history review
+        // while leaving the journal behind. Recover its complete exact-parent
+        // history, rather than lowering the floor or trusting the cache as a root.
+        using (var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true)))
+        {
+            var middle = fixture.Child(fixture.Legacy);
+            var trusted = fixture.Child(middle);
+            fixture.Trusted = trusted;
+            fixture.SaveCache(trusted);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Child(trusted);
+            fixture.RemoteHistory = [fixture.Legacy, middle, trusted, fixture.Current];
+            Require((await fixture.CheckAsync()).Available && fixture.Chain.Count(fixture.ProfileId) == 4 &&
+                fixture.Chain.ContainsFloor(fixture.ProfileId,
+                    new(trusted.GroupId, trusted.Epoch, trusted.Revision, trusted.Signature)),
+                "an existing reviewed schema-3 floor could not catch up through its exact signed parents");
+            fixture.AssertFloor(fixture.Current);
+            Require((await fixture.CheckAsync()).Available && fixture.PageRequests == 1,
+                "a recovered sharing check repeated history or lost its trusted floor");
+            Require((await fixture.CheckHostingAsync()).Allowed,
+                "the recovered schema-3 floor still blocked local hosting access");
+        }
+
+        using (var fixture = new Fixture(root))
+        {
+            var history = new List<SharedWorldRoster> { fixture.Legacy };
+            for (var revision = 2; revision <= 52; revision++) history.Add(fixture.Child(history[^1]));
+            var trusted = history[49];
+            fixture.Trusted = trusted;
+            fixture.SaveCache(trusted);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = history[^1];
+            fixture.RemoteHistory = history;
+            var pending = await fixture.CheckAsync();
+            Require(!pending.Available && pending.Code == "RosterCatchUpPending" &&
+                fixture.Chain.Count(fixture.ProfileId) == 49,
+                "bounded history catch-up skipped ahead of the still-missing reviewed floor");
+            fixture.AssertFloor(trusted);
+            Require((await fixture.CheckAsync()).Available && fixture.Chain.Count(fixture.ProfileId) == 52 &&
+                fixture.Chain.ContainsFloor(fixture.ProfileId,
+                    new(trusted.GroupId, trusted.Epoch, trusted.Revision, trusted.Signature)),
+                "bounded history catch-up could not resume through the exact reviewed floor");
+            fixture.AssertFloor(fixture.Current);
+        }
+
+        foreach (var fault in new[] { "missing-parent", "changed-floor", "legacy-jump", "invalid-signature" })
+        {
+            using var fixture = new Fixture(root);
+            var trusted = fixture.Child(fixture.Legacy);
+            fixture.Trusted = trusted;
+            fixture.SaveCache(trusted);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            var sibling = fixture.Sign(trusted with { OwnerOverride = !trusted.OwnerOverride });
+            fixture.Current = fault == "legacy-jump"
+                ? fixture.Sign(fixture.Bootstrap with { Epoch = trusted.Epoch + 1, Revision = trusted.Revision + 1 })
+                : fixture.Child(fault == "changed-floor" ? sibling : trusted);
+            fixture.RemoteHistory = fault switch
+            {
+                "missing-parent" or "legacy-jump" => [fixture.Legacy, fixture.Current],
+                "changed-floor" => [fixture.Legacy, sibling, fixture.Current],
+                _ => [fixture.Legacy, trusted with { Signature = new string('A', 88) }, fixture.Current]
+            };
+            var rejected = await fixture.CheckAsync();
+            Require(!rejected.Available && rejected.Code is "RosterRejected" or "RosterRollback" &&
+                fixture.Chain.Count(fixture.ProfileId) == 1,
+                "schema-3 floor recovery skipped, replaced or corrupted its exact protected revision: " + fault);
+            fixture.AssertFloor(trusted);
+        }
+
+        using (var fixture = new Fixture(root))
+        {
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            Require((await fixture.CheckAsync()).Available, "initial sharing check failed");
+            fixture.Current = fixture.Child(fixture.Child(fixture.Legacy));
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Current];
+            var rejected = await fixture.ReviewAsync();
+            Require(!rejected.Ok && fixture.Chain.Count(fixture.ProfileId) == 1,
+                "history review skipped an unavailable signed parent");
+            fixture.AssertFloor(fixture.Legacy);
+        }
+    }
+
+    private static async Task RecoveredFloorReceivesSaveAsync(string root)
+    {
+        using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+        var middle = fixture.Child(fixture.Legacy);
+        var trusted = fixture.Child(middle);
+        fixture.Trusted = trusted;
+        fixture.SaveCache(trusted);
+        fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+        fixture.Current = fixture.Child(trusted);
+        fixture.RemoteHistory = [fixture.Legacy, middle, trusted, fixture.Current];
+        fixture.PrepareFirstSave();
+        await fixture.ConnectAsync();
+
+        Require((await fixture.PullAsync()).Code == "ConsentRequired" &&
+            fixture.ManifestRequests == 0 && fixture.ChunkRequests == 0 && fixture.ReceiptRequests == 0 &&
+            fixture.Chain.Count(fixture.ProfileId) == 1,
+            "floor recovery bypassed receiving consent or downloaded before consent");
+        fixture.AssertFloor(trusted);
+        Require((await fixture.SetConsentAsync(true)).Ok, "synthetic receiving consent was not saved");
+
+        // Exercise the same scheduled receive path used by an existing paired PC.
+        // Its first trust check must repair the journal before requesting bytes.
+        await fixture.ScheduledPullAsync();
+        var status = fixture.ReceiveStatus;
+        var version = fixture.PublishedVersion!;
+        var receipt = fixture.ConfirmedReceipt;
+        Require(status is { Consented: true, ThisPcVersion: 1, ReceiptConfirmed: true } &&
+            fixture.Chain.Count(fixture.ProfileId) == 4 && fixture.PageRequests == 1 &&
+            fixture.ManifestRequests == 2 && fixture.ChunkRequests == 2 && fixture.ReceiptRequests == 1 &&
+            receipt is not null && receipt.VersionHash == version.VersionHash &&
+            FriendLink.ReadReceivedLatest(fixture.ReceiveRoot)?.VersionHash == version.VersionHash &&
+            File.ReadAllBytes(Path.Combine(fixture.ReceiveRoot, version.VersionHash,
+                SharedWorldService.PayloadDirectory, "synthetic.db")).SequenceEqual(fixture.PublishedPayload),
+            "scheduled recovery did not verify the complete first save and confirm its signed receipt: " +
+                status.State + "; " + status.Error);
+        fixture.AssertFloor(fixture.Current);
+
+        var retry = await fixture.PullAsync();
+        Require(retry is { Ok: true, Code: "AlreadyReceived", Status.ReceiptConfirmed: true } &&
+            fixture.ChunkRequests == 2 && fixture.ReceiptRequests == 2 && fixture.ConfirmedReceipt == receipt,
+            "a repaired receive retry redownloaded bytes or replaced the confirmed signed receipt");
+        Require((await fixture.SetConsentAsync(false)).Ok &&
+            (await fixture.PullAsync()).Code == "ConsentRequired" &&
+            fixture.ChunkRequests == 2 && fixture.ReceiptRequests == 2,
+            "receipt confirmation bypassed a later receiving withdrawal");
     }
 
     private static async Task ExactCurrentHeadAsync(string root)
@@ -343,9 +524,17 @@ internal static class SharedRosterBootstrapChecks
         public int CurrentRequests { get; private set; }
         public int PageRequests { get; private set; }
         public int RootFallbacks { get; private set; }
+        public int ManifestRequests { get; private set; }
+        public int ChunkRequests { get; private set; }
+        public int ReceiptRequests { get; private set; }
+        public SharedWorldVersion? PublishedVersion { get; private set; }
+        public byte[] PublishedPayload { get; private set; } = [];
+        public SharedWorldReceipt? ConfirmedReceipt { get; private set; }
         public string? LastAnchor { get; private set; }
         public long LastOffset { get; private set; } = -1;
         public string CacheName => $"shared-world-roster-{deviceId:N}-{ProfileId:N}.protected";
+        public string ReceiveRoot => Path.Combine(Data.RootPath, "received-shared-worlds",
+            deviceId.ToString("N"), ProfileId.ToString("N"));
         public FriendConfiguration SavedConfiguration => JsonSerializer.Deserialize<FriendConfiguration>(
             Data.LoadProtected("friend.protected")!, Json)!;
         public ReceivedSharedWorldStatus ReceiveStatus =>
@@ -386,6 +575,17 @@ internal static class SharedRosterBootstrapChecks
 
         public void SaveCache(SharedWorldRoster roster) => Data.SaveProtected(CacheName, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
 
+        public void PrepareFirstSave()
+        {
+            PublishedPayload = Enumerable.Range(0, SharedWorldService.ChunkBytes + 31)
+                .Select(index => (byte)(index % 251)).ToArray();
+            PublishedVersion = SharedWorldService.SignVersion(new(1, Current.GroupId, 1, null,
+                ProfileId, GameKinds.Valheim, "synthetic-roster-repair", DateTimeOffset.UtcNow,
+                SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(2456, false),
+                [new("synthetic.db", PublishedPayload.LongLength,
+                    Convert.ToHexString(SHA256.HashData(PublishedPayload)))], "", "", ""), owner);
+        }
+
         public void Seed(bool includeChild = true)
         {
             Chain.Append(Bootstrap, Bootstrap.OwnerPublicKey);
@@ -400,7 +600,7 @@ internal static class SharedRosterBootstrapChecks
             }
         }
 
-        public async Task<SharedWorldSharingView> CheckAsync()
+        public async Task ConnectAsync()
         {
             if (link is null)
             {
@@ -424,7 +624,27 @@ internal static class SharedRosterBootstrapChecks
                 });
                 Require((await link.PollAsync()).Profiles.Single().Id == ProfileId, "synthetic profile unavailable");
             }
-            return await link.CheckSharedWorldSharingAsync(ProfileId);
+        }
+
+        public async Task<SharedWorldSharingView> CheckAsync()
+        {
+            await ConnectAsync();
+            return await link!.CheckSharedWorldSharingAsync(ProfileId);
+        }
+
+        public Task<ReceivedSharedWorldResult> SetConsentAsync(bool enabled) =>
+            (link ?? throw new InvalidOperationException("Connect the synthetic PC first."))
+                .SetSharedWorldConsentAsync(ProfileId, enabled);
+
+        public Task<ReceivedSharedWorldResult> PullAsync() =>
+            (link ?? throw new InvalidOperationException("Connect the synthetic PC first."))
+                .PullSharedWorldAsync(ProfileId);
+
+        public async Task ScheduledPullAsync()
+        {
+            var connection = link ?? throw new InvalidOperationException("Connect the synthetic PC first.");
+            connection.ScheduleSharedCatchUp(CancellationToken.None);
+            await connection.ScheduledSharedCatchUp();
         }
 
         public Task<LocalHostingAccess> CheckHostingAsync() =>
@@ -485,9 +705,58 @@ internal static class SharedRosterBootstrapChecks
                 }
                 body = RemoteHistory is null ? Page : RemoteHistory.Skip(checked((int)offset)).Take(SharedWorldRosterChainStore.PageSize).ToArray();
             }
+            else if (path == $"/api/companion/servers/{ProfileId}/shared-world")
+            {
+                AssertFloor(Current);
+                Require(Chain.Contains(ProfileId, Current), "save manifest requested before journal repair");
+                ManifestRequests++;
+                body = PublishedVersion ?? throw new InvalidOperationException("No synthetic save was prepared.");
+            }
+            else if (PublishedVersion is { } version && path.StartsWith(
+                $"/api/companion/servers/{ProfileId}/shared-world/{version.VersionHash}/files/0/chunks/", StringComparison.Ordinal))
+            {
+                Require(long.TryParse(path.AsSpan(path.LastIndexOf('/') + 1), out var offset) &&
+                    offset >= 0 && offset < PublishedPayload.LongLength && offset % SharedWorldService.ChunkBytes == 0,
+                    "synthetic save chunk offset was invalid");
+                ChunkRequests++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(PublishedPayload.AsSpan((int)offset,
+                        Math.Min(SharedWorldService.ChunkBytes, PublishedPayload.Length - (int)offset)).ToArray())
+                });
+            }
+            else if (path == $"/api/companion/servers/{ProfileId}/shared-world/receipts")
+                return ConfirmReceiptAsync(request, cancellationToken);
             else throw new InvalidOperationException("Unexpected synthetic roster request: " + path);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             { Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(body, body.GetType(), Json)) });
+        }
+
+        private async Task<HttpResponseMessage> ConfirmReceiptAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Require(request.Method == HttpMethod.Post, "receipt used the wrong HTTP action");
+            var bytes = await request.Content!.ReadAsByteArrayAsync(cancellationToken);
+            var receipt = SharedWorldReceiptTrust.Parse(bytes);
+            var version = PublishedVersion ?? throw new InvalidOperationException("No synthetic save was prepared.");
+            var member = Current.Members.Single(item => item.DeviceId == deviceId);
+            Require(bytes.Length <= SharedWorldReceiptTrust.MaximumRequestBytes &&
+                member is { Revoked: false, Grants.Receive: true } &&
+                SharedWorldReceiptTrust.Verify(receipt, member.PublicKey) &&
+                receipt is not null && receipt.DeviceId == deviceId && receipt.ProfileId == ProfileId &&
+                receipt.GroupId == Current.GroupId && receipt.VersionHash == version.VersionHash &&
+                receipt.RosterEpoch == Current.Epoch && receipt.RosterRevision == Current.Revision &&
+                FriendLink.ReadReceivedLatest(ReceiveRoot)?.VersionHash == version.VersionHash,
+                "Host accepted a receipt without its exact signed roster, device and verified save identity");
+            Require(ConfirmedReceipt is null || ConfirmedReceipt == receipt,
+                "an unchanged receive retry replaced the Host's confirmed receipt");
+            ConfirmedReceipt = receipt;
+            ReceiptRequests++;
+            return new(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(
+                    new SharedWorldReceiptResult(true, "CopyConfirmed"), Json))
+            };
         }
 
         protected override void Dispose(bool disposing)

@@ -8,6 +8,7 @@ export type LocalHostingGuideProps = {
   status: LocalHostingStatus | null
   selectedStep?: StepKey | null
   busy: boolean
+  feedback?: string
   onRetry: () => void
   onPrepare?: () => void
   onChooseServer?: () => void
@@ -33,6 +34,14 @@ const permissionDeniedCodes = ['HostingPermissionRequired', 'HostingPermissionDe
   'PermissionDenied', 'SharingOff', 'SharedHostingDisabled', 'HostingDisabled']
 const missingSaveCodes = ['SharedSaveRequired', 'WaitingForSuccessorCopy', 'SharedSaveUnavailable',
   'NoPublishedSave', 'SharedVersionUnavailable', 'SharedChunkUnavailable']
+
+export function localHostingAccessBlocker(status: LocalHostingStatus | null): 'history' | 'permission' | 'unavailable' | null {
+  if (!status || status.allowed) return null
+  if (historyCodes.includes(status.code) || integrityCodes.includes(status.code) || status.code === 'SigningIdentityChanged'
+    || status.remedy?.kind === 'ChooseHistory') return 'history'
+  return [...permissionDeniedCodes, 'ApprovalPending', 'AccessExpired', 'Revoked', 'NotPaired'].includes(status.code)
+    ? 'permission' : 'unavailable'
+}
 
 type Action = { label: string; run?: () => void }
 type Help = { title: string; instructions: ReactNode[]; note?: ReactNode; actions?: Action[] }
@@ -166,6 +175,14 @@ function saveHelp(status: LocalHostingStatus, props: LocalHostingGuideProps): He
       'After the owner resolves which history to continue, return here and recheck the save. The guide cannot merge worlds or pick the newest by date.'
     ], actions: [review, retry]
   }
+  if (status.code === 'RosterRollback') return {
+    title: 'Refresh the saved sharing history', instructions: [
+      'Keep TogetherServer open on this PC and on the original owner\'s PC. Make sure both apps are up to date.',
+      'Choose Check hosting access again to sync missing signed sharing history. Existing saves and the saved connection are kept.',
+      'If the same message returns, ask the owner to open this server\'s Backups & sharing, choose Sharing & hosting and review any sharing notice. Do not delete or reset saved history to get past this check.'
+    ], note: 'A retry can catch up missing history. Changed, conflicting or damaged history stays blocked for review.',
+    actions: [{ label: 'Check hosting access again', run: props.onRetry }, review]
+  }
   if (integrityCodes.includes(status.code) || status.code === 'SigningIdentityChanged' || status.remedy?.kind === 'Review') return {
     title: 'Review the save verification problem', instructions: [
       'Keep the existing local save and leave hosting paused. The app could not trust the saved history, identity or file checks.',
@@ -245,8 +262,26 @@ function connectionHelp(status: LocalHostingStatus, props: LocalHostingGuideProp
   }
 }
 
+function waitingForAccess(key: StepKey, status: LocalHostingStatus, props: LocalHostingGuideProps, showPermission: () => void): Help {
+  const history = localHostingAccessBlocker(status) === 'history'
+  const check = guideSteps.find(step => step.key === key)!.label.toLowerCase()
+  return {
+    title: history ? `Review sharing history before checking ${check}` : `Check hosting access before checking ${check}`,
+    instructions: [
+      `The ${check} check has not run in this attempt because ${history ? 'sharing history needs review' : 'hosting access has not been verified'}.`,
+      history ? 'Keep every existing save. Follow the permission step to review the sharing notice with the owner, then check again.' :
+        'Follow the permission step first. After this PC has current hosting access, check again to see what it needs next.',
+      'This waiting result does not show a problem with the server app, save files, ports or network.'
+    ], actions: [
+      { label: 'Show the permission steps', run: showPermission },
+      ...(history ? [{ label: 'Review the shared saves', run: props.onReviewSharedSave }] : []),
+      { label: 'Check hosting access again', run: props.onRetry }
+    ]
+  }
+}
+
 export function LocalHostingGuide(props: LocalHostingGuideProps) {
-  const { status, selectedStep = null, busy, onRetry } = props
+  const { status, selectedStep = null, busy, feedback, onRetry } = props
   const guideHeading = useRef<HTMLHeadingElement>(null)
   useEffect(() => {
     if (!selectedStep) return
@@ -260,8 +295,10 @@ export function LocalHostingGuide(props: LocalHostingGuideProps) {
   const key = choice?.revision === revision && choice.requested === selectedStep ? choice.key : selectedStep ?? firstUnresolved
   const index = guideSteps.findIndex(step => step.key === key)
   const select = (next: StepKey) => setChoice({ key: next, revision, requested: selectedStep })
-  const help = status ? ({ permission: permissionHelp, server: serverHelp, save: saveHelp,
-    ports: portsHelp, connection: connectionHelp })[key](status, props) : {
+  const help = status ? localHostingAccessBlocker(status) && key !== 'permission'
+    ? waitingForAccess(key, status, props, () => select('permission'))
+    : ({ permission: permissionHelp, server: serverHelp, save: saveHelp,
+      ports: portsHelp, connection: connectionHelp })[key](status, props) : {
     title: 'Retry the hosting checks', instructions: [
       'Keep TogetherServer open and choose the saved Host connection for this server in Join.',
       'Retry the hosting checks. Wait for current permission, game and save results before continuing.'
@@ -279,6 +316,7 @@ export function LocalHostingGuide(props: LocalHostingGuideProps) {
       {help.note && <p className="local-hosting-guide-note">{help.note}</p>}
       <div className="local-hosting-guide-actions">{help.actions?.filter(action => action.run).map(action =>
         <Button key={action.label} className="secondary" disabled={busy} onClick={action.run}>{action.label}</Button>)}</div>
+      {feedback && <p className="local-hosting-guide-feedback" role="status" aria-live="polite" aria-atomic="true">{feedback}</p>}
     </div>
     <div className="local-hosting-guide-navigation">
       <Button className="text-button" disabled={index === 0} onClick={() => select(guideSteps[index - 1].key)}>Previous step</Button>

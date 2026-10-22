@@ -86,6 +86,10 @@ beside a check to open its part of the guide. The guide explains what to do on
 this PC and which changes need the original owner. A sharing-history or
 verification error needs review; it does not mean the owner turned sharing off.
 
+The guide reports what a button is doing, then shows its result and the next
+step. If permission or sharing history is blocking preparation, later checks
+show **Not checked** until that prerequisite is verified.
+
 Hosting requires a configured incoming connection. Confirmation can enable
 that saved app connection; TogetherServer never changes Windows Firewall,
 router forwards or DNS. Local port and outside TCP checks do not prove that a
@@ -109,6 +113,26 @@ Preview 0.3.3.4 also fixes Valheim's normal `//` permissions-file comments being
 misread as player entries. That bug could block first publication even with
 completed backups, valid permissions and enough free space. Update both PCs;
 you do not need to edit the game's permissions file to remove its comments.
+
+## If sharing history blocks the download
+
+Remote Start/Stop can work while receiving a shared save is blocked. The message
+**The saved sharing history changed unexpectedly** concerns the signed sharing
+records, before the app requests the save files or sends a download receipt.
+It does not establish a failed network check.
+
+The `0.3.3.5` source/test build repairs a case where history review saved a newer
+permission record without importing its journal. Keep both updated apps open;
+on the receiving PC, open **Host locally** and choose **Check hosting access
+again**. The app can catch up the missing signed records while preserving its
+saved connection and worlds. Changed, damaged or conflicting history remains
+blocked for review; keep that evidence instead of resetting app data.
+
+On the original Host, **Share latest backup** retries publication of an existing
+completed post-Stop backup. Then let the permitted receiving PC continue through
+**Host locally**. Check the receiver's completed verified copy and the Host's
+confirmed receipt before treating the save as available on both PCs. A source
+version alone does not mean another PC downloaded it.
 
 ## Continue from the latest save
 

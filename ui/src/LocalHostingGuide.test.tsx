@@ -158,7 +158,7 @@ describe('Local hosting setup guide', () => {
       expect(actions.onPrepare).not.toHaveBeenCalled()
     })
 
-  it.each(['RosterRollback', 'VersionRollback', 'InvalidManifest', 'SharedSaveHashMismatch', 'SigningIdentityChanged', 'SharingReviewRequired'])(
+  it.each(['VersionRollback', 'InvalidManifest', 'SharedSaveHashMismatch', 'SigningIdentityChanged', 'SharingReviewRequired'])(
     'keeps %s blocked for trusted history or file verification without a bypass action', code => {
       const { actions } = setup(withCheck('save', 'ActionRequired', { code }))
       expect(screen.getByRole('heading', { name: 'Review the save verification problem' })).toBeInTheDocument()
@@ -170,9 +170,46 @@ describe('Local hosting setup guide', () => {
     })
 
   it('explains a history failure from the permission check without suggesting a permission change', () => {
-    setup(withCheck('permission', 'ActionRequired', { allowed: false, code: 'RosterRollback' }))
-    expect(screen.getByRole('heading', { name: 'Review the save verification problem' })).toBeInTheDocument()
+    const { actions } = setup(withCheck('permission', 'ActionRequired', { allowed: false, code: 'RosterRollback' }))
+    expect(screen.getByRole('heading', { name: 'Refresh the saved sharing history' })).toBeInTheDocument()
+    expect(screen.getByText(/Make sure both apps are up to date/)).toBeInTheDocument()
+    expect(screen.getByText(/sync missing signed sharing history/)).toBeInTheDocument()
+    expect(screen.getByText(/Do not delete or reset saved history/)).toBeInTheDocument()
+    expect(screen.getByText(/Changed, conflicting or damaged history stays blocked for review/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Check hosting access again' }))
+    expect(actions.onRetry).toHaveBeenCalledOnce()
+    expect(actions.onPrepare).not.toHaveBeenCalled()
     expect(screen.queryByText(/Turn on/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['RosterRollback', 'Review sharing history before checking ports', 'Refresh the saved sharing history'],
+    ['HostingPermissionRequired', 'Check hosting access before checking ports', 'Ask the owner to allow shared hosting'],
+    ['RosterUnavailable', 'Check hosting access before checking ports', 'Check the current hosting permission']
+  ])('explains the prerequisite for a port check blocked by %s', (code, title, permissionTitle) => {
+    const { actions } = setup(withCheck('permission', 'ActionRequired', { allowed: false, code }), { selectedStep: 'ports' })
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument()
+    expect(screen.getByText(/The ports check has not run in this attempt/)).toBeInTheDocument()
+    expect(screen.getByText(/does not show a problem with the server app, save files, ports or network/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recheck the local ports' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Free the game ports on this PC' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show the permission steps' }))
+    expect(currentStep(/1\. Permission/)).toHaveAttribute('aria-current', 'step')
+    expect(screen.getByRole('heading', { name: permissionTitle })).toBeInTheDocument()
+    for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
+  })
+
+  it('announces an action in progress and its result beside the guide actions', () => {
+    const { props, rerender } = setup(withCheck('permission', 'Unknown', { allowed: false, code: 'RosterUnavailable' }), {
+      busy: true, feedback: 'Checking hosting access. This check does not start the server.'
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('Checking hosting access.')
+    expect(screen.getByRole('button', { name: 'Check hosting access again' })).toBeDisabled()
+    rerender(<LocalHostingGuide {...props} busy={false} status={prepared}
+      feedback="Check finished: this PC is prepared. Choose Host locally when you want to start." />)
+    expect(screen.getByRole('status')).toHaveTextContent('Check finished: this PC is prepared.')
+    expect(screen.queryByText(/Checking hosting access\./)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Check Friend access and the game separately' })).toBeInTheDocument()
   })
 
   it.each([

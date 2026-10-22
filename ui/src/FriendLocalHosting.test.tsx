@@ -102,11 +102,73 @@ it.each(['RosterUnavailable', 'SharingReviewRequired'])('keeps %s recoverable th
   expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
   const dialog = await openHosting()
   expect(dialog.getByText(/Hosting lets other players connect/)).toBeInTheDocument()
-  expect(dialog.getByRole('heading', { name: 'Check hosting again' })).toBeInTheDocument()
+  expect(dialog.getByRole('heading', { name: code === 'SharingReviewRequired' ? 'Review sharing history before hosting' : 'Check hosting again' })).toBeInTheDocument()
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
   restored = true
   fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
   await waitFor(() => expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled())
+})
+
+it.each(['RosterRollback', 'HostingPermissionRequired', 'RosterUnavailable'])('marks checks blocked by %s as not run instead of failed', async code => {
+  const writes: string[] = []
+  const blocked: LocalHostingStatus = { ...initial, ok: false, allowed: false, code,
+    message: 'Current hosting access needs review.',
+    steps: initial.steps.map(step => ({ ...step, state: 'ActionRequired' })) }
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(url.endsWith('/access') ? { allowed: true, code: 'HostingAllowed', message: 'Sharing was allowed.' } : blocked)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  const rows = within(dialog.getByRole('list', { name: 'Local hosting checks' })).getAllByRole('listitem')
+  expect(within(rows[0]).getByText('Needs attention')).toBeInTheDocument()
+  for (const row of rows.slice(1)) {
+    expect(within(row).getByText('Not checked')).toBeInTheDocument()
+    expect(within(row).getByText(/This check has not run in this attempt/)).toBeInTheDocument()
+    expect(within(row).queryByText('Needs attention')).not.toBeInTheDocument()
+  }
+  fireEvent.click(within(rows[3]).getByRole('button'))
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  expect(guide.getByText(/The ports check has not run in this attempt/)).toBeInTheDocument()
+  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+  expect(writes).toEqual([])
+})
+
+it('reports an unchanged history failure after a pending retry, then shows the actual failed port check after access recovers', async () => {
+  let release!: (value: Response) => void
+  let pending = false
+  const writes: string[] = []
+  const blocked: LocalHostingStatus = { ...initial, ok: false, allowed: false, code: 'RosterRollback',
+    message: 'The saved sharing history changed unexpectedly.',
+    steps: initial.steps.map(step => ({ ...step, state: 'ActionRequired' })) }
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
+    return pending ? new Promise<Response>(resolve => { release = resolve }) : response(blocked)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  expect(guide.getByRole('status')).toHaveTextContent('Check finished: sharing history needs review.')
+  pending = true
+  fireEvent.click(guide.getByRole('button', { name: 'Check hosting access again' }))
+  expect(guide.getByRole('status')).toHaveTextContent('Checking hosting access and this PC.')
+  expect(guide.getByRole('status')).toHaveTextContent('This check does not start the server.')
+  expect(dialog.getByRole('button', { name: 'Checking this PC...' })).toBeDisabled()
+  await act(async () => { release(response(blocked)) })
+  expect(guide.getByRole('status')).toHaveTextContent('Check finished: sharing history needs review.')
+  expect(guide.getByRole('button', { name: 'Check hosting access again' })).toBeEnabled()
+  fireEvent.click(guide.getByRole('button', { name: 'Check hosting access again' }))
+  await act(async () => { release(response({ ...prepared, ok: false, code: 'PortInUse', readyForManualStart: false,
+    message: 'The required game port is in use.',
+    steps: prepared.steps.map(step => step.key === 'ports' ? { ...step, state: 'ActionRequired', message: 'The required game port is in use.' } : step) })) })
+  expect(guide.getByRole('status')).toHaveTextContent('Check finished. Next: Local game ports.')
+  const rows = within(dialog.getByRole('list', { name: 'Local hosting checks' })).getAllByRole('listitem')
+  expect(within(rows[3]).getByText('Needs attention')).toBeInTheDocument()
+  expect(within(rows[3]).getByText('The required game port is in use.')).toBeInTheDocument()
+  expect(within(rows[4]).getByText('Unverified')).toBeInTheDocument()
+  expect(dialog.queryByText('Not checked')).not.toBeInTheDocument()
+  expect(writes).toEqual([])
 })
 
 it('cancels preparation when the pending permission lookup returns an explicit denial', async () => {
@@ -202,6 +264,44 @@ it('shows the missing install and continues with the selected file without a sep
   expect(dialog.getByRole('button', { name: 'Retry and start' })).toBeEnabled()
 })
 
+it.each([true, false])('opens the server picker from the guide and reports its result without starting (selected: %s)', async selected => {
+  let finishBrowse!: (value: string | null) => void
+  const writes: string[] = []
+  const missing: LocalHostingStatus = { ...initial, needsServerFile: true, serverFile: null,
+    steps: initial.steps.map(step => step.key === 'server' ? { ...step, state: 'ActionRequired' } : step) }
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(missing)
+  }))
+  const browse = vi.fn(() => new Promise<string | null>(resolve => { finishBrowse = resolve }))
+  render(<FriendLocalHosting {...props} onBrowseServerFile={browse} />)
+  const dialog = await openHosting()
+  fireEvent.change(dialog.getByRole('textbox', { name: 'Installed server file' }), { target: { value: 'C:/Previous/valheim_server.exe' } })
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  fireEvent.click(guide.getByRole('button', { name: 'Choose the installed server file' }))
+  expect(browse).toHaveBeenCalledExactlyOnceWith('Valheim')
+  expect(guide.getByRole('status')).toHaveTextContent('Choose the installed dedicated server file in the file picker.')
+  expect(guide.getByRole('button', { name: 'Choose the installed server file' })).toBeDisabled()
+  expect(dialog.getByRole('button', { name: 'Choosing server file...' })).toBeDisabled()
+  await act(async () => { finishBrowse(selected ? 'C:/Selected/valheim_server.exe' : null) })
+  expect(dialog.getByRole('textbox', { name: 'Installed server file' })).toHaveValue(selected ? 'C:/Selected/valheim_server.exe' : 'C:/Previous/valheim_server.exe')
+  expect(guide.getByRole('status')).toHaveTextContent(selected ? 'Server file selected. Choose Host locally to verify it' : 'No server file was selected. Your previous choice is kept.')
+  expect(guide.getByRole('button', { name: 'Choose the installed server file' })).toBeEnabled()
+  expect(writes).toEqual([])
+})
+
+it('explains manual file entry when the server picker is unavailable', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => response({ ...initial, needsServerFile: true, serverFile: null,
+    steps: initial.steps.map(step => step.key === 'server' ? { ...step, state: 'ActionRequired' } : step) })))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  fireEvent.click(guide.getByRole('button', { name: 'Choose the installed server file' }))
+  expect(dialog.getByRole('textbox', { name: 'Installed server file' })).toHaveFocus()
+  expect(guide.getByRole('status')).toHaveTextContent('Enter the installed server file above, then choose Host locally.')
+  expect(guide.getByRole('status')).toHaveTextContent('The file is checked before Start.')
+})
+
 it('requires Minecraft terms to be accepted locally before the network confirmation can proceed', async () => {
   const writes: { url: string; body: Record<string, unknown> }[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -219,6 +319,44 @@ it('requires Minecraft terms to be accepted locally before the network confirmat
   await waitFor(() => expect(writes).toEqual([{ url: `${base}/hosting/prepare`, body: {
     allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null, acceptedTerms: true
   } }]))
+})
+
+it('shows acceptance progress, then a retryable timeout without accepting or starting again from a late reply', async () => {
+  vi.useFakeTimers()
+  let release!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const invitation: LocalHostingStatus = { ...initial, handoffRequest: {
+    pending: true, code: 'WaitingForRecipient', message: 'Waiting for this PC.',
+    successorDeviceId: '33333333-3333-4333-8333-333333333333', requestId: '44444444-4444-4444-8444-444444444444',
+    recipientState: 'Requested', preparedVersionHash: null, finalVersion: null,
+    receiptConfirmed: false, canComplete: false, canCancel: true
+  } }
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) {
+      writes.push(url); signal = init.signal
+      return new Promise<Response>(resolve => { release = resolve })
+    }
+    return response(invitation)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog'))
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  expect(dialog.getByRole('button', { name: 'Accepting move...' })).toBeDisabled()
+  expect(within(dialog.getByRole('region', { name: 'Local hosting setup guide' })).getByRole('status')).toHaveTextContent('Accepting the hosting move')
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+  expect(signal?.aborted).toBe(true)
+  expect(dialog.getByRole('alert')).toHaveTextContent('Retry the checks to see whether it was accepted before responding again.')
+  expect(dialog.getByRole('button', { name: 'Retry automatic checks' })).toBeEnabled()
+  await act(async () => {
+    release(response({ ok: true, code: 'HostingAccepted', message: 'Late acceptance.' }))
+    await vi.advanceTimersByTimeAsync(10000)
+  })
+  expect(writes).toEqual([`${base}/handoff/respond`])
+  expect(dialog.queryByText('Late acceptance.')).not.toBeInTheDocument()
 })
 
 it('offers Connection help before a profile exists without changing the network from a status read', async () => {
@@ -333,7 +471,8 @@ it('keeps Start busy beyond 30 seconds and accepts a delayed reply exactly once'
   await act(async () => { await vi.advanceTimersByTimeAsync(31000) })
   expect(signal?.aborted).toBe(false)
   expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
-  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Checking this PC...' })).toBeDisabled()
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Requesting Start...' })).toBeDisabled()
+  expect(within(screen.getByRole('region', { name: 'Local hosting setup guide' })).getByRole('status')).toHaveTextContent('Requesting Start for the checked local save.')
   expect(open).not.toHaveBeenCalled()
   expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
   await act(async () => { release(response({ ok: true, code: 'Starting', message: 'Start requested.' })) })
@@ -398,6 +537,8 @@ it('bounds preparation and ignores a late result without retrying Start', async 
   fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
   await act(async () => {})
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Preparing this PC...' })).toBeDisabled()
+  expect(within(screen.getByRole('region', { name: 'Local hosting setup guide' })).getByRole('status')).toHaveTextContent('Getting the latest completed save')
   await act(async () => { await vi.advanceTimersByTimeAsync(120001) })
   expect(signal?.aborted).toBe(true)
   expect(screen.getByRole('button', { name: 'Retry automatic checks' })).toBeEnabled()
@@ -458,6 +599,7 @@ it('retains the same check rows and timestamp through a failed retry, then recov
   await waitFor(() => expect(dialog.getByText('The Host could not be reached.')).toBeInTheDocument())
   expect(within(list).getAllByRole('listitem')).toEqual(rows)
   expect(dialog.getByText(/Showing the last results/)).toBeInTheDocument()
+  expect(within(dialog.getByRole('region', { name: 'Local hosting setup guide' })).getByRole('status')).toHaveTextContent('The checks could not finish.')
   expect(dialog.getByText(/Last checked/)).toHaveAttribute('datetime')
   expect(checked).toBeTruthy()
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
