@@ -84,3 +84,30 @@ Physical PC transfer, native rendering, the selected LAN/Wi-Fi route and
 real-game load/change/Stop/restart remain external acceptance. Minecraft
 remains fixture-tested. The owner's foreground and running app are preserved
 throughout local verification. Static test-build identity is recorded below.
+
+## Test build
+
+The production UI bundle and Release publish pass. Vite retains its existing
+JavaScript chunk-size advisory. Static package inspection confirms a Windows
+GUI executable, the exact current app assembly and all seven current embedded
+UI assets. No executable or game was launched to perform that inspection.
+
+| Field | Value |
+| --- | --- |
+| Artifact | `local-data/shared-hosting-history-production-20261022-6a41ca6/TogetherServer.exe` |
+| Source | `6a41ca6af5052c6dbefff60e7bc923242ed8f6a1` |
+| File version | `0.3.3.5` |
+| Product version | `0.3.3.5+6a41ca6af5052c6dbefff60e7bc923242ed8f6a1` |
+| Bytes | 66,147,099 |
+| SHA-256 | `05784cef3bafd4f7adf9c2e6782278f1272a5b39389d7fed6bc0d22700130aff` |
+| Authenticode | `NotSigned` |
+
+`build-info.json`, `package-evidence.json` and `TogetherServer.exe.sha256`
+are beside the EXE in ignored local output. It has not been launched, installed,
+published or used to replace production. This is a portable test build for both
+PCs, with existing settings, pairing and save history retained. Its real-PC
+transfer and confirmed receipt still need the owner's two-PC test; synthetic
+confirmation above does not claim that the laptop already has the save.
+
+This documentation-only follow-up records the unchanged built bytes. It does
+not alter the tested product source or create a release/tag.
