@@ -1,0 +1,91 @@
+name: Complete immutable 0.3.3.2 regression checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  existing-remainder:
+    name: Complete eight remaining Existing stages
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the reviewed check-only source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Install the pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Receive and verify the original candidate and retained reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/receive-release-0332-candidate.ps1
+      - name: Compile only the remaining check dispatcher
+        run: |
+          dotnet restore TogetherServer.slnx --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked check restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Check-only compilation failed.' }
+      - name: Complete only the failed and unattempted stages
+        run: |
+          # Explicit opt-in: this dedicated hosted Windows runner owns its disposable desktop.
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $harness = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
+          $candidateHash = '1b154b45438f86951c761080c2efcd9f9db259f4a622ce26fcdb7ba31db5c29d'
+          $context = Get-Content local-data/ci-evidence/0332-continuation/context.json -Raw | ConvertFrom-Json
+          if ($context.retainedPassedChecks -ne 19 -or $context.candidateSha256 -cne $candidateHash -or
+              $context.verificationRevision -cne $env:GITHUB_SHA) { throw 'Continuation context differs.' }
+          $checks = [Collections.Generic.List[object]]::new()
+          $expected = @(
+            @{name='Shared LiveSave packaged transfer journey';run={dotnet $harness $candidate --shared-live-transfer-journey --allow-interactive-tests}},
+            @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate --allow-interactive-tests}},
+            @{name='Solution formatting';run={dotnet format TogetherServer.slnx --verify-no-changes --no-restore}},
+            @{name='Packaged served smoke';run={./checks/served-smoke.ps1 -AppPath $candidate}},
+            @{name='Production plus staging isolation smoke';run={./checks/staging-smoke.ps1 -AppPath $candidate}},
+            @{name='Packaged hidden desktop smoke';run={./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests}},
+            @{name='Packaged interactive desktop smoke';run={./checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests}},
+            @{name='Update handoff smoke';run={./checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests}}
+          )
+          try {
+            foreach ($check in $expected) {
+              $started = [DateTime]::UtcNow
+              try {
+                $global:LASTEXITCODE = 0
+                & $check.run
+                if ($LASTEXITCODE -ne 0) { throw "Stage failed: $($check.name)." }
+                $checks.Add(@{name=$check.name;outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+              } catch {
+                $checks.Add(@{name=$check.name;outcome='failed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds;errorType=$_.Exception.GetType().Name})
+                Write-Host "FAIL continuation stage: $($check.name) ($($_.Exception.GetType().Name))."
+              }
+            }
+          } finally {
+            $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            @{suite='Existing0332Continuation';sourceRevision=$context.sourceRevision;candidateSha256=$hash;
+              verificationRevision=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;
+              originalRunId=$context.originalRunId;originalExistingJobId=$context.originalExistingJobId;
+              retainedPassedChecks=19;expectedChecks=8;checks=@($checks.ToArray());
+              fullyAccepted=$false;nativeNotificationVerified=$false;originalNativeFailurePreserved=$true} |
+              ConvertTo-Json -Depth 6 | Set-Content local-data/ci-evidence/0332-continuation/report.json -Encoding utf8
+            if ($hash -cne $candidateHash) { throw 'The immutable candidate changed during continuation.' }
+          }
+          if ($checks.Count -ne 8 -or @($checks | Where-Object outcome -ne 'passed').Count) { throw 'Some remaining stages did not pass; inspect the report.' }
+      - name: Preserve the retained proof and every attempted continuation stage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-0332-existing-continuation
+          path: |
+            local-data/ci-evidence/0332-retained-existing/
+            local-data/ci-evidence/0332-continuation/
+          if-no-files-found: error
+          retention-days: 7

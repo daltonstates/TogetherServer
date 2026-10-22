@@ -230,13 +230,32 @@ internal static partial class SharedWorldJourney
                 $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
                 "owner could not disable shared hosting after the confirmed copy");
             await WaitCopiesAsync(owner, profile.Id, 0);
-            Require(File.Exists(received), "revocation removed a previously verified local copy");
+            await WaitSharedStateAsync(friendLocal, profile.Id, "Consent off");
+            var withdrawn = await GetAsync<ReceivedSharedWorldStatus>(friendLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            var publishedFile = version.Files.Single();
+            var expectedHash = Convert.ToHexString(SHA256.HashData(payload));
+            var publishedPayload = SharedWorldService.SafeChild(Path.Combine(hostData, "shared-worlds",
+                version.ProfileId.ToString("N"), version.GroupId.ToString("N"),
+                version.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                SharedWorldService.PayloadDirectory), publishedFile.Path);
+            var originalPayload = SharedWorldService.SafeChild(profile.WorldDirectory, publishedFile.Path);
+            Require(!withdrawn.Consented && withdrawn.State == "Consent off" &&
+                withdrawn.ThisPcVersion == version.Number && withdrawn.Error is null &&
+                File.Exists(received) && publishedFile.Sha256 == expectedHash &&
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(received))) == expectedHash,
+                "automatic consent withdrawal removed or invalidated the retained verified copy");
             using (var stream = new FileStream(received, FileMode.Open, FileAccess.Write))
                 stream.WriteByte((byte)(payload[0] ^ 0xff));
             var tampered = await GetAsync<ReceivedSharedWorldStatus>(friendLocal,
                 $"/api/local/friend/{profile.Id}/shared-world");
-            Require(tampered.State == "Error" && tampered.ThisPcVersion is null,
-                "a tampered received LiveSave remained verified");
+            Require(!tampered.Consented && tampered.State == "Consent off" &&
+                tampered.ThisPcVersion is null && !string.IsNullOrWhiteSpace(tampered.Error) &&
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(received))) != expectedHash,
+                "a tampered received LiveSave remained verified or was repaired during the assertion");
+            Require(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(publishedPayload))) == publishedFile.Sha256 &&
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(originalPayload))) == expectedHash,
+                "received-copy tampering changed the immutable Host publication or original world");
             StopApp(host);
             host = null;
             using (var data = new LocalData(hostData, companionPort))

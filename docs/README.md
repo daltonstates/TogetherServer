@@ -104,6 +104,7 @@ use the document title to identify the topic.
 | 0.3.2.2 preview | [Prerelease delivery](36-0.3.2.2-PRERELEASE.md) |
 | 0.3.3 | [Stable release delivery and evidence](38-0.3.3-RELEASE.md) |
 | 0.3.3.1 preview | [Prerelease delivery](39-0.3.3.1-PRERELEASE.md) |
+| 0.3.3.2 preview | [Prerelease delivery](41-0.3.3.2-PRERELEASE.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).
