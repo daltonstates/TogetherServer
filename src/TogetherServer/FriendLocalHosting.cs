@@ -5,6 +5,7 @@ namespace TogetherServer;
 
 public sealed record LocalHostingStep(string Key, string State, string Message);
 public sealed record LocalHostingRemedy(string Kind, string Title, string Message);
+public sealed record LocalHostingPermission(bool Allowed, string Code, string Message);
 public sealed record LocalHostingStatus(bool Ok, string Code, string Message,
     bool Allowed, bool Consented, string? Game, string Name, bool NeedsServerFile,
     bool NeedsPassword, string? ServerFile, string? GameVersion, int GamePort, int ControlPort,
@@ -25,6 +26,19 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
 {
     private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
         JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;
+
+    internal async Task<LocalHostingPermission> PermissionAsync(Guid profileId,
+        CancellationToken cancellationToken = default)
+    {
+        using var connection = friend.RetainLocalHostingConnection();
+        if (connection is null) return new(false, "NotPaired", "Choose a saved Host connection first.");
+        var access = await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken,
+            permissionOnly: true);
+        cancellationToken.ThrowIfCancellationRequested();
+        return friend.CurrentLocalHostingConnection(connection)
+            ? new(access.Allowed, access.Code, access.Message)
+            : new(false, "ConnectionChanged", "The selected Host changed. Review the shared server again.");
+    }
 
     internal static bool CurrentSignedControlRoute(bool verified, WorldSeparateCopyBranch? branch,
         LocalHostingRouteEvidence? current) => verified && branch is not null &&

@@ -46,6 +46,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root)),
     ("Legacy roster bootstrap races and trust floors", () => SharedRosterBootstrapChecks.RunAsync(root)),
     ("Solo and descendant world recovery", () => SoloRecoveryChecks.RunAsync(root)),
+    ("Local hosting permission before preparation", () => LocalHostingPermissionChecks.RunAsync(root)),
     ("Guided local shared hosting preparation", () => LocalHostingChecks.RunAsync(root)),
     ("Fixed shared hosting Start and repair actions", SharedHostingActionChecks.RunAsync),
     ("Paired-PC hosting requests and exact final move", () => PlannedHandoffRequestChecks.RunAsync(root)),

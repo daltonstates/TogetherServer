@@ -116,8 +116,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Candidate publication failed.' }
           $candidate = (Resolve-Path local-data/simple-hosting-candidate/TogetherServer.exe).Path
           New-Item -ItemType Directory -Force local-data/local-pairing-lab | Out-Null
-          @{ source = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant(); productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion } |
-            ConvertTo-Json | Set-Content local-data/local-pairing-lab/simple-hosting-candidate.json
+          $identity = @{ source = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT;
+            job = $env:GITHUB_JOB; sha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant();
+            bytes = (Get-Item -LiteralPath $candidate).Length; productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion }
+          $identity | ConvertTo-Json | Set-Content local-data/local-pairing-lab/simple-hosting-candidate.json
+          $identity | ConvertTo-Json | Set-Content local-data/simple-hosting-candidate/candidate.json
       - name: Verify the real packaged sharing flow on this isolated Windows runner
         shell: pwsh
         run: |
@@ -141,6 +144,20 @@ jobs:
             dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
             throw 'An ordinary packaged sharing run failed; any diagnostic retry is separate evidence.'
           }
+          $identity = Get-Content local-data/simple-hosting-candidate/candidate.json -Raw | ConvertFrom-Json
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $identity.sha256 -or
+              (Get-Item -LiteralPath $candidate).Length -ne $identity.bytes -or $identity.source -ne $env:GITHUB_SHA) {
+            throw 'The production candidate changed during the packaged checks.'
+          }
+      - name: Retain the exact tested production EXE
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: simple-hosting-production-candidate
+          path: |
+            local-data/simple-hosting-candidate/TogetherServer.exe
+            local-data/simple-hosting-candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain bounded redacted candidate and journey evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

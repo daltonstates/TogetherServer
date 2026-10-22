@@ -10,6 +10,8 @@
 .task-first-connection .connection-field-actions { grid-column: 2; grid-row: 1 / 3; display: flex; gap: .35rem; }
 .task-first-connection .private-copy { padding: .45rem; }
 .friend-play-flow .friend-primary-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.friend-play-flow .server-play-action { width: 12rem; max-width: 100%; min-height: 44px; font-size: .9375rem; }
+.friend-play-flow .open-game-action { margin-top: 0; }
 .friend-play-flow .server-support-disclosure { margin-top: .75rem; }
 .friend-play-flow .panel-heading { gap: .5rem; align-items: center; }
 .attention-workspace > .attention-current { padding: 1rem; }

@@ -18,6 +18,7 @@ export type LocalHostingStatus = {
   handoffRequest?: PlannedHandoffStatus | null
   remedy?: { kind: HostingRemedyKind; title: string; message: string } | null
 }
+export type LocalHostingPermission = { allowed: boolean; code: string; message: string }
 const remedyKinds = ['Permission', 'Respond', 'ChooseHistory', 'Terms', 'ChooseServer', 'GameSetup', 'Ports', 'Connection', 'Review', 'ConfirmCopy', 'GetSave'] as const
 type HostingRemedyKind = typeof remedyKinds[number]
 
@@ -26,6 +27,13 @@ const hashPattern = /^[0-9a-f]{64}$/i
 function boundedText(value: unknown, max: number, nullable = false): boolean {
   return nullable && value === null || typeof value === 'string' && value.length <= max
     && ![...value].some(character => character.charCodeAt(0) < 32 && !['\t', '\n', '\r'].includes(character))
+}
+export function parseLocalHostingPermission(value: unknown): LocalHostingPermission {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Hosting permission could not be checked.')
+  const item = value as Record<string, unknown>
+  if (typeof item.allowed !== 'boolean' || !boundedText(item.code, 100) || !boundedText(item.message, 1000))
+    throw new Error('Hosting permission could not be checked.')
+  return { allowed: item.allowed, code: item.code as string, message: item.message as string }
 }
 export function parseLocalHostingStatus(value: unknown): LocalHostingStatus {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Local hosting checks could not be read.')
@@ -113,6 +121,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const scope = JSON.stringify([connectionId, profileId])
   const request = useRef(0)
   const mutation = useRef(false)
+  const [permission, setPermission] = useState<LocalHostingPermission | null>(null)
   const [status, setStatus] = useState<LocalHostingStatus | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -139,6 +148,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       startIntent.current = null
     }
     currentStatus.current = next
+    setPermission({ allowed: next.allowed, code: next.code, message: next.message })
     setStatus(next)
   }, [])
   const controller = useRef<AbortController | null>(null)
@@ -147,6 +157,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   useEffect(() => {
     mutation.current = false
     startIntent.current = null
+    setPermission(null)
     setStatus(null); setOpen(false); setBusy(false); setError(''); setAcceptedTerms(false)
     setServerFile(''); setPassword(''); setActionMessage('')
     setNetworkConfirmed(false)
@@ -158,23 +169,28 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     let timeout: number | undefined
     const read = async () => {
       if (!mutation.current) {
-        const sequence = ++request.current
         const abort = new AbortController()
         currentRead = abort
         timeout = window.setTimeout(() => {
-          if (active && sequence === request.current) {
-            setStatus(null); plannedAuthorization.current = null; setPlannedOperation(null); ++request.current
+          if (active) {
+            setPermission(null)
             startIntent.current = null
           }
           abort.abort()
         }, 15000)
         try {
-          const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
-          if (active && sequence === request.current && !abort.signal.aborted) acceptStatus(next)
+          const next = await getLocalJson(`${base}/hosting/access`, parseLocalHostingPermission, abort.signal)
+          if (active && !abort.signal.aborted) {
+            setPermission(next)
+            if (!next.allowed) {
+              startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
+              invalidate(); mutation.current = false; setBusy(false); setStatus(null)
+            }
+          }
         } catch {
-          // An old grant cannot authorize hosting after an unavailable check.
-          if (active && sequence === request.current) {
-            setStatus(null); plannedAuthorization.current = null; setPlannedOperation(null)
+          // Keep the entry point available for guided recovery, never a Start intent.
+          if (active && !abort.signal.aborted) {
+            setPermission(null)
             startIntent.current = null
           }
         } finally { window.clearTimeout(timeout) }
@@ -183,7 +199,42 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
     void read()
     return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout); invalidate() }
-  }, [scope, base, available, accessBlocked, acceptStatus, invalidate])
+  }, [scope, base, available, accessBlocked, invalidate])
+
+  useEffect(() => {
+    if (!open || !available || accessBlocked) return
+    let active = true
+    let timer: number | undefined
+    let currentRead: AbortController | null = null
+    let timeout: number | undefined
+    const read = async () => {
+      if (!mutation.current) {
+        const sequence = ++request.current
+        const abort = new AbortController()
+        currentRead = abort
+        timeout = window.setTimeout(() => {
+          if (active && sequence === request.current) {
+            setStatus(null); plannedAuthorization.current = null; setPlannedOperation(null)
+            startIntent.current = null; ++request.current
+            setError('Hosting checks timed out. Retry the checks.')
+          }
+          abort.abort()
+        }, 15000)
+        try {
+          const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
+          if (active && sequence === request.current && !abort.signal.aborted) acceptStatus(next)
+        } catch (cause) {
+          if (active && sequence === request.current && !abort.signal.aborted) {
+            setStatus(null); plannedAuthorization.current = null; setPlannedOperation(null)
+            startIntent.current = null; setError(errorMessage(cause))
+          }
+        } finally { window.clearTimeout(timeout) }
+      }
+      if (active) timer = window.setTimeout(() => void read(), 10000)
+    }
+    timer = window.setTimeout(() => void read(), 10000)
+    return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout) }
+  }, [scope, base, open, available, accessBlocked, acceptStatus])
 
   useEffect(() => {
     if (disabled || accessBlocked) startIntent.current = null
@@ -199,7 +250,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setBusy(true); setError('')
     const timeout = window.setTimeout(() => {
       abort.abort()
-      if (sequence === request.current) { setStatus(null); setError('Hosting checks timed out. Retry the checks.'); setBusy(false); mutation.current = false; ++request.current }
+      if (sequence === request.current) { startIntent.current = null; setStatus(null); setError('Hosting checks timed out. Retry the checks.'); setBusy(false); mutation.current = false; ++request.current }
     }, 15000)
     try {
       const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
@@ -402,7 +453,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const requestOffered = handoff?.recipientState === 'Requested'
   const waitingForHost = handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
   const minecraftTerms = ['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && !status?.readyForManualStart && !status?.localProfileId
-  const attention = localHostingAttention(status, acceptedTerms, serverFile)
+  const attention = !status && permission?.allowed === false
+    ? { kind: 'Permission' as const, title: 'Ask the owner to allow hosting', message: permission.message }
+    : localHostingAttention(status, acceptedTerms, serverFile)
   const historyChoice = attention?.kind === 'ChooseHistory'
   const pause = () => {
     startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
@@ -418,7 +471,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     pause(); onOpenGameSetup(status.game, status.localProfileId ?? undefined)
   }
   const trigger = () => {
-    if (disabled || busy || !allowed) return
+    if (disabled || busy || permission?.allowed === false) return
     if (status?.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setOpen(true); setNetworkConfirmed(false); setError(''); setActionMessage('')
     void refresh()
@@ -426,14 +479,14 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const canContinue = allowed && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
-  if (!allowed && !open) return null
+  if (permission?.allowed === false && !open) return null
   return <>
-    {allowed && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
+    {permission?.allowed !== false && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
       <Icon name="server" size={24} /><div><h3>Host locally</h3>
         <p>{status?.running ? 'This server is already hosted on this PC.' : 'Use the latest available save to host this server on your PC.'}</p></div>
       <Button className="secondary" disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>
-    </section> : <Button className="secondary icon-button local-hosting-trigger" title="Host locally" aria-label="Host locally"
-      disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} /></Button>)}
+    </section> : <Button className="secondary server-play-action local-hosting-trigger" title="Host locally"
+      disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>)}
     {open && <SettingsDialog title="Host locally" description={worldName} busy={busy}
       onClose={pause} footer={status?.running && status.localProfileId ?
         <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :

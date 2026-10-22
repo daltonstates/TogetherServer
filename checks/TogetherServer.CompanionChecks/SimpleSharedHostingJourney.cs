@@ -111,9 +111,15 @@ internal static partial class CoreRemoteJourney
                 "SimpleAutomaticSignedGrantsMissing");
             groupKey = new SharedWorldPeerRoot(roster.OwnerPublicKey, profile.Id, roster.GroupId).GroupKey;
             foreach (var client in new[] { first, second })
+            {
+                var permission = await PairingLabGetAsync<LocalHostingPermission>(client,
+                    $"/api/local/friend/{profile.Id}/shared-world/hosting/access");
+                LabRequire(permission.Allowed && permission.Code == "HostingAllowed",
+                    "SimpleHostingEntryPermissionMissingBeforeFirstSave");
                 LabRequire((await PairingLabGetAsync<ReceivedSharedWorldStatus>(client,
                     $"/api/local/friend/{profile.Id}/shared-world")).Consented,
                     "SimpleAutomaticReceivingMissing");
+            }
             Pass("one-server-choice-enrolls-both-friends");
 
             for (var publication = 1; publication <= 2; publication++)

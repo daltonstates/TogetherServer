@@ -15,7 +15,8 @@ internal sealed partial class FriendLink
     // cached grant is useful offline, but only after its pinned roster/floor,
     // local signing key and current revocation fence have all been verified.
     internal async Task<LocalHostingAccess> LocalHostingAccessAsync(Guid profileId,
-        bool refresh, CancellationToken cancellationToken, bool verifyFiles = false)
+        bool refresh, CancellationToken cancellationToken, bool verifyFiles = false,
+        bool permissionOnly = false)
     {
         if (!TryRetain()) return new(false, false, "Shared server", null, null,
             false, "ConnectionClosed", "This saved Host connection is closing.");
@@ -38,7 +39,7 @@ internal sealed partial class FriendLink
                         error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
                     { /* An unreachable Host does not invalidate a signed offline grant. */ }
                 }
-                return ReadLocalHostingAccess(profileId, verifyFiles);
+                return ReadLocalHostingAccess(profileId, verifyFiles, permissionOnly);
             }
             catch (Exception error) when (error is IOException or InvalidDataException or
                 JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException)
@@ -51,7 +52,7 @@ internal sealed partial class FriendLink
         finally { ReleaseRetained(); }
     }
 
-    private LocalHostingAccess ReadLocalHostingAccess(Guid profileId, bool verifyFiles)
+    private LocalHostingAccess ReadLocalHostingAccess(Guid profileId, bool verifyFiles, bool permissionOnly = false)
     {
         var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId) ??
             config?.CachedProfiles?.SingleOrDefault(item => item.Id == profileId);
@@ -85,6 +86,12 @@ internal sealed partial class FriendLink
             !SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId,
                 Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), grants => grants.Receive && grants.EligibleHost))
             return Denied("HostingPermissionRequired", "The owner must grant Can host this save to this PC.");
+        // The primary action depends only on current signed authorization.
+        // Save selection and verification belong to the explicit hosting flow.
+        if (permissionOnly)
+            return new(true, consented, name, profile?.GameKind ?? profile?.Kind, null, false,
+                "HostingAllowed", "The owner allows this PC to host this server.",
+                new(roster.OwnerPublicKey, profileId, roster.GroupId));
         SharedWorldVersion? version = null;
         var verified = false;
         if (consented)

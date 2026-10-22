@@ -2277,7 +2277,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
 
 
               {profile.maintenanceEnabled && <DismissibleNotice scope={connectionKey} className="notice bad" role="status"><strong>Maintenance mode</strong><p>{profile.maintenanceMessage || 'The Host has paused remote actions for this server.'}</p></DismissibleNotice>}
-              {joinSection === 'play' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host={false}
+              {joinSection === 'connection' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host={false}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')} worldName={profile.name} serverState={profile.state}
                 serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint} />}
               {joinSection === 'play' && profile.kind !== 'Custom' && !['Revoked', 'Access expired', 'Awaiting approval'].includes(snapshot.state) &&

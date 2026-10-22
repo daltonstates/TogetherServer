@@ -244,6 +244,10 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     authority: { state: 'NoTakeover', message: demoBoundary, head: null, competingHeads: [], exactManagedProcessRunning: false },
     liveSave: { available: false, message: demoBoundary } })
   const friendBase = `/api/local/friend/${ids.primary}/shared-world`
+  if (path === `${friendBase}/hosting/access` && method === 'GET') {
+    const { allowed, code, message } = hostingStatus(session)
+    return reply({ allowed, code, message })
+  }
   if (path === `${friendBase}/hosting` && method === 'GET') return reply(hostingStatus(session))
   if (path === `${friendBase}/hosting/prepare` && method === 'POST') {
     if (!hostingStatus(session).allowed) return denied('DEMO: the owner must allow hosting first.', 'PermissionDenied')

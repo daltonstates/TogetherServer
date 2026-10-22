@@ -148,6 +148,7 @@ beforeEach(() => {
     if (path === '/api/local/network/ports') return ports
     if (path === '/api/local/desktop/preferences') return { available: false, launchAtLogin: false, closeToTray: false, startupAvailable: false }
     if (path === '/api/local/desktop/notifications') return structuredClone(notificationPreferences)
+    if (path.endsWith('/shared-world/hosting/access')) return { allowed: false, code: 'HostingPermissionRequired', message: 'The owner has not allowed hosting.' }
     throw new Error('Synthetic leaf data unavailable')
   })
   transport.change.mockReset().mockImplementation(async (path: string, _method: string, _decoder: unknown, body: Record<string, unknown>) => {
@@ -1659,7 +1660,7 @@ describe('Friend task structure', () => {
         key: key as LocalHostingStatus['steps'][number]['key'], state: key === 'connection' ? 'Unknown' : 'Ready',
         message: key === 'connection' ? 'Incoming connection is unverified.' : 'Local check passed.' })) }
     const read = transport.read.getMockImplementation()!
-    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path.endsWith('/shared-world/hosting') ? checks : read(path, ...args))
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => /\/shared-world\/hosting(?:\/access)?$/.test(path) ? checks : read(path, ...args))
     render(<App />)
     const play = await screen.findByRole('region', { name: 'Play' })
     const local = await within(play).findByRole('button', { name: 'Host locally' })
@@ -1724,13 +1725,16 @@ describe('Friend task structure', () => {
     const read = transport.read.getMockImplementation()!
     const checks = approvedLocalHosting(secondId)
     if (destination === 'setup') checks.remedy = { kind: 'Connection', title: 'Let friends connect to this PC', message: 'Review this PC connection.' }
-    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path.endsWith('/shared-world/hosting') ? checks : read(path, ...args))
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => /\/shared-world\/hosting(?:\/access)?$/.test(path) ? checks : read(path, ...args))
     await openHost()
     expect(directory().getByRole('button', { name: 'Open Contract fixture on this PC' })).toHaveAttribute('aria-current', 'true')
     fireEvent.click(directory().getByRole('button', { name: 'Open Shared Join world B on Evening Host' }))
     await screen.findByRole('region', { name: 'Play' })
     fireEvent.click(joinSections().getByRole('button', { name: 'Shared saves' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+    await openSharedHostingDetails()
+    const localHosting = await screen.findByRole('button', { name: 'Host locally' })
+    await waitFor(() => expect(localHosting).toBeEnabled())
+    fireEvent.click(localHosting)
     const dialog = await screen.findByRole('dialog', { name: 'Host locally' })
     await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
     fireEvent.click(within(dialog).getByRole('button', { name: destination === 'setup' ? 'Connection help' : 'Local server & connection details' }))
@@ -1942,7 +1946,7 @@ describe('Friend task structure', () => {
     fireEvent.click(joinSections().getByRole('button', { name: 'Shared saves' }))
     const saves = await openSharedHostingDetails()
     expect(within(saves).queryByRole('checkbox')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument())
     expectNoMutation()
   })
 

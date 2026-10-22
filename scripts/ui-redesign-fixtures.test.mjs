@@ -614,7 +614,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 20, 'ten shared-hosting surfaces cover desktop and narrow widths');
+  assert.equal(simple.plans.length, 26, 'thirteen shared-hosting surfaces cover desktop and narrow widths');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -841,12 +841,14 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 10);
+  assert.equal(simpleHostingCases.length, 13);
   assert.equal(simpleHostingVariants.length, 2);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
   const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready' });
   const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  assert.deepEqual(Object.keys(routeFixture(state, { method: 'GET', path: `${base}/access` }).body).sort(), ['allowed', 'code', 'message']);
+  assert.equal(routeFixture(state, { method: 'GET', path: `${base}/access` }).body.allowed, true);
   assert.equal(simpleHostingStatus(state, fixtureIds.primary, 'Synthetic').allowed, true);
   assert.equal(routeFixture(state, { method: 'GET', path: base }).body.readyForManualStart, true);
   assert.doesNotThrow(() => localHosting.parseLocalHostingStatus(routeFixture(state, { method: 'GET', path: base }).body));

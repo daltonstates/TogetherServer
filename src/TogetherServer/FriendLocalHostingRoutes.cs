@@ -37,6 +37,16 @@ internal static class FriendLocalHostingRoutes
             announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync,
             latestSource: peers is null ? null : peers.ResolveLatestRecoverySourceAsync);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
+        app.MapGet(route + "/access", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Fixed(context, true)) return Results.StatusCode(403);
+            if (!friendMode()) return Results.Conflict(new LocalHostingPermission(false, "HostMode", "Open Join to host a shared server on this PC."));
+            if (unavailable()) return Results.Conflict(new LocalHostingPermission(false, "AppBusy", "Wait for the current app operation."));
+            try { return Results.Json(await service.PermissionAsync(profileId, context.RequestAborted)); }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+            { return Results.Json(new LocalHostingPermission(false, "SharingReviewRequired", "This PC's saved sharing permission needs review.")); }
+        });
         app.MapGet(route, async (HttpContext context, Guid profileId) =>
         {
             if (!Fixed(context, true)) return Results.StatusCode(403);

@@ -14,6 +14,9 @@ export const simpleHostingCases = [
   { id: 'simple-hosting-owner-continuation', scenario: 'host-offline', fixture: { ownerContinuations: true }, workspace: 'Host',
     section: backups, steps: [sharing], screen: { role: 'region', name: 'Shared hosting' } },
   friend('not-allowed', 'not-allowed', { steps: [], screen: { role: 'region', name: 'Play' } }),
+  friend('entry', 'prepare', { steps: [], screen: { role: 'region', name: 'Play' } }),
+  friend('missing-install-entry', 'missing-server', { steps: [], screen: { role: 'region', name: 'Play' } }),
+  friend('play-ready', 'prepare', { scenario: 'friend-connected', steps: [], screen: { role: 'region', name: 'Play' } }),
   friend('network-warning', 'prepare'),
   friend('missing-install', 'missing-server'),
   friend('missing-connection', 'connection'),
@@ -79,8 +82,26 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
         throw new Error('Owner continuation exposed retained copies or a guest-hosting label');
     }
   } else if (testCase.id.endsWith('-not-allowed')) {
+    await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
     if (await page.getByRole('button', { name: 'Host locally', exact: true }).count() || writes.length)
       throw new Error('An unauthorized Friend can see or invoke local hosting');
+  } else if (testCase.id.endsWith('-entry') || testCase.id.endsWith('-play-ready')) {
+    const playRegion = page.getByRole('region', { name: 'Play', exact: true });
+    const entry = playRegion.getByRole('button', { name: 'Host locally', exact: true });
+    await entry.waitFor({ state: 'visible', timeout: 8000 });
+    if (!/Host locally/u.test(await entry.textContent()) || writes.length ||
+        state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')) ||
+        await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() ||
+        await page.getByText('Host decision not checked', { exact: true }).count())
+      throw new Error('The labeled hosting entry must appear before setup checks or diagnostic clutter');
+    if (testCase.id.endsWith('-play-ready')) {
+      const open = await playRegion.getByRole('button', { name: 'Open game', exact: true }).boundingBox();
+      const stop = await playRegion.getByRole('button', { name: 'Stop server', exact: true }).boundingBox();
+      if (!open || !stop || Math.abs(open.width - stop.width) > 1 || Math.abs(open.height - stop.height) > 1 ||
+          await playRegion.getByText('Asks Steam to open an installed game. Join the server from the game.', { exact: true }).count())
+        throw new Error('Open game and Stop server must have equal dimensions without the intervening helper text');
+      record.assertions.push({ playActionSizes: { open, stop } });
+    }
   } else if (testCase.id.endsWith('-starting')) {
     if (!state.simpleHostingStarted || writes.length !== 2 || !writes[0].path.endsWith('/prepare') || !writes[1].path.endsWith('/start'))
       throw new Error('The single confirmation did not prepare then Start exactly once');

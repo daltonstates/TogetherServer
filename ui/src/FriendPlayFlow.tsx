@@ -192,7 +192,7 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
       {canJoin && currentProfile && <OpenGameButton profileId={profile.id} kind={currentProfile.gameKind ?? currentProfile.kind}
         connectionId={snapshot.connectionId} identityKey={identityKey} available={!busy}
         disabledReason="Wait for the current action to finish." />}
-      {(currentProfile?.state === 'Ready' || pendingAction === 'stop' && currentProfile?.state === 'Stopping') && permissions.currentAccess && permissions.grants.stop && onStop && <Button className="secondary" disabled={busy || !permissions.actions.stop.available}
+      {(currentProfile?.state === 'Ready' || pendingAction === 'stop' && currentProfile?.state === 'Stopping') && permissions.currentAccess && permissions.grants.stop && onStop && <Button className="secondary server-play-action" disabled={busy || !permissions.actions.stop.available}
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>

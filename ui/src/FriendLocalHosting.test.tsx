@@ -56,6 +56,66 @@ async function confirmHosting() {
   fireEvent.click(button)
 }
 
+it('shows a labeled entry immediately and checks hosting only after it is clicked', async () => {
+  const calls: string[] = []
+  let finishPermission!: (value: Response) => void
+  const fetcher = vi.fn(async (url: string) => {
+    calls.push(url)
+    if (url.endsWith('/access')) return new Promise<Response>(resolve => { finishPermission = resolve })
+    return response({ ...initial, needsServerFile: true, serverFile: null })
+  })
+  vi.stubGlobal('fetch', fetcher)
+  render(<FriendLocalHosting {...props} />)
+  const entry = screen.getByRole('button', { name: 'Host locally' })
+  expect(entry).toHaveTextContent('Host locally')
+  expect(entry).toBeEnabled()
+  expect(calls).toEqual([`${base}/hosting/access`])
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  fireEvent.click(entry)
+  const dialog = await screen.findByRole('dialog', { name: 'Host locally' })
+  expect(await within(dialog).findByRole('heading', { name: 'Install or find the game server' })).toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting`])
+  await act(async () => { finishPermission(response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })) })
+  expect(calls).toHaveLength(2)
+})
+
+it('keeps a failed permission lookup recoverable through Host locally', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('/access')) throw new Error('Permission lookup unavailable.')
+    return response(initial)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  const dialog = await openHosting()
+  expect(dialog.getByText(/Hosting lets other players connect/)).toBeInTheDocument()
+  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+})
+
+it('cancels preparation when the pending permission lookup returns an explicit denial', async () => {
+  let finishPermission!: (value: Response) => void
+  let finishPreparation!: (value: Response) => void
+  let preparationSignal: AbortSignal | null | undefined
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/access')) return new Promise<Response>(resolve => { finishPermission = resolve })
+    if (init?.method) {
+      writes.push(url); preparationSignal = init.signal
+      return new Promise<Response>(resolve => { finishPreparation = resolve })
+    }
+    return response(initial)
+  }))
+  const open = vi.fn()
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await openHosting(); await confirmHosting()
+  await act(async () => { finishPermission(response({ allowed: false, code: 'HostingPermissionRequired', message: 'The owner removed hosting access.' })) })
+  expect(preparationSignal?.aborted).toBe(true)
+  expect(screen.getByRole('heading', { name: 'Ask the owner to allow hosting' })).toBeInTheDocument()
+  await act(async () => { finishPreparation(response(prepared)) })
+  expect(writes).toEqual([`${base}/hosting/prepare`])
+  expect(open).not.toHaveBeenCalled()
+})
+
 it('uses one network confirmation to prepare and Start the exact checked save', async () => {
   const calls: { url: string; body?: Record<string, unknown> }[] = []
   const open = vi.fn()
@@ -69,7 +129,7 @@ it('uses one network confirmation to prepare and Start the exact checked save', 
   expect(dialog.getByText(/Hosting lets other players connect to this PC through your network/)).toBeInTheDocument()
   expect(dialog.queryByRole('checkbox')).not.toBeInTheDocument()
   expect(dialog.queryByText(/Receive|Reshare|voter|choose a history/i)).not.toBeInTheDocument()
-  expect(calls).toEqual([{ url: `${base}/hosting` }, { url: `${base}/hosting` }])
+  expect(calls).toEqual([{ url: `${base}/hosting/access` }, { url: `${base}/hosting` }])
   await confirmHosting()
   await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId))
   expect(calls.slice(2)).toEqual([{ url: `${base}/hosting/prepare`, body: {

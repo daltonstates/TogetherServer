@@ -30,8 +30,7 @@ function ScopedOpenGameButton({ profileId, kind, available, disabledReason }: Op
     } catch (failure) { if (!controller.signal.aborted) { setMessage(errorMessage(failure)); setFailed(true) } }
     finally { if (pending.current === controller) pending.current = null; if (!controller.signal.aborted) setBusy(false) }
   }
-  return <div className="open-game-action"><Button className="server-primary-action" disabled={busy || !available} onClick={() => void open()}><Icon name={busy ? 'loader' : 'game'} />{busy ? 'Opening game…' : 'Open game'}</Button>
-    <small>Asks Steam to open an installed game. Join the server from the game.</small>
+  return <div className="open-game-action"><Button className="server-primary-action server-play-action" disabled={busy || !available} onClick={() => void open()}><Icon name={busy ? 'loader' : 'game'} />{busy ? 'Opening game…' : 'Open game'}</Button>
     {!available && <small>{disabledReason ?? 'Reconnect and wait for the server to be ready before opening the game.'}</small>}
     {message && <DismissibleNotice as="p" scope={profileId} className={failed ? 'error-text' : 'helper-text'} role={failed ? 'alert' : 'status'}>{message}</DismissibleNotice>}
   </div>

@@ -515,6 +515,10 @@ export function routeFixture(state, request) {
       p.sharedSavesEnabled = body.enabled;
       return reply(result({ code: 'SharedHostingSaved', message: 'Friends can host this synthetic server.' }));
     }
+    if (!host && suffix === 'shared-world/hosting/access' && method === 'GET') {
+      const allowed = state.simpleHosting ? state.simpleHosting !== 'not-allowed' : !!state.hostingRemedy;
+      return reply({ allowed, code: allowed ? 'HostingAllowed' : 'HostingPermissionRequired', message: boundary });
+    }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting' && method === 'GET')
       return reply(simpleHostingStatus(state, id, boundary));
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting/prepare' && method === 'POST') {
