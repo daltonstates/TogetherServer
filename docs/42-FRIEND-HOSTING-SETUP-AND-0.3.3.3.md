@@ -35,12 +35,14 @@ unverified cached membership was presented as an owner permission denial, and
 legacy standalone sharing snapshots could diverge from the retained signed
 history.
 
-New publication anchors the original signed snapshot immediately and appends
-later changes as exact-parent schema-3 revisions. Existing legacy splits may
-retain a strictly newer schema-2 snapshot only while the journal head is still
-legacy, with the same signed owner, profile and group and both counters strictly
-increasing. Exact previously trusted snapshots remain retained. After schema 3,
-standalone replacements cannot advance the journal.
+The original owner reconciles a newer signed standalone snapshot with a journal
+that a peer started from an older cached snapshot. A strictly newer schema-2
+snapshot may advance only a legacy journal head, with the same signed owner,
+profile and group and both counters strictly increasing. Exact previously
+trusted snapshots remain retained. Existing journal changes use exact-parent
+schema-3 revisions; standalone replacements cannot advance a schema-3 head.
+Legacy standalone publication remains supported until a journal exists, so an
+explicitly reviewed owner source rotation retains its prior behavior.
 
 The companion roster read can resume after a bounded exact-hash header rather
 than treating one PC's journal length as the other PC's offset. Legacy peers
@@ -118,3 +120,86 @@ Release assets remain unsigned unless a validated signature is explicitly
 recorded. Keep source, workflow/run/artifact identity and exact asset hashes
 with the final publication record; never rebuild frozen release bytes to
 complete a later check.
+
+## Superseded first hosted candidate
+
+Compiled source is `ed1040c4a3dacac83ca0ac6925aad63c10b2c10e`, version
+`0.3.3.3`. [Windows CI 39816832047](https://github.com/daltonstates/TogetherServer/actions/runs/39816832047),
+attempt 1, builds the immutable candidate once. Candidate job `119957404246`
+and package job `119959000580` pass. Candidate artifact `12441999129` is
+61,019,850 bytes, ZIP SHA-256
+`a23d5eac62ccb554bf7bec64d4a5f69ffec863ed0a4978d98c934caa7cc04ce0`.
+Package artifact `12443032428` is 120,264,933 bytes, ZIP SHA-256
+`8513339255e3d8da4d7d52b68f6f9d1613a4f026ce42a1dd9f4d759bd6baaeb4`.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer-win-x64.exe` | 66,143,111 | `e8417bffd36ac20f51daf2992f571f2462ff8167f44db471818c158e0ce57c3a` |
+| `TogetherServer-Setup-win-x64.exe` | 60,605,349 | `d519c44f21357527fe77ecdd005d5be892103dfd8283d372da905ff4c0b910cb` |
+
+Independent downloaded-byte inspection confirms the GUI subsystem, exact
+bundled assembly hash, all seven embedded UI assets, local/hosted UI byte
+equality, numeric/source versions, adjacent checksums and `NotSigned` status.
+The installer passes six smoke cases and the actual Host, Friend and Decide
+later wizard choices on hosted Windows. Six compatibility jobs for 0.3.0,
+0.3.1, 0.3.2, 0.3.2.1, 0.3.2.2 and 0.3.3 pass their role-direction and
+update-handoff checks. Browser and packaged rehearsal jobs pass.
+
+Native Desktop job `119959000550` passes all 14 window-chrome checks, including
+physical titlebar double-click, taskbar, caption, ShowAsync, single-instance
+and tray restoration. Its independent QoL suite passes 12 required cases and
+records one blocked case: Windows remains in `QuietTime`, so real notification
+delivery, physical notification click and destination navigation are unproven.
+The job remains failed; full native acceptance is not claimed. Development
+staging startup is separately skipped by design; production startup belongs
+to its existing disposable-candidate gate.
+
+## First hosted review and correction
+
+[UI review 39817041108](https://github.com/daltonstates/TogetherServer/actions/runs/39817041108),
+render job `119958129093`, captures 54 of 60 plans and fails six plans across
+two cases. It has no JavaScript errors, unhandled routes or layout findings
+in those failures. The reopen case accidentally entered the passive-entry
+assertion because both IDs end in `-entry`; the two visible Host locally
+buttons then correctly trigger a strict-locator failure. The removed-access
+assertion searched for an exact text node while its heading also contains the
+nested access-status label. Its failure screenshot shows the checkbox checked
+and the removed Host revealed on the correctly aligned row.
+
+The corrected checks explicitly identify the three passive-entry cases and
+use the removed Host's scoped accessible heading. They retain geometry,
+full-label click, fresh reopen reads, blocked Start and zero hosting-write
+assertions. All 34 pure fixture tests and syntax checks pass. The corrected
+selectors will be exercised by the next candidate's normal hosted review.
+The original failed review remains failed.
+
+The first Existing job `119959000504` passes its first six stages, including
+all 1,411 UI tests, then fails TogetherServer.Checks (109 passed, five failed).
+The eager first-publication journal changed legacy fixture assumptions and
+also blocked the supported owner-reviewed world-source rotation. This is a
+product regression, not a test waiver. The two eager anchoring/bootstrap
+additions are removed; strict signed legacy repair, hash-based catch-up,
+revision-gap lookup, proof filtering and permission refresh remain. All five
+original assertions in TogetherServer.Checks are unchanged. The interrupted
+disable fixture now locks whichever authority destination actually exists.
+
+The publication/journal mutation gate serializes the repaired race: a peer
+either anchors first and publication follows the exact parent, or the owner
+imports the strictly newer complete legacy snapshot before serving its current
+roster. The explicit old-journal/new-standalone regression still exercises this
+repair. A fresh candidate and hosted run are required after this product fix;
+the first EXE and installer above will not be tagged or published.
+
+The first automatic-sharing job passes both ordinary eight-stage journeys.
+The local-pairing job passes its 18-stage LAN API journey, then its UI journey
+passes seven stages through automatic receipt and original/received payload
+hash checks before preparation fails. The masked report does not identify the
+prepare response code. A bounded diagnostic now retains only a validated result
+code, booleans and fixed step-key/state pairs before the unchanged readiness
+assertions; messages, paths, IDs and connection material remain excluded.
+The next hosted run must verify this stage and the two later UI stages, plus
+the previously unattempted loopback journey.
+
+The corrected source compiles with zero warnings/errors and passes all 63
+source/synthetic groups. The same symbolic-link subcase remains an explicit
+account-capability skip. No existing core regression assertion was changed.

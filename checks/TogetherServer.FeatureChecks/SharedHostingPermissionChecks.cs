@@ -422,7 +422,9 @@ internal static class SharedHostingPermissionChecks
             Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
                 "could not seed the interrupted disable check");
             var roster = (await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId))!;
-            var path = Path.Combine(fixture.Data.RootPath, $"shared-roster-chain-{fixture.ProfileId:N}.protected");
+            var journalFloor = Path.Combine(fixture.Data.RootPath, $"shared-roster-chain-{fixture.ProfileId:N}.protected");
+            var path = File.Exists(journalFloor) ? journalFloor : Path.Combine(fixture.Data.RootPath,
+                "shared-worlds", fixture.ProfileId.ToString("N"), roster.GroupId.ToString("N") + ".roster.json");
             SharedWorldResult result;
             using (var hold = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 result = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, false, CancellationToken.None);

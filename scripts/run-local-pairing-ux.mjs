@@ -437,6 +437,19 @@ try {
       new URL(response.url()).pathname === `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`, { timeout: remainingHostingTime() });
     await confirm.click();
     const prepared = await (await firstCheck).json();
+    report.preparationDiagnostics = {
+      ok: prepared?.ok === true, allowed: prepared?.allowed === true, consented: prepared?.consented === true,
+      ready: prepared?.readyForManualStart === true, running: prepared?.running === true,
+      needsServerFile: prepared?.needsServerFile === true,
+      hasLocalProfile: typeof prepared?.localProfileId === 'string' && prepared.localProfileId.length > 0,
+      hasBranch: typeof prepared?.branchHash === 'string' && prepared.branchHash.length > 0,
+      code: typeof prepared?.code === 'string' && /^[A-Za-z0-9]{1,80}$/u.test(prepared.code) ? prepared.code : 'Unavailable',
+      steps: ['permission', 'server', 'save', 'ports', 'connection'].flatMap(key => {
+        const step = Array.isArray(prepared?.steps) ? prepared.steps.find(item => item?.key === key &&
+          ['Ready', 'ActionRequired', 'Unknown'].includes(item?.state)) : null;
+        return step ? [{ key, state: step.state }] : [];
+      })
+    };
     if (!prepared.ok || !prepared.allowed || !prepared.consented || !prepared.readyForManualStart
       || !prepared.localProfileId || !prepared.branchHash || prepared.running)
       throw new Error('The single network confirmation did not prepare the exact verified copy');

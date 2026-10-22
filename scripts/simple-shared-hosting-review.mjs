@@ -143,18 +143,19 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     const bounds = { label: await label.boundingBox(), checkbox: await checkbox.boundingBox(), text: await text.boundingBox(),
       display: await label.evaluate(element => getComputedStyle(element).display) };
     assertRemovedAccessBounds(bounds);
-    if (await checkbox.isChecked() || await directory.getByText('Removed friend', { exact: true }).count())
+    const removedHost = directory.getByRole('heading', { level: 4, name: /^Removed friend\s*Access removed$/u });
+    if (await checkbox.isChecked() || await removedHost.count())
       throw new Error('Removed Host access must start hidden');
     await text.click();
-    await directory.getByText('Removed friend', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
-    if (!await checkbox.isChecked() || hostingWrites(state).length)
+    await removedHost.waitFor({ state: 'visible', timeout: 8000 });
+    if (await removedHost.count() !== 1 || !await checkbox.isChecked() || hostingWrites(state).length)
       throw new Error('Clicking the removed-access label must reveal the saved Host without a hosting action');
     record.assertions.push({ removedAccessInline: bounds, clickableLabelRevealedRemovedHost: true });
   } else if (testCase.id.endsWith('-not-allowed')) {
     await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
     if (await page.getByRole('button', { name: 'Host locally', exact: true }).count() || writes.length)
       throw new Error('An unauthorized Friend can see or invoke local hosting');
-  } else if (testCase.id.endsWith('-entry') || testCase.id.endsWith('-play-ready')) {
+  } else if (['simple-hosting-entry', 'simple-hosting-missing-install-entry', 'simple-hosting-play-ready'].includes(testCase.id)) {
     const playRegion = page.getByRole('region', { name: 'Play', exact: true });
     const entry = playRegion.getByRole('button', { name: 'Host locally', exact: true });
     await entry.waitFor({ state: 'visible', timeout: 8000 });
