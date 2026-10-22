@@ -27,6 +27,14 @@ internal static class FriendLocalHostingRoutes
         !context.Request.QueryString.HasValue &&
         (!get || context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody != true);
 
+    internal static void ValidatePublicationRequest(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length is 0 or > 64) throw new InvalidDataException("Use the fixed backup sharing action.");
+        using var document = JsonDocument.Parse(bytes.ToArray(), new() { MaxDepth = 2 });
+        if (document.RootElement.ValueKind != JsonValueKind.Object || document.RootElement.EnumerateObject().Any())
+            throw new InvalidDataException("Use the fixed backup sharing action.");
+    }
+
     internal static void Map(WebApplication app, LocalData data, FriendService friend,
         HostManager manager, CompanionServer companion, ExternalPortProbe externalProbe,
         SemaphoreSlim modeGate, Func<bool> friendMode, Func<bool> unavailable, WorldPeerService? peers = null)
@@ -109,6 +117,23 @@ internal static class FriendLocalHostingRoutes
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
             { return Results.BadRequest(new LocalHostingActionResult(false, "SharedHostingReviewRequired", "Shared hosting could not be confirmed. Retry the automatic checks.")); }
+            finally { modeGate.Release(); }
+        });
+        app.MapPost("/api/local/profiles/{localProfileId:guid}/shared-world/publish", async (HttpContext context, Guid localProfileId) =>
+        {
+            if (!Fixed(context)) return Results.StatusCode(403);
+            await modeGate.WaitAsync(context.RequestAborted);
+            try
+            {
+                if (friendMode()) return Results.Conflict(new SharedWorldResult(false, "FriendMode", "Share the completed backup from the Host PC."));
+                if (unavailable()) return Results.Conflict(new SharedWorldResult(false, "AppBusy", "Wait for the current app operation."));
+                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 64, context.RequestAborted);
+                ValidatePublicationRequest(bytes ?? []);
+                return Results.Json(await manager.RetrySharedSavePublicationAsync(localProfileId, context.RequestAborted));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+            { return Results.BadRequest(new SharedWorldResult(false, "InvalidPublicationRequest", "Use Share latest backup to retry the completed backup.")); }
             finally { modeGate.Release(); }
         });
         app.MapPost("/api/local/friend/{profileId:guid}/shared-world/handoff/respond", async (HttpContext context, Guid profileId) =>

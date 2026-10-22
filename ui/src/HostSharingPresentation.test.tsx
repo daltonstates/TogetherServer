@@ -12,6 +12,8 @@ const device: Device = { id: deviceId, profileId, assignedProfileIds: [profileId
   approvalPending: false, credentialExpiresUtc: null, lastHeartbeatUtc: null, serverPermissions: [],
   accessExpiresUtc: null, accessExpired: false, sharedWorldKeyEnrolled: false }
 const initial = { enabled: false, latest: null, error: null, canManageSharing: true }
+const unpublished = { ...initial, enabled: true }
+const latest = { number: 1, versionHash: 'A'.repeat(64), createdUtc: '2026-10-22T12:00:00Z', captureKind: 'PostStopBackup' }
 const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
 const props = { profileId, devices: [device], rollingBackupEnabled: false, worldName: 'Alderheim', onGrantChanged: vi.fn(async () => {}) }
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -38,10 +40,27 @@ async function toggle() {
   return checkbox
 }
 
+function setupPublication(getStatus: () => unknown, publish: (init: RequestInit) => Promise<Response>) {
+  const writes: { url: string; method: string; body: unknown }[] = []
+  const reads: string[] = []
+  const onGrantChanged = vi.fn(async () => {})
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) {
+      writes.push({ url, method: init.method, body: JSON.parse(String(init.body)) })
+      return publish(init)
+    }
+    reads.push(url)
+    return reply(url.endsWith('/governance') ? null : getStatus())
+  }))
+  const view = render(<HostSharedSaves {...props} onGrantChanged={onGrantChanged} />)
+  return { ...view, writes, reads, onGrantChanged }
+}
+
 describe('one shared-hosting setting', () => {
   it('shows exactly one switch and no per-PC grant, voter, forwarding or move controls', async () => {
     const writes = setup()
     expect(await toggle()).not.toBeChecked()
+    expect(screen.queryByRole('button', { name: 'Share latest backup' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Shared saves' }).firstElementChild).toBe(screen.getByRole('region', { name: 'Shared hosting' }))
     expect(screen.getAllByRole('checkbox')).toHaveLength(1)
     expect(screen.queryByRole('button', { name: /Manage sharing|Move hosting|Review transfer/ })).not.toBeInTheDocument()
@@ -85,12 +104,14 @@ describe('one shared-hosting setting', () => {
     expect(blocker).toHaveAttribute('role', 'alert')
     expect(screen.getByRole('checkbox')).toBeDisabled()
     expect(screen.queryByRole('button', { name: /Choose|Merge|Approve|Move/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Share latest backup' })).not.toBeInTheDocument()
   })
 
   it('does not offer the setting from an inherited Host without owner permission', async () => {
     setup({ ...initial, enabled: true, canManageSharing: false })
     expect(await screen.findByText("Change this setting on the original owner's PC.")).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Share latest backup' })).not.toBeInTheDocument()
   })
 
   it('keeps a refused change visible and does not write grants as a fallback', async () => {
@@ -138,6 +159,133 @@ describe('one shared-hosting setting', () => {
     expect(within(workspace).queryByLabelText('Approved Host')).not.toBeInTheDocument()
     expect(workspace).not.toHaveTextContent(/Host decision|Current Host status/)
     expect(writes).toEqual([])
+  })
+})
+
+describe('sharing the latest backup', () => {
+  it('requires an explicit request and prevents duplicate publication while pending', async () => {
+    let release!: (value: Response) => void
+    const { writes, reads, onGrantChanged } = setupPublication(() => unpublished,
+      () => new Promise<Response>(resolve => { release = resolve }))
+    const button = await screen.findByRole('button', { name: 'Share latest backup' })
+    expect(screen.getByText('No completed save has been shared yet. Friends cannot receive a save until a backup is shared.')).toBeVisible()
+    expect(writes).toEqual([])
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    expect(screen.getByRole('checkbox')).toBeDisabled()
+    expect(writes).toEqual([{ url: `${base}/publish`, method: 'POST', body: {} }])
+    await act(async () => { release(reply({ ok: false, code: 'NoBackup', message: 'No completed backup is available.' })) })
+    expect(await screen.findByText('No completed backup is available.')).toBeVisible()
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(reads.filter(url => url === base)).toHaveLength(2)
+    expect(onGrantChanged).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed publication visible and retryable without changing permissions', async () => {
+    const { writes, onGrantChanged } = setupPublication(() => ({ ...unpublished, error: 'The backup could not be checked.' }),
+      async () => reply({ ok: false, code: 'InvalidSetup', message: 'Check the server player list, then try again.' }))
+    const button = await screen.findByRole('button', { name: 'Share latest backup' })
+    fireEvent.click(button)
+    expect(await screen.findByText('Check the server player list, then try again.')).toBeVisible()
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(screen.queryByText(/will be sent|Latest save available/)).not.toBeInTheDocument()
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(writes).toEqual([
+      { url: `${base}/publish`, method: 'POST', body: {} },
+      { url: `${base}/publish`, method: 'POST', body: {} }
+    ])
+    expect(screen.getByRole('checkbox')).toBeChecked()
+    expect(onGrantChanged).not.toHaveBeenCalled()
+  })
+
+  it('rereads a successful publication and distinguishes availability from confirmed receipt', async () => {
+    let current: unknown = { ...unpublished, error: 'The earlier backup could not be shared.' }
+    const { writes, reads, onGrantChanged } = setupPublication(() => current, async () => {
+      current = { ...unpublished, latest, confirmedCopies: 0 }
+      return reply({ ok: true, code: 'Published', message: 'The backup was shared.' })
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Share latest backup' }))
+    expect(await screen.findByText('Latest save available. No PCs have confirmed receipt yet.')).toBeVisible()
+    expect(screen.queryByText('The earlier backup could not be shared.')).not.toBeInTheDocument()
+    expect(screen.queryByText('The backup was shared.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Share latest backup' })).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox')).toBeChecked()
+    expect(reads.filter(url => url === base)).toHaveLength(2)
+    expect(writes).toEqual([{ url: `${base}/publish`, method: 'POST', body: {} }])
+    expect(onGrantChanged).not.toHaveBeenCalled()
+  })
+
+  it('offers recovery for a newer publication error without treating an older shared save as success', async () => {
+    const { writes } = setupPublication(() => ({ ...unpublished, latest, confirmedCopies: 1, error: 'The newer backup could not be shared.' }),
+      async () => reply({ ok: false, code: 'InvalidSetup', message: 'Review the setup.' }))
+    expect(await screen.findByRole('button', { name: 'Share latest backup' })).toBeEnabled()
+    expect(screen.getByText('The newer backup could not be shared.')).toBeVisible()
+    expect(screen.getByText('Save sharing needs attention. Check the error and try sharing the latest backup again.')).toBeVisible()
+    expect(screen.queryByText(/Latest save available|will be sent/)).not.toBeInTheDocument()
+    expect(writes).toEqual([])
+  })
+
+  it('polls available status without publishing a backup automatically', async () => {
+    vi.useFakeTimers()
+    const { writes, reads } = setupPublication(() => unpublished,
+      async () => reply({ ok: true, code: 'Published', message: 'The backup was shared.' }))
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'Share latest backup' })).toBeEnabled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(20000) })
+    expect(reads.filter(url => url === base)).toHaveLength(3)
+    expect(writes).toEqual([])
+  })
+
+  it('aborts an unconfirmed publication after the timeout and leaves a visible retry', async () => {
+    vi.useFakeTimers()
+    let signal: AbortSignal | null | undefined
+    const { writes, onGrantChanged } = setupPublication(() => unpublished, init => {
+      signal = init.signal
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+      })
+    })
+    await act(async () => {})
+    const button = screen.getByRole('button', { name: 'Share latest backup' })
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+    expect(signal?.aborted).toBe(true)
+    expect(screen.getByText('Sharing could not be checked. Refresh sharing and try again.')).toBeVisible()
+    expect(button).toBeEnabled()
+    expect(writes).toEqual([{ url: `${base}/publish`, method: 'POST', body: {} }])
+    expect(onGrantChanged).not.toHaveBeenCalled()
+  })
+
+  it('ignores a late publication result and read for the previous server', async () => {
+    let release!: (value: Response) => void
+    let signal: AbortSignal | null | undefined
+    const nextId = '33333333-3333-4333-8333-333333333333'
+    const writes: string[] = []
+    const reads: string[] = []
+    const onGrantChanged = vi.fn(async () => {})
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method) {
+        writes.push(url); signal = init.signal
+        return new Promise<Response>(resolve => { release = resolve })
+      }
+      reads.push(url)
+      return reply(url.endsWith('/governance') ? null : url === base ? unpublished : initial)
+    }))
+    const view = render(<HostSharedSaves {...props} onGrantChanged={onGrantChanged} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Share latest backup' }))
+    view.rerender(<HostSharedSaves {...props} profileId={nextId} onGrantChanged={onGrantChanged} />)
+    await toggle()
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { release(reply({ ok: true, code: 'Published', message: 'Previous server backup shared.' })) })
+    expect(screen.queryByText('Previous server backup shared.')).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox')).not.toBeChecked()
+    expect(screen.queryByRole('button', { name: 'Share latest backup' })).not.toBeInTheDocument()
+    expect(reads.filter(url => url === base)).toHaveLength(1)
+    expect(writes).toEqual([`${base}/publish`])
+    expect(onGrantChanged).not.toHaveBeenCalled()
   })
 })
 

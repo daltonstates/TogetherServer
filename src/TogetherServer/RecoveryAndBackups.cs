@@ -196,6 +196,16 @@ internal sealed partial class WorldBackupService
             .OrderByDescending(item => item.CreatedUtc).ToList();
     }
 
+    // Completion order is durable catalog append order. Wall-clock timestamps
+    // can tie or move backward and must not choose an older save for sharing.
+    internal IReadOnlyList<WorldBackupRecord> CompletedRollingForSharing(ServerProfile profile)
+    {
+        lock (sync)
+            return data.LoadBackupCatalog().Records.Where(item => item.ProfileId == profile.Id &&
+                item.Kind == profile.Kind && item.WorldId == profile.WorldId &&
+                item.BackupKind == BackupKinds.Rolling).ToArray();
+    }
+
     public WorldBackupStatus Status(Guid profileId) => Statuses([profileId])[profileId];
 
     public IReadOnlyDictionary<Guid, WorldBackupStatus> Statuses(IEnumerable<Guid> profileIds)

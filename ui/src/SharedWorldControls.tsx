@@ -407,10 +407,11 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
       getLocalJson(base, parseHostSharedWorldStatus, signal),
       getLocalJson(`${base}/governance`, parseRoster, signal)
     ])
-    if (signal.aborted || current !== sequence.current) return
+    if (signal.aborted || current !== sequence.current || currentScope.current !== base) return
     if (nextStatus.status === 'fulfilled') setStatus(nextStatus.value)
     else { setStatus(null); setMessage(errorMessage(nextStatus.reason)) }
     setRoster(nextRoster.status === 'fulfilled' ? nextRoster.value : null)
+    return nextStatus.status === 'fulfilled' ? nextStatus.value : null
   }, [base])
 
   useEffect(() => {
@@ -429,6 +430,10 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
       active = false; ++sequences.current; abort.abort(); controller.current?.abort(); window.clearTimeout(timer)
     }
   }, [read])
+
+  const authority = status?.authority
+  const blocked = authority?.state === 'OldHostFenced' || authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
+  const canPublish = status?.enabled === true && status.canManageSharing && !blocked && (!status.latest || Boolean(status.error))
 
   const changeSharing = async (enabled: boolean) => {
     if (mutation.current || !status?.canManageSharing) return
@@ -452,6 +457,29 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
       if (currentScope.current === scope) { mutation.current = false; setBusy(false) }
     }
   }
+  const publishBackup = async () => {
+    if (mutation.current || !canPublish) return
+    mutation.current = true
+    ++sequence.current
+    const scope = base
+    const abort = new AbortController()
+    controller.current = abort
+    setBusy(true); setMessage('')
+    const timeout = window.setTimeout(() => abort.abort(), 30000)
+    try {
+      const result = await changeJson(`${base}/publish`, 'POST', parseBasicResult, {}, abort.signal)
+      if (abort.signal.aborted || currentScope.current !== scope) return
+      setMessage(result.message)
+      const refreshed = await read(abort.signal)
+      if (!abort.signal.aborted && currentScope.current === scope && result.ok && refreshed?.latest && !refreshed.error)
+        setMessage('')
+    } catch (error) {
+      if (currentScope.current === scope) setMessage(abort.signal.aborted ? 'Sharing could not be checked. Refresh sharing and try again.' : errorMessage(error))
+    } finally {
+      window.clearTimeout(timeout)
+      if (currentScope.current === scope) { mutation.current = false; setBusy(false) }
+    }
+  }
   const refresh = async () => {
     if (mutation.current) return
     const abort = new AbortController()
@@ -459,8 +487,6 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
     setMessage('')
     await read(abort.signal)
   }
-  const authority = status?.authority
-  const blocked = authority?.state === 'OldHostFenced' || authority?.state === 'CompetingHistories' || authority?.state === 'ReviewRequired'
   const eligible = devices.filter(device => device.paired && !device.revoked && !device.approvalPending &&
     !device.accessExpired && device.assignedProfileIds.includes(profileId))
   const enabled = status?.enabled === true
@@ -476,8 +502,11 @@ export function HostSharedSaves({ profileId, devices, currentAddress, onGrantCha
     {status?.error && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.error}</DismissibleNotice>}
     {message && <DismissibleNotice as="p" scope={noticeScope} role="status">{message}</DismissibleNotice>}
     <p role="status">{!status ? 'Checking shared hosting...' : !enabled ? 'Friends cannot host this server.' :
-      status.latest ? `Latest save available. ${status.confirmedCopies} ${status.confirmedCopies === 1 ? 'PC has' : 'PCs have'} confirmed its copy.` :
-        'Sharing is on. The latest save will be sent when a completed copy is available.'}</p>
+      !status.latest ? 'No completed save has been shared yet. Friends cannot receive a save until a backup is shared.' :
+        status.error ? 'Save sharing needs attention. Check the error and try sharing the latest backup again.' :
+          status.confirmedCopies === 0 ? 'Latest save available. No PCs have confirmed receipt yet.' :
+            `Latest save available. ${status.confirmedCopies} ${status.confirmedCopies === 1 ? 'PC has' : 'PCs have'} confirmed its copy.`}</p>
+    {canPublish && <Button disabled={busy} onClick={() => void publishBackup()}><Icon name="refresh" />Share latest backup</Button>}
     <details className="host-sharing-details"><summary>Sharing details</summary>
       <p>{eligible.length} approved {eligible.length === 1 ? 'PC is' : 'PCs are'} assigned to this server. Access changes apply automatically.</p>
       <HostSharingPermissions profileId={profileId} devices={eligible} members={roster?.members ?? []} enabled={enabled} />

@@ -115,11 +115,29 @@ internal static partial class SharedWorldJourney
                 await RequireNoPublishedSharedSaveAsync(owner, client, profile.Id);
 
             File.WriteAllText(Path.Combine(world, "world.dat"), "first verified fixture change");
+            File.WriteAllText(Path.Combine(world, "permittedlist.txt"),
+                "// List of permitted players ID ONE per line\r\n");
             await StartAndStopAsync(owner, profile.Id);
             var first = await GetAsync<SharedWorldStatus>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world");
             Require(first.Latest is { Number: 1 }, "the first signed save was not published");
             var firstVersion = first.Latest!;
+            Require(firstVersion.PortableSetup.Allowlist is { Count: 0 },
+                "the default Valheim permissions comment was shared as a player entry");
+            var publicationRetry = await PostAsync<object, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/publish", new { });
+            Require(publicationRetry.Ok && publicationRetry.Version?.VersionHash == firstVersion.VersionHash &&
+                publicationRetry.Version.BackupId == firstVersion.BackupId && publicationRetry.Version.Number == 1,
+                "the packaged retry did not reuse the exact completed backup and shared version");
+            using (var rejected = await RawMutationAsync(owner, HttpMethod.Post,
+                $"/api/local/profiles/{profile.Id}/shared-world/publish", new { path = "C:/unapproved" }))
+                Require(rejected.StatusCode == HttpStatusCode.BadRequest,
+                    "the packaged publication action accepted caller-selected files");
+            using (var rejected = await RawMutationAsync(aLocal, HttpMethod.Post,
+                $"/api/local/profiles/{profile.Id}/shared-world/publish", new { }))
+                Require(rejected.StatusCode == HttpStatusCode.Conflict &&
+                    (await rejected.Content.ReadFromJsonAsync<SharedWorldResult>(Json))?.Code == "FriendMode",
+                    "Friend mode could invoke original-owner publication");
             await PollAsync(aLocal);
             await PollAsync(bLocal);
             await WaitVersionAsync(aLocal, profile.Id, 1);
@@ -1334,13 +1352,19 @@ internal static partial class SharedWorldJourney
     private static async Task<TResponse> MutateAsync<TRequest, TResponse>(HttpClient client,
         HttpMethod method, string path, TRequest body, CancellationToken cancellationToken = default)
     {
+        using var response = await RawMutationAsync(client, method, path, body, cancellationToken);
+        return await response.Content.ReadFromJsonAsync<TResponse>(Json, cancellationToken) ??
+            throw new Exception($"empty local {method} {path}: {(int)response.StatusCode}");
+    }
+
+    private static async Task<HttpResponseMessage> RawMutationAsync<TRequest>(HttpClient client,
+        HttpMethod method, string path, TRequest body, CancellationToken cancellationToken = default)
+    {
         using var request = new HttpRequestMessage(method, path)
         { Content = JsonContent.Create(body, options: Json) };
         request.Headers.Add("Origin", client.BaseAddress!.ToString().TrimEnd('/'));
         request.Headers.Add("X-TogetherServer-Local", "1");
-        using var response = await client.SendAsync(request, cancellationToken);
-        return await response.Content.ReadFromJsonAsync<TResponse>(Json, cancellationToken) ??
-            throw new Exception($"empty local {method} {path}: {(int)response.StatusCode}");
+        return await client.SendAsync(request, cancellationToken);
     }
 
     private static void Require(bool condition, string message)

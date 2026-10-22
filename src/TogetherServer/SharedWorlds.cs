@@ -526,6 +526,13 @@ internal sealed partial class SharedWorldService
     }
 
     public SharedWorldResult PublishAfterStop(ServerProfile profile, Guid backupId)
+        => PublishAfterStop(profile, backupId, null, false);
+
+    internal SharedWorldResult RetryAfterStop(ServerProfile profile, Guid backupId, string? expectedHeadHash)
+        => PublishAfterStop(profile, backupId, expectedHeadHash, true);
+
+    private SharedWorldResult PublishAfterStop(ServerProfile profile, Guid backupId,
+        string? expectedHeadHash, bool requireExpectedHead)
     {
         if (!profile.SharedSavesEnabled || profile.Kind == GameKinds.Custom)
             return new(false, "SharingOff", "Shared saves are off for this server.");
@@ -533,6 +540,7 @@ internal sealed partial class SharedWorldService
             lock (sync)
             {
                 string? stage = null;
+                var failureMessage = "Sharing permissions or signed history need review. Retry sharing the completed backup for details.";
                 try
                 {
                     var successor = Authority.LocalAuthorizedHead(profile.Id);
@@ -556,11 +564,20 @@ internal sealed partial class SharedWorldService
                         throw new InvalidDataException("The existing shared save pointer failed verification.");
                     var binding = BindSource(profile);
                     var previous = ReconcilePublishedVersion(profile, priorStatus.Latest ?? successor?.Version);
+                    if (requireExpectedHead && previous?.VersionHash != expectedHeadHash && previous?.BackupId != backupId)
+                        throw new InvalidDataException("A completed shared save was recovered during this check. Refresh sharing before retrying; the recovered save was kept.");
                     if (successor is not null && (previous!.GroupId != successor.Version.GroupId ||
                         previous.Number < successor.Version.Number))
                         throw new InvalidDataException("Published history does not continue the authority head.");
                     if (previous?.BackupId == backupId)
+                    {
+                        failureMessage = "The existing shared save could not be verified, or its error notice could not be cleared. Keep the saved copies and retry after reviewing storage access.";
+                        foreach (var file in previous.Files)
+                            VerifyFile(SafeChild(Path.Combine(VersionRoot(previous), PayloadDirectory), file.Path), file);
+                        if (File.Exists(ErrorPath(profile.Id))) File.Delete(ErrorPath(profile.Id));
                         return new(true, "SharedSavePublished", "The hash-verified post-Stop file copy is available to approved PCs. Game load has not been checked.", previous);
+                    }
+                    failureMessage = "The completed backup could not be verified. Check its integrity in Backup library, then retry sharing.";
                     var source = capture.ReadVerified(profile, backupId);
                     if (source.Schema != 1 || source.Kind != SharedWorldCaptureKinds.PostStopBackup ||
                         source.Files.Count is < 1 or > MaximumFiles ||
@@ -571,10 +588,14 @@ internal sealed partial class SharedWorldService
                     var drive = new DriveInfo(Path.GetPathRoot(data.RootPath)!);
                     if (drive.AvailableFreeSpace < 1024L * 1024 * 1024 ||
                         drive.AvailableFreeSpace - 1024L * 1024 * 1024 < size)
+                    {
+                        failureMessage = "There is not enough room to share this backup. Keep 1 GiB free after the shared copy is created, then retry sharing.";
                         throw new IOException("Keep 1 GiB free after copying the published backup.");
+                    }
                     var group = binding.GroupId;
                     var number = previous?.Number + 1 ?? 1;
                     var files = source.Files.ToArray();
+                    failureMessage = "The backup's server settings could not be shared. Review its setup, then retry sharing the completed backup for details.";
                     if (source.Setup is null)
                         throw new InvalidDataException("The backup lacks a complete reviewed setup checkpoint.");
                     var portableSetup = SharedWorldPortableSetupReader.Capture(source.Setup);
@@ -590,6 +611,7 @@ internal sealed partial class SharedWorldService
                         portableSetup, files, publicKey, digest, signature);
                     if (JsonSerializer.SerializeToUtf8Bytes(version, Json).Length > MaximumManifestBytes)
                         throw new InvalidDataException("The shared save manifest is too large.");
+                    failureMessage = "The completed backup could not be copied to shared-save storage. Check this PC's free space and folder access, then retry sharing.";
                     var root = Root(profile.Id);
                     Directory.CreateDirectory(root);
                     stage = Path.Combine(root, ".stage-" + Guid.NewGuid().ToString("N"));
@@ -626,8 +648,7 @@ internal sealed partial class SharedWorldService
                     try
                     {
                         Directory.CreateDirectory(Root(profile.Id));
-                        File.WriteAllText(ErrorPath(profile.Id),
-                            "The latest completed backup could not be published. Review free space and backup integrity.");
+                        File.WriteAllText(ErrorPath(profile.Id), failureMessage);
                     }
                     catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException) { }
                     return new(false, "SharedSavePublishFailed", "The completed backup could not be published: " + ex.Message);

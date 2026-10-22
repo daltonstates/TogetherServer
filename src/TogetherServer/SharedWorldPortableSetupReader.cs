@@ -96,7 +96,8 @@ internal static class SharedWorldPortableSetupReader
         if (content is null) return [];
         if (snapshot.Kind == GameKinds.Valheim)
             return content.Split('\n').Select(line => line.Trim())
-                .Where(line => line.Length > 0 && !line.StartsWith('#'))
+                .Where(line => line.Length > 0 && !line.StartsWith('#') &&
+                    !line.StartsWith("//", StringComparison.Ordinal))
                 .Select(line => new SharedWorldPortableAllowEntry(line, null)).ToArray();
         return ParseMinecraftAllowlist(snapshot.Kind, content);
     }

@@ -13,6 +13,192 @@ internal static class SharedHostingPermissionChecks
     private static readonly SharedWorldGrants Hosting = new(Receive: true, EligibleHost: true);
     private static readonly SharedWorldGrants AutomaticHosting = new(Receive: true, EligibleHost: true, Reshare: true);
 
+    internal static async Task RetryPublicationAsync(string root)
+    {
+        foreach (var request in new[] { "{}", " { } " })
+            FriendLocalHostingRoutes.ValidatePublicationRequest(System.Text.Encoding.UTF8.GetBytes(request));
+        foreach (var request in new[] { "", "[]", "null", "{\"backupId\":\"chosen-by-caller\"}",
+            "{\"path\":\"C:/private\"}", "{\"command\":\"run\"}", new string(' ', 65) })
+        {
+            var rejected = false;
+            try { FriendLocalHostingRoutes.ValidatePublicationRequest(System.Text.Encoding.UTF8.GetBytes(request)); }
+            catch (Exception error) when (error is InvalidDataException or JsonException) { rejected = true; }
+            Require(rejected, "backup publication accepted a caller-selected file, ID, command or malformed body");
+        }
+
+        using (var fixture = new Fixture(root, "retry-default-valheim", profile => profile.Backups.MinimumFreeSpaceMb = 0,
+            kind: GameKinds.Valheim))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
+                "could not enable the synthetic Valheim source");
+            var profile = fixture.Current().Profiles[0];
+            Directory.CreateDirectory(profile.WorldDirectory);
+            var worldPath = Path.Combine(profile.WorldDirectory, "SyntheticWorld.db");
+            var savedPayload = System.Text.Encoding.UTF8.GetBytes("completed synthetic world before the failed publication");
+            File.WriteAllBytes(worldPath, savedPayload);
+            File.WriteAllText(Path.Combine(profile.WorldDirectory, "permittedlist.txt"),
+                "// List of permitted players ID ONE per line\r\n");
+            var backups = new WorldBackupService(fixture.Data, fixture.Clock);
+            var completed = backups.Create(profile, BackupKinds.Rolling);
+            Require(completed is { Ok: true, Backup.SetupIncluded: true }, "the existing sealed Valheim backup was not created");
+            var setupPath = Path.Combine(fixture.Data.BackupsRoot, profile.Id.ToString("N"),
+                completed.Backup!.Id.ToString("N") + ".backup", "setup.protected");
+            var originalSetup = File.ReadAllBytes(setupPath);
+            var errorPath = Path.Combine(fixture.Data.RootPath, "shared-worlds", profile.Id.ToString("N"), "last-error.txt");
+            File.WriteAllText(errorPath, "The latest completed backup could not be published. Review free space and backup integrity.");
+            fixture.Clock.Now += TimeSpan.FromMinutes(1);
+            File.WriteAllText(worldPath, "current world differs from the sealed backup");
+            Require(backups.Create(profile, BackupKinds.Manual).Ok, "could not create the newer manual backup exclusion case");
+            var catalogBefore = File.ReadAllBytes(Path.Combine(fixture.Data.RootPath, "backups.json"));
+            var liveBefore = File.ReadAllBytes(worldPath);
+            var settingsBefore = JsonSerializer.SerializeToUtf8Bytes(fixture.Current());
+            var pairingBefore = File.ReadAllBytes(Path.Combine(fixture.Data.RootPath, "pairing-state.protected"));
+
+            var published = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+            Require(published is { Ok: true, Version: { Number: 1 } } &&
+                published.Version.BackupId == completed.Backup.Id &&
+                published.Version.PortableSetup.Allowlist is { Count: 0 } &&
+                SharedWorldService.VerifySignature(published.Version),
+                "retry did not publish the existing signed rolling backup with its default Valheim comment ignored");
+            var shared = new SharedWorldService(fixture.Data, backups);
+            var index = Array.FindIndex(published.Version!.Files.ToArray(), file => file.Path == "SyntheticWorld.db");
+            Require(index >= 0 && shared.ReadChunk(published.Version, index, 0).AsSpan().SequenceEqual(savedPayload) &&
+                !File.Exists(errorPath) &&
+                File.ReadAllBytes(setupPath).AsSpan().SequenceEqual(originalSetup) &&
+                File.ReadAllBytes(Path.Combine(fixture.Data.RootPath, "backups.json")).AsSpan().SequenceEqual(catalogBefore) &&
+                File.ReadAllBytes(worldPath).AsSpan().SequenceEqual(liveBefore) &&
+                JsonSerializer.SerializeToUtf8Bytes(fixture.Current()).AsSpan().SequenceEqual(settingsBefore) &&
+                File.ReadAllBytes(Path.Combine(fixture.Data.RootPath, "pairing-state.protected")).AsSpan().SequenceEqual(pairingBefore) &&
+                fixture.Driver.Actions == 0 && fixture.Data.LoadRuns().Count == 0 && shared.Status(profile).ConfirmedCopies == 0,
+                "retry changed a backup, live world, settings or grants, invoked a driver, or invented a receiving-PC confirmation");
+            File.WriteAllText(errorPath, "old publication notice retained after a successful copy");
+            var repeated = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+            Require(repeated.Ok && repeated.Version?.VersionHash == published.Version.VersionHash &&
+                shared.Status(profile).Error is null && !File.Exists(errorPath),
+                "an exact repeated retry created another version or retained a stale publication error");
+            var publishedWorld = Path.Combine(fixture.Data.RootPath, "shared-worlds", profile.Id.ToString("N"),
+                published.Version.GroupId.ToString("N"), "1", "payload", "SyntheticWorld.db");
+            File.WriteAllText(publishedWorld, "damaged published bytes");
+            File.WriteAllText(errorPath, "unresolved publication notice");
+            var damagedPublished = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+            Require(!damagedPublished.Ok && shared.Status(profile).Error is not null && File.Exists(errorPath),
+                "an idempotent retry cleared the error without verifying the published payload");
+            File.WriteAllBytes(publishedWorld, savedPayload);
+            Require((await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None)).Ok &&
+                shared.Status(profile).Error is null, "retry did not clear the error after the exact published bytes verified again");
+
+            fixture.Clock.Now += TimeSpan.FromMinutes(1);
+            var damaged = backups.Create(profile, BackupKinds.Rolling);
+            Require(damaged is { Ok: true, Backup.SetupIncluded: true }, "could not create the later damaged-backup case");
+            File.AppendAllText(Path.Combine(fixture.Data.BackupsRoot, profile.Id.ToString("N"),
+                damaged.Backup!.Id.ToString("N") + ".backup", "payload", "SyntheticWorld.db"), "tampered");
+            var refused = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+            var after = shared.Status(profile);
+            Require(!refused.Ok && after.Latest?.VersionHash == published.Version.VersionHash &&
+                after.Error?.Contains("could not be verified", StringComparison.Ordinal) == true &&
+                after.Error?.Contains("free space", StringComparison.Ordinal) != true && fixture.Driver.Actions == 0,
+                "retry published a damaged newer backup, fell back to another copy, lost the prior shared save, or blamed free space");
+        }
+
+        using (var fixture = new Fixture(root, "retry-prerequisites"))
+        {
+            Require((await fixture.Manager.RetrySharedSavePublicationAsync(fixture.ProfileId, CancellationToken.None)).Code == "SharingOff",
+                "retry enabled sharing without owner approval");
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
+                "could not enable the retry prerequisite source");
+            Require((await fixture.Manager.RetrySharedSavePublicationAsync(fixture.ProfileId, CancellationToken.None)).Code == "NoCompletedBackup",
+                "retry invented a completed backup or attempted to read the live world");
+            fixture.Pairing.RequireSharedRosterPublication(fixture.ProfileId);
+            Require((await fixture.Manager.RetrySharedSavePublicationAsync(fixture.ProfileId, CancellationToken.None)).Code == "SharingAccessNeedsReview" &&
+                fixture.Driver.Actions == 0 && new SharedWorldService(fixture.Data, new WorldBackupService(fixture.Data, fixture.Clock))
+                    .Status(fixture.Current().Profiles[0]).Latest is null,
+                "retry bypassed unresolved permissions or invoked a process");
+        }
+
+        using (var fixture = new Fixture(root, "retry-inherited", profile =>
+            { profile.SharedSavesEnabled = true; profile.SeparateCopySourceProfileId = Guid.NewGuid(); }))
+            Require((await fixture.Manager.RetrySharedSavePublicationAsync(fixture.ProfileId, CancellationToken.None)).Code == "OwnerSharingRequired" &&
+                fixture.Driver.Actions == 0, "an inherited Host retried original-owner publication");
+
+        using (var fixture = new Fixture(root, "retry-completion-order", profile => profile.Backups.MinimumFreeSpaceMb = 0))
+        {
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
+                "could not enable the backup completion-order case");
+            var profile = fixture.Current().Profiles[0];
+            Directory.CreateDirectory(profile.WorldDirectory);
+            var worldPath = Path.Combine(profile.WorldDirectory, "world.dat");
+            var backups = new WorldBackupService(fixture.Data, fixture.Clock);
+            var shared = new SharedWorldService(fixture.Data, backups);
+            SharedWorldVersion? expected = null;
+            for (var number = 1; number <= 3; number++)
+            {
+                if (number == 3) fixture.Clock.Now -= TimeSpan.FromMinutes(1);
+                File.WriteAllText(worldPath, "completion " + number);
+                var completed = backups.Create(profile, BackupKinds.Rolling);
+                Require(completed is { Ok: true, Backup.SetupIncluded: true }, "could not create the ordered backup");
+                var normalPublication = shared.PublishAfterStop(profile, completed.Backup!.Id);
+                Require(normalPublication.Ok && normalPublication.Version?.Number == number,
+                    "normal post-Stop publication could not establish the newest ordered save");
+                expected = normalPublication.Version;
+                var retry = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+                Require(retry.Ok && retry.Version?.VersionHash == expected!.VersionHash &&
+                    retry.Version.Number == number && fixture.Driver.Actions == 0,
+                    "retry republished older progress when backup clocks tied or moved backward");
+            }
+            var latest = backups.CompletedRollingForSharing(profile).Last();
+            var catalog = fixture.Data.LoadBackupCatalog();
+            catalog.Records.RemoveAll(item => item.Id != latest.Id);
+            fixture.Data.SaveBackupCatalog(catalog);
+            fixture.Clock.Now -= TimeSpan.FromMinutes(1);
+            File.WriteAllText(worldPath, "later completion with missing published baseline");
+            Require(backups.Create(profile, BackupKinds.Rolling).Ok, "could not create the unproven-baseline backup");
+            catalog = fixture.Data.LoadBackupCatalog();
+            catalog.Records.RemoveAll(item => item.Id == latest.Id);
+            fixture.Data.SaveBackupCatalog(catalog);
+            var refused = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+            Require(!refused.Ok && refused.Code == "SharedSaveOrderNeedsReview" &&
+                shared.Status(profile).Latest?.VersionHash == expected!.VersionHash,
+                "retry replaced a shared head without a retained completion-order baseline");
+        }
+
+        foreach (var retainRecoveredBackup in new[] { true, false })
+        {
+            using var fixture = new Fixture(root, "retry-interrupted-publication-" + retainRecoveredBackup,
+                profile => profile.Backups.MinimumFreeSpaceMb = 0);
+            Require((await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None)).Ok,
+                "could not enable the interrupted-publication source");
+            var profile = fixture.Current().Profiles[0];
+            Directory.CreateDirectory(profile.WorldDirectory);
+            var worldPath = Path.Combine(profile.WorldDirectory, "world.dat");
+            var backups = new WorldBackupService(fixture.Data, fixture.Clock);
+            var shared = new SharedWorldService(fixture.Data, backups);
+            File.WriteAllText(worldPath, "first completed save");
+            var first = backups.Create(profile, BackupKinds.Rolling);
+            var firstVersion = shared.PublishAfterStop(profile, first.Backup!.Id).Version ??
+                throw new InvalidOperationException("could not publish the first interrupted-retry baseline");
+            var pointerPath = Path.Combine(fixture.Data.RootPath, "shared-worlds", profile.Id.ToString("N"), "latest.json");
+            var firstPointer = File.ReadAllBytes(pointerPath);
+            File.WriteAllText(worldPath, "newer sealed save before the pointer update");
+            var next = backups.Create(profile, BackupKinds.Rolling);
+            var nextVersion = shared.PublishAfterStop(profile, next.Backup!.Id).Version ??
+                throw new InvalidOperationException("could not establish the sealed next version");
+            // Model a completed version directory whose final pointer write was
+            // interrupted. The signed payload remains exactly as published.
+            File.WriteAllBytes(pointerPath, firstPointer);
+            if (!retainRecoveredBackup)
+            {
+                var catalog = fixture.Data.LoadBackupCatalog();
+                catalog.Records.RemoveAll(item => item.Id == next.Backup.Id);
+                fixture.Data.SaveBackupCatalog(catalog);
+            }
+            var result = await fixture.Manager.RetrySharedSavePublicationAsync(profile.Id, CancellationToken.None);
+            var recovered = shared.Status(profile).Latest;
+            Require(result.Ok == retainRecoveredBackup && recovered?.VersionHash == nextVersion.VersionHash &&
+                recovered.Number == 2 && recovered.BackupId != firstVersion.BackupId && fixture.Driver.Actions == 0,
+                "retry replaced a reconciled newer save with the older backup selected before recovery");
+        }
+    }
+
     internal static async Task RunAsync(string root)
     {
         await LateEnrollmentAfterUnassignmentAsync(root);
