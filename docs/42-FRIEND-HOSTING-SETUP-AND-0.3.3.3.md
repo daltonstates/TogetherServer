@@ -203,3 +203,19 @@ the previously unattempted loopback journey.
 The corrected source compiles with zero warnings/errors and passes all 63
 source/synthetic groups. The same symbolic-link subcase remains an explicit
 account-capability skip. No existing core regression assertion was changed.
+
+## Corrected candidate and final UI capture
+
+Corrected compiled source is `7d6ab87a0d92f3a1e4c6f403a37a898e4807fa1d`.
+[Windows CI 39819723346](https://github.com/daltonstates/TogetherServer/actions/runs/39819723346)
+and [UI review 39819723794](https://github.com/daltonstates/TogetherServer/actions/runs/39819723794)
+use that source. The new UI review captures 59 of 60 plans. Its one remaining
+failure is the 150% narrow removed-access screenshot: geometry, full-label
+click and revealing the removed Host all pass, then the renderer tries to
+capture Play after the sidebar click has scrolled that panel off screen.
+The capture target now names Servers, the actual region under review.
+
+A manual render-only option avoids repeating the independent packaged journeys
+for this assertion-only correction. Product/UI/build inputs remain unchanged;
+the final rendered asset hashes must match the corrected candidate's bundled
+UI. The original 59-capture run remains failed.

@@ -2,6 +2,11 @@ name: UI redesign visual review
 
 on:
   workflow_dispatch:
+    inputs:
+      render_only:
+        description: 'Run only the UI assertion review; retain the existing packaged journey results.'
+        type: boolean
+        default: false
   push:
     branches: ['review/ui-redesign-*']
     paths-ignore: ['docs/**', '**/*.md']
@@ -76,7 +81,7 @@ jobs:
           retention-days: 1
 
   simple-hosting:
-    if: startsWith(github.ref_name, 'review/ui-redesign-simple-hosting-')
+    if: startsWith(github.ref_name, 'review/ui-redesign-simple-hosting-') && !inputs.render_only
     name: Packaged automatic shared hosting
     runs-on: windows-latest
     timeout-minutes: 20

@@ -33,7 +33,7 @@ export const simpleHostingCases = [
   friend('stale-retry', 'prepare'),
   friend('recovered-retry', 'prepare'),
   friend('directory-removed', 'prepare', { fixture: { simpleHosting: 'prepare', removedHost: true },
-    steps: [], screen: { role: 'region', name: 'Play' } }),
+    steps: [], screen: { role: 'region', name: 'Servers' } }),
 ];
 export const simpleHostingVariants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100 },
