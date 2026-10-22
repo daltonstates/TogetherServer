@@ -1,0 +1,279 @@
+name: Complete immutable 0.3.3.3 remaining checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  existing:
+    name: Custom and 14 remaining Existing stages
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out reviewed check-only source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Receive frozen candidate, fixtures, UI and 12 retained Existing passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/receive-release-0333-candidate.ps1 -Suite Existing
+      - name: Restore locked check dependencies and compile only disposable check outputs
+        run: |
+          npm --prefix ui ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked check dependency installation failed.' }
+          dotnet restore TogetherServer.slnx --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked solution restore failed.' }
+          foreach ($name in @('Custom', 'SharedHistory', 'Update', 'Companion')) {
+            dotnet build "checks/TogetherServer.${name}Checks/TogetherServer.${name}Checks.csproj" -c Release --no-restore -p:CodeOnlyVerification=true -o "local-data/continuation0333/checks/$name"
+            if ($LASTEXITCODE -ne 0) { throw 'Disposable check-only compilation failed.' }
+          }
+      - name: Attempt every remaining Existing stage on this dedicated hosted desktop
+        run: |
+          # Explicit owner-authorized hosted opt-in. Never run these checks on the owner's active desktop.
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $harness = (Resolve-Path local-data/continuation0333/checks/Companion/TogetherServer.CompanionChecks.dll).Path
+          $candidateHash = '05af882c8ce710bad2ff6990220bdd82019c291f102c9c0ea36643a4d277318b'
+          $context = Get-Content local-data/ci-evidence/0333-continuation/context.json -Raw | ConvertFrom-Json
+          if ($context.retainedPassedChecks -ne 12 -or $context.candidateSha256 -cne $candidateHash -or
+              $context.verificationRevision -cne $env:GITHUB_SHA) { throw 'Existing continuation context differs.' }
+          $checks = [Collections.Generic.List[object]]::new()
+          $expected = @(
+            @{name='TogetherServer.CustomChecks';run={dotnet local-data/continuation0333/checks/Custom/TogetherServer.CustomChecks.dll}},
+            @{name='TogetherServer.SharedHistoryChecks';run={dotnet local-data/continuation0333/checks/SharedHistory/TogetherServer.SharedHistoryChecks.dll}},
+            @{name='TogetherServer.UpdateChecks';run={dotnet local-data/continuation0333/checks/Update/TogetherServer.UpdateChecks.dll}},
+            @{name='Core remote journey';run={dotnet $harness $candidate --core-remote-journey --allow-interactive-tests}},
+            @{name='World-load packaged rehearsal';run={dotnet $harness $candidate --world-load-rehearsal --allow-interactive-tests}},
+            @{name='Shared Worlds packaged journey';run={dotnet $harness $candidate --shared-world-journey --allow-interactive-tests}},
+            @{name='Staging LiveSave owner action';run={dotnet $harness $candidate --live-save-action --allow-interactive-tests}},
+            @{name='Shared LiveSave packaged transfer journey';run={dotnet $harness $candidate --shared-live-transfer-journey --allow-interactive-tests}},
+            @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate --allow-interactive-tests}},
+            @{name='Solution formatting';run={dotnet format TogetherServer.slnx --verify-no-changes --no-restore}},
+            @{name='Packaged served smoke';run={& checks/served-smoke.ps1 -AppPath $candidate}},
+            @{name='Production plus staging isolation smoke';run={& checks/staging-smoke.ps1 -AppPath $candidate}},
+            @{name='Packaged hidden desktop smoke';run={& checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests}},
+            @{name='Packaged interactive desktop smoke';run={& checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests}},
+            @{name='Update handoff smoke';run={& checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests}}
+          )
+          try {
+            foreach ($check in $expected) {
+              $started = [DateTime]::UtcNow
+              try {
+                if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidateHash) { throw 'Candidate bytes changed before a stage.' }
+                $global:LASTEXITCODE = 0
+                & $check.run
+                if ($LASTEXITCODE -ne 0) { throw 'Remaining stage failed.' }
+                $checks.Add(@{name=$check.name;outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+              } catch {
+                $checks.Add(@{name=$check.name;outcome='failed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds;errorType=$_.Exception.GetType().Name})
+                Write-Host "FAIL continuation: $($check.name) ($($_.Exception.GetType().Name))."
+              }
+            }
+          } finally {
+            $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            @{suite='Existing0333Continuation';sourceRevision=$context.sourceRevision;verificationRevision=$env:GITHUB_SHA;
+              runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;candidateSha256=$hash;candidateRunId=$context.candidateRunId;
+              originalJobId=$context.originalJobId;retainedArtifactId=$context.retainedArtifactId;retainedPassedChecks=12;
+              expectedChecks=15;checks=@($checks.ToArray());originalFailurePreserved=$true;fullyAccepted=$false;
+              nativeNotificationVerified=$false;quietTimeLimitationRetained=$true} | ConvertTo-Json -Depth 6 |
+              Set-Content local-data/ci-evidence/0333-continuation/report.json -Encoding utf8
+            if ($hash -cne $candidateHash) { throw 'The immutable candidate changed during continuation.' }
+          }
+          if ($checks.Count -ne 15 -or @($checks | Where-Object outcome -ne 'passed').Count) { throw 'Not every remaining Existing check passed; inspect the complete report.' }
+      - name: Retain original failures, passed stages and every attempted continuation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-0333-existing-continuation
+          path: |
+            local-data/ci-evidence/0333-continuation/
+            local-data/ci-evidence/0333-retained-existing/
+          if-no-files-found: error
+          retention-days: 7
+
+  pairing:
+    name: UX and loopback with 18 retained LAN stages
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out reviewed check-only source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Receive frozen candidate, fixtures, UI and 18 retained LAN stages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/receive-release-0333-candidate.ps1 -Suite Pairing
+      - name: Install locked Playwright and compile only the disposable dispatcher
+        run: |
+          npm --prefix ui ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked test dependencies failed.' }
+          Push-Location ui
+          try {
+            node -e 'if (require("./node_modules/playwright/package.json").version !== "1.64.0") throw new Error("Playwright version mismatch");'
+            if ($LASTEXITCODE -ne 0) { throw 'Locked Playwright identity differs.' }
+            ./node_modules/.bin/playwright.cmd install chromium
+            if ($LASTEXITCODE -ne 0) { throw 'Locked Chromium installation failed.' }
+          } finally { Pop-Location }
+          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dispatcher restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true -o local-data/continuation0333/checks/Companion
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable dispatcher compilation failed.' }
+      - name: Attempt only UX and loopback on this dedicated hosted Windows runner
+        run: |
+          # Explicit owner-authorized hosted opt-in. Never run on the owner's active desktop.
+          $continued = Get-Content local-data/ci-evidence/0333-continuation/context.json -Raw | ConvertFrom-Json
+          if ($continued.retainedPassedChecks -ne 18 -or $continued.verificationRevision -cne $env:GITHUB_SHA -or
+              $continued.candidateSha256 -cne '05af882c8ce710bad2ff6990220bdd82019c291f102c9c0ea36643a4d277318b') { throw 'Pairing continuation context differs.' }
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $harness = (Resolve-Path local-data/continuation0333/checks/Companion/TogetherServer.CompanionChecks.dll).Path
+          $candidateHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($candidateHash -cne '05af882c8ce710bad2ff6990220bdd82019c291f102c9c0ea36643a4d277318b') { throw 'The received candidate changed before pairing.' }
+          $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
+          $productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion
+          if ($productVersion -cne "$version+7d6ab87a0d92f3a1e4c6f403a37a898e4807fa1d") { throw 'Local pairing candidate source identity mismatch.' }
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/local-pairing -Force
+          $context = [ordered]@{ sourceRevision = '7d6ab87a0d92f3a1e4c6f403a37a898e4807fa1d'; verificationRevision = $env:GITHUB_SHA; productVersion = $productVersion; candidateSha256 = $candidateHash;
+            workflowRunId = $env:GITHUB_RUN_ID; workflowRunAttempt = $env:GITHUB_RUN_ATTEMPT; job = $env:GITHUB_JOB;
+            playwrightVersion = '1.64.0'; retainedLanStages = 18; originalFailurePreserved = $true;
+            fullyAccepted = $false; nativeNotificationVerified = $false; quietTimeLimitationRetained = $true; boundary = 'Dedicated hosted Windows runner; windowless synthetic same-PC tests only; no real game or WAN acceptance.' }
+          $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'candidate.json') -Encoding utf8
+          $upInterfaces = @(Get-NetAdapter -ErrorAction Stop | Where-Object Status -eq 'Up' | ForEach-Object InterfaceIndex)
+          $lan = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+            $_.AddressState.ToString() -eq 'Preferred' -and $_.InterfaceIndex -in $upInterfaces -and
+            $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
+          } | Sort-Object InterfaceIndex, IPAddress | Select-Object -First 1)
+          if ($lan.Count -ne 1) { throw 'The hosted local pairing lane requires one assigned preferred private IPv4 address.' }
+          $labRoot = Join-Path (Get-Location) 'local-data/local-pairing-lab'
+          $modeResults = [Collections.Generic.List[object]]::new()
+          try {
+            foreach ($mode in @('ux', 'loopback')) {
+              try {
+                $before = @(if (Test-Path -LiteralPath $labRoot) { Get-ChildItem -LiteralPath $labRoot -Directory | ForEach-Object Name })
+                $labArguments = @($harness, $candidate, '--local-pairing-lab-journey', '--allow-windowless-lab')
+                if ($mode -ne 'loopback') { $labArguments += @('--lab-lan-address', $lan[0].IPAddress) }
+                if ($mode -eq 'ux') { $labArguments += '--lab-ux' }
+                # The harness assigns apps, fixtures and the muted headless browser to its kill-on-close job.
+                # It receives the downloaded candidate, never the rebuilt source-output app or the rebuilding launcher.
+                if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidateHash) { throw 'The candidate changed before a pairing mode.' }
+                dotnet @labArguments
+                $runExitCode = $LASTEXITCODE
+                $created = @(Get-ChildItem -LiteralPath $labRoot -Directory | Where-Object { $_.Name -notin $before })
+                if ($created.Count -ne 1 -or $created[0].Name -notmatch '^run-[0-9a-f]{32}$') { throw 'One exact new lab report directory was not identified.' }
+                $destination = New-Item -ItemType Directory -Path (Join-Path $evidence.FullName $mode) -Force
+                $reportPath = Join-Path $created[0].FullName 'report.json'
+                if (!(Test-Path -LiteralPath $reportPath) -or (Get-Item -LiteralPath $reportPath).Length -gt 262144) { throw 'The bounded lab report is missing or too large.' }
+                $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+                # Export fixed report fields only: no process paths, protected state, pairing material or synthetic saves.
+                $report | Select-Object schema, runId, startedUtc, endedUtc, durationMs, mode, physicalPcCount, outcome,
+                  failedStage, failureCode, stages, uxStagePassed, apiHostChange, branchTransfer, cleanup, resources, windowObservation, acceptance |
+                  ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'report.json') -Encoding utf8
+                $uxReport = $null
+                if ($mode -eq 'ux') {
+                  $uxRoot = Join-Path $created[0].FullName 'ux'
+                  $uxReportPath = Join-Path $uxRoot 'report.json'
+                  if (!(Test-Path -LiteralPath $uxReportPath) -or (Get-Item -LiteralPath $uxReportPath).Length -gt 262144) { throw 'The bounded UX report is missing or too large.' }
+                  $uxReport = Get-Content -LiteralPath $uxReportPath -Raw | ConvertFrom-Json
+                  $uxReport | Select-Object ok, stages, errors, failedRequests, canceledRequests, controlPolicyChanges, boundaries, guidedHosting, preparationDiagnostics, hostingRequestDiagnostics, hostingUiTransitions, signedDiscovery, automaticSharing, copyIntegrity, failurePathCoverage, failure |
+                    ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'ux-report.json') -Encoding utf8
+                  $pictures = @(Get-ChildItem -LiteralPath $uxRoot -File -Filter '*.png')
+                  if ($pictures.Count -gt 64) { throw 'The masked UX screenshot count exceeds its bound.' }
+                  foreach ($picture in $pictures) {
+                    if ($picture.Name -notmatch '^(?:[0-9]{2}-[a-z0-9-]+|failure-[0-9]+)\.png$' -or $picture.Length -gt 16MB -or
+                        ($picture.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A masked UX screenshot failed its bounded export checks.' }
+                    Copy-Item -LiteralPath $picture.FullName -Destination (Join-Path $destination.FullName $picture.Name)
+                  }
+                }
+                if ($runExitCode -ne 0 -or $report.outcome -ne 'Passed' -or @($report.stages).Count -eq 0 -or
+                    @($report.stages | Where-Object state -ne 'Passed').Count -ne 0) { throw "The $mode lab did not pass every planned stage without skips." }
+                foreach ($required in @('isolated-apps', 'cleanup')) {
+                  if (@($report.stages | Where-Object id -eq $required).Count -ne 1) { throw "The $mode lab omitted a required stage." }
+                }
+                $expected = @('isolated-apps', 'cleanup', 'two-ended-ux')
+                if ($mode -ne 'ux') {
+                  $expected = @('isolated-apps', 'pinned-pairing', 'separate-permissions-and-consent', 'signed-chat',
+                    'synthetic-stop-copy-receipts', 'password-permission-revoke', 'unsupported-password-source-denied',
+                    'guided-hosting', 'local-copy-hosting', 'lost-response-cleanup', 'cleanup')
+                  if ($mode -eq 'lan-api') {
+                    $expected += @('new-host-notice', 'new-host-authenticated-connect', 'new-host-permission-isolation',
+                      'new-host-stop-and-transfer', 'new-host-restart-reconnect', 'new-host-revocation-isolation', 'new-host-receipt-confirmed')
+                    if ($report.apiHostChange.discoveredHost -ne $true -or $report.apiHostChange.connectedOwner -ne $true -or
+                        $report.apiHostChange.connectedObserver -ne $true -or $report.apiHostChange.transferredCandidateCopy -ne $true -or
+                        $report.apiHostChange.restartedHostConnections -ne $true -or $report.apiHostChange.isolatedRevocation -ne $true) {
+                      throw 'The LAN lab omitted a required signed hosting, transfer, restart or credential-isolation proof.'
+                    }
+                  }
+                }
+                if (@($report.stages).Count -ne $expected.Count -or @($report.stages | Where-Object id -notin $expected).Count -ne 0 -or
+                    @($report.stages.id | Select-Object -Unique).Count -ne $expected.Count) { throw "The $mode lab changed its required stage inventory." }
+                if ($report.cleanup.jobActiveProcesses -ne 0 -or $report.windowObservation.state -ne 'Passed' -or
+                    $report.windowObservation.samples -lt 1 -or $report.windowObservation.peakVisibleOwnedWindows -ne 0) { throw "The $mode lab failed window observation or exact job cleanup." }
+                if ($mode -eq 'ux' -and ($uxReport.ok -ne $true -or @($uxReport.stages).Count -ne 10 -or
+                    @($uxReport.stages | Where-Object passed -ne $true).Count -ne 0 -or @($uxReport.errors).Count -ne 0 -or
+                    @($uxReport.failedRequests).Count -ne 0 -or @($pictures).Count -lt 1 -or
+                    $uxReport.failurePathCoverage.hostingGrantWithdrawal -ne $true -or $uxReport.failurePathCoverage.localConsentAndCancel -ne $true)) {
+                  throw 'The actual two-ended UX did not pass all ten stages and permission/consent failure paths with masked evidence.'
+                }
+                if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $candidateHash) { throw 'The downloaded candidate changed during local pairing acceptance.' }
+                Write-Host "PASS ${mode}: every planned stage, observed zero windows, exact job cleanup and immutable candidate."
+                $modeResults.Add(@{mode=$mode;outcome='passed'})
+              } catch {
+                $modeResults.Add(@{mode=$mode;outcome='failed';errorType=$_.Exception.GetType().Name})
+                Write-Host "FAIL ${mode}: $($_.Exception.GetType().Name). Original failure remains separate."
+              }
+            }
+          } finally {
+            $finalHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            $context.finalCandidateSha256 = $finalHash
+            $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'candidate.json') -Encoding utf8
+            @{suite='Pairing0333Continuation';sourceRevision=$context.sourceRevision;verificationRevision=$env:GITHUB_SHA;
+              runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;candidateSha256=$finalHash;retainedLanStages=18;
+              expectedModes=@('ux','loopback');checks=@($modeResults.ToArray());originalFailurePreserved=$true;
+              fullyAccepted=$false;nativeNotificationVerified=$false;quietTimeLimitationRetained=$true} | ConvertTo-Json -Depth 6 |
+              Set-Content local-data/ci-evidence/0333-continuation/report.json -Encoding utf8
+            if ($finalHash -ne $candidateHash) { throw 'The downloaded candidate bytes changed.' }
+          }
+
+          if ($modeResults.Count -ne 2 -or @($modeResults | Where-Object outcome -ne 'passed').Count) { throw 'Both UX and loopback must pass; inspect the complete mode report.' }
+      - name: Retain LAN proof, original UX failure, redacted new reports and masked screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-0333-pairing-continuation
+          path: |
+            local-data/ci-evidence/0333-continuation/
+            local-data/ci-evidence/0333-retained-pairing/
+            local-data/ci-evidence/local-pairing/
+          if-no-files-found: error
+          retention-days: 7

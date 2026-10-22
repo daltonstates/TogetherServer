@@ -17,14 +17,17 @@ async Task Check(string name, Func<Task> test)
 void Require(bool value, string message) { if (!value) throw new Exception(message); }
 int FreePort()
 {
-    var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
+    var properties = IPGlobalProperties.GetIPGlobalProperties();
+    var udp = properties.GetActiveUdpListeners()
+        .Select(endpoint => endpoint.Port).ToHashSet();
+    var tcp = properties.GetActiveTcpListeners()
         .Select(endpoint => endpoint.Port).ToHashSet();
     for (var attempt = 0; attempt < 100; attempt++)
     {
         var port = Random.Shared.Next(35000, 59000);
-        if (!active.Contains(port)) return port;
+        if (!udp.Contains(port) && !tcp.Contains(port + 1)) return port;
     }
-    throw new Exception("No unused UDP port found in the Windows port table.");
+    throw new Exception("No unused declared UDP/TCP port pair found in the Windows port tables.");
 }
 
 ServerProfile Profile(string name, int port)
@@ -344,7 +347,8 @@ await Check("operation-scoped Stop survives an immediate Custom start race", asy
 
     for (var attempt = 0; attempt < 5; attempt++)
     {
-        Require((await manager.StartAsync(profile.Id)).Ok, $"immediate start {attempt + 1} failed");
+        var started = await manager.StartAsync(profile.Id);
+        Require(started.Ok, $"immediate start {attempt + 1} failed: {started.Code}");
         try
         {
             var run = data.LoadRuns().Single(item => item.ProfileId == profile.Id);

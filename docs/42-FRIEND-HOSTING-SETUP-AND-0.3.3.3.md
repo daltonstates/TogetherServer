@@ -216,6 +216,68 @@ capture Play after the sidebar click has scrolled that panel off screen.
 The capture target now names Servers, the actual region under review.
 
 A manual render-only option avoids repeating the independent packaged journeys
-for this assertion-only correction. Product/UI/build inputs remain unchanged;
-the final rendered asset hashes must match the corrected candidate's bundled
-UI. The original 59-capture run remains failed.
+for this assertion-only correction. Application and UI component sources remain
+unchanged. The capture-plan module is also an indirect build input for the
+synthetic demo, so rebuilding after the plan correction changes bundle hashes.
+The passing rebuilt 60-plan review is source-level fixture evidence; its index
+does not match the frozen candidate and is not exact-package rendering proof.
+The final review must receive the candidate's pinned artifact, verify every UI
+asset and serve those retained files without a UI or app rebuild. The original
+59-capture run remains failed.
+
+## Retained corrected candidate evidence
+
+Windows run `39819723346`, attempt 1, builds the corrected candidate in job
+`119967477555`. Artifact `12443303157` is 61,020,009 bytes, ZIP SHA-256
+`a55676eb4b7e17698770d15713670e332fb3ffeadc2e2c597b70b0bf46a96d3a`.
+Package job `119968652505` passes. Its artifact `12443532218` is 120,263,916
+bytes, ZIP SHA-256
+`659da50d997ca2e94123ee454f1d4948de5f9abee52f44cbfce40b387ba90932`.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer-win-x64.exe` | 66,143,076 | `05af882c8ce710bad2ff6990220bdd82019c291f102c9c0ea36643a4d277318b` |
+| `TogetherServer-Setup-win-x64.exe` | 60,603,837 | `cac3ffd6bccd70acf48635d38c5ecca416a1e7a89cde7d70620de597783bbf04` |
+
+Downloaded bytes independently pass static PE/bundle inspection, exact source
+and numeric version, all seven embedded UI asset hashes, adjacent checksums
+and unsigned-state verification. Installer smoke passes six cases; the actual
+Host, Friend and Decide later choices pass. All six compatibility jobs,
+Browser, QolApi, rehearsal and both automatic shared-hosting runs pass.
+
+The corrected Existing job `119968652593` passes its first 12 stages,
+including **1,411 UI tests**, **114 core checks**, Valheim 11, Factorio five,
+Terraria two, Minecraft 12 and Minecraft setup five. The Custom runner passes
+five cases and fails its immediate-Start race without retaining the Start
+result code. Its port helper checked only UDP `p`, although the profile also
+declares TCP `p+1`. The check-only correction observes both listener tables
+and retains the fixed result code; it opens no listener and changes no Start,
+Stop or timeout assertion. Custom plus the 14 unattempted Existing stages
+require hosted continuation. The original failure remains failed.
+
+The corrected local-pairing job `119968652866` passes all 18 LAN API stages
+with zero observed windows and exact owned-process cleanup. The actual
+two-ended UI passes seven stages and verifies the original and received
+completed-save hashes. Preparation succeeds with `LocalHostingPrepared` and
+all permission, server, save and port checks Ready. Its subsequent single
+Start request fails before the required running state is observed. The dialog
+is closed in the failure capture; a bounded diagnostic continuation must
+identify whether a connection transition unmounted it or Start timed out.
+It retains elapsed time, fixed status/code and capped state/element-presence
+transitions only. It adds no poll, retry or time allowance. UX and the
+unattempted loopback journey remain required before publication.
+
+Corrected Desktop job `119968652604` passes all **14 native chrome checks**.
+Its startup observation is 11,047 ms, within the corrected initial deadline.
+The independent native QoL suite passes 12 required cases and remains failed
+because Windows reports `QuietTime`. Notification delivery, physical click and
+destination navigation are blocked. Full native acceptance remains false.
+
+[Render-only review 39820425269](https://github.com/daltonstates/TogetherServer/actions/runs/39820425269)
+passes all **60 plans**, with zero layout findings or skipped plans. Its
+rebuilt index hash is
+`1229ba9e472f98d9033a57b887949d9afc4b9562c3d3cc7f4ae8ea639f9778af`;
+the frozen candidate's index is
+`0093ec5af1464d59502ea0ced4cd208dd68919fcb9697ce5490de9f44436b48f`.
+The difference is recorded rather than treating a rebuilt fixture as the
+release package. An exact retained-byte replay is prepared.

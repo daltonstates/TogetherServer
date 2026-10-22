@@ -39,6 +39,30 @@ let friendDeviceId;
 let hostingStartRequests = 0;
 let hostingPrepareRequests = 0;
 const hostingStartResults = [];
+const hostingRequestDiagnostics = [];
+const hostingUiTransitions = [];
+const hostingRequests = new WeakMap();
+const diagnosticsStartedAt = Date.now();
+let closingBrowser = false;
+let previousHostingUi = '';
+let previousConnectionId;
+let startConnectionId;
+let latestHostingUi = null;
+const fixedCode = value => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(value) ? value : 'Unavailable';
+const requestFailureKind = value => new Map([
+  ['net::ERR_ABORTED', 'Aborted'], ['net::ERR_TIMED_OUT', 'TimedOut'],
+  ['net::ERR_CONNECTION_CLOSED', 'ConnectionClosed'], ['net::ERR_CONNECTION_RESET', 'ConnectionReset']
+]).get(value) ?? 'Other';
+report.hostingRequestDiagnostics = hostingRequestDiagnostics;
+report.hostingUiTransitions = hostingUiTransitions;
+async function hostingUiPresence(page) {
+  return page.evaluate(profileId => ({
+    sourceArticlePresent: document.getElementById(`friend-server-${profileId}`) !== null,
+    hostingActionPresent: document.querySelector('button.local-hosting-trigger') !== null,
+    hostingDialogOpen: [...document.querySelectorAll('dialog[open]')].some(dialog =>
+      dialog.querySelector('h2')?.textContent === 'Host locally')
+  }), input.profileId);
+}
 const privateText = new Set();
 const pages = [];
 const timeout = 30000;
@@ -217,19 +241,71 @@ try {
         `/api/local/friend/${input.profileId}/shared-world/hosting/start`) hostingStartRequests++;
       if (request.method() === 'POST' && new URL(request.url()).pathname ===
         `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`) hostingPrepareRequests++;
+      const operation = request.method() === 'POST' && new URL(request.url()).pathname.match(
+        new RegExp(`^/api/local/friend/${input.profileId}/shared-world/hosting/(prepare|start)$`, 'u'))?.[1];
+      if (operation && hostingRequestDiagnostics.length < 16) {
+        if (operation === 'start') startConnectionId = previousConnectionId;
+        const entry = { operation, startedMs: Date.now() - diagnosticsStartedAt, elapsedMs: null,
+          state: 'Pending', status: null, code: 'Unavailable', ok: false, failureKind: null, duringBrowserCleanup: false };
+        hostingRequests.set(request, entry);
+        hostingRequestDiagnostics.push(entry);
+      }
     });
     page.on('pageerror', () => { if (report.errors.length < 20) report.errors.push({ stage: currentStage, kind: 'pageerror' }); });
     page.on('requestfailed', request => {
+      const entry = hostingRequests.get(request);
+      if (entry) Object.assign(entry, { state: 'Failed', elapsedMs: Date.now() - diagnosticsStartedAt - entry.startedMs,
+        failureKind: requestFailureKind(request.failure()?.errorText), duringBrowserCleanup: closingBrowser });
+      if (entry?.operation === 'start') {
+        entry.lastSnapshot = latestHostingUi;
+        void hostingUiPresence(page).then(presence => { entry.uiAtFailure = presence; }).catch(() => {});
+      }
       const entries = request.method() === 'GET' && request.failure()?.errorText === 'net::ERR_ABORTED'
         ? report.canceledRequests : report.failedRequests;
       if (entries.length < 40) entries.push({ stage: currentStage,
         method: request.method(), path: new URL(request.url()).pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ':id').slice(0, 160) });
     });
+    page.on('requestfinished', request => {
+      const entry = hostingRequests.get(request);
+      if (entry) Object.assign(entry, { state: 'Finished', elapsedMs: Date.now() - diagnosticsStartedAt - entry.startedMs });
+    });
     page.on('response', async response => {
+      const entry = hostingRequests.get(response.request());
+      if (entry) {
+        entry.status = response.status();
+        const result = await response.json().catch(() => null);
+        Object.assign(entry, { code: fixedCode(result?.code), ok: result?.ok === true });
+      }
       if (response.request().method() === 'POST' && new URL(response.url()).pathname ===
         `/api/local/friend/${input.profileId}/shared-world/hosting/start`) {
         const result = await response.json().catch(() => null);
         hostingStartResults.push({ status: response.status(), ok: result?.ok === true });
+      }
+      if (origin === `http://127.0.0.1:${input.friendPort}` && new URL(response.url()).pathname === '/api/local/snapshot') {
+        try {
+          const snapshot = await response.json();
+          const connectionStates = ['Connected', 'Disabled', 'Disconnected/Unknown', 'Revoked', 'Access expired',
+            'Awaiting approval', 'Update required', 'Not connected'];
+          const observation = {
+            mode: ['Host', 'Friend'].includes(snapshot?.mode) ? snapshot.mode : 'Other',
+            connectionState: connectionStates.includes(snapshot?.state) ? snapshot.state : 'Other',
+            connectionCode: snapshot?.connectionCode == null ? 'None' : fixedCode(snapshot.connectionCode),
+            connectionChanged: previousConnectionId !== undefined && previousConnectionId !== snapshot?.connectionId,
+            connectionMatchesStart: startConnectionId === undefined ? null : startConnectionId === snapshot?.connectionId,
+            sourceAssigned: Array.isArray(snapshot?.profiles) && snapshot.profiles.some(profile => profile?.id === input.profileId),
+            assignedProfiles: Array.isArray(snapshot?.profiles) ? Math.min(100, snapshot.profiles.length) : 0,
+            managedRuns: Array.isArray(snapshot?.runs) ? Math.min(2, snapshot.runs.length) : 0,
+            ...await hostingUiPresence(page)
+          };
+          previousConnectionId = snapshot?.connectionId;
+          latestHostingUi = { elapsedMs: Date.now() - diagnosticsStartedAt, ...observation };
+          const signature = JSON.stringify(observation);
+          if (signature !== previousHostingUi) {
+            previousHostingUi = signature;
+            if (hostingUiTransitions.length === 64) hostingUiTransitions.shift();
+            hostingUiTransitions.push({ elapsedMs: Date.now() - diagnosticsStartedAt, stage: currentStage, ...observation });
+          }
+        } catch { /* Read-only diagnostics cannot change the journey's result. */ }
       }
       if (response.status() >= 400 && report.failedRequests.length < 40) report.failedRequests.push({ stage: currentStage,
         status: response.status(), method: response.request().method(),
@@ -544,7 +620,9 @@ try {
   report.failure = { stage: currentStage, message: 'The named UI stage did not satisfy its assertions. Inspect the masked screenshots and bounded request diagnostics.' };
   for (let index = 0; index < pages.length; index++) await shot(pages[index], `failure-${index}`).catch(() => {});
 } finally {
+  closingBrowser = true;
   if (browser) await browser.close().catch(() => {});
+  for (const entry of hostingRequestDiagnostics) entry.elapsedMs ??= Date.now() - diagnosticsStartedAt - entry.startedMs;
   await fs.writeFile(path.join(artifacts, 'report.json'), JSON.stringify(report, null, 2));
   process.stdout.write(`${JSON.stringify({ ok: report.ok, stages: report.stages.length, failedStage: report.failure?.stage })}\n`);
   process.exitCode = report.ok ? 0 : 1;

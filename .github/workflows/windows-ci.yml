@@ -238,7 +238,7 @@ jobs:
                 $uxReportPath = Join-Path $uxRoot 'report.json'
                 if (!(Test-Path -LiteralPath $uxReportPath) -or (Get-Item -LiteralPath $uxReportPath).Length -gt 262144) { throw 'The bounded UX report is missing or too large.' }
                 $uxReport = Get-Content -LiteralPath $uxReportPath -Raw | ConvertFrom-Json
-                $uxReport | Select-Object ok, stages, errors, failedRequests, canceledRequests, controlPolicyChanges, boundaries, guidedHosting, preparationDiagnostics, signedDiscovery, automaticSharing, copyIntegrity, failurePathCoverage, failure |
+                $uxReport | Select-Object ok, stages, errors, failedRequests, canceledRequests, controlPolicyChanges, boundaries, guidedHosting, preparationDiagnostics, hostingRequestDiagnostics, hostingUiTransitions, signedDiscovery, automaticSharing, copyIntegrity, failurePathCoverage, failure |
                   ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'ux-report.json') -Encoding utf8
                 $pictures = @(Get-ChildItem -LiteralPath $uxRoot -File -Filter '*.png')
                 if ($pictures.Count -gt 64) { throw 'The masked UX screenshot count exceeds its bound.' }
