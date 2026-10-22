@@ -91,6 +91,25 @@ that saved app connection; TogetherServer never changes Windows Firewall,
 router forwards or DNS. Local port and outside TCP checks do not prove that a
 particular player can join the game.
 
+## If another PC has never received a save
+
+Sharing must publish a completed save on the Host before another PC can receive
+it. In preview 0.3.3.4 and later, open **Backups > Sharing & hosting** on the
+original Host and choose **Share latest backup**. It retries an existing
+completed backup after Stop, with its original checked files and setup. You do
+not need another Stop when that backup already exists. If there is no completed
+backup after Stop, stop the server normally once to create the first one.
+
+Keep both apps open while the other PC receives and verifies the copy. **Latest
+save available** describes the Host's copy; the confirmed receipt count shows
+whether another PC has actually received it. Check any error before hosting.
+Retry does not start a game, replace the live world or change permissions.
+
+Preview 0.3.3.4 also fixes Valheim's normal `//` permissions-file comments being
+misread as player entries. That bug could block first publication even with
+completed backups, valid permissions and enough free space. Update both PCs;
+you do not need to edit the game's permissions file to remove its comments.
+
 ## Continue from the latest save
 
 Suppose A hosts and B receives the completed session save. With A offline,

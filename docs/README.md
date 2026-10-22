@@ -94,6 +94,7 @@ use the document title to identify the topic.
 - [Workspace and window controls](35-WORKSPACE-AND-WINDOW-CHROME.md)
 - [Documentation refresh](37-DOCUMENTATION-REFRESH.md)
 - [Friend hosting checks and guided fixes](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md)
+- [Valheim shared-save publication and backup retry](43-VALHEIM-SHARED-SAVE-PUBLICATION-AND-0.3.3.4.md)
 
 ## Release evidence
 
@@ -107,6 +108,7 @@ use the document title to identify the topic.
 | 0.3.3.1 preview | [Prerelease delivery](39-0.3.3.1-PRERELEASE.md) |
 | 0.3.3.2 preview | [Prerelease delivery](41-0.3.3.2-PRERELEASE.md) |
 | 0.3.3.3 preview | [Friend hosting fixes and prerelease delivery](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md) |
+| 0.3.3.4 preview | [Valheim publication fix and prerelease delivery](43-VALHEIM-SHARED-SAVE-PUBLICATION-AND-0.3.3.4.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).
