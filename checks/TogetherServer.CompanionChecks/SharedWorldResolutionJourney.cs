@@ -104,19 +104,37 @@ internal static partial class SharedWorldJourney
                 $"/api/local/devices/{deviceC}/shared-world/{profile.Id}/grants",
                 new(new SharedWorldGrants(RecoveryVoter: true)))).Ok,
                 "owner could not appoint a voter without Receive");
+            var beforeCReview = await GetAsync<ReceivedSharedWorldStatus>(cLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(!beforeCReview.Consented,
+                $"voter-only Friend already had receiving consent before signed history review; " +
+                $"state={BoundedPublicationDiagnostic(beforeCReview.State)}; " +
+                $"rosterRevision={beforeCReview.RosterRevision?.ToString() ?? "none"}; " +
+                $"error={BoundedPublicationDiagnostic(beforeCReview.Error)}");
             var firstCReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review", new());
             Require(!firstCReview.Ok && firstCReview.Code == "GroupReviewRequired" &&
                 firstCReview.GroupId is not null && firstCReview.OwnerPublicKey is not null,
-                $"voter-only Friend did not review owner and group before any save: {firstCReview.Code}; " +
+                $"voter-only Friend did not review owner and group before any save; ok={firstCReview.Ok}; " +
+                $"code={BoundedPublicationDiagnostic(firstCReview.Code)}; " +
+                $"message={BoundedPublicationDiagnostic(firstCReview.Message)}; " +
+                $"records={firstCReview.RecordCount}; competingHeads={firstCReview.CompetingHeads}; " +
                 $"group present={firstCReview.GroupId is not null}; owner present={firstCReview.OwnerPublicKey is not null}");
             var confirmedCReview = await PostAsync<WorldHistoryReviewRequest, WorldHistoryReviewResult>(cLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/history/review",
                 new(firstCReview.GroupId, firstCReview.OwnerPublicKey));
-            Require(confirmedCReview is { Ok: true, Code: "HistoryReviewed" } &&
-                !(await GetAsync<ReceivedSharedWorldStatus>(cLocal,
-                    $"/api/local/friend/{profile.Id}/shared-world")).Consented,
-                "voter-only signed history review granted receiving consent");
+            Require(confirmedCReview is { Ok: true, Code: "HistoryReviewed" },
+                $"voter-only signed history review confirmation failed; ok={confirmedCReview.Ok}; " +
+                $"code={BoundedPublicationDiagnostic(confirmedCReview.Code)}; " +
+                $"message={BoundedPublicationDiagnostic(confirmedCReview.Message)}; " +
+                $"records={confirmedCReview.RecordCount}; competingHeads={confirmedCReview.CompetingHeads}");
+            var afterCReview = await GetAsync<ReceivedSharedWorldStatus>(cLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(!afterCReview.Consented,
+                $"voter-only signed history review granted receiving consent; beforeConsented={beforeCReview.Consented}; " +
+                $"state={BoundedPublicationDiagnostic(afterCReview.State)}; " +
+                $"rosterRevision={afterCReview.RosterRevision?.ToString() ?? "none"}; " +
+                $"error={BoundedPublicationDiagnostic(afterCReview.Error)}");
             var voterOnlyRoster = await GetAsync<SharedWorldRoster>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world/governance");
             Require(SharedWorldRosterTrust.Verify(voterOnlyRoster) &&

@@ -1,0 +1,105 @@
+name: Complete immutable 0.3.3.6 remaining checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  existing:
+    name: Diagnose sharing review and complete remaining Existing stages
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out reviewed check-only source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Receive frozen candidate, fixtures, UI and 17 retained Existing passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/receive-release-0336-candidate.ps1
+      - name: Restore locked check dependencies and compile only disposable check outputs
+        run: |
+          npm --prefix ui ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked check dependency installation failed.' }
+          dotnet restore TogetherServer.slnx --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked solution restore failed.' }
+          foreach ($name in @('Companion')) {
+            dotnet build "checks/TogetherServer.${name}Checks/TogetherServer.${name}Checks.csproj" -c Release --no-restore -p:CodeOnlyVerification=true -o "local-data/continuation0336/checks/$name"
+            if ($LASTEXITCODE -ne 0) { throw 'Disposable check-only compilation failed.' }
+          }
+      - name: Attempt every remaining Existing stage on this dedicated hosted desktop
+        run: |
+          # Explicit owner-authorized hosted opt-in. Never run these checks on the owner's active desktop.
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $harness = (Resolve-Path local-data/continuation0336/checks/Companion/TogetherServer.CompanionChecks.dll).Path
+          $candidateHash = '1d89155b78201139d317ec2121af667284844354493eee5dfbeb6e8d0ac48722'
+          $context = Get-Content local-data/ci-evidence/0336-continuation/context.json -Raw | ConvertFrom-Json
+          if ($context.retainedPassedChecks -ne 17 -or $context.candidateSha256 -cne $candidateHash -or
+              $context.verificationRevision -cne $env:GITHUB_SHA) { throw 'Existing continuation context differs.' }
+          $checks = [Collections.Generic.List[object]]::new()
+          $expected = @(
+            @{name='Voter-only review diagnostic journey';run={dotnet $harness $candidate --shared-resolution-off --allow-interactive-tests}},
+            @{name='Shared Worlds packaged journey';run={dotnet $harness $candidate --shared-world-journey --allow-interactive-tests}},
+            @{name='Staging LiveSave owner action';run={dotnet $harness $candidate --live-save-action --allow-interactive-tests}},
+            @{name='Shared LiveSave packaged transfer journey';run={dotnet $harness $candidate --shared-live-transfer-journey --allow-interactive-tests}},
+            @{name='TogetherServer.CompanionChecks';run={dotnet $harness $candidate --allow-interactive-tests}},
+            @{name='Solution formatting';run={dotnet format TogetherServer.slnx --verify-no-changes --no-restore}},
+            @{name='Packaged served smoke';run={& checks/served-smoke.ps1 -AppPath $candidate}},
+            @{name='Production plus staging isolation smoke';run={& checks/staging-smoke.ps1 -AppPath $candidate}},
+            @{name='Packaged hidden desktop smoke';run={& checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -AllowInteractiveTests}},
+            @{name='Packaged interactive desktop smoke';run={& checks/desktop-smoke.ps1 -AppPath $candidate -Port 0 -Interactive -AllowInteractiveTests}},
+            @{name='Update handoff smoke';run={& checks/update-handoff-smoke.ps1 -AppPath $candidate -AllowInteractiveTests}}
+          )
+          try {
+            foreach ($check in $expected) {
+              $started = [DateTime]::UtcNow
+              try {
+                if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidateHash) { throw 'Candidate bytes changed before a stage.' }
+                $global:LASTEXITCODE = 0
+                & $check.run
+                if ($LASTEXITCODE -ne 0) { throw 'Remaining stage failed.' }
+                $checks.Add(@{name=$check.name;outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+              } catch {
+                $checks.Add(@{name=$check.name;outcome='failed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds;errorType=$_.Exception.GetType().Name})
+                Write-Host "FAIL continuation: $($check.name) ($($_.Exception.GetType().Name)): $($_.Exception.Message)"
+              }
+            }
+          } finally {
+            $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            @{suite='Existing0336Continuation';sourceRevision=$context.sourceRevision;verificationRevision=$env:GITHUB_SHA;
+              runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT;candidateSha256=$hash;candidateRunId=$context.candidateRunId;
+              originalJobId=$context.originalJobId;retainedArtifactId=$context.retainedArtifactId;retainedPassedChecks=17;
+              expectedChecks=11;checks=@($checks.ToArray());originalFailurePreserved=$true;fullyAccepted=$false;
+              nativeNotificationVerified=$false;quietTimeLimitationRetained=$true} | ConvertTo-Json -Depth 6 |
+              Set-Content local-data/ci-evidence/0336-continuation/report.json -Encoding utf8
+            if ($hash -cne $candidateHash) { throw 'The immutable candidate changed during continuation.' }
+          }
+          if ($checks.Count -ne 11 -or @($checks | Where-Object outcome -ne 'passed').Count) { throw 'Not every remaining Existing check passed; inspect the complete report.' }
+      - name: Retain original failures, passed stages and every attempted continuation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-0336-existing-continuation
+          path: |
+            local-data/ci-evidence/0336-continuation/
+            local-data/ci-evidence/0336-retained-existing/
+          if-no-files-found: error
+          retention-days: 7
