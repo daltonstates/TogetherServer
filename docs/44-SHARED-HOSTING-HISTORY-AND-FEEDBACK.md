@@ -5,10 +5,11 @@ Ethernet and Wi-Fi, but **Host locally** reports **The saved sharing history
 changed unexpectedly**. The original Host has no confirmed save download.
 The setup guide also gives too little feedback after its buttons are pressed.
 
-This slice first prepared an unreleased `0.3.3.5` test build. The owner then
-explicitly authorized its GitHub prerelease. Publication preparation and exact
-release evidence are recorded below. No networking, installation or running
-app is changed on the owner's PC.
+Preview [0.3.3.5](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.5)
+is published following the owner's explicit request. The initial local test
+build was superseded by the corrected immutable candidate below. Publication
+and exact release evidence are recorded here. No networking, installation or
+running app is changed on the owner's PC.
 
 ## Cause and repair
 
@@ -150,3 +151,144 @@ solution whitespace formatting verification.
 Ignored evidence, prepared notes and the preserved initial failures are under
 `local-data/release-0.3.3.5/`. The initial portable test EXE above is retained as
 historical evidence and will not be substituted for the corrected release.
+
+## Corrected immutable candidate
+
+Corrected source `111e2b503af58168e6951dc5b645310126cadf3f` is frozen in
+[Windows CI 39878755154](https://github.com/daltonstates/TogetherServer/actions/runs/39878755154).
+Candidate job `120170744729` builds the single portable app used by all its
+functional lanes and installer packaging. Its file version is `0.3.3.5` and
+product version is `0.3.3.5+111e2b503af58168e6951dc5b645310126cadf3f`.
+
+| Frozen asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer-win-x64.exe` | 66,148,067 | `00a774223b092fc039e5d8b933bcaca52c8f1e2b2f06997276c973b9c3ab436d` |
+| `TogetherServer-Setup-win-x64.exe` | 60,610,876 | `b8243186e6e81421059503dd50632ac0ea44a9fe9dcf34b631265abab4ff0e22` |
+
+Both executables remain `NotSigned`. Candidate artifact `12469991252` is
+61,027,507 bytes, ZIP SHA-256
+`5a3ed5dd3f3e60e0183bbf352e412312643eb397dd0870046cb222f4d5ea0b18`.
+Release-assets artifact `12469862359` is 120,276,053 bytes, ZIP SHA-256
+`0396124c791371cc7a2ecfc229dcd3f276aea9f6f24abb761d1ec4c6738afd2f`.
+Their API metadata, ZIP digests, source/run bindings and extracted bytes have
+been checked independently. Static binary reads verify the Windows GUI
+subsystem, exact bundled assembly and all seven current UI assets without
+loading or launching the app. Both packaged assets pass numeric version,
+product/source version, unsigned classification and adjacent checksum checks.
+
+Package job `120171744446` passes six installer smoke checks and all three
+actual installer wizard choices: Host, Friend and Decide later. Its wizard
+summary binds the unchanged portable and installer hashes, with cleanup
+complete and no skipped cases. Artifact `12469573124` has ZIP SHA-256
+`377005df105e010c9c88f61a602b3adf8201a7ab3bec9d04fe80dbd2e2856543`.
+The package manifest deliberately retains `fullyAccepted=false` and
+`reviewOnly=true`; its installer result does not stand in for the independent
+functional and native checks.
+
+## Corrected hosted UI, pairing and handoff checks
+
+[Visual review 39878758112](https://github.com/daltonstates/TogetherServer/actions/runs/39878758112)
+passes both jobs. Render job `120170754204` captures all **60 plans**, including
+desktop, narrow and narrow at 150% scale, with **337 screenshots**, no skipped
+plans and zero recorded layout, selector or runtime failures. Independent
+inspection of 28 screenshots finds no blocking overlap, clipping or readability
+defect. The long narrow guides remain scrollable; a minor feedback sentence
+says "steps below" even though those instructions precede it.
+
+Visual artifact `12469158766` is 19,012,864 bytes, ZIP SHA-256
+`e0c51a04691789a229cef2d73bfed8f916c35869514fd804afdb8110addfea63`.
+Its manifest binds the corrected source and bundled UI index SHA-256
+`5ee5819461e1b37536d52eef9dc62bfce652919375ece89f49c107dd70651752`,
+which matches the frozen release candidate's index. The separately built
+same-source packaged review passes two ordinary eight-stage handoffs; that
+review EXE is never substituted for release bytes.
+
+Local-pairing job `120171744551` passes all **18 assigned-LAN API stages**,
+**10 actual UI stages** with their three-stage wrapper, and **11 loopback
+stages**. Reports bind the frozen candidate before and after. They verify a
+complete received save, an automatic receipt, matching received/hosted hashes,
+fresh destination storage and an unchanged original after candidate Stop.
+Every mode records zero visible owned windows and zero owned processes at
+cleanup. Artifact `12470086220` is 1,262,232 bytes, ZIP SHA-256
+`fff2fdb4d274683e812d6b1d95aae9b98df8282496f5a24d332f65420d5a666a`.
+These remain synthetic processes on one hosted PC, not the owner's two PCs.
+
+Automatic-sharing job `120171744593` passes two ordinary **eight-stage** runs
+against the frozen release candidate, with one Friend Start and one owner
+Start in each, descendant transfer/relay and empty owned-process jobs at
+cleanup. Artifact `12469284998` is 2,729 bytes, ZIP SHA-256
+`c24ca106b9d0f3383510dbe49e9b2245e638c7564084ed38026f2abdced04653`.
+All six older-version compatibility lanes, bundled browser journeys, remote
+rehearsal and QolApi source/packaged checks pass on this corrected run.
+
+QolApi job `120171744541` logs **65 of 65 source/synthetic groups passed with
+no skips**, including the corrected signed-history regressions. Its report
+binds the unchanged release candidate. Artifact `12470335330` is 695 bytes,
+ZIP SHA-256
+`7d33ed772f8cddd70b51ba5cf469a88872d25cda7ea26ccda750a4ba0b54c8b9`.
+
+Desktop job `120171744632` remains failed solely because hosted Windows stays
+in QuietTime and blocks actual notification delivery, click and navigation.
+Its other 12 required native cases pass; the separate window-chrome gate also
+passes. No notification setting is changed to bypass the blocker. Artifact
+`12470290310` is 308,629 bytes, ZIP SHA-256
+`18f18af64d99b0e0ac731a35e3ba7391ad1213007b720f89eed9f44fd1bf0c2f`.
+Full native acceptance remains false. Physical-PC LAN/Wi-Fi transfer and real
+game save/restart acceptance remain open.
+
+## Final functional acceptance
+
+Existing job `120171744669` passes all **27 serial stages**, including
+**1,429 UI tests in 108 files**, **114 core checks**, Shared History, game
+fixtures, Companion, core remote, world-load, served package, staging
+isolation, hidden/visible desktop, formatting and update handoff. Both
+previously failing named cases pass: schema-3 delegated voter-only fenced
+review, and signed-majority authority/conflict review across restart.
+
+The complete Shared Worlds packaged journey passes **11 groups**, with
+**zero failures and zero skipped recovery scenarios**. Its fenced newer-floor
+review and offline-owner recovery paths pass against the corrected companion
+routes. Final serial verification records the exact unchanged candidate hash
+and product/source version. Artifact `12470432947` is 1,120 bytes, ZIP SHA-256
+`b85b65b1f380146983a39033fd0ecfb96b5a0909ec87190846aa4fbd2d4ee413`.
+The downloaded report binds the corrected source and frozen portable hash;
+every recorded stage passes.
+
+Windows CI finishes with **14 passing jobs** and the separate Desktop job
+failed solely for its recorded QuietTime notification blocker. All required
+functional checks are complete. The release notes retain the incomplete
+native and physical-machine acceptance boundaries rather than claiming a
+fully passing Windows workflow. The original failed run is not reused.
+
+## Published prerelease and public downloads
+
+Release `421348309` is public at
+[v0.3.3.5](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.5),
+published `2026-10-23T01:03:26Z`, with `draft=false`, `prerelease=true` and
+`make_latest=false`. Annotated tag object
+`6f2a1919716aff483181e84944d282bb02e69395` points to the exact compiled source
+`111e2b503af58168e6951dc5b645310126cadf3f`. This documentation-only follow-up
+does not move the tag or rebuild any release asset.
+
+| Public asset | Asset ID | SHA-256 |
+| --- | ---: | --- |
+| `TogetherServer-win-x64.exe` | 667573899 | `00a774223b092fc039e5d8b933bcaca52c8f1e2b2f06997276c973b9c3ab436d` |
+| `TogetherServer-win-x64.exe.sha256` | 667574343 | `4df7d37184734a12d5981b153e912863754ab284370e4446e2fe628418296bec` |
+| `TogetherServer-Setup-win-x64.exe` | 667574394 | `b8243186e6e81421059503dd50632ac0ea44a9fe9dcf34b631265abab4ff0e22` |
+| `TogetherServer-Setup-win-x64.exe.sha256` | 667574795 | `e151ad576351ffdb058b72b5b6816b64866675d7ef80a84e378066123b7cd22c` |
+
+Anonymous public verification completes at
+`2026-10-23T01:03:41.3097084Z`. All four browser-download URLs return the exact
+uploaded bytes, matching API digests, sizes, the frozen manifest and adjacent
+checksum contents. Both executables have numeric version `0.3.3.5` and remain
+`NotSigned`; the portable product/source version matches the annotated tag.
+The accepted package manifest SHA-256 is
+`3c33d4a0bb83b1106eee216b0ebb63c961cccff6477ded576882efaf9b76e12c`.
+No downloaded app or installer is launched during this verification.
+
+Stable/latest remains `v0.3.3`, release `418702775`. Classification, inventories,
+asset IDs, sizes, digests and download URLs for all eight prior releases in the
+pre-publication snapshot remain unchanged. Prepared notes, API metadata,
+artifact receipts, private logs and downloaded binaries stay ignored under
+`local-data/release-0.3.3.5/`. The task guide and documentation index link this
+preview and its shared-save retry instructions.

@@ -110,6 +110,7 @@ use the document title to identify the topic.
 | 0.3.3.2 preview | [Prerelease delivery](41-0.3.3.2-PRERELEASE.md) |
 | 0.3.3.3 preview | [Friend hosting fixes and prerelease delivery](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md) |
 | 0.3.3.4 preview | [Valheim publication fix and prerelease delivery](43-VALHEIM-SHARED-SAVE-PUBLICATION-AND-0.3.3.4.md) |
+| 0.3.3.5 preview | [Shared-hosting history repair and prerelease delivery](44-SHARED-HOSTING-HISTORY-AND-FEEDBACK.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).

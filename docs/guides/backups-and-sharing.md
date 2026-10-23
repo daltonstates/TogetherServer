@@ -121,8 +121,9 @@ Remote Start/Stop can work while receiving a shared save is blocked. The message
 records, before the app requests the save files or sends a download receipt.
 It does not establish a failed network check.
 
-The `0.3.3.5` source/test build repairs a case where history review saved a newer
-permission record without importing its journal. Keep both updated apps open;
+[Preview 0.3.3.5](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.5)
+repairs a case where history review saved a newer permission record without
+importing its journal. Update both PCs to this preview and keep both apps open;
 on the receiving PC, open **Host locally** and choose **Check hosting access
 again**. The app can catch up the missing signed records while preserving its
 saved connection and worlds. Changed, damaged or conflicting history remains
