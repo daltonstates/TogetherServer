@@ -1,11 +1,14 @@
 // Pure plan and assertions for the existing hosted-only renderer. Importing this
 // module does not open a browser, write files or contact a network.
 const play = ['Join sections', 'play', 'Play'];
+const sharedSaves = ['Join sections', 'shared-saves', 'Shared saves'];
 const backups = ['Selected server sections', 'backups', 'Backups'];
 const sharing = { nav: 'World protection sections', button: 'Sharing & hosting' };
 const dialog = { role: 'dialog', name: 'Host locally' };
 const friend = (id, stage, extra = {}) => ({ id: `simple-hosting-${id}`, scenario: 'friend-offline', workspace: 'Join',
   fixture: { simpleHosting: stage }, section: play, steps: [{ button: 'Host locally' }], screen: dialog, ...extra });
+const hiddenEntry = (id, stage, card = false) => friend(id, stage, { steps: [], hostingEntry: 'hidden',
+  section: card ? sharedSaves : play, screen: card ? { css: '.friend-primary' } : { role: 'region', name: 'Play' } });
 export const simpleHostingCases = [
   { id: 'simple-hosting-owner-off', scenario: 'host-offline', workspace: 'Host', section: backups,
     steps: [sharing], screen: { role: 'region', name: 'Shared hosting' } },
@@ -13,10 +16,17 @@ export const simpleHostingCases = [
     steps: [sharing, { role: 'checkbox', name: 'Allow friends to host this server' }], screen: { role: 'region', name: 'Shared hosting' } },
   { id: 'simple-hosting-owner-continuation', scenario: 'host-offline', fixture: { ownerContinuations: true }, workspace: 'Host',
     section: backups, steps: [sharing], screen: { role: 'region', name: 'Shared hosting' } },
-  friend('not-allowed', 'not-allowed', { steps: [], screen: { role: 'region', name: 'Play' } }),
-  friend('entry', 'prepare', { steps: [], screen: { role: 'region', name: 'Play' } }),
-  friend('missing-install-entry', 'missing-server', { steps: [], screen: { role: 'region', name: 'Play' } }),
-  friend('play-ready', 'prepare', { scenario: 'friend-connected', steps: [], screen: { role: 'region', name: 'Play' } }),
+  hiddenEntry('not-allowed', 'not-allowed'),
+  hiddenEntry('not-allowed-card', 'not-allowed', true),
+  hiddenEntry('permission-unknown-entry', 'permission-unknown'),
+  hiddenEntry('permission-unknown-card', 'permission-unknown', true),
+  hiddenEntry('permission-review-entry', 'permission-review'),
+  hiddenEntry('permission-review-card', 'permission-review', true),
+  friend('entry', 'prepare', { steps: [], hostingEntry: 'visible', screen: { role: 'region', name: 'Play' } }),
+  friend('card-entry', 'prepare', { steps: [], hostingEntry: 'visible', section: sharedSaves,
+    screen: { role: 'region', name: 'Host locally' } }),
+  friend('missing-install-entry', 'missing-server', { steps: [], hostingEntry: 'visible', screen: { role: 'region', name: 'Play' } }),
+  friend('play-ready', 'prepare', { scenario: 'friend-connected', steps: [], hostingEntry: 'visible', screen: { role: 'region', name: 'Play' } }),
   friend('network-warning', 'prepare'),
   friend('missing-install', 'missing-server'),
   friend('missing-connection', 'connection', { steps: [{ button: 'Host locally' },
@@ -25,11 +35,11 @@ export const simpleHostingCases = [
   friend('ready-confirmation', 'ready'),
   friend('starting', 'ready', { steps: [{ button: 'Host locally' }, { button: 'Host locally', within: 'dialog[open]' }],
     screen: { css: '.server-command-header', text: 'Starting' } }),
-  friend('guide-permission-unknown', 'permission-unknown'),
-  friend('guide-permission-denied', 'permission-denied'),
+  friend('guide-permission-unknown', 'permission-unknown-after-entry'),
+  friend('guide-permission-denied', 'permission-denied-after-entry'),
   friend('guide-ports', 'ports', { steps: [{ button: 'Host locally' },
     { button: 'Set up Local game ports', within: 'dialog[open]' }] }),
-  friend('reopen-entry', 'permission-review'),
+  friend('reopen-entry', 'permission-review-after-entry'),
   friend('stale-retry', 'prepare'),
   friend('recovered-retry', 'prepare'),
   friend('directory-removed', 'prepare', { fixture: { simpleHosting: 'prepare', removedHost: true },
@@ -44,14 +54,14 @@ export const simpleHostingVariants = [
 const permissionCodes = { 'not-allowed': 'HostingPermissionRequired', 'permission-unknown': 'RosterUnavailable',
   'permission-review': 'RosterRollback', 'permission-denied': 'HostingPermissionRequired' };
 export function simpleHostingPermission(state, boundary) {
-  // The denied-dialog case represents permission changing between the entry
-  // lookup and the full checks. Other denials retain their exact typed code.
-  const code = state.simpleHosting === 'permission-denied' ? null : permissionCodes[state.simpleHosting];
+  // An already-open guide can learn that access changed after its positive
+  // entry lookup. Initial denied and unknown lookups remain fail-closed.
+  const code = state.simpleHosting?.endsWith('-after-entry') ? null : permissionCodes[state.simpleHosting];
   return { allowed: !code, code: code ?? 'HostingAllowed', message: boundary };
 }
 
 export function simpleHostingStatus(state, profileId, boundary) {
-  const stage = state.simpleHosting;
+  const stage = state.simpleHosting?.replace(/-after-entry$/u, '');
   const prepared = state.simpleHostingPrepared || stage === 'ready';
   const allowed = !permissionCodes[stage];
   const missing = stage === 'missing-server';
@@ -151,31 +161,40 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     if (await removedHost.count() !== 1 || !await checkbox.isChecked() || hostingWrites(state).length)
       throw new Error('Clicking the removed-access label must reveal the saved Host without a hosting action');
     record.assertions.push({ removedAccessInline: bounds, clickableLabelRevealedRemovedHost: true });
-  } else if (testCase.id.endsWith('-not-allowed')) {
+  } else if (testCase.hostingEntry === 'hidden') {
     await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
-    if (await page.getByRole('button', { name: 'Host locally', exact: true }).count() || writes.length)
-      throw new Error('An unauthorized Friend can see or invoke local hosting');
-  } else if (['simple-hosting-entry', 'simple-hosting-missing-install-entry', 'simple-hosting-play-ready'].includes(testCase.id)) {
-    const playRegion = page.getByRole('region', { name: 'Play', exact: true });
-    const entry = playRegion.getByRole('button', { name: 'Host locally', exact: true });
+    if (!state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting/access')) ||
+        await page.getByRole('button', { name: 'Host locally', exact: true }).count() ||
+        await page.locator('.local-hosting-card').count() ||
+        await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() || writes.length ||
+        state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')))
+      throw new Error('Denied or unknown permission must hide the hosting action and card without opening checks or writing state');
+    record.assertions.push({ hostingEntryHidden: true, permissionCode: simpleHostingPermission(state, '').code,
+      presentation: testCase.section === sharedSaves ? 'card' : 'action' });
+  } else if (testCase.hostingEntry === 'visible') {
+    const card = testCase.section === sharedSaves;
+    const entryRegion = page.getByRole('region', { name: card ? 'Host locally' : 'Play', exact: true });
+    const entry = entryRegion.getByRole('button', { name: 'Host locally', exact: true });
     await entry.waitFor({ state: 'visible', timeout: 8000 });
     if (!/Host locally/u.test(await entry.textContent()) || writes.length ||
         state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')) ||
         await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() ||
         await page.getByText('Host decision not checked', { exact: true }).count())
       throw new Error('The labeled hosting entry must appear before setup checks or diagnostic clutter');
+    if (await page.locator('.local-hosting-card').count() !== Number(card))
+      throw new Error('Confirmed hosting access must show exactly its requested entry presentation');
     if (testCase.id.endsWith('-play-ready')) {
-      const open = await playRegion.getByRole('button', { name: 'Open game', exact: true }).boundingBox();
-      const stop = await playRegion.getByRole('button', { name: 'Stop server', exact: true }).boundingBox();
+      const open = await entryRegion.getByRole('button', { name: 'Open game', exact: true }).boundingBox();
+      const stop = await entryRegion.getByRole('button', { name: 'Stop server', exact: true }).boundingBox();
       const styles = {};
-      for (const name of ['Open game', 'Stop server']) styles[name] = await playRegion.getByRole('button', { name, exact: true }).evaluate(element => {
+      for (const name of ['Open game', 'Stop server']) styles[name] = await entryRegion.getByRole('button', { name, exact: true }).evaluate(element => {
         const style = getComputedStyle(element);
         return { classes: element.className, minHeight: style.minHeight, minBlockSize: style.minBlockSize,
           fontSize: style.fontSize, padding: style.padding, transform: style.transform };
       });
       record.assertions.push({ playActionSizes: { open, stop }, styles });
       if (!open || !stop || Math.abs(open.width - stop.width) > 1 || Math.abs(open.height - stop.height) > 1 ||
-          await playRegion.getByText('Asks Steam to open an installed game. Join the server from the game.', { exact: true }).count())
+          await entryRegion.getByText('Asks Steam to open an installed game. Join the server from the game.', { exact: true }).count())
         throw new Error('Open game and Stop server must have equal dimensions without the intervening helper text');
     }
   } else if (testCase.id.endsWith('-starting')) {
@@ -191,10 +210,18 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     if (testCase.id.endsWith('-save-conflict') && await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
       throw new Error('Divergent save histories must block Start');
     if (testCase.id.endsWith('-reopen-entry')) {
+      state.simpleHosting = 'permission-review';
       await modal.getByRole('button', { name: 'Close Host locally', exact: true }).click();
       await modal.waitFor({ state: 'hidden', timeout: 8000 });
       const entry = page.getByRole('region', { name: 'Play', exact: true }).getByRole('button', { name: 'Host locally', exact: true });
+      await entry.waitFor({ state: 'hidden', timeout: 8000 });
+      if (await entry.count()) throw new Error('Closing a permission review must hide the entry until access is confirmed again');
+      const accessRestored = page.waitForResponse(async response => response.url().endsWith('/shared-world/hosting/access') &&
+        response.request().method() === 'GET' && response.ok() && (await response.json()).allowed === true, { timeout: 15000 });
+      state.simpleHosting = 'prepare';
+      await accessRestored;
       await entry.waitFor({ state: 'visible', timeout: 8000 });
+      state.simpleHosting = 'permission-review-after-entry';
       const reads = state.requests.filter(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')).length;
       const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
         response.request().method() === 'GET', { timeout: 8000 });
@@ -205,7 +232,7 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       if (state.requests.filter(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')).length <= reads ||
           await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
         throw new Error('Reopening a review failure must read current checks while keeping Start blocked');
-      record.assertions.push({ reopenedAfterReviewFailure: true, startRemainsBlocked: true });
+      record.assertions.push({ hiddenUntilPermissionRestored: true, reopenedAfterReviewFailure: true, startRemainsBlocked: true });
     }
     if (/-stale-retry$|-recovered-retry$/u.test(testCase.id)) {
       state.simpleHostingReadFailure = true;

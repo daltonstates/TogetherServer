@@ -157,7 +157,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const scope = JSON.stringify([connectionId, profileId])
   const request = useRef(0)
   const mutation = useRef(false)
-  const [permission, setPermission] = useState<LocalHostingPermission | null>(null)
+  const [scopedPermission, setPermission] = useState<(LocalHostingPermission & { scope: string }) | null>(null)
+  const permission = scopedPermission?.scope === scope ? scopedPermission : null
   const [status, setStatus] = useState<LocalHostingStatus | null>(null)
   const [checksCurrent, setChecksCurrent] = useState(false)
   const [checking, setChecking] = useState(false)
@@ -193,10 +194,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       startIntent.current = null
     }
     currentStatus.current = next
-    setPermission({ allowed: next.allowed, code: next.code, message: next.message })
+    setPermission({ allowed: next.allowed, code: next.code, message: next.message, scope })
     setStatus(next)
     setChecksCurrent(true); setLastCheckedAt(Date.now()); setNow(Date.now())
-  }, [])
+  }, [scope])
   const controller = useRef<AbortController | null>(null)
   const invalidate = useCallback(() => { ++request.current; controller.current?.abort() }, [])
 
@@ -229,7 +230,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         try {
           const next = await getLocalJson(`${base}/hosting/access`, parseLocalHostingPermission, abort.signal)
           if (active && !abort.signal.aborted) {
-            setPermission(next)
+            setPermission({ ...next, scope })
             if (!next.allowed) {
               startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
               invalidate(); mutation.current = false; setBusy(false); setPendingAction(null); setChecking(false); setChecksCurrent(false)
@@ -237,7 +238,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             }
           }
         } catch {
-          // Keep the entry point available for guided recovery, never a Start intent.
+          // Wait for confirmed hosting access before offering the entry point.
           if (active && !abort.signal.aborted) {
             setPermission(null)
             setChecksCurrent(false)
@@ -524,6 +525,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const requestOffered = handoff?.recipientState === 'Requested'
   const waitingForHost = handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
   const minecraftTerms = ['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && !status?.readyForManualStart && !status?.localProfileId
+  const permissionAllowed = permission?.allowed === true
   const denied = confirmedHostingDenial(permission)
   const guidanceStatus = checksCurrent ? status : status && permission?.allowed === false ? {
     ...status, allowed: false, readyForManualStart: false, code: permission.code, message: permission.message,
@@ -559,17 +561,17 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     pause(); onOpenGameSetup(status.game, status.localProfileId ?? undefined)
   }
   const trigger = () => {
-    if (disabled || busy || denied) return
+    if (disabled || busy || !permissionAllowed) return
     if (status?.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setOpen(true); setNetworkConfirmed(false); setError(''); setActionMessage('')
     void refresh()
   }
-  const canContinue = allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
+  const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
-  if (denied && !open) return null
+  if (!permissionAllowed && !open) return null
   return <>
-    {!denied && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
+    {permissionAllowed && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
       <Icon name="server" size={24} /><div><h3>Host locally</h3>
         <p>{status?.running ? 'This server is already hosted on this PC.' : 'Use the latest available save to host this server on your PC.'}</p></div>
       <Button className="secondary" disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>

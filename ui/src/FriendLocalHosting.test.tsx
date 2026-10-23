@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FriendLocalHosting, localHostingAttention, parseLocalHostingStatus, type LocalHostingStatus } from './FriendLocalHosting'
 
@@ -56,16 +57,22 @@ async function confirmHosting() {
   fireEvent.click(button)
 }
 
-it('shows a labeled entry immediately and checks hosting only after it is clicked', async () => {
+it.each(['action', 'card'] as const)('waits for confirmed permission before offering the %s entry', async presentation => {
   const calls: string[] = []
+  const writes: string[] = []
   let finishPermission!: (value: Response) => void
-  const fetcher = vi.fn(async (url: string) => {
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url)
+    if (init?.method) writes.push(url)
     if (url.endsWith('/access')) return new Promise<Response>(resolve => { finishPermission = resolve })
     return response({ ...initial, needsServerFile: true, serverFile: null })
   })
   vi.stubGlobal('fetch', fetcher)
-  render(<FriendLocalHosting {...props} />)
+  render(<FriendLocalHosting {...props} presentation={presentation} />)
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`])
+  await act(async () => { finishPermission(response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })) })
   const entry = screen.getByRole('button', { name: 'Host locally' })
   expect(entry).toHaveTextContent('Host locally')
   expect(entry).toBeEnabled()
@@ -75,38 +82,65 @@ it('shows a labeled entry immediately and checks hosting only after it is clicke
   const dialog = await screen.findByRole('dialog', { name: 'Host locally' })
   expect(await within(dialog).findByRole('heading', { name: 'Install or find the game server' })).toBeInTheDocument()
   expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting`])
-  await act(async () => { finishPermission(response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })) })
   expect(calls).toHaveLength(2)
+  expect(writes).toEqual([])
 })
 
-it('keeps a failed permission lookup recoverable through Host locally', async () => {
+it.each(['action', 'card'] as const)('hides the %s entry after a failed permission lookup', async presentation => {
+  const calls: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    calls.push(url)
     if (url.endsWith('/access')) throw new Error('Permission lookup unavailable.')
     return response(initial)
   }))
-  render(<FriendLocalHosting {...props} />)
+  render(<FriendLocalHosting {...props} presentation={presentation} />)
   await act(async () => {})
-  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
-  const dialog = await openHosting()
-  expect(dialog.getByText(/Hosting lets other players connect/)).toBeInTheDocument()
-  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`])
 })
 
-it.each(['RosterUnavailable', 'SharingReviewRequired'])('keeps %s recoverable through the hosting flow', async code => {
+it.each(['action', 'card'] as const)('keeps a timed-out %s entry hidden when the old permission result arrives late', async presentation => {
+  vi.useFakeTimers()
+  let finishPermission!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const calls: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push(url); signal = init?.signal
+    return new Promise<Response>(resolve => { finishPermission = resolve })
+  }))
+  render(<FriendLocalHosting {...props} presentation={presentation} />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(15001) })
+  expect(signal?.aborted).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  await act(async () => { finishPermission(response({ allowed: true, code: 'HostingAllowed', message: 'Sharing was on.' })) })
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`])
+})
+
+it.each(['Unknown', 'RosterUnavailable', 'SharingReviewRequired'])('waits for %s hosting access to recover before offering the entry', async code => {
+  vi.useFakeTimers()
   let restored = false
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => response(url.endsWith('/access')
-    ? { allowed: false, code, message: 'The saved hosting information needs checking.' }
-    : restored ? initial : { ...initial, allowed: false, code, message: 'The saved hosting information needs checking.' })))
+  const calls: string[] = []
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push(url)
+    if (init?.method) writes.push(url)
+    return response(restored ? { allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' }
+      : { allowed: false, code, message: 'The saved hosting information needs checking.' })
+  }))
   render(<FriendLocalHosting {...props} />)
   await act(async () => {})
-  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
-  const dialog = await openHosting()
-  expect(dialog.getByText(/Hosting lets other players connect/)).toBeInTheDocument()
-  expect(dialog.getByRole('heading', { name: code === 'SharingReviewRequired' ? 'Review sharing history before hosting' : 'Check hosting again' })).toBeInTheDocument()
-  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
   restored = true
-  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
-  await waitFor(() => expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled())
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting/access`])
+  expect(writes).toEqual([])
 })
 
 it.each(['RosterRollback', 'HostingPermissionRequired', 'RosterUnavailable'])('marks checks blocked by %s as not run instead of failed', async code => {
@@ -172,12 +206,15 @@ it('reports an unchanged history failure after a pending retry, then shows the a
 })
 
 it('cancels preparation when the pending permission lookup returns an explicit denial', async () => {
+  vi.useFakeTimers()
+  let accessReads = 0
   let finishPermission!: (value: Response) => void
   let finishPreparation!: (value: Response) => void
   let preparationSignal: AbortSignal | null | undefined
   const writes: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/access')) return new Promise<Response>(resolve => { finishPermission = resolve })
+    if (url.endsWith('/access')) return ++accessReads === 1 ? response(initial)
+      : new Promise<Response>(resolve => { finishPermission = resolve })
     if (init?.method) {
       writes.push(url); preparationSignal = init.signal
       return new Promise<Response>(resolve => { finishPreparation = resolve })
@@ -186,7 +223,11 @@ it('cancels preparation when the pending permission lookup returns an explicit d
   }))
   const open = vi.fn()
   render(<FriendLocalHosting {...props} onOpenHost={open} />)
-  await openHosting(); await confirmHosting()
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
   await act(async () => { finishPermission(response({ allowed: false, code: 'HostingPermissionRequired', message: 'The owner removed hosting access.' })) })
   expect(preparationSignal?.aborted).toBe(true)
   expect(screen.getByRole('heading', { name: 'Ask the owner to allow hosting' })).toBeInTheDocument()
@@ -243,6 +284,104 @@ it.each(['action', 'card'] as const)('hides the %s affordance when permission is
   expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
   view.rerender(<FriendLocalHosting {...props} presentation={presentation} accessBlocked />)
   expect(fetcher).toHaveBeenCalledOnce()
+})
+
+it.each(['action', 'card'] as const)('updates the %s entry when the owner enables then disables hosting without making writes', async presentation => {
+  vi.useFakeTimers()
+  let enabled = false
+  const calls: string[] = []
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push(url)
+    if (init?.method) writes.push(url)
+    return response({ allowed: enabled, code: enabled ? 'HostingAllowed' : 'HostingPermissionRequired',
+      message: enabled ? 'The owner allows hosting.' : 'Shared hosting is off.' })
+  }))
+  const view = render(<FriendLocalHosting {...props} presentation={presentation} />)
+  await act(async () => {})
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  enabled = true
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  enabled = false
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('region', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(view.container).toBeEmptyDOMElement()
+  expect(calls).toEqual(Array<string>(3).fill(`${base}/hosting/access`))
+  expect(writes).toEqual([])
+})
+
+it.each(['profile', 'connection'] as const)('does not carry confirmed permission across a %s change before reset effects run', async change => {
+  vi.useFakeTimers()
+  let finishPermission!: (value: Response) => void
+  let accessReads = 0
+  const calls: string[] = []
+  const writes: string[] = []
+  const entryAtCommit: boolean[] = []
+  const continueAtCommit: (boolean | null)[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push(url)
+    if (init?.method) writes.push(url)
+    if (!url.endsWith('/access')) return response(initial)
+    return ++accessReads === 1 ? response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
+      : new Promise<Response>(resolve => { finishPermission = resolve })
+  }))
+  function ScopeProbe({ nextProfile = profileId, nextConnection = 'first' }: { nextProfile?: string; nextConnection?: string }) {
+    useLayoutEffect(() => {
+      const buttons = screen.queryAllByRole('button', { name: 'Host locally' })
+      entryAtCommit.push(buttons.some(button => !button.closest('dialog, [role="dialog"]')))
+      const confirm = buttons.find(button => button.closest('dialog, [role="dialog"]'))
+      continueAtCommit.push(confirm ? !(confirm as HTMLButtonElement).disabled : null)
+    }, [nextProfile, nextConnection])
+    return <FriendLocalHosting {...props} profileId={nextProfile} connectionId={nextConnection} />
+  }
+  const view = render(<ScopeProbe />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  const nextProfile = change === 'profile' ? '33333333-3333-4333-8333-333333333333' : profileId
+  view.rerender(<ScopeProbe nextProfile={nextProfile} nextConnection={change === 'connection' ? 'second' : 'first'} />)
+  expect(entryAtCommit).toEqual([false, false])
+  expect(continueAtCommit).toEqual([null, false])
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  await act(async () => { finishPermission(response({ allowed: false, code: 'HostingPermissionRequired', message: 'Shared hosting is off.' })) })
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting`, `/api/local/friend/${nextProfile}/shared-world/hosting/access`])
+  expect(writes).toEqual([])
+})
+
+it.each(['action', 'card'] as const)('keeps an open guide recoverable after the %s entry loses permission', async presentation => {
+  vi.useFakeTimers()
+  let enabled = true
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(url.endsWith('/access') ? { allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' }
+      : enabled ? initial : { ...initial, ok: false, allowed: false, code: 'HostingPermissionRequired', message: 'The owner disabled shared hosting.' })
+  }))
+  render(<FriendLocalHosting {...props} presentation={presentation} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog', { name: 'Host locally' }))
+  enabled = false
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  const confirm = dialog.getByRole('button', { name: 'Host locally' })
+  expect(confirm).toBeDisabled()
+  expect(screen.getAllByRole('button', { name: 'Host locally' })).toEqual([confirm])
+  expect(screen.queryByRole('region', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(dialog.getByRole('heading', { name: 'Ask the owner to allow hosting' })).toBeInTheDocument()
+  expect(dialog.getByRole('region', { name: 'Local hosting setup guide' })).toBeInTheDocument()
+  expect(dialog.getByRole('button', { name: 'Retry automatic checks' })).toBeEnabled()
+  enabled = true
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await act(async () => {})
+  expect(confirm).toBeEnabled()
+  expect(writes).toEqual([])
 })
 
 it('shows the missing install and continues with the selected file without a separate save permission', async () => {
@@ -655,10 +794,12 @@ it('preserves displayed checks after an automatic timeout and ignores a late res
   expect(writes).toEqual([])
 })
 
-it.each(['failed', 'timed out'])('restores the recovery entry when a later permission read %s after an earlier denial', async failure => {
+it.each(['failed', 'timed out'])('keeps the entry hidden when a later permission read %s after an earlier denial', async failure => {
   vi.useFakeTimers()
   let accessReads = 0
+  const calls: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    calls.push(url)
     if (!url.endsWith('/access')) return response(initial)
     if (++accessReads === 1) return response({ allowed: false, code: 'HostingPermissionRequired', message: 'Sharing was off.' })
     if (failure === 'timed out') return new Promise<Response>(() => {})
@@ -668,10 +809,9 @@ it.each(['failed', 'timed out'])('restores the recovery entry when a later permi
   await act(async () => {})
   expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
   await act(async () => { await vi.advanceTimersByTimeAsync(failure === 'timed out' ? 25001 : 10001) })
-  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
-  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
-  await act(async () => {})
-  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting/access`])
 })
 
 it('waits for an in-flight automatic check before letting Browse change the selected server', async () => {
