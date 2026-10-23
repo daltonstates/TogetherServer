@@ -5,8 +5,10 @@ Ethernet and Wi-Fi, but **Host locally** reports **The saved sharing history
 changed unexpectedly**. The original Host has no confirmed save download.
 The setup guide also gives too little feedback after its buttons are pressed.
 
-This slice prepares an unreleased `0.3.3.5` test build. It does not publish a
-GitHub release, change networking, install the app or replace the running copy.
+This slice first prepared an unreleased `0.3.3.5` test build. The owner then
+explicitly authorized its GitHub prerelease. Publication preparation and exact
+release evidence are recorded below. No networking, installation or running
+app is changed on the owner's PC.
 
 ## Cause and repair
 
@@ -85,7 +87,7 @@ real-game load/change/Stop/restart remain external acceptance. Minecraft
 remains fixture-tested. The owner's foreground and running app are preserved
 throughout local verification. Static test-build identity is recorded below.
 
-## Test build
+## Initial local test build (superseded)
 
 The production UI bundle and Release publish pass. Vite retains its existing
 JavaScript chunk-size advisory. Static package inspection confirms a Windows
@@ -111,3 +113,40 @@ confirmation above does not claim that the laptop already has the save.
 
 This documentation-only follow-up records the unchanged built bytes. It does
 not alter the tested product source or create a release/tag.
+
+## Prerelease preparation
+
+The owner explicitly requested creation of the prerelease after the local test
+handoff. Initial hosted Windows run
+[39877061919](https://github.com/daltonstates/TogetherServer/actions/runs/39877061919)
+checked source `6a41ca6af5052c6dbefff60e7bc923242ed8f6a1`. Its Existing job
+`120166055567` exposed two fenced-history review regressions: first-time
+delegated voter proof and signed-majority conflict review returned
+`RosterUnavailable`. The original failures remain recorded. The run was
+cancelled after those failures to supersede its bytes; none of its successful
+jobs qualify the corrected release candidate.
+
+A new pure regression independently failed before the correction. Review now
+avoids advancing trust when its fresh signed roster exactly equals the
+protected floor. When a genuinely newer roster needs its parents, only an
+explicit history review may use bounded `review=1` metadata paging after an
+ordinary page returns unavailable. That mode reuses the existing read-only
+history authorization before and after the read, including current device,
+assignment and signed membership checks. Normal metadata/hosting requests,
+save manifests, chunks, receipts and lifecycle actions keep their fences.
+The existing signed review-roster selection is shared under the manager gate;
+pages keep the strict offset, exact anchor and size bounds.
+
+Older Hosts first receive the ordinary request, including their existing
+unknown-anchor/root fallback. No ordinary hosting or receive request opts into
+review mode. Missing, damaged or gapped review proof cannot advance the
+protected floor. The expanded pure regression covers these cases, unchanged
+voter-only floors and consent preservation. Its focused CodeOnlyVerification
+build has zero warnings/errors and the exact source-check group passes. Real
+companion-route verification belongs to the corrected hosted candidate.
+Focused hosting-permission and fixed-Start checks also pass, as does targeted
+solution whitespace formatting verification.
+
+Ignored evidence, prepared notes and the preserved initial failures are under
+`local-data/release-0.3.3.5/`. The initial portable test EXE above is retained as
+historical evidence and will not be substituted for the corrected release.

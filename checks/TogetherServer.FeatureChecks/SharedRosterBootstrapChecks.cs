@@ -16,6 +16,8 @@ internal static class SharedRosterBootstrapChecks
         await ExactCurrentHeadAsync(root);
         await InitialGroupReviewAsync(root);
         await ReviewedSchema3FloorAsync(root);
+        await FencedHistoryReviewAsync(root);
+        await FencedRosterCatchUpAsync(root);
         await RecoveredFloorReceivesSaveAsync(root);
         using (var fixture = new Fixture(root))
         {
@@ -301,6 +303,133 @@ internal static class SharedRosterBootstrapChecks
         }
     }
 
+    private static async Task FencedHistoryReviewAsync(string root)
+    {
+        using (var fixture = new Fixture(root, new(RecoveryVoter: true)))
+        {
+            fixture.Current = fixture.Legacy;
+            fixture.RemoteHistory = [fixture.Legacy];
+            fixture.RosterPagesUnavailable = true;
+            await fixture.ConnectAsync();
+            var reviewed = await fixture.ReviewAsync(new(fixture.Current.GroupId, fixture.Current.OwnerPublicKey));
+            Require(reviewed is { Ok: true, Code: "HistoryReviewed" } &&
+                fixture.PageRequests == 0 && !fixture.Chain.HasState(fixture.ProfileId) &&
+                !fixture.ReceiveStatus.Consented,
+                "an unchanged voter-only floor could not review fenced history without roster pages: " + reviewed.Code);
+            fixture.AssertFloor(fixture.Legacy);
+
+            fixture.Current = fixture.Sign(fixture.Legacy with { OwnerOverride = !fixture.Legacy.OwnerOverride });
+            Require((await fixture.ReviewAsync()).Code == "RosterRejected" && fixture.PageRequests == 0,
+                "fenced review accepted another signature at the protected floor");
+            fixture.AssertFloor(fixture.Legacy);
+            fixture.Current = fixture.Bootstrap;
+            var advanced = await fixture.ReviewAsync();
+            Require(!advanced.Ok && advanced.Code == "RosterUnavailable" && fixture.PageRequests == 2 &&
+                fixture.ReviewPageRequests == 1 &&
+                !fixture.Chain.HasState(fixture.ProfileId),
+                "fenced review advanced its protected legacy floor without signed history");
+            fixture.AssertFloor(fixture.Legacy);
+        }
+
+        using (var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true)))
+        {
+            var middle = fixture.Child(fixture.Legacy);
+            fixture.Current = fixture.Child(middle);
+            fixture.Trusted = fixture.Current;
+            fixture.SaveCache(fixture.Current);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.RemoteHistory = [fixture.Legacy, middle, fixture.Current];
+            fixture.RosterPagesUnavailable = true;
+            await fixture.ConnectAsync();
+            var reviewed = await fixture.ReviewAsync(new(fixture.Current.GroupId, fixture.Current.OwnerPublicKey));
+            Require(reviewed is { Ok: true, Code: "HistoryReviewed" } &&
+                fixture.PageRequests == 0 && fixture.Chain.Count(fixture.ProfileId) == 1,
+                "an unchanged schema-3 floor could not review fenced history: " + reviewed.Code);
+            fixture.AssertFloor(fixture.Current);
+            var hosting = await fixture.CheckHostingAsync();
+            Require(!hosting.Allowed && hosting.Code == "RosterUnavailable" &&
+                fixture.PageRequests == 2 && fixture.ReviewPageRequests == 0 &&
+                fixture.Chain.Count(fixture.ProfileId) == 1,
+                "read-only fenced review bypassed the ordinary hosting journal requirement");
+            fixture.AssertFloor(fixture.Current);
+        }
+    }
+
+    private static async Task FencedRosterCatchUpAsync(string root)
+    {
+        foreach (var fault in new[] { "none", "unavailable", "invalid-signature", "missing-parent" })
+        {
+            using var fixture = new Fixture(root, new(RecoveryVoter: true));
+            var middle = fixture.Child(fixture.Legacy);
+            var trusted = fixture.Child(middle);
+            fixture.Trusted = trusted;
+            fixture.SaveCache(trusted);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Child(trusted);
+            fixture.RemoteHistory = fault switch
+            {
+                "invalid-signature" => [fixture.Legacy, middle with { Signature = new string('A', 88) }, trusted, fixture.Current],
+                "missing-parent" => [fixture.Legacy, fixture.Current],
+                _ => [fixture.Legacy, middle, trusted, fixture.Current]
+            };
+            fixture.RosterPagesUnavailable = true;
+            fixture.ReviewPagesAvailable = fault != "unavailable";
+            await fixture.ConnectAsync();
+            var reviewed = await fixture.ReviewAsync(new(fixture.Current.GroupId, fixture.Current.OwnerPublicKey));
+            Require(fixture.ReviewPageRequests == 1 && !fixture.ReceiveStatus.Consented &&
+                fixture.SavedConfiguration.ConsentedSharedWorldProfiles.Count == 0,
+                "fenced roster catch-up bypassed consent or omitted explicit review metadata: " + fault);
+            if (fault == "none")
+            {
+                Require(reviewed is { Ok: true, Code: "HistoryReviewed" } &&
+                    fixture.Chain.Count(fixture.ProfileId) == 4 &&
+                    fixture.Chain.ContainsFloor(fixture.ProfileId,
+                        new(trusted.GroupId, trusted.Epoch, trusted.Revision, trusted.Signature)),
+                    "explicit fenced review did not retain its exact signed floor and parents: " + reviewed.Code);
+                fixture.AssertFloor(fixture.Current);
+            }
+            else
+            {
+                Require(!reviewed.Ok && fixture.Chain.Count(fixture.ProfileId) == 1,
+                    "unavailable, damaged or gapped review metadata advanced signed history: " + fault);
+                fixture.AssertFloor(trusted);
+            }
+        }
+
+        // An old Host's echoed unknown anchor must still fall back to its
+        // ordinary root page, without requiring support for the new query.
+        using (var fixture = new Fixture(root, new(RecoveryVoter: true)))
+        {
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Child(fixture.Bootstrap);
+            fixture.RemoteHistory = [fixture.Bootstrap, fixture.Current];
+            await fixture.ConnectAsync();
+            var reviewed = await fixture.ReviewAsync(new(fixture.Current.GroupId, fixture.Current.OwnerPublicKey));
+            Require(reviewed.Ok && fixture.RootFallbacks == 1 && fixture.ReviewPageRequests == 0,
+                "history review lost the older Host's ordinary unknown-anchor fallback: " + reviewed.Code);
+            fixture.AssertFloor(fixture.Current);
+        }
+
+        using (var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true)))
+        {
+            var trusted = fixture.Child(fixture.Legacy);
+            fixture.Trusted = trusted;
+            fixture.SaveCache(trusted);
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            fixture.Current = fixture.Child(trusted);
+            fixture.RemoteHistory = [fixture.Legacy, trusted, fixture.Current];
+            fixture.RosterPagesUnavailable = fixture.ReviewPagesAvailable = true;
+            await fixture.ConnectAsync();
+            Require(!(await fixture.CheckHostingAsync()).Allowed && fixture.ReviewPageRequests == 0,
+                "ordinary hosting requested fenced review metadata");
+            Require((await fixture.SetConsentAsync(true)).Ok &&
+                !(await fixture.PullAsync()).Ok && fixture.ReviewPageRequests == 0 &&
+                fixture.ManifestRequests == 0 && fixture.ChunkRequests == 0 && fixture.ReceiptRequests == 0,
+                "ordinary receiving used review metadata or bypassed the Host's transfer fence");
+            fixture.AssertFloor(trusted);
+        }
+    }
+
     private static async Task RecoveredFloorReceivesSaveAsync(string root)
     {
         using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
@@ -520,9 +649,12 @@ internal static class SharedRosterBootstrapChecks
         public SharedWorldRoster? Trusted { get; set; }
         public IReadOnlyList<SharedWorldRoster> Page { get; set; } = [];
         public IReadOnlyList<SharedWorldRoster>? RemoteHistory { get; set; }
+        public bool RosterPagesUnavailable { get; set; }
+        public bool ReviewPagesAvailable { get; set; }
         public int PageFailures { get; set; }
         public int CurrentRequests { get; private set; }
         public int PageRequests { get; private set; }
+        public int ReviewPageRequests { get; private set; }
         public int RootFallbacks { get; private set; }
         public int ManifestRequests { get; private set; }
         public int ChunkRequests { get; private set; }
@@ -686,10 +818,21 @@ internal static class SharedRosterBootstrapChecks
             else if (path.EndsWith("/revisions", StringComparison.Ordinal))
             {
                 PageRequests++;
-                Require(long.TryParse(request.RequestUri.Query.AsSpan("?offset=".Length), out var offset), "invalid offset");
+                var query = request.RequestUri.Query;
+                var review = query.EndsWith("&review=1", StringComparison.Ordinal);
+                Require(long.TryParse(query.AsSpan("?offset=".Length,
+                    query.Length - "?offset=".Length - (review ? "&review=1".Length : 0)), out var offset), "invalid offset");
                 LastOffset = offset;
                 LastAnchor = request.Headers.TryGetValues(SharedWorldRosterProtocol.AfterHeader, out var anchors)
                     ? anchors.Single() : null;
+                if (review) ReviewPageRequests++;
+                if (review && !ReviewPagesAvailable) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                if (!review && RosterPagesUnavailable)
+                {
+                    var fenced = new HttpResponseMessage(LastAnchor is null ? HttpStatusCode.NotFound : HttpStatusCode.Conflict);
+                    if (LastAnchor is not null) fenced.Headers.Add(SharedWorldRosterProtocol.AnchorHeader, LastAnchor);
+                    return Task.FromResult(fenced);
+                }
                 if (PageFailures > 0) { PageFailures--; throw new HttpRequestException("synthetic lost roster response"); }
                 if (RemoteHistory is not null && LastAnchor is not null)
                 {

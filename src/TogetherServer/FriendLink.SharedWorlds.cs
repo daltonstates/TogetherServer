@@ -136,7 +136,7 @@ internal sealed partial class FriendLink
 
     private async Task<ReceivedSharedWorldResult?> CatchUpRosterAsync(Guid profileId,
         HttpClient client, SharedWorldRoster current, string? pinned,
-        SharedRosterFloor? floor, CancellationToken cancellationToken)
+        SharedRosterFloor? floor, CancellationToken cancellationToken, bool allowReviewPages = false)
     {
         if (current.ProfileId != profileId || !SharedWorldRosterTrust.VerifySignature(current) ||
             pinned is not null && current.OwnerPublicKey != pinned)
@@ -213,15 +213,28 @@ internal sealed partial class FriendLink
             }
             var fullLastPage = false;
             var useAnchor = true;
+            var reviewPages = false;
             for (var pageNumber = 0; pageNumber < 4; pageNumber++)
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get,
-                    $"api/companion/servers/{profileId}/shared-world/roster/revisions?offset={count}");
                 var localHeads = useAnchor ? chain.Heads(profileId) : [];
                 var anchor = localHeads.Count == 1 ? SharedWorldRosterTrust.Hash(localHeads[0]) : null;
-                if (anchor is not null) request.Headers.Add(SharedWorldRosterProtocol.AfterHeader, anchor);
-                using var response = await client.SendAsync(request,
-                    HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                async Task<HttpResponseMessage> FetchPageAsync(bool review)
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get,
+                        $"api/companion/servers/{profileId}/shared-world/roster/revisions?offset={count}" +
+                        (review ? "&review=1" : ""));
+                    if (anchor is not null) request.Headers.Add(SharedWorldRosterProtocol.AfterHeader, anchor);
+                    return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                }
+                using var normalResponse = await FetchPageAsync(reviewPages);
+                // Older Hosts keep the ordinary anchor/root fallback. Only an
+                // explicit history review may retry unavailable metadata through
+                // the separately authorized read-only mode.
+                using var reviewResponse = allowReviewPages && !reviewPages &&
+                    normalResponse.StatusCode == System.Net.HttpStatusCode.NotFound
+                    ? await FetchPageAsync(true) : null;
+                if (reviewResponse is not null) reviewPages = true;
+                var response = reviewResponse ?? normalResponse;
                 var bytes = await ReadBoundedSharedAsync(response.Content, 4 * 1024 * 1024,
                     cancellationToken);
                 // Counts are local positions, not remote positions: two valid
@@ -444,11 +457,18 @@ internal sealed partial class FriendLink
             if (changingGroup && accepted.Count > 0 && group != roster.GroupId)
                 return new(false, "HistoryConflict",
                     "This PC already keeps authority for another group. Preserve it for owner review.");
-            var rosterFailure = await CatchUpRosterAsync(profileId, client, roster, owner,
-                floor is not null && floor.GroupId != roster.GroupId ? null : floor,
-                cancellationToken);
-            if (rosterFailure is not null)
-                return new(false, rosterFailure.Code, rosterFailure.Message);
+            // Fenced Hosts keep signed history readable while ordinary roster
+            // paging is blocked. Reviewing this exact protected list advances
+            // no trust; hosting and receiving still require the full journal.
+            if (floor is null || floor.GroupId != roster.GroupId || floor.Epoch != roster.Epoch ||
+                floor.Revision != roster.Revision || floor.Signature != roster.Signature)
+            {
+                var rosterFailure = await CatchUpRosterAsync(profileId, client, roster, owner,
+                    floor is not null && floor.GroupId != roster.GroupId ? null : floor,
+                    cancellationToken, allowReviewPages: true);
+                if (rosterFailure is not null)
+                    return new(false, rosterFailure.Code, rosterFailure.Message);
+            }
             var offset = Math.Max(0, accepted.Count - 1);
             using var historyResponse = await client.GetAsync(
                 $"api/companion/servers/{profileId}/shared-world/authority?offset={offset}",

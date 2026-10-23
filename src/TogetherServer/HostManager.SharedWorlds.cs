@@ -613,14 +613,14 @@ public sealed partial class HostManager
     }
 
     internal async Task<IReadOnlyList<SharedWorldRoster>?> SharedWorldRosterHistoryAsync(
-        Guid profileId, long offset = 0)
+        Guid profileId, long offset = 0, bool reviewOnly = false)
     {
         await gate.WaitAsync();
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null || SharedAuthorityBlocked(profileId, out _)) return null;
-            var current = sharedWorlds.ReadRoster(profile);
+            if (profile is null || !reviewOnly && SharedAuthorityBlocked(profileId, out _)) return null;
+            var current = reviewOnly ? SharedWorldReviewRosterLocked(profile) : sharedWorlds.ReadRoster(profile);
             if (current is null) return null;
             var chain = new SharedWorldRosterChainStore(data);
             return chain.HasState(profileId) ? chain.ReadPage(profileId, offset) :
@@ -630,14 +630,14 @@ public sealed partial class HostManager
     }
 
     internal async Task<IReadOnlyList<SharedWorldRoster>?> SharedWorldRosterHistoryAfterAsync(
-        Guid profileId, string hash)
+        Guid profileId, string hash, bool reviewOnly = false)
     {
         await gate.WaitAsync();
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null || SharedAuthorityBlocked(profileId, out _)) return null;
-            var current = sharedWorlds.ReadRoster(profile);
+            if (profile is null || !reviewOnly && SharedAuthorityBlocked(profileId, out _)) return null;
+            var current = reviewOnly ? SharedWorldReviewRosterLocked(profile) : sharedWorlds.ReadRoster(profile);
             if (current is null) return null;
             var chain = new SharedWorldRosterChainStore(data);
             return chain.HasState(profileId) ? chain.ReadAfter(profileId, hash) :
@@ -654,27 +654,30 @@ public sealed partial class HostManager
         try
         {
             var profile = settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (profile is null) return null;
-            // Before the first authority record, an unpublished membership change
-            // cannot be used for review. Once fenced, the signed roster and current
-            // device grants are intersected by CompanionServer for read-only access.
-            if (pairing.SharedRosterDirty(profileId) && !authority.HasState(profileId))
-                return null;
-            var local = sharedWorlds.ReadRoster(profile);
-            if (local is null) return null;
-            var heads = WorldAuthorityTrust.EffectiveHeads(authority.ReadReviewRecords(profileId));
-            if (heads.Length == 0) return local;
-            var rosters = heads.Select(item => item.Roster).Append(local).ToArray();
-            if (rosters.Any(item => item.GroupId != local.GroupId ||
-                item.OwnerPublicKey != local.OwnerPublicKey || !SharedWorldRosterTrust.Verify(item)))
-                return null;
-            var newest = rosters.OrderByDescending(item => item.Epoch)
-                .ThenByDescending(item => item.Revision).First();
-            if (rosters.Any(item => item.Epoch == newest.Epoch &&
-                item.Revision == newest.Revision && item.Signature != newest.Signature)) return null;
-            return newest;
+            return profile is null ? null : SharedWorldReviewRosterLocked(profile);
         }
         finally { gate.Release(); }
+    }
+
+    // Call only while holding the manager gate, including for bounded review pages.
+    private SharedWorldRoster? SharedWorldReviewRosterLocked(ServerProfile profile)
+    {
+        // Before the first authority record, an unpublished membership change
+        // cannot be used for review. CompanionServer rechecks the current device
+        // and signed membership before and after returning read-only metadata.
+        if (pairing.SharedRosterDirty(profile.Id) && !authority.HasState(profile.Id)) return null;
+        var local = sharedWorlds.ReadRoster(profile);
+        if (local is null) return null;
+        var heads = WorldAuthorityTrust.EffectiveHeads(authority.ReadReviewRecords(profile.Id));
+        if (heads.Length == 0) return local;
+        var rosters = heads.Select(item => item.Roster).Append(local).ToArray();
+        if (rosters.Any(item => item.GroupId != local.GroupId ||
+            item.OwnerPublicKey != local.OwnerPublicKey || !SharedWorldRosterTrust.Verify(item))) return null;
+        var newest = rosters.OrderByDescending(item => item.Epoch)
+            .ThenByDescending(item => item.Revision).First();
+        if (rosters.Any(item => item.Epoch == newest.Epoch &&
+            item.Revision == newest.Revision && item.Signature != newest.Signature)) return null;
+        return newest;
     }
 
     internal async Task<SharedWorldRoster> PublishDelegatedRosterAsync(Guid profileId,

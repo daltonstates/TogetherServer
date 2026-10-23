@@ -848,8 +848,12 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             if (!pairing.CanAccess(device!, profileId) || device!.SharedWorldPublicKey is null)
                 return Results.StatusCode(403);
             var rawOffset = context.Request.Query["offset"];
+            var rawReview = context.Request.Query["review"];
+            if (rawReview.Count > 1 || rawReview.Count == 1 && rawReview[0] != "1")
+                return Results.BadRequest(new { code = "InvalidRosterReview" });
+            var review = rawReview.Count == 1;
             long offset = 0;
-            if (context.Request.Query.Count != (rawOffset.Count == 0 ? 0 : 1) ||
+            if (context.Request.Query.Count != (rawOffset.Count == 0 ? 0 : 1) + (review ? 1 : 0) ||
                 rawOffset.Count > 1 || rawOffset.Count == 1 &&
                 !long.TryParse(rawOffset[0], System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out offset))
@@ -861,10 +865,21 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 return Results.BadRequest(new { code = "InvalidRosterAnchor" });
             try
             {
+                if (review)
+                {
+                    var auth = await AuthorizeHistoryReview(device, profileId);
+                    if (!auth.Decision.Ok) return Results.Json(auth.Decision, statusCode: 403);
+                    device = auth.Current!;
+                }
                 var revisions = anchor is null
-                    ? await manager.SharedWorldRosterHistoryAsync(profileId, offset)
-                    : await manager.SharedWorldRosterHistoryAfterAsync(profileId, anchor);
-                if (!Reauthorize(device, out var current, out decision) ||
+                    ? await manager.SharedWorldRosterHistoryAsync(profileId, offset, reviewOnly: review)
+                    : await manager.SharedWorldRosterHistoryAfterAsync(profileId, anchor, reviewOnly: review);
+                if (review)
+                {
+                    var recheck = await AuthorizeHistoryReview(device, profileId);
+                    if (!recheck.Decision.Ok) return Results.Json(recheck.Decision, statusCode: 403);
+                }
+                else if (!Reauthorize(device, out var current, out decision) ||
                     !pairing.CanAccess(current!, profileId))
                     return Results.StatusCode(403);
                 if (anchor is not null)
