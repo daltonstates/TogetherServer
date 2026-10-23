@@ -71,6 +71,12 @@ Approved PCs assigned to this server automatically keep and share its completed,
 verified saves. Safe post-Stop backups are enabled with it. Newly approved PCs
 receive the same permission; removing a PC or its server access still works.
 
+Remote Start and Stop permissions are separate from this setting. Being able
+to run your own server or control a friend's server does not grant access to
+host their save. If hosting access is missing, the original Host must enable
+**Allow friends to host this server** for that server and keep this PC approved
+and assigned. Repeating the local game or port checks cannot grant permission.
+
 On a permitted Friend PC, choose the **Host locally** icon beside Start.
 Confirm the warning that other players will connect to your PC and network.
 The app checks the latest available save, its signed history and SHA-256 file

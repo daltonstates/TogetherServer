@@ -19,6 +19,8 @@ internal static class LocalHostingPermissionChecks
     {
         await PermissionBeforePreparationAsync(root);
         await RefreshSignedPermissionAsync(root);
+        await FirstGroupDenialsAsync(root);
+        await TransientRefreshFailuresAsync(root);
         await TransientEnrollmentStatusAsync(root);
         await RefreshStatusWithoutHeartbeatAsync(root);
         await ConnectionAndCancellationAsync(root);
@@ -164,6 +166,93 @@ internal static class LocalHostingPermissionChecks
         }
     }
 
+    private static async Task FirstGroupDenialsAsync(string root)
+    {
+        foreach (var schema in new[] { 2, 3 })
+            foreach (var memberState in new[] { "no-grants", "host-only", "receive-only", "revoked", "expired", "wrong-key" })
+            {
+                using var fixture = new Fixture(root, schema);
+                fixture.Config.ApprovedSharedWorldGroups.Clear();
+                fixture.ReplaceMember(member => memberState switch
+                {
+                    "no-grants" => member with { Grants = new() },
+                    "host-only" => member with { Grants = new(EligibleHost: true) },
+                    "receive-only" => member with { Grants = new(Receive: true) },
+                    "revoked" => member with { Revoked = true },
+                    "expired" => member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) },
+                    _ => member with { PublicKey = fixture.Roster.OwnerPublicKey }
+                });
+                var expected = memberState == "wrong-key" ? "HostingIdentityRequired" : "HostingPermissionRequired";
+                var cached = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(!cached.Allowed && cached.Code == expected && fixture.Requests == 0 &&
+                    !fixture.Config.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId),
+                    $"schema {schema} cached {memberState} was hidden behind missing group approval: {cached.Code}");
+                fixture.Connect();
+                var fresh = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(!fresh.Allowed && fresh.Code == expected && fixture.Requests == 4 &&
+                    fixture.Config.SharedRosterFloors[fixture.ProfileId].Signature == fixture.Roster.Signature &&
+                    fixture.Config.ConsentedSharedWorldProfiles.Count == 0,
+                    $"schema {schema} refreshed {memberState} lost its verified denial: {fresh.Code}");
+                if (memberState != "receive-only")
+                    Require(!fixture.Config.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId),
+                        "a denied first-group enrollment approved an ungranted group");
+                if (expected == "HostingPermissionRequired")
+                    Require(fresh.Message.Contains("Allow friends to host this server", StringComparison.Ordinal),
+                        "a verified owner denial omitted the setting the owner must review");
+                fixture.AssertNoPreparation();
+            }
+        foreach (var fault in new[] { "signature", "floor" })
+        {
+            using var fixture = new Fixture(root);
+            fixture.Config.ApprovedSharedWorldGroups.Clear();
+            fixture.ReplaceMember(member => member with { Grants = new() });
+            if (fault == "signature") fixture.SaveRoster(fixture.Roster with { Signature = new string('A', 88) });
+            else fixture.Config.SharedRosterFloors[fixture.ProfileId] =
+                fixture.Config.SharedRosterFloors[fixture.ProfileId] with { Revision = 2 };
+            var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+            Require(!result.Allowed && result.Code == "SharingReviewRequired" && fixture.Requests == 0 &&
+                !fixture.Config.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId),
+                $"an unverified {fault} became a trusted owner denial: {result.Code}");
+            fixture.AssertNoPreparation();
+        }
+    }
+
+    private static async Task TransientRefreshFailuresAsync(string root)
+    {
+        foreach (var timeout in new[] { false, true })
+            foreach (var cache in new[] { "unknown", "allowed", "denied" })
+            {
+                using var fixture = new Fixture(root);
+                if (cache == "unknown")
+                {
+                    fixture.Config.SharedRosterFloors.Clear();
+                    fixture.Config.SharedWorldSigningKeys.Clear();
+                    fixture.Config.ApprovedSharedWorldGroups.Clear();
+                    fixture.Data.DeleteProtected(fixture.RosterName);
+                }
+                else if (cache == "denied")
+                {
+                    fixture.Config.ApprovedSharedWorldGroups.Clear();
+                    fixture.ReplaceMember(member => member with { Grants = new() });
+                }
+                var floor = fixture.Config.SharedRosterFloors.GetValueOrDefault(fixture.ProfileId);
+                var roster = fixture.Data.LoadProtected(fixture.RosterName);
+                fixture.Connect();
+                fixture.TransportOffline = !timeout;
+                fixture.TransportTimeout = timeout;
+                var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var expected = cache == "unknown" ? "RosterUnavailable" :
+                    cache == "allowed" ? "HostingAllowed" : "HostingPermissionRequired";
+                var after = fixture.Data.LoadProtected(fixture.RosterName);
+                Require(result.Allowed == (cache == "allowed") && result.Code == expected && fixture.Requests == 1 &&
+                    fixture.Config.SharedRosterFloors.GetValueOrDefault(fixture.ProfileId) == floor &&
+                    (roster is null ? after is null : after is not null && roster.SequenceEqual(after)) &&
+                    !result.Message.Contains("synthetic", StringComparison.Ordinal),
+                    $"{cache} cached permission lost its state after {(timeout ? "timeout" : "network failure")}: {result.Code}");
+                fixture.AssertNoPreparation();
+            }
+    }
+
     private static async Task TransientEnrollmentStatusAsync(string root)
     {
         foreach (var method in new[] { HttpMethod.Get, HttpMethod.Post })
@@ -233,7 +322,7 @@ internal static class LocalHostingPermissionChecks
         var statusService = new FriendLocalHostingService(fixture.Data, fixture.Friends, fixture.Manager, _ => []);
         fixture.TransportOffline = true;
         var unknown = await statusService.StatusAsync(fixture.ProfileId);
-        Require(!unknown.Allowed && unknown.Code == "SharingPermissionUnknown" &&
+        Require(!unknown.Allowed && unknown.Code == "RosterUnavailable" &&
             unknown.Steps.Single(step => step.Key == "permission").State == "Unknown" && !unknown.ReadyForManualStart,
             "an unavailable first status read fabricated an owner denial");
         fixture.TransportOffline = false;
@@ -317,18 +406,18 @@ internal static class LocalHostingPermissionChecks
         internal string KeyName => $"shared-world-pc-signing-{deviceId:N}.protected";
         internal string RosterName => $"shared-world-roster-{deviceId:N}-{ProfileId:N}.protected";
         internal int Requests { get; private set; }
-        internal bool TransportOffline, EnrollmentDenied, EnrollFreshIdentity;
+        internal bool TransportOffline, TransportTimeout, EnrollmentDenied, EnrollFreshIdentity;
         internal HttpMethod? EnrollmentFailureMethod;
         internal HttpStatusCode? EnrollmentFailureStatus;
         internal Action? BeforeCurrentRoster;
 
-        internal Fixture(string root)
+        internal Fixture(string root, int schema = 3)
         {
             Data = new(Path.Combine(root, "hosting-permission-" + Guid.NewGuid().ToString("N")));
             Data.SaveSettings(new HostSettings());
-            Roster = Sign(new(3, Guid.NewGuid(), ProfileId, 1, 1, true, Public(owner),
+            Roster = Sign(new(schema, Guid.NewGuid(), ProfileId, 1, 1, true, Public(owner),
                 [new(deviceId, MemberPublicKey, Hosting, false)], "",
-                SignerDeviceId: Guid.Empty, SignerPublicKey: Public(owner)));
+                SignerDeviceId: schema == 3 ? Guid.Empty : null, SignerPublicKey: schema == 3 ? Public(owner) : null));
             history.Add(Roster);
             Data.SaveProtected(KeyName, member.ExportPkcs8PrivateKey());
             SaveRoster(Roster);
@@ -420,6 +509,7 @@ internal static class LocalHostingPermissionChecks
             cancellationToken.ThrowIfCancellationRequested();
             Requests++;
             if (TransportOffline) throw new HttpRequestException("synthetic unreachable original Host");
+            if (TransportTimeout) throw new TaskCanceledException("synthetic internal sharing timeout");
             Require(request.Headers.Authorization?.Parameter == new string('C', 64) &&
                 request.Headers.GetValues("X-Device-Id").Single() == deviceId.ToString(),
                 "permission refresh lost device authentication");

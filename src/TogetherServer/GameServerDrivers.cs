@@ -221,20 +221,28 @@ internal sealed class ValheimServerDriver(LocalData data) : IGameServerDriver
             "Valheim process launched. Waiting for its server-connected log signal; join and save are unverified.", processId);
     }
 
-    public GameHealthResult Health(ManagedRun run)
+    public GameHealthResult Health(ManagedRun run) => Observe(
+        () => ValheimServerLog.Read(run.LogPath),
+        () => ValveServerQuery.Info(run.GamePort + 1),
+        () => IsNonCrossplay(run));
+
+    internal static GameHealthResult Observe(Func<ValheimLogStatus> readLog,
+        Func<ValveServerQueryResult> queryInfo, Func<bool> isNonCrossplay)
     {
-        var log = ValheimServerLog.Read(run.LogPath);
+        var log = readLog();
         if (!log.Ready)
             return new(false, "ValheimStarting", "Starting",
                 "Valheim process matches; waiting for server-connected log");
-        var query = ValveServerQuery.Info(run.GamePort + 1);
+        var query = queryInfo();
         if (query.Players is { } players)
             return new(true, "ValheimLogReady", "Ready",
                 $"Valheim reports {players.Online} of {players.Capacity?.ToString() ?? "?"} players online; client join and save remain unverified",
                 players.Online, players.Capacity, PlayerCountTrusted: true);
 
-        var nonCrossplay = IsNonCrossplay(run);
-        if (query.NoReply && nonCrossplay && log.Players is { } loggedPlayers)
+        var nonCrossplay = isNonCrossplay();
+        // A join may arrive while UDP is waiting or retrying. Fallback must
+        // observe the owned log after the query, never reuse its earlier zero.
+        if (query.NoReply && nonCrossplay && readLog() is { Ready: true, Players: { } loggedPlayers })
             return new(true, "ValheimLogReady", "Ready",
                 $"Valheim's local server log reports {loggedPlayers.Online} of {loggedPlayers.Capacity} players online; client join and save remain unverified",
                 loggedPlayers.Online, loggedPlayers.Capacity, PlayerCountTrusted: true);
@@ -295,11 +303,20 @@ internal static class ValheimServerLog
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return new(false, null);
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            var start = Math.Max(0, stream.Length - TailBytes);
+            var length = stream.Length;
+            var start = Math.Max(0, length - TailBytes);
             stream.Seek(start, SeekOrigin.Begin);
-            using var reader = new StreamReader(stream, Encoding.UTF8, true, 4096, leaveOpen: false);
+            var bytes = new byte[(int)(length - start)];
+            stream.ReadExactly(bytes);
+            // Unity may still be writing the final line. It cannot establish an
+            // empty server until its line terminator is present. Capture a fixed
+            // byte window so a growing log cannot extend this bounded read.
+            var completeLength = bytes.AsSpan().LastIndexOf((byte)'\n') + 1;
+            using var content = new MemoryStream(bytes, 0, completeLength, writable: false);
+            using var reader = new StreamReader(content, Encoding.UTF8, true, 4096, leaveOpen: false);
             if (start > 0) reader.ReadLine(); // Discard the possibly partial first line.
-            return Parse(reader);
+            var result = Parse(reader, startsAtBeginning: start == 0);
+            return completeLength == bytes.Length ? result : result with { Players = null };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DecoderFallbackException)
         {
@@ -307,9 +324,10 @@ internal static class ValheimServerLog
         }
     }
 
-    internal static ValheimLogStatus Parse(TextReader reader)
+    internal static ValheimLogStatus Parse(TextReader reader, bool startsAtBeginning = true)
     {
         var ready = false;
+        var hasCountBaseline = startsAtBeginning;
         var count = 0;
         var pendingConnections = 0;
         var pendingDisconnects = 0;
@@ -337,6 +355,7 @@ internal static class ValheimServerLog
                     continue;
                 }
                 ready = true;
+                hasCountBaseline = true;
                 count = checkpoint;
                 pendingConnections = 0;
                 pendingDisconnects = 0;
@@ -383,7 +402,7 @@ internal static class ValheimServerLog
             }
         }
 
-        var complete = ready && !inconsistent && pendingConnections == 0 && pendingDisconnects == 0 &&
+        var complete = ready && hasCountBaseline && !inconsistent && pendingConnections == 0 && pendingDisconnects == 0 &&
             count is >= 0 and <= Capacity;
         return new(ready, complete ? new GamePlayerCount(count, Capacity) : null);
     }
@@ -432,9 +451,12 @@ internal static class ValveServerQuery
     ];
 
     public static ValveServerQueryResult Info(int port)
-        => Info(IPAddress.Loopback, port);
+        => Info(IPAddress.Loopback, port, retrySilence: true);
 
     public static ValveServerQueryResult Info(IPAddress address, int port)
+        => Info(address, port, retrySilence: false);
+
+    private static ValveServerQueryResult Info(IPAddress address, int port, bool retrySilence)
     {
         try
         {
@@ -444,18 +466,26 @@ internal static class ValveServerQuery
                 SendTimeout = 800
             };
             socket.Connect(address, port);
-            socket.Send(InfoRequest);
             var buffer = new byte[4096];
-            var length = socket.Receive(buffer);
-            if (IsChallenge(buffer.AsSpan(0, length), out var challenge))
+            return Query(request =>
             {
-                var challenged = new byte[InfoRequest.Length + sizeof(int)];
-                InfoRequest.CopyTo(challenged, 0);
-                BinaryPrimitives.WriteInt32LittleEndian(challenged.AsSpan(InfoRequest.Length), challenge);
-                socket.Send(challenged);
-                length = socket.Receive(buffer);
-            }
-            return new(ParseInfo(buffer.AsSpan(0, length)), false);
+                try
+                {
+                    socket.Send(request);
+                    var length = socket.Receive(buffer);
+                    return buffer.AsSpan(0, length).ToArray();
+                }
+                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
+                {
+                    // An oversized datagram answered us; it is an invalid
+                    // reply, never silence eligible for retry/log fallback.
+                    return [];
+                }
+                catch (Exception ex) when (ex is SocketException or IOException)
+                {
+                    return null;
+                }
+            }, retrySilence);
         }
         catch (Exception ex) when (ex is SocketException or IOException)
         {
@@ -465,6 +495,37 @@ internal static class ValveServerQuery
         {
             return new(null, false);
         }
+    }
+
+    // One local UDP timeout should not reject an otherwise safe fresh Stop
+    // check. Retry silence once on this same socket, retaining a received Steam
+    // challenge. Malformed/split/count replies are final; none are retried into
+    // a zero. One challenge plus one silence retry bounds this to three exchanges.
+    internal static ValveServerQueryResult Query(Func<byte[], byte[]?> exchange, bool retrySilence)
+    {
+        var request = InfoRequest;
+        var challenged = false;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var response = exchange(request);
+            if (response is null)
+            {
+                if (!retrySilence) return new(null, true);
+                retrySilence = false;
+                continue;
+            }
+            if (IsChallenge(response, out var challenge))
+            {
+                if (challenged) return new(null, false);
+                challenged = true;
+                request = new byte[InfoRequest.Length + sizeof(int)];
+                InfoRequest.CopyTo(request, 0);
+                BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(InfoRequest.Length), challenge);
+                continue;
+            }
+            return new(ParseInfo(response), false);
+        }
+        return new(null, false);
     }
 
     private static bool IsChallenge(ReadOnlySpan<byte> response, out int challenge)
@@ -488,10 +549,15 @@ internal static class ValveServerQuery
             offset += terminator + 1;
             if (offset > response.Length) return null;
         }
-        if (response.Length - offset < 4) return null;
+        // Do not accept a packet cut off after the count bytes. A complete
+        // A2S_INFO also contains bots/type/environment/visibility/VAC and a
+        // terminated version. EDF and its additional fields remain optional.
+        if (response.Length - offset < 10) return null;
         offset += sizeof(ushort); // Steam application ID.
         var online = response[offset++];
-        var capacity = response[offset];
+        var capacity = response[offset++];
+        offset += 5; // Bots, server type, environment, visibility, VAC.
+        if (response[offset..].IndexOf((byte)0) < 0) return null;
         return capacity > 0 && online <= capacity ? new(online, capacity) : null;
     }
 }

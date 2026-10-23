@@ -11,6 +11,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Isolated native development demo", () => DemoInstanceChecks.RunAsync(root)),
     ("Passive grouped server directory", () => ServerDirectoryChecks.RunAsync(root)),
     ("Calm completed player-count observations", () => { PlayerCountPresentationChecks.Run(); PlayerCountPresentationChecks.RunQuietCountdown(root); return Task.CompletedTask; }),
+    ("Valheim player-count query recovery", () => { ValheimPlayerCountChecks.Run(root); return Task.CompletedTask; }),
     ("Versioned required feature setup", () => RequiredFeatureSetupChecks.RunAsync(root)),
     ("Installer handoff and optional first-use guide", () => GettingStartedChecks.RunAsync(root)),
     ("Separate owner-controlled game password access", () => GamePasswordPermissionChecks.RunAsync(root)),

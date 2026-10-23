@@ -25,6 +25,7 @@ internal sealed partial class FriendLink
             await gate.WaitAsync(cancellationToken);
             try
             {
+                var refreshUnavailable = false;
                 if (refresh && config is { KnownRevoked: false } &&
                     view.ConnectionCode is not ("Revoked" or "AccessExpired" or "ApprovalPending") &&
                     (view.State is "Connected" or "Disabled" ||
@@ -40,9 +41,14 @@ internal sealed partial class FriendLink
                     }
                     catch (Exception error) when (error is HttpRequestException ||
                         error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-                    { /* An unreachable Host does not invalidate a signed offline grant. */ }
+                    { refreshUnavailable = true; }
                 }
-                return ReadLocalHostingAccess(profileId, verifyFiles, permissionOnly);
+                var access = ReadLocalHostingAccess(profileId, verifyFiles, permissionOnly);
+                // Keep current signed offline grants and denials. Without a
+                // verified cache, explain that the refresh could not complete.
+                return refreshUnavailable && access.Code == "SharingPermissionUnknown"
+                    ? access with { Code = "RosterUnavailable", Message = "This PC could not check the Host's sharing permission. Keep the Host app open and retry." }
+                    : access;
             }
             catch (Exception error) when (error is IOException or InvalidDataException or
                 JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException)
@@ -85,8 +91,7 @@ internal sealed partial class FriendLink
             return Denied("WorldHistoryReviewRequired", "Choose and review the shared save history before preparing hosting.");
         var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
         var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
-        if (floor is null || owner is null ||
-            config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != floor.GroupId)
+        if (floor is null || owner is null)
             return Denied("SharingPermissionUnknown", "This PC has not verified the current sharing permission. Check again while connected to the Host.");
         var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{profileId:N}.protected");
         var roster = bytes is { Length: > 0 } && bytes.LongLength <= SharedWorldService.MaximumManifestBytes
@@ -110,7 +115,11 @@ internal sealed partial class FriendLink
             return Denied("HostingIdentityRequired", "Check this PC's sharing identity with the Host first.");
         if (!SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId, publicKey,
                 grants => grants.Receive && grants.EligibleHost))
-            return Denied("HostingPermissionRequired", "The owner has not allowed this PC to host this server. Ask them to review shared hosting and this PC's access.");
+            return Denied("HostingPermissionRequired", "The owner has not allowed this PC to host this server. Ask them to turn on Allow friends to host this server on the Host PC and check this PC's access.");
+        // A verified signed denial is actionable before this PC has followed
+        // its first group. An allowed result still needs that local approval.
+        if (config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) != floor.GroupId)
+            return Denied("SharingPermissionUnknown", "This PC has not verified the current sharing permission. Check again while connected to the Host.");
         // The primary action depends only on current signed authorization.
         // Save selection and verification belong to the explicit hosting flow.
         if (permissionOnly)
