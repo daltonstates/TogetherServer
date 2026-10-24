@@ -65,21 +65,35 @@ history; published versions have their own
 
 ## Current delivery
 
-Preview 0.3.3.9 is being prepared. All 71 source/synthetic groups, strict solution
-compilation, full UI lint and production bundling pass. The focused directory
-checks cover both snapshot-before-directory directions, independent worlds,
-ordinary local creation and unresolved known runs. The renderer/harness suite
-passes 49 pure checks. The local full UI run passes 1,482 of 1,483 cases; its
-remaining demo assertion waited less than the three-second directory poll.
-The same exact assertion now waits up to four seconds and all seven demo flows
-pass. The immutable hosted candidate still requires a full UI rerun, actual
-sidebar clicks before/after Stop, process, compatibility and packaging checks.
+[Preview 0.3.3.9](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.9)
+is published from application source `2f434a628091eb2a6a58b10882310a40980bc952`.
+All 71 source/synthetic groups, 1,483 UI tests in 109 files, 49 pure harness
+checks, strict compilation, formatting, full lint and production bundling pass.
+The [primary Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40133447407)
+builds one candidate; the [retained-candidate continuation](https://github.com/daltonstates/TogetherServer/actions/runs/40135653155)
+passes all 27 Existing gates and UX 3 outer/10 inner, loopback 11 and same-PC
+assigned-LAN 18 pairing stages. Actual sidebar clicks reach the exact signed
+world, hosting PC and profile before and after Stop. The continuation changes
+only bounded check diagnostics and test whitespace, and verifies unchanged
+EXE, seven UI assets and 25 fixture files.
 
-The earlier candidate's actual screenshot revealed the first-frame duplicate
-and was superseded before publication. Earlier run identities, failures and
-measurements remain in ignored release evidence and CI. Final candidate hashes,
-CI results and public-download verification belong with the published release.
-The owner's active desktop and 29 unrelated pending files remain preserved.
+Two automatic-sharing runs each pass nine stages with one Friend and one owner
+Start. Packaged API/browser/rehearsal, six legacy compatibility/update-handoff
+lanes, six installer smoke cases and three actual wizard choices pass. The
+access review passes 36 plans and 164 PNGs with no failures, skips or layout
+findings; 10 representative images were inspected. Native checks retain
+12 required passes, one QuietTime notification block and one inapplicable
+development-staging startup skip. Full native acceptance remains incomplete.
+
+An earlier candidate exposed the first-frame duplicate and was superseded.
+Initial cleanup, private synthetic readiness and signed-member preservation
+assertions did not recur against the unchanged application; their causes remain
+unexplained and no repair is claimed. Exact run identities, hashes and retained
+failures are recorded with the release and CI, rather than duplicated here.
+Anonymous downloads verified all four public assets, source/tag identity and
+unchanged prior releases; stable/latest remains 0.3.3. The owner's active desktop
+and 29 unrelated pending files remain preserved. Laptop history diagnosis,
+adopted-copy preparation and physical/game acceptance remain open as listed above.
 
 ## Repository maintenance
 
