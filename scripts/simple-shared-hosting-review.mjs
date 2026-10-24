@@ -28,6 +28,7 @@ export const simpleHostingCases = [
   friend('missing-install-entry', 'missing-server', { steps: [], hostingEntry: 'visible', screen: { role: 'region', name: 'Play' } }),
   friend('play-ready', 'prepare', { scenario: 'friend-connected', steps: [], hostingEntry: 'visible', screen: { role: 'region', name: 'Play' } }),
   friend('network-warning', 'prepare'),
+  friend('guide-save-preparation', 'prepare'),
   friend('missing-install', 'missing-server'),
   friend('missing-connection', 'connection', { steps: [{ button: 'Host locally' },
     { button: 'Set up Connections from other PCs', within: 'dialog[open]' }] }),
@@ -53,11 +54,17 @@ export const simpleHostingVariants = [
 
 const permissionCodes = { 'not-allowed': 'HostingPermissionRequired', 'permission-unknown': 'RosterUnavailable',
   'permission-review': 'RosterRollback', 'permission-denied': 'HostingPermissionRequired' };
+const permissionMessages = {
+  HostingPermissionRequired: 'The owner has not allowed this PC to host this synthetic server.',
+  RosterUnavailable: 'This synthetic PC could not check the Host\'s sharing permission. Keep the Host reachable and check again.',
+  RosterRollback: 'This synthetic PC\'s saved sharing history needs review. Keep both apps open and check hosting access again.'
+};
 export function simpleHostingPermission(state, boundary) {
   // An already-open guide can learn that access changed after its positive
   // entry lookup. Initial denied and unknown lookups remain fail-closed.
   const code = state.simpleHosting?.endsWith('-after-entry') ? null : permissionCodes[state.simpleHosting];
-  return { allowed: !code, code: code ?? 'HostingAllowed', message: boundary };
+  return { allowed: !code, code: code ?? 'HostingAllowed',
+    message: code ? `${permissionMessages[code]} ${boundary}`.trim() : boundary };
 }
 
 export function simpleHostingStatus(state, profileId, boundary) {
@@ -68,10 +75,10 @@ export function simpleHostingStatus(state, profileId, boundary) {
   const connection = stage === 'connection';
   const conflict = stage === 'conflict';
   const ports = stage === 'ports';
-  return { ok: allowed && !missing && !connection && !conflict && !ports,
+  return { ok: allowed && prepared && !missing && !connection && !conflict && !ports,
     code: permissionCodes[stage] ?? (missing ? 'InstalledServerRequired' : connection ? 'LocalConnectionSetupRequired' : ports ? 'PortConflict' :
-      conflict ? 'HostingHistoryChoiceRequired' : prepared ? 'LocalHostingPrepared' : 'NeedsPreparation'),
-    message: boundary, allowed, consented: prepared, game: 'Valheim', name: 'Weekend Valheim', needsServerFile: missing,
+      conflict ? 'HostingHistoryChoiceRequired' : prepared ? 'LocalHostingPrepared' : 'LocalHostingPreparationRequired'),
+    message: boundary, allowed, consented: prepared || stage === 'prepare', game: 'Valheim', name: 'Weekend Valheim', needsServerFile: missing,
     needsPassword: false, serverFile: missing ? null : 'C:\\TogetherServer-Synthetic\\valheim_server.exe',
     gameVersion: 'Synthetic', gamePort: 2456, controlPort: 5131, localProfileId: prepared ? profileId : null,
     branchHash: prepared ? 'A'.repeat(64) : null, readyForManualStart: allowed && prepared && !connection && !missing && !conflict && !ports,
@@ -162,15 +169,46 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       throw new Error('Clicking the removed-access label must reveal the saved Host without a hosting action');
     record.assertions.push({ removedAccessInline: bounds, clickableLabelRevealedRemovedHost: true });
   } else if (testCase.hostingEntry === 'hidden') {
-    await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
-    if (!state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting/access')) ||
+    const card = testCase.section === sharedSaves;
+    const scope = card ? page.locator('.friend-primary') : page.getByRole('region', { name: 'Play', exact: true });
+    const permission = simpleHostingPermission(state, '');
+    const access = scope.getByRole('status', { name: 'Hosting access', exact: true });
+    const accessPath = `/api/local/friend/${state.friend.profiles[0]?.id}/shared-world/hosting/access`;
+    const assertHidden = async () => {
+      if (!state.requests.some(item => item.method === 'GET' && item.path === accessPath) ||
+        state.requests.some(item => /shared-world\/hosting(?:\/|$)/u.test(item.path) &&
+          (item.method !== 'GET' || item.path !== accessPath)) ||
         await page.getByRole('button', { name: 'Host locally', exact: true }).count() ||
-        await page.locator('.local-hosting-card').count() ||
-        await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() || writes.length ||
+        await page.getByRole('region', { name: 'Host locally', exact: true }).count() ||
+        await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() ||
+        await page.getByRole('list', { name: 'Local hosting checks', exact: true }).count() || hostingWrites(state).length ||
         state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')))
-      throw new Error('Denied or unknown permission must hide the hosting action and card without opening checks or writing state');
-    record.assertions.push({ hostingEntryHidden: true, permissionCode: simpleHostingPermission(state, '').code,
-      presentation: testCase.section === sharedSaves ? 'card' : 'action' });
+        throw new Error('Denied or unknown permission must hide the hosting launcher without opening checks or writing state');
+    };
+    await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
+    await access.waitFor({ state: 'visible', timeout: 8000 });
+    if (await access.count() !== 1 || !await access.isVisible())
+      throw new Error('Denied or unknown permission must show one scoped Hosting access status');
+    await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
+    await assertHidden();
+    const retry = scope.getByRole('button', { name: 'Check hosting access again', exact: true });
+    const retryExpected = permission.code !== 'HostingPermissionRequired';
+    if (await retry.count() !== Number(retryExpected) || retryExpected && !await retry.isEnabled())
+      throw new Error('Unknown or review-required hosting access needs an enabled read-only retry; a confirmed denial needs its explanation');
+    if (retryExpected) {
+      const reads = state.requests.filter(item => item.method === 'GET' && item.path === accessPath).length;
+      const retried = page.waitForResponse(response => response.url().endsWith(accessPath) &&
+        response.request().method() === 'GET' && response.ok(), { timeout: 8000 });
+      await retry.click();
+      const result = await (await retried).json();
+      if (result.allowed !== false || result.code !== permission.code ||
+          state.requests.filter(item => item.method === 'GET' && item.path === accessPath).length <= reads)
+        throw new Error('A hosting access retry must read the current scoped permission without granting access');
+      await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
+      await assertHidden();
+    }
+    record.assertions.push({ hostingEntryHidden: true, hostingAccessStatusVisible: true, hostingAccessRetry: retryExpected,
+      permissionCode: permission.code, presentation: card ? 'card' : 'action', accessReadOnly: true });
   } else if (testCase.hostingEntry === 'visible') {
     const card = testCase.section === sharedSaves;
     const entryRegion = page.getByRole('region', { name: card ? 'Host locally' : 'Play', exact: true });
@@ -258,6 +296,7 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     const guideExpectation = testCase.id.endsWith('-guide-permission-unknown') ? ['permission', 'Check the current hosting permission'] :
       testCase.id.endsWith('-guide-permission-denied') ? ['permission', 'Ask the owner to allow shared hosting'] :
       testCase.id.endsWith('-missing-install') ? ['server', 'Install or select the dedicated server'] :
+      testCase.id.endsWith('-guide-save-preparation') ? ['save', 'Prepare this PC\'s hosting copy'] :
       testCase.id.endsWith('-save-conflict') ? ['save', 'Ask the owner to review different progress'] :
       testCase.id.endsWith('-guide-ports') ? ['ports', 'Free the game ports on this PC'] :
       testCase.id.endsWith('-missing-connection') ? ['connection', 'Set up connections to this PC'] : null;
@@ -268,6 +307,13 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
         throw new Error('The hosting check did not open its corresponding setup guide');
       if (key === 'permission' && await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
         throw new Error('The permission guide must not allow hosting through an unresolved or denied result');
+      if (testCase.id.endsWith('-guide-save-preparation')) {
+        if (await guide.getByText(/receives it if needed and prepares a separate local copy/u).count() !== 1 ||
+            await modal.getByText(/interrupted transfer|stop the game server safely/iu).count() ||
+            !await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+          throw new Error('An unprepared hosting copy must explain preparation and retain explicit network confirmation without implying a failed transfer');
+        record.assertions.push({ unpreparedCopyExplained: true, transferFailureImplied: false, networkConfirmationStillRequired: true });
+      }
       record.assertions.push({ hostingGuideStep: key, heading: title });
     }
     if (hostingWrites(state).length) throw new Error('Checks, retry, guide navigation and reopening must not write hosting state');

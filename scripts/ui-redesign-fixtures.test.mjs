@@ -614,7 +614,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 78, 'twenty-six shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
+  assert.equal(simple.plans.length, 81, 'twenty-seven shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -841,7 +841,7 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 26);
+  assert.equal(simpleHostingCases.length, 27);
   assert.equal(simpleHostingVariants.length, 3);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
@@ -935,10 +935,11 @@ test('hosting review distinguishes initial permission failures from access chang
     for (const changedAfterEntry of [false, true]) {
       const state = createFixtureState({ id: 'friend-offline', simpleHosting: `${stage}${changedAfterEntry ? '-after-entry' : ''}` });
       const access = routeFixture(state, { method: 'GET', path: `${base}/access` }).body;
-      assert.deepEqual(access, simpleHostingPermission(state, access.message));
+      const status = routeFixture(state, { method: 'GET', path: base }).body;
+      // The status keeps the fixture boundary; access already adds its own explanation.
+      assert.deepEqual(access, simpleHostingPermission(state, status.message));
       assert.equal(access.allowed, changedAfterEntry, 'only the explicit access-change fixture permits the initial entry lookup');
       assert.equal(access.code, changedAfterEntry ? 'HostingAllowed' : code);
-      const status = routeFixture(state, { method: 'GET', path: base }).body;
       assert.deepEqual(status, simpleHostingStatus(state, fixtureIds.primary, status.message));
       assert.equal(status.code, code);
       assert.equal(status.allowed, false);
@@ -963,7 +964,43 @@ test('hosting review distinguishes initial permission failures from access chang
   assert.equal(status.steps.find(step => step.key === 'ports').state, 'ActionRequired');
 });
 
-test('hidden hosting entry evidence covers action and card and refuses checked or mutation gaps', async () => {
+test('unprepared hosting fixtures require explicit preparation and preserve no-grant Start denial', () => {
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'prepare' });
+  const access = routeFixture(state, { method: 'GET', path: `${base}/access` }).body;
+  const status = routeFixture(state, { method: 'GET', path: base }).body;
+  assert.equal(access.allowed, true);
+  assert.equal(status.code, 'LocalHostingPreparationRequired');
+  assert.equal(status.ok, false);
+  assert.equal(status.consented, true, 'this state is past consent and has not prepared a hosting copy');
+  assert.equal(status.readyForManualStart, false);
+  assert.equal(status.localProfileId, null);
+  assert.equal(status.branchHash, null);
+  assert.equal(status.steps.find(step => step.key === 'save').state, 'Unknown');
+  assert.equal(state.simpleHostingPrepared, false);
+  assert.equal(state.simpleHostingStarted, false);
+  assert.ok(state.requests.every(request => request.method === 'GET'));
+  assert.doesNotThrow(() => localHosting.parseLocalHostingStatus(status));
+  const guide = simpleHostingCases.find(item => item.id === 'simple-hosting-guide-save-preparation');
+  assert.equal(guide.fixture.simpleHosting, 'prepare');
+  assert.deepEqual(guide.steps, [{ button: 'Host locally' }], 'the rendered preparation guide stops before the network confirmation');
+  assert.deepEqual(guide.screen, { role: 'dialog', name: 'Host locally' });
+  const start = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true };
+  const prepare = { allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null };
+  for (const stage of ['not-allowed', 'permission-unknown', 'permission-review']) {
+    const blocked = createFixtureState({ id: 'friend-offline', simpleHosting: stage });
+    assert.equal(routeFixture(blocked, { method: 'GET', path: `${base}/access` }).body.allowed, false);
+    assert.equal(routeFixture(blocked, { method: 'POST', path: `${base}/start`, body: start }), null);
+    const result = routeFixture(blocked, { method: 'POST', path: `${base}/prepare`, body: prepare }).body;
+    assert.equal(result.allowed, false);
+    assert.equal(result.readyForManualStart, false);
+    assert.equal(blocked.simpleHostingPrepared, false);
+    assert.equal(routeFixture(blocked, { method: 'POST', path: `${base}/start`, body: start }), null);
+    assert.equal(blocked.simpleHostingStarted, false);
+  }
+});
+
+test('hidden hosting launcher evidence requires scoped access text and GET-only recovery across both presentations', async () => {
   const { assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
   const hidden = simpleHostingCases.filter(item => item.hostingEntry === 'hidden');
   assert.equal(hidden.length, 6);
@@ -973,25 +1010,78 @@ test('hidden hosting entry evidence covers action and card and refuses checked o
   const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
   for (const testCase of hidden) {
     const state = createFixtureState({ id: testCase.scenario, ...testCase.fixture });
-    assert.equal(routeFixture(state, { method: 'GET', path: `${base}/access` }).body.allowed, false);
+    const permission = routeFixture(state, { method: 'GET', path: `${base}/access` }).body;
+    assert.equal(permission.allowed, false);
     assert.deepEqual(testCase.steps, [], 'a hidden-entry case must never attempt to open hosting');
-    const counts = { button: 0, dialog: 0, card: 0 };
+    const retryExpected = permission.code !== 'HostingPermissionRequired';
+    const counts = { launcher: 0, region: 0, dialog: 0, list: 0, status: 1, retry: Number(retryExpected) };
+    let retryEnabled = true;
+    let completeResponse;
+    const access = {
+      waitFor: async options => assert.equal(options.state, 'visible'), count: async () => counts.status,
+      isVisible: async () => counts.status === 1,
+      getByText: (text, options) => {
+        assert.equal(permission.message.includes(text), true, 'the status must explain this scoped permission result');
+        assert.deepEqual(options, { exact: false });
+        return { waitFor: async settings => assert.equal(settings.state, 'visible') };
+      }
+    };
+    const retry = { count: async () => counts.retry, isEnabled: async () => retryEnabled,
+      click: async () => {
+        const response = routeFixture(state, { method: 'GET', path: `${base}/access` });
+        completeResponse({ url: () => `http://synthetic.invalid${base}/access`, request: () => ({ method: () => 'GET' }),
+          ok: () => response.status === 200, json: async () => response.body });
+      } };
+    const scope = { getByRole: (role, options) => {
+      assert.equal(options.exact, true);
+      if (role === 'status' && options.name === 'Hosting access') return access;
+      assert.equal(role, 'button'); assert.equal(options.name, 'Check hosting access again');
+      return retry;
+    } };
     const page = {
-      getByRole: role => ({ waitFor: async options => assert.equal(options.state, 'hidden'), count: async () => counts[role] }),
-      locator: selector => { assert.equal(selector, '.local-hosting-card'); return { count: async () => counts.card }; }
+      getByRole: (role, options) => {
+        if (role === 'region' && options.name === 'Play') return scope;
+        const key = role === 'button' ? 'launcher' : role;
+        assert.equal(options.name, role === 'list' ? 'Local hosting checks' : 'Host locally');
+        return { waitFor: async settings => assert.equal(settings.state, 'hidden'), count: async () => counts[key] };
+      },
+      locator: selector => { assert.equal(selector, '.friend-primary', 'styling classes do not identify the hidden launcher'); return scope; },
+      waitForResponse: (predicate, options) => {
+        assert.deepEqual(options, { timeout: 8000 });
+        return new Promise(resolve => { completeResponse = response => {
+          assert.equal(predicate(response), true, 'the retry waits for a successful scoped access GET'); resolve(response);
+        }; });
+      }
     };
     const record = { assertions: [] };
     await assertSimpleHostingUi(page, testCase, record, state);
     assert.equal(record.assertions[0].hostingEntryHidden, true);
+    assert.equal(record.assertions[0].hostingAccessStatusVisible, true);
+    assert.equal(record.assertions[0].hostingAccessRetry, retryExpected);
+    assert.equal(record.assertions[0].accessReadOnly, true);
     assert.equal(record.assertions[0].presentation, testCase.section[1] === 'shared-saves' ? 'card' : 'action');
-    for (const surface of ['button', 'card', 'dialog']) {
+    assert.equal(state.requests.length, retryExpected ? 2 : 1, 'unknown/review uses a second GET; a known denial keeps its explanation');
+    assert.ok(state.requests.every(request => request.method === 'GET' && request.path === `${base}/access`));
+    for (const surface of ['launcher', 'region', 'dialog', 'list']) {
       counts[surface] = 1;
       await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /Denied or unknown permission must hide/u);
       counts[surface] = 0;
     }
+    counts.status = 0;
+    await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /must show one scoped Hosting access status/u);
+    counts.status = 1;
+    counts.retry = Number(!retryExpected);
+    await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /needs an enabled read-only retry/u);
+    counts.retry = Number(retryExpected);
+    if (retryExpected) {
+      retryEnabled = false;
+      await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /needs an enabled read-only retry/u);
+      retryEnabled = true;
+    }
     await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, { ...state, requests: [] }),
       /Denied or unknown permission must hide/u, 'an unchecked initial render is not hidden-permission evidence');
-    for (const request of [{ method: 'GET', path: base }, { method: 'POST', path: `${base}/prepare` }]) {
+    for (const request of [{ method: 'GET', path: base }, { method: 'POST', path: `${base}/prepare` },
+      { method: 'GET', path: `/api/local/friend/${fixtureIds.secondary}/shared-world/hosting/access` }]) {
       await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, { ...state, requests: [...state.requests, request] }),
         /Denied or unknown permission must hide/u, 'hidden entries must not run setup checks or write hosting state');
     }

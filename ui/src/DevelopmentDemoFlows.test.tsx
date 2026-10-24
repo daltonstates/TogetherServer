@@ -122,9 +122,15 @@ it.each(['friend-players-online', 'friend-players-checking'] as const)('keeps %s
   controller?.reset(scene)
   render(<DemoApp />)
   const play = await screen.findByRole('region', { name: 'Play' })
+  // Hosting access has its own lookup before the granted action appears.
+  // Keep the quiet player-count assertions after that lookup has finished.
+  await within(play).findByRole('button', { name: 'Host locally' })
   expect(within(play).getByRole('button', { name: 'Stop server' })).toBeDisabled()
   expect(within(play).queryByRole('status')).not.toBeInTheDocument()
-  expect(within(play).queryByRole('alert')).not.toBeInTheDocument()
+  // Requirements are deliberately unavailable in this fixture. A count
+  // observation must not add another alert to that independent result.
+  const requirements = within(play).getByRole('region', { name: 'Game requirements' })
+  expect(within(play).queryAllByRole('alert')).toEqual(within(requirements).queryAllByRole('alert'))
   expect(within(play).queryByText('Checking players. Stop waits for a fresh count of zero.')).not.toBeInTheDocument()
   expect(play.querySelector('.warning-text')).toBeNull()
   const row = await screen.findByRole('button', { name: 'Open Morgan’s Meadow · DEMO on Morgan' })
