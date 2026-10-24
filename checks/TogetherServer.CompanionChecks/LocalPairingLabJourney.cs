@@ -625,7 +625,7 @@ internal static partial class CoreRemoteJourney
                             new(RemoteControlsEnabled: true))).Ok, "CandidateRemoteControlsRejected");
                         var allowed = await RequireCandidateConnectionAsync(owner, DateTimeOffset.UtcNow.AddSeconds(-1));
                         var restricted = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
-                        LabRequire(allowed.Profiles.Single().CanStart && !restricted.Profiles.Single().CanStart &&
+                        LabRequire(allowed.Profiles.Single().CanStart && allowed.Profiles.Single().CanStop && !restricted.Profiles.Single().CanStart &&
                             !restricted.Profiles.Single().CanStop && !restricted.Profiles.Single().CanViewPassword, "CandidatePermissionScopeLost");
                         var denied = await FriendActionAsync(second, localProfileId!.Value, "start");
                         LabRequire(!denied.Ok && denied.Code == "PermissionDenied", "ObserverObtainedOwnerLifecyclePermission");
@@ -717,7 +717,10 @@ internal static partial class CoreRemoteJourney
                         var savedDevices = (await ObserveAsync("ReadBaselineDevices", first,
                             () => PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion"))).Devices;
                         LabRequire(savedDevices.Count == 2 && savedDevices.All(device => device.Paired && !device.Revoked &&
-                            !device.CanStart && !device.CanStop && !device.CanViewPassword), "RestartCredentialBaselineInvalid");
+                            !device.CanStart && device.CanStop == (device.Id == ownerAlias) && !device.CanViewPassword) &&
+                            savedDevices.SingleOrDefault(device => device.Id == ownerAlias) is { CanStop: true } &&
+                            savedDevices.SingleOrDefault(device => device.Id == observerAlias) is { CanStop: false },
+                            "RestartCredentialBaselineInvalid");
                         var beforeCompanion = await ObserveAsync("ReadBaselineIdentity", first,
                             () => PairingLabGetAsync<JsonElement>(first, "/api/local/companion"));
                         var fingerprint = beforeCompanion.GetProperty("fingerprint").GetString();
@@ -763,8 +766,9 @@ internal static partial class CoreRemoteJourney
                         var persistedDevices = (await ObserveAsync("ReadRestoredDevices", first,
                             () => PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion"))).Devices;
                         LabRequire(persistedDevices.Count == 2 && persistedDevices.All(device => savedDevices.Any(saved => saved.Id == device.Id &&
-                            saved.CredentialExpiresUtc == device.CredentialExpiresUtc && saved.AssignedProfileIds.SequenceEqual(device.AssignedProfileIds)) &&
-                            device.Paired && !device.Revoked && !device.CanStart && !device.CanStop && !device.CanViewPassword),
+                            saved.CredentialExpiresUtc == device.CredentialExpiresUtc && saved.AssignedProfileIds.SequenceEqual(device.AssignedProfileIds) &&
+                            saved.CanStop == device.CanStop) &&
+                            device.Paired && !device.Revoked && !device.CanStart && device.CanStop == (device.Id == ownerAlias) && !device.CanViewPassword),
                             "RestartChangedCredentialOrPermissions");
                         // Reconnect before issuing Start: authenticated status and
                         // repeated polling must leave the prepared game offline.
@@ -774,7 +778,9 @@ internal static partial class CoreRemoteJourney
                                 () => WaitForConnectedAsync(client, allowDisabled: true));
                             LabRequire(offline.Endpoint == savedObserver.Endpoint && offline.HostId == savedObserver.HostId &&
                                 offline.Profiles.Count == 1 && offline.Profiles.Single().Id == localProfileId &&
-                                offline.Profiles.Single().State == "Offline" && offline.Profiles.Single().RunOperationId is null,
+                                offline.Profiles.Single().State == "Offline" && offline.Profiles.Single().RunOperationId is null &&
+                                offline.Profiles.Single().CanStop == (client == owner) &&
+                                !offline.Profiles.Single().CanStart && !offline.Profiles.Single().CanStopNow,
                                 "RestartReconnectionReplayedGameStart");
                         }
                         restored = await ObserveAsync("ReadOfflineRuns", first,
@@ -830,11 +836,12 @@ internal static partial class CoreRemoteJourney
                         await PairingLabWaitAsync(async () =>
                         {
                             var view = await PostAsync<object, FriendView>(owner, "/api/local/friend/poll", new { });
-                            return view.State == "Revoked" && view.ConnectionCode == "Revoked";
+                            return view.State == "Revoked" && view.ConnectionCode == "Revoked" &&
+                                !view.CanStop && view.Profiles.Count == 0;
                         }, "RevokedCandidateAliasStillAuthenticated");
                         var observer = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
                         var devices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
-                        LabRequire(devices.Single(device => device.Id == ownerAlias).Revoked &&
+                        LabRequire(devices.Single(device => device.Id == ownerAlias) is { Revoked: true, CanStop: false } &&
                             devices.Single(device => device.Id == observerAlias) is { Revoked: false, Paired: true } &&
                             !observer.Profiles.Single().CanStart && !observer.Profiles.Single().CanStop && !observer.Profiles.Single().CanViewPassword,
                             "CandidateRevocationAffectedOtherCredential");

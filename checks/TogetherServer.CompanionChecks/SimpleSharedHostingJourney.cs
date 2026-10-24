@@ -38,6 +38,9 @@ internal static partial class CoreRemoteJourney
         var stages = new List<string>();
         PairingLabProcess? host = null, candidate = null, receiver = null;
         string? failed = null, groupKey = null;
+        string activeCheck = "setup";
+        string? failedCheck = null;
+        long? failedJsonLine = null, failedJsonByte = null;
         var initialBytes = "Synthetic original " + runId.ToString("N");
         var continuedBytes = "Synthetic continued progress " + runId.ToString("N");
         var profile = new ServerProfile
@@ -180,19 +183,22 @@ internal static partial class CoreRemoteJourney
 
             var candidateRun = candidateSnapshot.Runs.Single(item => item.ProfileId == prepared.LocalProfileId);
             LabRequire(candidateRun.RunOperationId is not null, "SimpleCandidateSessionMissing");
+            activeCheck = "original-owner-session-connect";
             var ownerConnection = await PostAsync<object, WorldPeerActionResult>(owner,
                 $"/api/local/world-peers/{groupKey}/connect", new { deviceId = firstDevice, sessionId = candidateRun.RunOperationId.Value });
             LabRequire(ownerConnection.Ok && ownerConnection.Code == "PeerSessionConnected", "SimpleOwnerSuccessorConnectionRejected");
+            activeCheck = "original-owner-authenticated-status";
             await ModeAsync(owner, hostMode: false);
             var ownerView = await WaitForConnectedAsync(owner, allowDisabled: true);
             LabRequire(ownerView.Profiles.Count == 1 && ownerView.Profiles.Single().Id == prepared.LocalProfileId &&
                 ownerView.Profiles.Single().CanStop && !ownerView.Profiles.Single().CanStart &&
                 !ownerView.Profiles.Single().CanViewLogs && !ownerView.RemoteControlsEnabled,
                 "SimpleOriginalOwnerGuardedStopPermissionMissing");
-            var sharing = await PostAsync<object, SharedWorldSharingView>(owner,
-                $"/api/local/friend/{prepared.LocalProfileId}/shared-world/sharing/check", new { });
-            LabRequire(sharing.Available && sharing.Code == "OriginalOwner" && sharing.SelfDeviceId == Guid.Empty,
-                "SimpleOriginalOwnerSuccessorRosterUnavailable");
+            // The disposable lab permits the passive directory but deliberately
+            // excludes the sharing-management POST. This peer row uses the same
+            // verified cached roster; the exact sharing projection has separate
+            // source coverage without widening the packaged lab's allowlist.
+            activeCheck = "original-owner-signed-world-directory";
             var directory = await PairingLabGetAsync<ServerDirectoryView>(owner, "/api/local/servers");
             var originalRow = directory.LocalServers.Single(item => item.Id == profile.Id);
             var successorRow = directory.FriendHosts.SelectMany(item => item.Servers).Single(item => item.Id == prepared.LocalProfileId);
@@ -200,16 +206,20 @@ internal static partial class CoreRemoteJourney
                 originalRow.OriginalProfileId == profile.Id && successorRow.OriginalProfileId == profile.Id &&
                 !originalRow.IsSuccessor && successorRow.IsSuccessor,
                 "SimpleOwnerDirectorySplitOneSignedWorld");
+            activeCheck = "original-owner-controls-disabled-stop";
             var disabledStop = await FriendActionAsync(owner, prepared.LocalProfileId.Value, "stop");
             LabRequire(!disabledStop.Ok && disabledStop.Code == "RemoteControlsDisabled", "SimpleOwnerBypassedRemoteControlsOff");
             await ModeAsync(first, hostMode: true);
+            activeCheck = "candidate-enable-remote-controls";
             LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
                 new(RemoteControlsEnabled: true))).Ok, "SimpleCandidateRemoteControlsEnableRejected");
             try
             {
+                activeCheck = "original-owner-untrusted-count-status";
                 ownerView = await WaitForConnectedAsync(owner);
                 LabRequire(ownerView.Profiles.Single().CanStop && !ownerView.Profiles.Single().CanStopNow &&
                     ownerView.Profiles.Single().State == "Process running", "SimpleFixtureBecameTrustedEmptyGame");
+                activeCheck = "original-owner-untrusted-count-stop";
                 var countBlockedStop = await FriendActionAsync(owner, prepared.LocalProfileId.Value, "stop");
                 LabRequire(!countBlockedStop.Ok && countBlockedStop.Code == "ServerNotReady", "SimpleOwnerBypassedUntrustedFixtureCount");
                 var unchangedRun = (await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot")).Runs
@@ -310,7 +320,9 @@ internal static partial class CoreRemoteJourney
         catch (Exception error)
         {
             failed = error is PairingLabFailure lab ? lab.Code : error.GetType().Name;
-            throw new InvalidOperationException($"Simple shared-hosting journey failed: {failed}. Evidence: {root}");
+            failedCheck = activeCheck;
+            if (error is JsonException json) { failedJsonLine = json.LineNumber; failedJsonByte = json.BytePositionInLine; }
+            throw new InvalidOperationException($"Simple shared-hosting journey failed: {failed} at {failedCheck}. Evidence: {root}");
         }
         finally
         {
@@ -342,6 +354,9 @@ internal static partial class CoreRemoteJourney
                 durationMs = timer.ElapsedMilliseconds,
                 stages,
                 failed,
+                failedCheck,
+                failedJsonLine,
+                failedJsonByte,
                 cleanup = new { jobEmpty = clean },
                 sourceVersionHash = initialVersion?.VersionHash,
                 sourceVersionNumber = initialVersion?.Number,
@@ -406,7 +421,7 @@ internal static partial class CoreRemoteJourney
             processes.Add(owned);
             LabRequire(owned.Matches(), "SimpleFixtureIdentityMismatch");
         }
-        void Pass(string stage) { stages.Add(stage); Console.WriteLine("PASS simple shared hosting: " + stage); }
+        void Pass(string stage) { stages.Add(stage); activeCheck = stage; Console.WriteLine("PASS simple shared hosting: " + stage); }
         async Task ConfigureFriendAsync(HttpClient client, int companionPort)
         {
             await ModeAsync(client, hostMode: true);

@@ -391,6 +391,31 @@ async function waitForSyntheticResponses(page, pending, revision, timeoutMs = 80
   }
   throw failure();
 }
+async function scrollCaptureScreen(page, specification, pending, revision, timeoutMs = 8000, now = () => performance.now()) {
+  const deadline = now() + timeoutMs;
+  const remaining = () => {
+    const value = deadline - now();
+    if (value <= 0) throw new Error(`Named capture screen did not remain attached within ${timeoutMs} ms`);
+    return value;
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await waitForSyntheticResponses(page, pending, revision, remaining(), now);
+    // A mode change replaces the workspace. Resolve its requested screen again
+    // after the exact responses and paints, including on a detach-only retry.
+    const screen = locatorFor(page, specification).first();
+    try {
+      await screen.waitFor({ state: 'visible', timeout: remaining() });
+      await screen.scrollIntoViewIfNeeded({ timeout: remaining() });
+      await waitForSyntheticResponses(page, pending, revision, remaining(), now);
+      const current = locatorFor(page, specification).first();
+      await current.waitFor({ state: 'visible', timeout: remaining() });
+      return current;
+    } catch (error) {
+      if (!/Element is not attached to the DOM/u.test(error.message ?? '')) throw error;
+      if (attempt === 3) throw new Error('Named capture screen detached during all three settled scroll attempts', { cause: error });
+    }
+  }
+}
 async function navigateHeader(page, workspace, record) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true });
   await visible(navigation);
@@ -1349,17 +1374,19 @@ try {
         }
         await performActions(page, testCase, record);
       }
-      const screen = await visible(locatorFor(page, testCase.screen));
+      // A click can still be finishing Host -> Friend navigation. Settle the
+      // current responses and painted UI before resolving or scrolling a pane.
+      if (!testCase.pendingState) await page.waitForLoadState('networkidle', { timeout: 8000 });
+      record.assertions.push({ syntheticResponsesSettled: await waitForSyntheticResponses(page, pending, () => responseRevision) });
+      let screen = await visible(locatorFor(page, testCase.screen));
       record.assertions.push({ correctNamedScreen: { ...testCase.screen, name: String(testCase.screen.name ?? '') } });
       const hasDialog = await page.locator('dialog[open]').count() > 0;
       if (hasDialog && !record.dialogInitialFocus) record.dialogInitialFocus = await focusDetails(page);
       if (!testCase.action?.startsWith('tooltip') && testCase.action !== 'picker' && !testCase.id.startsWith('setup-polish-settings-')) {
         record.actions.push({ action: 'scroll-asserted-screen-into-view' });
-        await screen.scrollIntoViewIfNeeded();
+        screen = await scrollCaptureScreen(page, testCase.screen, pending, () => responseRevision);
       }
       // Wait for UI fetches/fonts/paint using signals, never arbitrary sleep.
-      if (!testCase.pendingState) await page.waitForLoadState('networkidle', { timeout: 8000 });
-      record.assertions.push({ syntheticResponsesSettled: await waitForSyntheticResponses(page, pending, () => responseRevision) });
       await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
       if (testCase.id.endsWith('-chat-empty')) {
         const messages = await visible(page.getByRole('log', { name: 'Messages', exact: true }));

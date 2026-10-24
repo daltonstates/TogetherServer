@@ -859,6 +859,62 @@ test('capture quiet wait preserves failures and bounds unresolved responses, bro
   assert.equal(paints, 8, 'continuous response activity uses one shared deadline instead of restarting its timeout');
 });
 
+test('capture settles navigation before resolving a pane and re-resolves the same screen after a detached scroll', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'scrollCaptureScreen');
+  assert.ok(helper);
+  const beforeScreen = source.indexOf('let screen = await visible(locatorFor(page, testCase.screen));');
+  assert.ok(source.lastIndexOf('syntheticResponsesSettled: await waitForSyntheticResponses(page, pending, () => responseRevision)', beforeScreen) >
+    source.lastIndexOf('await performActions(page, testCase, record)', beforeScreen), 'mode-changing actions settle before the first named pane lookup');
+  const specification = { role: 'region', name: 'Servers' };
+  const events = [], resolved = [];
+  let scrolls = 0;
+  const scroll = runInNewContext(`${helper.getText(ast)}\n;scrollCaptureScreen`, {
+    waitForSyntheticResponses: async () => { events.push('settle'); },
+    locatorFor: (_page, requested) => {
+      assert.equal(requested, specification, 'a retry must retain the exact requested named screen');
+      events.push('resolve');
+      const pane = { id: resolved.length, waitFor: async () => { events.push('visible'); }, scrollIntoViewIfNeeded: async () => {
+        events.push('scroll');
+        if (++scrolls === 1) throw new Error('locator.scrollIntoViewIfNeeded: Element is not attached to the DOM');
+      } };
+      resolved.push(pane);
+      return { first: () => pane };
+    }
+  });
+  const current = await scroll({}, specification, new Set(), () => 0, 8000, () => 0);
+  assert.deepEqual(events, ['settle', 'resolve', 'visible', 'scroll', 'settle', 'resolve', 'visible', 'scroll', 'settle', 'resolve', 'visible']);
+  assert.equal(scrolls, 2);
+  assert.equal(current, resolved[2], 'return the fresh named panel after final response/paint settlement, never the detached pane');
+});
+
+test('capture scroll retries only detach failures and bounds repeated replacement with one shared deadline', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'scrollCaptureScreen');
+  const detached = new Error('Element is not attached to the DOM');
+  let scrolls = 0;
+  const scope = { waitForSyntheticResponses: async () => {}, locatorFor: () => ({ first: () => ({
+    waitFor: async () => {}, scrollIntoViewIfNeeded: async () => { scrolls++; throw detached; }
+  }) }) };
+  const scroll = runInNewContext(`${helper.getText(ast)}\n;scrollCaptureScreen`, scope);
+  await assert.rejects(scroll({}, {}, new Set(), () => 0, 8000, () => 0),
+    error => /all three settled scroll attempts/u.test(error.message) && error.cause === detached);
+  assert.equal(scrolls, 3, 'persistent replacement stays a failed capture after three exact detach attempts');
+  const other = new Error('The named screen is clipped by another panel.');
+  scope.locatorFor = () => ({ first: () => ({ waitFor: async () => {}, scrollIntoViewIfNeeded: async () => { throw other; } }) });
+  await assert.rejects(scroll({}, {}, new Set(), () => 0, 8000, () => 0), error => error === other,
+    'other scroll and visibility errors propagate without a retry');
+  let elapsed = 0;
+  const budgets = [];
+  scope.waitForSyntheticResponses = async (_page, _pending, _revision, remaining) => { budgets.push(remaining); elapsed += 1000; };
+  scope.locatorFor = () => ({ first: () => ({ waitFor: async () => { elapsed += 2000; },
+    scrollIntoViewIfNeeded: async () => { elapsed += 2000; throw detached; } }) });
+  await assert.rejects(scroll({}, {}, new Set(), () => 0, 8000, () => elapsed), /did not remain attached within 8000 ms/u);
+  assert.deepEqual(budgets, [8000, 3000], 'retrying never resets the overall deadline');
+});
+
 test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {
   const state = createFixtureState('host-ready');
   const before = JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices });
