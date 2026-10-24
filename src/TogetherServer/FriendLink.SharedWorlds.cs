@@ -311,12 +311,13 @@ internal sealed partial class FriendLink
                     if (!chain.Contains(profileId, revision))
                     {
                         // Different legacy journals can omit one another's
-                        // standalone snapshots. A root fallback may pass an older
-                        // verified snapshot even after concurrent peer catch-up
-                        // advances our head to schema 3. Prove its position using
+                        // standalone snapshots. Any response can carry an older
+                        // verified snapshot after concurrent peer catch-up
+                        // advances our head to schema 3, including an anchored
+                        // request already in flight. Prove its position using
                         // the retained legacy interval, never just the new tip;
                         // equal counters, forks and schema-3 gaps still fail closed.
-                        if (!useAnchor && chain.SupersededLegacySnapshot(profileId, revision)) continue;
+                        if (chain.SupersededLegacySnapshot(profileId, revision)) continue;
                         chain.Append(revision, pinned ?? current.OwnerPublicKey);
                     }
                 }

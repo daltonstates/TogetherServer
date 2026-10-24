@@ -49,6 +49,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Enrollment nonce scope and single-use", () => EnrollmentNonceChecks.RunAsync()),
     ("Concurrent shared enrollment exchanges", () => SharedEnrollmentExchangeChecks.RunAsync(root)),
     ("Legacy roster bootstrap races and trust floors", () => SharedRosterBootstrapChecks.RunAsync(root)),
+    ("Concurrent signed roster imports", () => { SharedRosterConcurrentImportChecks.Run(root); return Task.CompletedTask; }),
     ("Revoked shared-world device rejoin", () => SharedRosterRejoinChecks.RunAsync(root)),
     ("Solo and descendant world recovery", () => SoloRecoveryChecks.RunAsync(root)),
     ("Local hosting permission before preparation", () => LocalHostingPermissionChecks.RunAsync(root)),

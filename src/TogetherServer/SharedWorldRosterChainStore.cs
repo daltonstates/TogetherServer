@@ -509,7 +509,20 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         {
             var floor = Ready(roster.ProfileId);
             var hash = SharedWorldRosterTrust.Hash(roster);
-            if (floor.Heads!.Contains(hash)) return;
+            if (floor.GroupId != Guid.Empty && (floor.GroupId != roster.GroupId ||
+                floor.OwnerPublicKey != pinnedOwnerPublicKey || roster.OwnerPublicKey != pinnedOwnerPublicKey))
+                throw new InvalidDataException("Roster chain identity changed.");
+            // A companion response and peer catch-up can import the same
+            // revision concurrently. Recheck committed membership under this
+            // lock even when another importer already advanced beyond it.
+            // Retain the exact protected lookup and file; never recreate either.
+            if (floor.Count > 0 && HasLookup(roster.ProfileId, floor, hash))
+            {
+                var retained = LoadRevision(roster.ProfileId, hash);
+                if (!SharedWorldRosterTrust.VerifySignature(retained))
+                    throw new InvalidDataException("Retained roster signature is invalid.");
+                return;
+            }
             Reserve(roster.ProfileId, 1024 * 1024);
             if (floor.GroupId == Guid.Empty)
             {

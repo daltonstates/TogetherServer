@@ -19,6 +19,7 @@ internal static class SharedRosterBootstrapChecks
         await FencedHistoryReviewAsync(root);
         await FencedRosterCatchUpAsync(root);
         await ConcurrentLegacyBootstrapAsync(root);
+        await ConcurrentAnchoredLegacyBootstrapAsync(root);
         await RecoveredFloorReceivesSaveAsync(root);
         await TransferProgressCancellationAsync(root);
         using (var fixture = new Fixture(root))
@@ -491,6 +492,76 @@ internal static class SharedRosterBootstrapChecks
         }
     }
 
+    private static async Task ConcurrentAnchoredLegacyBootstrapAsync(string root)
+    {
+        foreach (var fault in new[] { "none", "sibling", "same-epoch", "same-revision", "schema3", "schema3-gap", "bad-signature" })
+        {
+            using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+            fixture.Chain.Append(fixture.Legacy, fixture.Legacy.OwnerPublicKey);
+            var nextLegacy = fixture.Sign(fixture.Bootstrap with { Epoch = 3, Revision = 3 });
+            var peerHead = fixture.Child(nextLegacy);
+            fixture.Current = fault == "schema3-gap" ? fixture.Child(fixture.Child(peerHead)) : peerHead;
+            var receivedLegacy = fault switch
+            {
+                "sibling" => fixture.Sign(nextLegacy with { OwnerOverride = !nextLegacy.OwnerOverride }),
+                "same-epoch" => fixture.Sign(fixture.Bootstrap with { Epoch = nextLegacy.Epoch }),
+                "same-revision" => fixture.Sign(fixture.Bootstrap with { Revision = nextLegacy.Revision }),
+                "schema3" => fixture.Child(fixture.Legacy),
+                "bad-signature" => fixture.Bootstrap with { Signature = new string('A', 88) },
+                _ => fixture.Bootstrap
+            };
+            fixture.RemoteHistory = [fixture.Legacy, receivedLegacy, nextLegacy, fixture.Current];
+            var cachedFloor = fixture.Data.LoadProtected(fixture.CacheName)!;
+            byte[]? peerFloor = null;
+            var imported = 0;
+            fixture.BeforeAnchoredPage = () =>
+            {
+                Require(fixture.LastAnchor == SharedWorldRosterTrust.Hash(fixture.Legacy) &&
+                    fixture.Chain.Count(fixture.ProfileId) == 1,
+                    "the anchored race did not begin from the exact retained owner snapshot");
+                // An approved peer can have a valid journal beginning at L3.
+                // It imports L3/S4 while this request still carries anchor L1;
+                // the owner's response also contains the intervening L2.
+                fixture.Chain.Append(nextLegacy, nextLegacy.OwnerPublicKey);
+                fixture.Chain.Append(peerHead, peerHead.OwnerPublicKey);
+                peerFloor = fixture.Data.LoadProtected($"shared-roster-chain-{fixture.ProfileId:N}.protected")!;
+                imported++;
+            };
+            var sharing = await fixture.CheckAsync();
+            Require(imported == 1 && fixture.RootFallbacks == 0 && fixture.PageRequests == 1 &&
+                fixture.LastAnchor == SharedWorldRosterTrust.Hash(fixture.Legacy) && fixture.LastOffset == 1 &&
+                fixture.Chain.Count(fixture.ProfileId) == 3 &&
+                fixture.Chain.Contains(fixture.ProfileId, fixture.Legacy) &&
+                fixture.Chain.Heads(fixture.ProfileId).Single().Signature == peerHead.Signature &&
+                peerFloor is not null && fixture.Data.LoadProtected($"shared-roster-chain-{fixture.ProfileId:N}.protected")!
+                    .AsSpan().SequenceEqual(peerFloor),
+                "anchored history import changed the peer's complete signed prefix, repeated paging or used root fallback");
+            if (fault == "none")
+            {
+                Require(sharing.Available && sharing.Revision == fixture.Current.Revision &&
+                    (await fixture.CheckHostingAsync()).Allowed && fixture.PageRequests == 1,
+                    "a valid anchored legacy page became a verification failure after peer catch-up: " +
+                    sharing.Code + "; " + sharing.Message);
+                fixture.AssertFloor(fixture.Current);
+            }
+            else
+            {
+                Require(!sharing.Available && sharing.Code == "RosterRejected",
+                    "anchored peer catch-up skipped a fork, unverified snapshot or schema-3 gap: " + fault);
+                fixture.AssertFloor(fixture.Legacy);
+                Require(fixture.Data.LoadProtected(fixture.CacheName)!.AsSpan().SequenceEqual(cachedFloor),
+                    "rejected anchored metadata replaced the exact cached signed floor: " + fault);
+            }
+            Require(fixture.ManifestRequests == 0 && fixture.ChunkRequests == 0 && fixture.ReceiptRequests == 0 &&
+                fixture.AuthorityRequests == 0 && fixture.ConfirmedReceipt is null &&
+                !Directory.Exists(fixture.ReceiveRoot) &&
+                !new WorldAuthorityStore(fixture.Data).HasState(fixture.ProfileId) &&
+                !fixture.Data.HasProtected(WorldPeerReceiveConsentStore.StateName) &&
+                fixture.Data.LoadSettings().Profiles.Count == 0 && !fixture.Data.LoadSettings().CompanionListeningEnabled,
+                "an anchored permission check changed save, receipt, authority, consent or hosting state");
+        }
+    }
+
     private static async Task TransferProgressCancellationAsync(string root)
     {
         using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
@@ -749,6 +820,7 @@ internal static class SharedRosterBootstrapChecks
         public bool RosterPagesUnavailable { get; set; }
         public bool ReviewPagesAvailable { get; set; }
         public Action? BeforeRootPage { get; set; }
+        public Action? BeforeAnchoredPage { get; set; }
         public int PageFailures { get; set; }
         public int CurrentRequests { get; private set; }
         public int PageRequests { get; private set; }
@@ -757,6 +829,7 @@ internal static class SharedRosterBootstrapChecks
         public int ManifestRequests { get; private set; }
         public int ChunkRequests { get; private set; }
         public int ReceiptRequests { get; private set; }
+        public int AuthorityRequests { get; private set; }
         public SharedWorldVersion? PublishedVersion { get; private set; }
         public byte[] PublishedPayload { get; private set; } = [];
         public SharedWorldReceipt? ConfirmedReceipt { get; private set; }
@@ -908,7 +981,11 @@ internal static class SharedRosterBootstrapChecks
             else if (path.EndsWith("/enrollment", StringComparison.Ordinal))
                 body = request.Method == HttpMethod.Get ? new SharedWorldEnrollmentChallenge(new string('N', 44)) : new { ok = true };
             else if (path.EndsWith("/roster", StringComparison.Ordinal)) body = Current;
-            else if (path.EndsWith("/authority", StringComparison.Ordinal)) body = Array.Empty<WorldAuthorityRecord>();
+            else if (path.EndsWith("/authority", StringComparison.Ordinal))
+            {
+                AuthorityRequests++;
+                body = Array.Empty<WorldAuthorityRecord>();
+            }
             else if (path.EndsWith("/revisions/current", StringComparison.Ordinal))
             {
                 CurrentRequests++;
@@ -942,6 +1019,12 @@ internal static class SharedRosterBootstrapChecks
                 if (RemoteHistory is not null && LastAnchor is not null)
                 {
                     var position = Array.FindIndex(RemoteHistory.ToArray(), item => SharedWorldRosterTrust.Hash(item) == LastAnchor);
+                    if (position >= 0)
+                    {
+                        var beforeAnchoredPage = BeforeAnchoredPage;
+                        BeforeAnchoredPage = null;
+                        beforeAnchoredPage?.Invoke();
+                    }
                     var response = new HttpResponseMessage(position < 0 ? HttpStatusCode.Conflict : HttpStatusCode.OK)
                     {
                         Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(position < 0 ? [] :

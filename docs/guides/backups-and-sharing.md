@@ -137,13 +137,16 @@ Remote Start/Stop can work while receiving a shared save is blocked. The message
 records, before the app requests the save files or sends a download receipt.
 It does not establish a failed network check.
 
-[Preview 0.3.3.5](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.5)
-repairs a case where history review saved a newer permission record without
-importing its journal. Update both PCs to this preview and keep both apps open;
-on the receiving PC, open **Host locally** and choose **Check hosting access
-again**. The app can catch up the missing signed records while preserving its
-saved connection and worlds. Changed, damaged or conflicting history remains
-blocked for review; keep that evidence instead of resetting app data.
+Use the [newest preview](https://github.com/daltonstates/TogetherServer/releases)
+on both PCs and keep both apps open. History review retains the signed parent
+records before advancing its trusted record. It also handles background peer
+sync advancing while a sharing check is waiting for revisions. These cases can
+show **The signed sharing history failed verification**, including **The
+received revisions could not be joined to this PC's saved sharing history**.
+On the receiving PC, open **Host locally** and choose **Check hosting access
+again**. Catch-up preserves the saved connection, current permissions and
+worlds. Changed, damaged or conflicting history remains blocked for review;
+keep that evidence instead of resetting app data.
 
 On the original Host, **Share latest backup** retries publication of an existing
 completed post-Stop backup. Then let the permitted receiving PC continue through

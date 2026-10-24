@@ -23,6 +23,11 @@ history; published versions have their own
 - Signed original-world identity survives successor-local profile IDs and
   roster changes. Missing valid ancestry can be caught up; invalid signatures,
   changed ownership and divergent histories still require review.
+- Companion history checks and background peer sync can converge while a page
+  request is in flight. A redundant legacy snapshot must fit a strictly proven
+  retained owner-signed interval. Replaying an exact committed revision checks
+  its protected index and signed file under the mutation lock, preserves the
+  current head, and grants no access from an earlier roster.
 - An adopted connection's permission prompt and saved receive consent use the
   pinned original world and member identity. Original-owner permission requires
   its actual signing key and keeps local receive consent separate. Cached save
@@ -41,11 +46,12 @@ history; published versions have their own
 
 ## Open work and acceptance limits
 
-- The physical laptop's signed sharing-history failure is still unconfirmed.
-  Revoke/reinvite cases pass with retained and deleted old connections and
-  signing metadata. The error now names the failing verification step while
-  preserving signed ancestry and trust floors. A retry's complete extended
-  message is needed to identify that laptop's failure; history is not reset.
+- The laptop's extended error identifies signed-ancestry import. Two concurrent
+  import schedules reproduce this failure in disposable source checks: an
+  anchored response carrying an intermediate legacy snapshot after peer sync
+  advanced, and an exact revision committed elsewhere between checking and
+  appending it. Both paths are repaired without resetting history. Physical
+  laptop retry remains unverified; revoke/reinvite alone did not reproduce it.
 - **Known adopted-copy preparation limit:** the permission prompt, consent
   alias and cached-version identity have focused source coverage, but preparing
   from an already adopted successor can still fail at the legacy received-copy
