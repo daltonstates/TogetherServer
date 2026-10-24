@@ -808,6 +808,57 @@ test('settings jump coordinator awaits async false results and records only sett
   assert.ok(evaluations > 1 && evaluations <= 8, 'an unfulfilled destination is retried and remains a bounded failure');
 });
 
+test('capture waits for exact synthetic responses and retries activity that starts during painted observation', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'waitForSyntheticResponses');
+  assert.ok(helper, 'exercise the actual harness helper without a browser or listener');
+  const wait = runInNewContext(`${helper.getText(ast)}\n;waitForSyntheticResponses`, { setTimeout, clearTimeout });
+  let revision = 1, paints = 0, elapsed = 0;
+  const pending = new Set();
+  let finish;
+  const token = { method: 'GET', path: '/api/local/profiles/synthetic/shared-world',
+    done: new Promise(resolve => { finish = resolve; }) };
+  pending.add(token);
+  const page = { evaluate: async () => {
+    paints++; elapsed += 16;
+    assert.equal(pending.size, 0, 'paint observation follows completion of the current exact response');
+    if (paints === 1) revision += 2; // A new request starts and finishes between the two samples.
+  } };
+  const waiting = wait(page, pending, () => revision, 8000, () => elapsed);
+  assert.equal(paints, 0, 'an active route is awaited rather than failing a one-time pending sample');
+  pending.delete(token); revision++; finish();
+  const evidence = await waiting;
+  assert.equal(evidence.pending, 0);
+  assert.equal(evidence.responseRevision, 4);
+  assert.equal(evidence.stablePaintFrames, 2);
+  assert.equal(paints, 2, 'a response revision change invalidates the first painted interval');
+  assert.match(source, /finally \{ pending\.delete\(token\); responseRevision\+\+; settled\(\); \}/u,
+    'exact route completion signals both the pending set and the observed revision');
+  assert.match(source, /syntheticResponsesSettled: await waitForSyntheticResponses\(page, pending, \(\) => responseRevision\)/u,
+    'capture uses the bounded helper rather than a single pending-size sample');
+});
+
+test('capture quiet wait preserves failures and bounds unresolved responses, browser observations and continuous activity', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'waitForSyntheticResponses');
+  const wait = runInNewContext(`${helper.getText(ast)}\n;waitForSyntheticResponses`, { setTimeout, clearTimeout });
+  const unresolved = new Set([{ method: 'GET', path: '/api/local/never-settles', done: new Promise(() => {}) }]);
+  await assert.rejects(wait({ evaluate: async () => assert.fail('do not paint before the response settles') }, unresolved,
+    () => 1, 10, () => 0), /did not settle within 10 ms.*GET \/api\/local\/never-settles/u);
+  assert.equal(unresolved.size, 1, 'timing out never discards an unresolved request');
+  await assert.rejects(wait({ evaluate: () => new Promise(() => {}) }, new Set(), () => 0, 10, () => 0),
+    /did not settle within 10 ms/u, 'an unresponsive browser observation is also bounded');
+  const failedObservation = new Error('Synthetic browser observation failed.');
+  await assert.rejects(wait({ evaluate: async () => { throw failedObservation; } }, new Set(), () => 0, 8000, () => 0),
+    error => error === failedObservation, 'an observed error remains a failed capture');
+  let elapsed = 0, revision = 0, paints = 0;
+  await assert.rejects(wait({ evaluate: async () => { elapsed += 1000; revision += 2; paints++; } }, new Set(),
+    () => revision, 8000, () => elapsed), /did not settle within 8000 ms/u);
+  assert.equal(paints, 8, 'continuous response activity uses one shared deadline instead of restarting its timeout');
+});
+
 test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {
   const state = createFixtureState('host-ready');
   const before = JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices });

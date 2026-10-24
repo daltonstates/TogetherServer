@@ -366,6 +366,31 @@ function locatorFor(page, screen) {
   return screen.css ? page.locator(screen.css).filter({ hasText: screen.text }) : page.getByRole(screen.role, { name: screen.name, exact: typeof screen.name === 'string' });
 }
 async function visible(locator) { await locator.first().waitFor({ state: 'visible', timeout: 8000 }); return locator.first(); }
+// networkidle may describe an earlier lifecycle event. Observe these exact
+// intercepted responses and a stable painted interval before judging capture.
+async function waitForSyntheticResponses(page, pending, revision, timeoutMs = 8000, now = () => performance.now()) {
+  const deadline = now() + timeoutMs;
+  const failure = () => new Error(`Synthetic API responses did not settle within ${timeoutMs} ms at capture` +
+    (pending.size ? `: ${[...pending].map(item => `${item.method} ${item.path}`).join(', ')}` : ': response activity did not become quiet'));
+  const bounded = async promise => {
+    const remaining = deadline - now();
+    if (remaining <= 0) throw failure();
+    let timer;
+    try {
+      await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(failure()), remaining); })]);
+    } finally { clearTimeout(timer); }
+  };
+  while (now() < deadline) {
+    if (pending.size) {
+      await bounded(Promise.all([...pending].map(item => item.done)));
+      continue;
+    }
+    const observed = revision();
+    await bounded(page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))));
+    if (!pending.size && revision() === observed) return { pending: 0, responseRevision: observed, stablePaintFrames: 2 };
+  }
+  throw failure();
+}
 async function navigateHeader(page, workspace, record) {
   const navigation = page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true });
   await visible(navigation);
@@ -1239,6 +1264,7 @@ try {
       }
       context = await browser.newContext({ viewport: variant.viewport, colorScheme: variant.theme, deviceScaleFactor: 1, serviceWorkers: 'block', acceptDownloads: false, locale: 'en-US', timezoneId: 'UTC', reducedMotion: variant.reducedMotion ?? 'reduce' });
       const pending = new Set(), deliberatelyFailedURLs = new Set(), deliberatelyPendingURLs = new Set();
+      let responseRevision = 0;
       await context.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
         if (url.origin !== origin) {
@@ -1246,7 +1272,10 @@ try {
           await route.abort('blockedbyclient'); return;
         }
         if (url.pathname.startsWith('/api/local/')) {
-          const token = {}; pending.add(token);
+          let settled;
+          const token = { method: request.method(), path: `${url.pathname}${url.search}`,
+            done: new Promise(resolve => { settled = resolve; }) };
+          pending.add(token); responseRevision++;
           try {
             let body;
             try { body = request.postDataJSON(); } catch { body = request.postData(); }
@@ -1268,7 +1297,7 @@ try {
           } catch (error) {
             record.unhandledFixtures.push({ method: request.method(), path: `${url.pathname}${url.search}`, reason: `Fixture handler threw: ${error.message}` });
             await route.fulfill({ status: 500, json: { code: 'VisualFixtureException', message: 'Synthetic fixture handler failed; no application call made.' } });
-          } finally { pending.delete(token); }
+          } finally { pending.delete(token); responseRevision++; settled(); }
           return;
         }
         if (url.pathname.startsWith('/api/')) { record.blockedNetwork.push({ url: request.url(), reason: 'Non-local API forbidden' }); await route.abort('blockedbyclient'); return; }
@@ -1330,7 +1359,7 @@ try {
       }
       // Wait for UI fetches/fonts/paint using signals, never arbitrary sleep.
       if (!testCase.pendingState) await page.waitForLoadState('networkidle', { timeout: 8000 });
-      if (pending.size) throw new Error('Synthetic API responses still pending at capture');
+      record.assertions.push({ syntheticResponsesSettled: await waitForSyntheticResponses(page, pending, () => responseRevision) });
       await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))); });
       if (testCase.id.endsWith('-chat-empty')) {
         const messages = await visible(page.getByRole('log', { name: 'Messages', exact: true }));
