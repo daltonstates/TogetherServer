@@ -908,7 +908,11 @@ internal static partial class CoreRemoteJourney
                             SharedWorldSeparateCopyStore.VerifyReceivedBranch(published, preparedBranch, sourceVersion)),
                         "CleanupFaultSourceVersionUnverified");
                     var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-                    LabRequire(started.Ok, "CleanupFaultFixtureStartRejected");
+                    // Record only the bounded fixed result code, never a response
+                    // message, saved identity, credential or world path.
+                    var startCode = started.Code is { Length: > 0 and <= 64 } && started.Code.All(char.IsAsciiLetterOrDigit)
+                        ? started.Code : "Unspecified";
+                    LabRequire(started.Ok, "CleanupFaultFixtureStartRejected_" + startCode);
                     // Normal owner Start can continue newer Friend progress in
                     // a separate profile. Bind its one returned run to this world.
                     var launched = started.Snapshot.Runs.Where(item => item.ProcessId is not null).ToArray();
