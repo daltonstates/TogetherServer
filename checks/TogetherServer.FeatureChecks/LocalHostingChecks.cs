@@ -22,6 +22,7 @@ internal static class LocalHostingChecks
         await IncomingConsentAsync(root);
         await FirstIncomingListenerAsync(root);
         await LatestSelectionBlocksAsync(root);
+        await UnpreparedCopyStatusAsync(root);
         using (var automatic = new Fixture(root, granted: true, automaticReceiving: true))
         {
             var automaticStatus = await automatic.Service.StatusAsync(automatic.ProfileId);
@@ -143,6 +144,38 @@ internal static class LocalHostingChecks
         Require(!rejected.Ok && !rejected.Allowed && !rejected.Consented &&
             denied.Data.LoadSettings().CompanionEndpoint == "" && denied.Data.LoadSettings().Profiles.Count == 0 &&
             denied.Driver.ProcessAttempts == 0, "an ungranted PC received hosting, local consent, a profile or identity setup");
+    }
+
+    private static async Task UnpreparedCopyStatusAsync(string root)
+    {
+        foreach (var payload in new[] { "complete", "missing", "partial" })
+        {
+            using var fixture = new Fixture(root, granted: true, automaticReceiving: true);
+            if (payload != "complete") fixture.ChangeReceivedPayload(payload == "partial" ? "partial copy" : null);
+            for (var read = 0; read < 2; read++)
+            {
+                var status = await fixture.Service.StatusAsync(fixture.ProfileId);
+                Require(status.Allowed && status.Consented && status.Code == "LocalHostingPreparationRequired" &&
+                    !status.ReadyForManualStart && !status.Running && status.BranchHash is null && status.LocalProfileId is null &&
+                    status.Steps.Single(step => step.Key == "save").State == "Unknown" &&
+                    FriendLocalHostingService.WithRemedy(status).Remedy?.Kind != "GetSave" &&
+                    fixture.Data.LoadSettings().Profiles.Count == 0 && fixture.Data.LoadRuns().Count == 0 &&
+                    new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0 &&
+                    !fixture.Data.LoadSettings().CompanionListeningEnabled && fixture.Driver.ProcessAttempts == 0,
+                    $"passive {payload} copy status claimed a failed transfer, verified hosting copy or performed preparation");
+            }
+            var prepared = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
+            if (payload == "complete")
+                Require(prepared.ReadyForManualStart && prepared.BranchHash is not null && prepared.LocalProfileId is not null &&
+                    fixture.Driver.ProcessAttempts == 0,
+                    "explicit preparation did not verify and prepare the complete received copy");
+            else
+                Require(!prepared.Ok && prepared.Code == "SharedSaveRequired" && !prepared.ReadyForManualStart &&
+                    fixture.Data.LoadSettings().Profiles.Count == 0 &&
+                    new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0 &&
+                    fixture.Driver.ProcessAttempts == 0,
+                    $"a signed announcement with a {payload} payload bypassed explicit copy verification");
+        }
     }
 
     private static async Task IncomingConsentAsync(string root)
@@ -416,6 +449,12 @@ internal static class LocalHostingChecks
             var bytes = Encoding.UTF8.GetBytes("a later source history, distinct from local progress");
             head = Version(head.Number + 1, head.VersionHash, bytes);
             WriteCopy(head, bytes);
+        }
+        internal void ChangeReceivedPayload(string? contents)
+        {
+            var path = Path.Combine(vault, head.VersionHash, SharedWorldService.PayloadDirectory, "world.dat");
+            if (contents is null) File.Delete(path);
+            else File.WriteAllText(path, contents);
         }
         internal Task<ReceivedSharedWorldResult> WithdrawReceivingAsync() =>
             friends.SetSharedWorldConsentAsync(ProfileId, false);

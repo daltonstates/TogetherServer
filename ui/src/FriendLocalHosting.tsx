@@ -125,9 +125,11 @@ export function localHostingAttention(status: LocalHostingStatus | null, accepte
     return { kind: 'Ports', title: 'Free the game ports on this PC', message: status.message }
   if (['PeerMembershipRequired', 'HostingPermissionChanged', 'HostingRequestChanged', 'SeparateCopyReviewRequired', 'SuccessorChecksPending', 'DataRecoveryRequired'].includes(status.code))
     return { kind: 'Review', title: 'Review this PC’s shared save', message: status.message }
-  if (status.remedy?.kind === 'GetSave' || ['SharedSaveRequired', 'WaitingForSuccessorCopy'].includes(status.code))
-    return { kind: 'GetSave', title: 'Wait for the latest completed save',
-      message: 'Ask the current Host to stop the server safely so its latest save can be shared, then retry.' }
+  if (['InvalidManifest', 'InvalidSave', 'SharedSaveInvalid', 'SharedSaveHashMismatch', 'HashMismatch', 'ChunkHashMismatch'].includes(status.code))
+    return { kind: 'Review', title: 'Review the save verification problem', message: status.message }
+  if (status.remedy?.kind === 'GetSave' || ['SharedSaveRequired', 'SharedSaveUnavailable', 'NoPublishedSave',
+    'SharedVersionUnavailable', 'SharedChunkUnavailable', 'WaitingForSuccessorCopy'].includes(status.code))
+    return { kind: 'GetSave', title: 'Get a completed verified save', message: status.message }
   if (status.remedy && !['ConfirmCopy', 'ChooseServer', 'Terms', 'Respond'].includes(status.remedy.kind)) return status.remedy
   if (status.code === 'LocalServerSetupRequired') return { kind: 'GameSetup', title: 'Finish game setup', message: status.message }
   if (status.steps[3].state === 'ActionRequired') return { kind: 'Ports', title: 'Free the game ports on this PC', message: status.steps[3].message }
@@ -159,6 +161,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const mutation = useRef(false)
   const [scopedPermission, setPermission] = useState<(LocalHostingPermission & { scope: string }) | null>(null)
   const permission = scopedPermission?.scope === scope ? scopedPermission : null
+  const [permissionCheck, setPermissionCheck] = useState<{ scope: string; pending: boolean; message: string } | null>(null)
+  const [permissionRetry, setPermissionRetry] = useState(0)
   const [status, setStatus] = useState<LocalHostingStatus | null>(null)
   const [checksCurrent, setChecksCurrent] = useState(false)
   const [checking, setChecking] = useState(false)
@@ -210,6 +214,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setServerFile(''); setPassword(''); setActionMessage('')
     setNetworkConfirmed(false)
     setPlannedOperation(null); plannedAttempt.current = ''
+    return invalidate
+  }, [scope, base, available, accessBlocked, invalidate])
+
+  useEffect(() => {
     if (!available || accessBlocked) return
     let active = true
     let timer: number | undefined
@@ -219,9 +227,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       if (!mutation.current && !dialogOpen.current) {
         const abort = new AbortController()
         currentRead = abort
+        setPermissionCheck({ scope, pending: true, message: '' })
         timeout = window.setTimeout(() => {
           if (active) {
             setPermission(null)
+            setPermissionCheck({ scope, pending: false,
+              message: 'Hosting access check timed out. Keep TogetherServer open on both PCs, then check again.' })
             setChecksCurrent(false)
             startIntent.current = null
           }
@@ -231,6 +242,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           const next = await getLocalJson(`${base}/hosting/access`, parseLocalHostingPermission, abort.signal)
           if (active && !abort.signal.aborted) {
             setPermission({ ...next, scope })
+            setPermissionCheck({ scope, pending: false, message: '' })
             if (!next.allowed) {
               startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
               invalidate(); mutation.current = false; setBusy(false); setPendingAction(null); setChecking(false); setChecksCurrent(false)
@@ -241,6 +253,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           // Wait for confirmed hosting access before offering the entry point.
           if (active && !abort.signal.aborted) {
             setPermission(null)
+            setPermissionCheck({ scope, pending: false,
+              message: 'Hosting access could not be checked. Keep TogetherServer open on both PCs, then check again.' })
             setChecksCurrent(false)
             startIntent.current = null
           }
@@ -249,8 +263,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       if (active) timer = window.setTimeout(() => void read(), 10000)
     }
     void read()
-    return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout); invalidate() }
-  }, [scope, base, available, accessBlocked, invalidate])
+    return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout) }
+  }, [scope, base, available, accessBlocked, invalidate, permissionRetry])
 
   useEffect(() => {
     if (!open || !available || accessBlocked) return
@@ -526,6 +540,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const waitingForHost = handoff?.recipientState === 'Prepared' && !status?.readyForManualStart
   const minecraftTerms = ['MinecraftJava', 'MinecraftBedrock'].includes(status?.game ?? '') && !status?.readyForManualStart && !status?.localProfileId
   const permissionAllowed = permission?.allowed === true
+  const permissionChecking = !permissionCheck || permissionCheck.scope !== scope || permissionCheck.pending
   const denied = confirmedHostingDenial(permission)
   const guidanceStatus = checksCurrent ? status : status && permission?.allowed === false ? {
     ...status, allowed: false, readyForManualStart: false, code: permission.code, message: permission.message,
@@ -569,8 +584,20 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
-  if (!permissionAllowed && !open) return null
   return <>
+    {!permissionAllowed && !open && <div className={presentation === 'card' ? 'local-hosting-card' : 'local-hosting-next'}>
+      <div className="local-hosting-next" role="status" aria-label="Hosting access" aria-busy={permissionChecking}>
+        <p className="helper-text">{permissionChecking ? 'Checking hosting access...' : permissionCheck?.message || permission?.message ||
+          'Hosting access has not been verified. Keep TogetherServer open on both PCs, then check again.'}</p>
+      </div>
+      {!permissionChecking && !denied && <Button className="text-button" disabled={disabled || busy}
+        onClick={() => {
+          if (disabled || busy || mutation.current || dialogOpen.current) return
+          startIntent.current = null; setPermission(null)
+          setPermissionCheck({ scope, pending: true, message: '' })
+          setPermissionRetry(previous => previous + 1)
+        }}><Icon name="refresh" />Check hosting access again</Button>}
+    </div>}
     {permissionAllowed && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
       <Icon name="server" size={24} /><div><h3>Host locally</h3>
         <p>{status?.running ? 'This server is already hosted on this PC.' : 'Use the latest available save to host this server on your PC.'}</p></div>

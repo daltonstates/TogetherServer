@@ -266,10 +266,42 @@ describe('Local hosting setup guide', () => {
     'gives a completed-source and safe-stop path for %s without starting from a read', code => {
       const { actions } = setup(withCheck('save', 'ActionRequired', { code }))
       expect(screen.getByRole('heading', { name: 'Get a completed verified save' })).toBeInTheDocument()
-      expect(screen.getByText(/ask the current Host to stop the game server safely/)).toBeInTheDocument()
-      expect(screen.getByText(/interrupted transfer or a signed save announcement is not a complete verified local copy/)).toBeInTheDocument()
+      expect(screen.getByText(/Share latest backup to retry an existing completed backup/)).toBeInTheDocument()
+      expect(screen.getByText(/If no completed backup exists, ask the current Host to stop the game server safely/)).toBeInTheDocument()
+      expect(screen.getByText('This PC must receive and verify a complete save before Start.')).toBeInTheDocument()
+      expect(screen.queryByText(/interrupted transfer/)).not.toBeInTheDocument()
       expect(screen.getByText(/choose Host locally below after reviewing the network confirmation/)).toBeInTheDocument()
       for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
+    })
+
+  it.each(['Unknown', 'ActionRequired'] as const)('explains the unprepared hosting copy before a generic %s save result', state => {
+    const status = withCheck('save', state, { code: 'LocalHostingPreparationRequired',
+      message: 'Choose Host locally to get and verify the latest completed save.', localProfileId: null, branchHash: null })
+    const { actions } = setup(status)
+    expect(currentStep(/3\. Save/)).toHaveAttribute('aria-current', 'step')
+    expect(screen.getByRole('heading', { name: 'Prepare this PC\'s hosting copy' })).toBeInTheDocument()
+    expect(screen.getByText(status.message)).toBeInTheDocument()
+    expect(screen.getByText(/receives it if needed and prepares a separate local copy/)).toBeInTheDocument()
+    expect(screen.getByText(/Preparation verifies the save files and local setup before Start/)).toBeInTheDocument()
+    expect(screen.queryByText(/interrupted transfer|stop the game server safely/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Prepare a checked copy' })).not.toBeInTheDocument()
+    for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Recheck the save' }))
+    expect(actions.onRetry).toHaveBeenCalledOnce()
+    expect(actions.onPrepare).not.toHaveBeenCalled()
+  })
+
+  it.each(['SharedSaveUnavailable', 'SharedVersionUnavailable', 'SharedChunkUnavailable', 'ChunkHashMismatch'])(
+    'keeps the actual %s failure visible with review and read-only retry actions', code => {
+      const status = withCheck('save', 'ActionRequired', { ok: false, code,
+        message: 'The exact shared copy could not be verified. Keep its source reachable and retry.' })
+      const { actions } = setup(status)
+      expect(screen.getByText(status.message)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Review the shared saves' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Recheck the save' }))
+      expect(actions.onReviewSharedSave).toHaveBeenCalledOnce()
+      expect(actions.onRetry).toHaveBeenCalledOnce()
+      expect(actions.onPrepare).not.toHaveBeenCalled()
     })
 
   it('keeps an unknown save check unverified instead of offering preparation', () => {

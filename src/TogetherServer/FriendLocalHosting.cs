@@ -168,24 +168,26 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var code = ambiguous ? "HostingHistoryChoiceRequired" : !access.Allowed ? access.Code :
             hosted?.ReviewRequired == true ? "LocalHostingReviewRequired" : ready ? "LocalHostingPrepared" :
             running ? "LocalHostingRunning" : manualSetup ? "LocalServerSetupRequired" :
-            !access.Consented ? "LocalConsentRequired" : !saveReady ? hosted?.Restored == true ?
-                "LocalHostingPreparationRequired" : "SharedSaveRequired" :
+            !access.Consented ? "LocalConsentRequired" : !saveReady ? "LocalHostingPreparationRequired" :
             serverFile is null ? "InstalledServerRequired" : !ports.Available ? "LocalPortsRequired" : "LocalHostingPreparationRequired";
         var message = ambiguous ? "More than one local history is available. Choose a history in shared-save setup; every save is preserved." :
             !access.Allowed ? access.Message : hosted?.ReviewRequired == true ? hosted.Message :
             running ? "This shared save is already hosted on this PC. Its local world is preserved." :
             ready ? "This PC is prepared. Current save, game and port checks run again when you choose Host on this PC." :
-            manualSetup ? serverMessage : "Prepare this PC to receive a verified save and finish local hosting checks.";
+            manualSetup ? serverMessage : "Choose Host locally to get the latest completed save and prepare a checked hosting copy on this PC.";
         var result = new LocalHostingStatus(ready || running, code, message, access.Allowed, access.Consented, game,
             access.Name, version is not null && serverFile is null && !manualSetup, false, serverFile, gameVersion,
             ports.GamePort, ports.ControlPort, existing?.Id ?? (hosted?.Restored == true ? hosted.LocalProfileId : null), branch?.BranchHash,
             ready, running,
             [new("permission", HostingPermissionState(access.Allowed, access.Code), access.Message),
              new("server", serverFile is not null && !manualSetup ? "Ready" : "ActionRequired", serverMessage),
-             new("save", saveReady ? "Ready" : "ActionRequired", ambiguous ? "Choose an exact shared history before continuing." :
+             // This read does not hash received payloads or prepare a hosting
+             // branch. An unprepared copy is unverified, not a failed transfer.
+             new("save", saveReady ? "Ready" : !ambiguous && branch is null ? "Unknown" : "ActionRequired", ambiguous ? "Choose an exact shared history before continuing." :
                 saveReady ? "Preparation verified this retained signed save. Start repeats current checks; existing local progress is preserved." :
                 hosted?.Restored == true ? "The existing local world is preserved. Prepare again to repeat its verification checks." :
-                !access.Consented ? "Prepare can allow shared saves on this PC after your consent." : "Receive a complete verified save from an approved reachable PC."),
+                !access.Consented ? "Prepare can allow shared saves on this PC after your consent." :
+                "Choose Host locally to receive or reuse the latest completed save, verify its files and prepare this PC's hosting copy."),
              new("ports", ports.Available ? "Ready" : "ActionRequired", running ?
                 $"This PC's running server uses game port {ports.GamePort}." : ports.Available ?
                 $"Local game port {ports.GamePort} is selected; Start repeats every declared game-port check." : "Local game ports need attention before preparation."),

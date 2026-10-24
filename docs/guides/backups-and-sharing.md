@@ -78,6 +78,16 @@ host their save. If hosting access is missing, the original Host must enable
 and assigned. Repeating the local game or port checks cannot grant permission.
 
 On a permitted Friend PC, choose the **Host locally** icon beside Start.
+If the icon is missing, check the hosting-access message on the Friend page.
+An unavailable permission check has a **Check hosting access again** action;
+it does not mean the owner turned sharing off. If the owner has not granted
+hosting, check the original Host's setting and this PC's assigned access.
+
+Opening **Host locally** first reads the checks. **Prepare this PC's hosting
+copy** means preparation has not run yet; it does not report a failed download.
+The save remains unverified for hosting until preparation checks the actual
+files. A signed save announcement alone is not a checked copy.
+
 Confirm the warning that other players will connect to your PC and network.
 The app checks the latest available save, its signed history and SHA-256 file
 hashes, the matching installed server, free space, local ports and the saved

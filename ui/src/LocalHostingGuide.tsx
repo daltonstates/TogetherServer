@@ -185,6 +185,7 @@ function saveHelp(status: LocalHostingStatus, props: LocalHostingGuideProps): He
   }
   if (integrityCodes.includes(status.code) || status.code === 'SigningIdentityChanged' || status.remedy?.kind === 'Review') return {
     title: 'Review the save verification problem', instructions: [
+      status.message,
       'Keep the existing local save and leave hosting paused. The app could not trust the saved history, identity or file checks.',
       'Ask the owner to open this server\'s Backups & sharing, choose Sharing & hosting and check the sharing notice and completed source copy. An older history or a failed hash check cannot be bypassed.',
       'Keep an approved PC with the verified completed save reachable, then retry. If the same failure returns, review the shared-save details with the owner before continuing.'
@@ -206,12 +207,21 @@ function saveHelp(status: LocalHostingStatus, props: LocalHostingGuideProps): He
     ], note: invitation.receiptConfirmed ? 'A copy was acknowledged. The final handoff checks still need to finish.' : 'The final save receipt is not confirmed yet.',
     actions: [review, retry]
   }
+  if (status.code === 'LocalHostingPreparationRequired') return {
+    title: 'Prepare this PC\'s hosting copy', instructions: [
+      status.message,
+      'Choose Host locally below after reviewing the network confirmation. The app checks for the latest completed save, receives it if needed and prepares a separate local copy.',
+      'Preparation verifies the save files and local setup before Start. Existing saves are kept.'
+    ], actions: [review, retry]
+  }
   if (missingSaveCodes.includes(status.code) || status.remedy?.kind === 'GetSave') return {
     title: 'Get a completed verified save', instructions: [
+      status.message,
       'Keep TogetherServer open on this PC and on an approved PC that has the latest completed save. At least one source PC must be reachable.',
-      'If no completed copy has been shared, ask the current Host to stop the game server safely. Its Backups & sharing page, under Sharing & hosting, shows when a completed copy is available.',
+      'On the original Host, open Backups & sharing, choose Sharing & hosting and select Share latest backup to retry an existing completed backup.',
+      'If no completed backup exists, ask the current Host to stop the game server safely so a completed save can be shared.',
       'Return here and choose Host locally below after reviewing the network confirmation. The app receives the copy, checks its files and prepares fresh local storage before starting.'
-    ], note: 'An interrupted transfer or a signed save announcement is not a complete verified local copy.', actions: [review, retry]
+    ], note: 'This PC must receive and verify a complete save before Start.', actions: [review, retry]
   }
   if (status.steps[2].state === 'Ready') return {
     title: 'The local save passed its checks', instructions: [
