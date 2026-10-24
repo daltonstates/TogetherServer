@@ -1055,9 +1055,18 @@ internal static partial class SharedWorldJourney
                         $"ownerMatches={roster.OwnerPublicKey == root.OwnerPublicKey}, groupMatches={roster.GroupId == root.GroupId}, " +
                         $"revision={roster.Revision}");
                     var member = roster.Members.SingleOrDefault(item => item.DeviceId == deviceId);
+                    var deadlineLive = member is not null &&
+                        (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow);
                     Require(member is { Revoked: false, Grants: { Receive: true, EligibleHost: true, Reshare: true } } &&
-                        (member.AccessExpiresUtc is null || member.AccessExpiresUtc > DateTimeOffset.UtcNow),
-                        "the server's one hosting choice did not automatically grant Receive, Host and Reshare");
+                        deadlineLive,
+                        "the server's one hosting choice did not automatically grant Receive, Host and Reshare; " +
+                        $"receiver={receiverNumber}, observations={observations}, phase={phase}, revision={roster.Revision}, " +
+                        $"memberPresent={member is not null}, revoked={member?.Revoked.ToString() ?? "unavailable"}, " +
+                        $"receive={member?.Grants.Receive.ToString() ?? "unavailable"}, " +
+                        $"eligibleHost={member?.Grants.EligibleHost.ToString() ?? "unavailable"}, " +
+                        $"reshare={member?.Grants.Reshare.ToString() ?? "unavailable"}, " +
+                        $"recoveryVoter={member?.Grants.RecoveryVoter.ToString() ?? "unavailable"}, " +
+                        $"manageSharing={member?.Grants.ManageSharing.ToString() ?? "unavailable"}, deadlineLive={deadlineLive}");
                     memberKey ??= member!.PublicKey;
                     Require(memberKey == member!.PublicKey,
                         "the signed Friend identity changed during automatic receiving checks");

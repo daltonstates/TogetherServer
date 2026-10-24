@@ -86,7 +86,7 @@ try {
     Require ($LASTEXITCODE -eq 0) 'The frozen candidate must be an ancestor of the check source.'
     $changed = @(git diff --no-renames --name-only $sourceRevision HEAD)
     Require ($LASTEXITCODE -eq 0) 'Could not compare verification inputs.'
-    $allowed = '^(docs/.+|checks/TogetherServer\.FeatureChecks/OriginalOwnerRemoteStopChecks\.cs|scripts/receive-release-0338-final-candidate\.ps1|\.github/workflows/release-0338-final-source-checks\.yml)$'
+    $allowed = '^(docs/.+|checks/TogetherServer\.FeatureChecks/OriginalOwnerRemoteStopChecks\.cs|checks/TogetherServer\.CompanionChecks/SharedWorldJourney\.cs|scripts/receive-release-0338-final-candidate\.ps1|\.github/workflows/release-0338-final-(source-checks|tail)\.yml)$'
     Require (@($changed | Where-Object { $_ -cnotmatch $allowed }).Count -eq 0) 'Product, dependency, build or unrelated check source changed after the frozen candidate.'
     $dirty = @(git status --porcelain --untracked-files=no)
     Require ($LASTEXITCODE -eq 0 -and $dirty.Count -eq 0) 'Verification requires unchanged tracked checkout files.'
@@ -102,7 +102,7 @@ try {
         }
     }
     $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-    $run = Get-ReviewJson "actions/runs/$candidateRunId"
+    $run = Get-ReviewJson "actions/runs/$candidateRunId/attempts/1"
     Require ($run.id -eq $candidateRunId -and $run.head_sha -ceq $sourceRevision -and
         $run.head_branch -ceq 'review/full-acceptance-remote-hosting-0338-final' -and $run.run_attempt -eq 1 -and $run.event -ceq 'push' -and
         $run.workflow_id -eq 367811679 -and $run.path -ceq '.github/workflows/windows-ci.yml' -and
