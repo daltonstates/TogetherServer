@@ -52,6 +52,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Revoked shared-world device rejoin", () => SharedRosterRejoinChecks.RunAsync(root)),
     ("Solo and descendant world recovery", () => SoloRecoveryChecks.RunAsync(root)),
     ("Local hosting permission before preparation", () => LocalHostingPermissionChecks.RunAsync(root)),
+    ("Adopted successor hosting identity and consent", () => AdoptedLocalHostingChecks.RunAsync(root)),
     ("Guided local shared hosting preparation", () => LocalHostingChecks.RunAsync(root)),
     ("Fixed shared hosting Start and repair actions", SharedHostingActionChecks.RunAsync),
     ("Observed local hosting progress", LocalHostingProgressChecks.RunAsync),

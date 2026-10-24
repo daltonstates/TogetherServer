@@ -22,6 +22,19 @@ function host(patch: Partial<DirectoryHost> = {}): DirectoryHost {
     state: 'Connected', connectionCode: null, lastConnectedUtc: new Date(now).toISOString(),
     servers: [server({ id: ids.source, name: 'Shared meadow' })], ...patch }
 }
+function friendSnapshot(profiles: DirectoryServer[], patch: Partial<FriendSnapshot> = {}): FriendSnapshot {
+  return { mode: 'Friend', state: 'Connected', detail: '', endpoint: '', connectionId: ids.connection,
+    connections: null, hostId: ids.host, hostProfileName: 'Morgan', lastConnectedUtc: new Date(now).toISOString(),
+    remoteControlsEnabled: true, canStart: true, canStop: true, hostCapabilities: [],
+    profiles: profiles.map(profile => ({ id: profile.id, name: profile.name, kind: profile.kind, state: profile.state,
+      onlinePlayers: profile.onlinePlayers, maxPlayers: profile.maxPlayers, playerCountTrusted: profile.playerCountTrusted,
+      playerCountObservedUtc: profile.playerCountObservedUtc, playerObservationSource: profile.playerObservationSource,
+      playerCountRefreshing: profile.playerCountRefreshing, playerCountFailureCount: profile.playerCountFailureCount,
+      canStart: true, canStop: true, canStopNow: false,
+      canRestartNow: false, runOperationId: null, joinAddress: null, stopReason: null, restartReason: null,
+      autoShutdownAtUtc: null, autoShutdownReason: null, maintenanceEnabled: false, maintenanceMessage: null,
+      canExtendTimer: false, timerExtensionMinutes: 0, timerExtensionRemainingMinutes: 0, canViewLogs: false })), ...patch }
+}
 function directory(): ServerDirectoryView {
   return { localServers: [server(), server({ id: ids.guest, name: 'Shared local copy',
     separateCopySourceProfileId: ids.source, sourceName: 'Shared meadow', sourceHostName: 'Morgan' })],
@@ -337,4 +350,134 @@ it('preserves signed world identity during current Friend snapshot overlays', ()
       maintenanceMessage: null, canExtendTimer: false, timerExtensionMinutes: 0, timerExtensionRemainingMinutes: 0, canViewLogs: false }] }
   const combined = directoryWithSnapshot({ localServers: [], friendHosts: [prior] }, snapshot)
   expect(combined.friendHosts[0].servers[0]).toMatchObject({ ...identity, id: ids.guest, onlinePlayers: 1 })
+})
+
+it.each(['new connection', 'empty saved connection'])('keeps one owner world while a %s awaits its signed directory row', saved => {
+  const identity = { sharedWorldId: 'A'.repeat(64), originalProfileId: ids.local }
+  const original = server({ ...identity, isSuccessor: false, state: 'Offline' })
+  const successor = server({ ...identity, id: ids.guest, isSuccessor: true, name: 'A successor-local name',
+    state: 'Unknown', onlinePlayers: null, playerCountTrusted: false })
+  const before: ServerDirectoryView = { localServers: [original],
+    friendHosts: saved === 'empty saved connection' ? [host({ servers: [] })] : [] }
+  const snapshot = friendSnapshot([successor])
+  if (saved === 'new connection') snapshot.connections = [structuredClone(snapshot)]
+  const retained = structuredClone({ before, snapshot })
+  const pending = directoryWithSnapshot(before, snapshot)
+  expect(pending.friendHosts).toEqual([])
+  const props = { selection: { kind: 'friend' as const, connectionId: ids.connection, profileId: ids.guest },
+    nowMs: now, busy: false, onRetry: vi.fn(), onSelect: vi.fn(), onAddLocal: vi.fn(), onConnect: vi.fn() }
+  const { rerender } = render(<ServerDirectory view={pending} {...props} />)
+  expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Open Our world on this PC' })).toHaveTextContent('Offline')
+  expect(screen.queryByRole('heading', { name: 'Morgan' })).not.toBeInTheDocument()
+
+  const complete = directoryWithSnapshot({ localServers: [original], friendHosts: [host({ servers: [successor] })] }, snapshot)
+  rerender(<ServerDirectory view={complete} {...props} />)
+  const world = screen.getByRole('button', { name: 'Open Our world on this PC' })
+  expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(1)
+  expect(world).toHaveAttribute('aria-current', 'true')
+  expect(world).toHaveTextContent('Hosted by Morgan')
+  expect(world).toHaveTextContent('Players —')
+  expect(screen.queryByRole('heading', { name: 'Morgan' })).not.toBeInTheDocument()
+  fireEvent.click(world)
+  expect(props.onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.guest })
+  expect({ before, snapshot }).toEqual(retained)
+})
+
+it('retains independent canonical worlds while a saved connection gains another profile', () => {
+  const original = server({ sharedWorldId: 'A'.repeat(64), originalProfileId: ids.local, state: 'Offline' })
+  const independent = server({ id: ids.source, name: 'Our world', sharedWorldId: 'B'.repeat(64),
+    originalProfileId: ids.source })
+  const successor = server({ id: ids.guest, name: 'Our world', sharedWorldId: original.sharedWorldId,
+    originalProfileId: ids.local, isSuccessor: true })
+  const before = { localServers: [original], friendHosts: [host({ servers: [independent] })] }
+  const snapshot = friendSnapshot([independent, successor])
+  const pending = directoryWithSnapshot(before, snapshot)
+  expect(pending.friendHosts[0].servers).toHaveLength(1)
+  expect(pending.friendHosts[0].servers[0].id).toBe(ids.source)
+  const props = { selection: null, nowMs: now, busy: false, onRetry: vi.fn(), onSelect: vi.fn(), onAddLocal: vi.fn(), onConnect: vi.fn() }
+  const { rerender } = render(<ServerDirectory view={pending} {...props} />)
+  expect(screen.getByRole('button', { name: 'Open Our world on Morgan' })).toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(2)
+  const complete = directoryWithSnapshot({ ...before, friendHosts: [host({ servers: [independent, successor] })] }, snapshot)
+  rerender(<ServerDirectory view={complete} {...props} />)
+  expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(2)
+  expect(screen.getByRole('button', { name: 'Open Our world on this PC' })).toHaveTextContent('Hosted by Morgan')
+  fireEvent.click(screen.getByRole('button', { name: 'Open Our world on Morgan' }))
+  expect(props.onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.source })
+})
+
+it('uses the initial snapshot fallback and admits an ordinary new world when its directory arrives', () => {
+  const ordinary = server({ id: ids.source, name: 'An independent world' })
+  const snapshot = friendSnapshot([ordinary])
+  expect(directoryWithSnapshot(null, snapshot).friendHosts[0].servers[0]).toMatchObject({ id: ids.source, name: ordinary.name })
+  const empty = { localServers: [], friendHosts: [] }
+  expect(directoryWithSnapshot(empty, snapshot).friendHosts).toEqual([])
+  const complete = directoryWithSnapshot({ ...empty, friendHosts: [host({ servers: [ordinary] })] }, snapshot)
+  const actions = show(complete)
+  fireEvent.click(screen.getByRole('button', { name: 'Open An independent world on Morgan' }))
+  expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.source })
+})
+
+it('keeps one original friend world while a newly prepared local profile awaits its signed directory row', () => {
+  const identity = { sharedWorldId: 'C'.repeat(64), originalProfileId: ids.source }
+  const original = server({ ...identity, id: ids.source, name: 'Shared meadow', state: 'Offline' })
+  const snapshot = parseSnapshot(fixture)
+  if (snapshot.mode !== 'Host') throw new Error('Expected the shared Host fixture.')
+  snapshot.settings.profiles = [{ ...snapshot.settings.profiles[0], id: ids.guest, name: 'New local profile',
+    separateCopySourceProfileId: ids.source }]
+  snapshot.runs = [{ ...snapshot.runs[0], profileId: ids.guest, state: 'Process running', onlinePlayers: null, playerCountTrusted: false }]
+  const retained = structuredClone(snapshot)
+  const before = { localServers: [], friendHosts: [host({ servers: [original] })] }
+  const pending = directoryWithSnapshot(before, snapshot)
+  expect(pending.localServers).toEqual([])
+  expect(directoryWithSnapshot(null, snapshot).localServers[0]).toMatchObject({ id: ids.guest, state: 'Process running' })
+  const props = { selection: { kind: 'local' as const, profileId: ids.guest }, nowMs: now, busy: false,
+    onRetry: vi.fn(), onSelect: vi.fn(), onAddLocal: vi.fn(), onConnect: vi.fn() }
+  const { rerender } = render(<ServerDirectory view={pending} {...props} />)
+  expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(1)
+  expect(screen.getByRole('button', { name: 'Open Shared meadow on Morgan' })).toHaveTextContent('Offline')
+  const complete = directoryWithSnapshot({ ...before, localServers: [server({ ...identity, id: ids.guest,
+    isSuccessor: true, separateCopySourceProfileId: ids.source })] }, snapshot)
+  rerender(<ServerDirectory view={complete} {...props} />)
+  const world = screen.getByRole('button', { name: 'Open Shared meadow on Morgan' })
+  expect(screen.getAllByRole('button', { name: /^Open / })).toHaveLength(1)
+  expect(world).toHaveAttribute('aria-current', 'true')
+  expect(world).toHaveTextContent('Hosting on this PC')
+  expect(world).toHaveTextContent('Players —')
+  expect(screen.queryByRole('heading', { name: 'Hosting for friends' })).not.toBeInTheDocument()
+  fireEvent.click(world)
+  expect(props.onSelect).toHaveBeenLastCalledWith({ kind: 'local', profileId: ids.guest })
+  expect(snapshot).toEqual(retained)
+})
+
+it('preserves multiple known active locations and unresolved counts during snapshot overlays', () => {
+  const identity = { sharedWorldId: 'D'.repeat(64), originalProfileId: ids.local }
+  const original = server({ ...identity })
+  const successor = server({ ...identity, id: ids.guest, isSuccessor: true, state: 'Unknown',
+    onlinePlayers: null, playerCountTrusted: false })
+  const view = { localServers: [original], friendHosts: [host({ servers: [successor] })] }
+  const combined = directoryWithSnapshot(view, friendSnapshot([successor]))
+  expect(combined.localServers).toEqual([original])
+  expect(combined.friendHosts[0].servers[0]).toMatchObject({ id: ids.guest, state: 'Unknown', onlinePlayers: null })
+  const actions = show(combined, { selection: { kind: 'friend', connectionId: ids.connection, profileId: ids.guest } })
+  const world = screen.getByRole('button', { name: 'Open Our world on this PC' })
+  expect(world).toHaveTextContent('Multiple hosting PCs · review shared saves')
+  expect(world).toHaveTextContent('Players —')
+  fireEvent.click(world)
+  expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.guest })
+})
+
+it('admits a new ordinary local world immediately while the combined directory catches up', () => {
+  const snapshot = parseSnapshot(fixture)
+  if (snapshot.mode !== 'Host') throw new Error('Expected the shared Host fixture.')
+  snapshot.settings.profiles = [{ ...snapshot.settings.profiles[0], id: ids.guest, name: 'A new owner world', separateCopySourceProfileId: null }]
+  snapshot.runs = [{ ...snapshot.runs[0], profileId: ids.guest, state: 'Offline' }]
+  const combined = directoryWithSnapshot({ localServers: [], friendHosts: [] }, snapshot)
+  expect(combined.localServers).toHaveLength(1)
+  const actions = show(combined, { selection: { kind: 'local', profileId: ids.guest } })
+  const world = screen.getByRole('button', { name: 'Open A new owner world on this PC' })
+  expect(world).toHaveAttribute('aria-current', 'true')
+  fireEvent.click(world)
+  expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'local', profileId: ids.guest })
 })

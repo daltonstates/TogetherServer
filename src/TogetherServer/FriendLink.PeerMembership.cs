@@ -158,7 +158,9 @@ internal sealed partial class FriendLink
         var cached = CachedPeerRoster(root.ProfileId);
         if (cached is null)
             return (null, SharingFailure(selfId, "RosterUnavailable", "Sync approved peers to verify this world's current sharing list."));
-        using var key = LoadPcSigningKey();
+        using var key = LoadExistingSharingKey();
+        if (key is null)
+            return (null, SharingFailure(selfId, "HostingIdentityRequired", "Check this PC's sharing identity with the Host first."));
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         if (SharedWorldPeerTrust.AccessFromRoster(root, cached, selfId, publicKey) is null)
             return (null, SharingFailure(selfId, "PermissionDenied", "This PC no longer has access to this world's sharing list."));

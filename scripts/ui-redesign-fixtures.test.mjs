@@ -1104,6 +1104,86 @@ test('two-ended lab treats blank or malformed selection as absent and selects on
   assert.equal(clicks, 3, 'every missing preference falls back to the exact input profile, never an arbitrary first row');
 });
 
+test('two-ended lab proves signed single-world routing and rejects split, stale, or misrouted sidebars', async () => {
+  const source = readFileSync(new URL('run-local-pairing-ux.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('pairing-ux.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helpers = ['directoryNavigation', 'verifyWorldSidebar'].map(name => ast.statements.find(statement =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === name).getText(ast)).join('\n');
+  assert.equal((source.match(/await stage\(/gu) ?? []).length, 10, 'the existing ten UX stages remain required');
+  assert.ok(source.includes("verifyWorldSidebar(friend, 'candidate')"));
+  assert.ok(source.includes("verifyWorldSidebar(host, 'owner')"));
+  assert.ok(source.includes("verifyWorldSidebar(host, 'owner', true)"));
+  const run = async (location, stopped, fault) => {
+    const candidate = { profileId: fixtureIds.secondary, groupKey: 'A'.repeat(64), runId: fixtureIds.session,
+      endpoint: 'https://192.0.2.11:5132' };
+    const identity = { sharedWorldId: candidate.groupKey, originalProfileId: fixtureIds.primary };
+    const original = { ...identity, id: fixtureIds.primary, name: 'Our world', state: 'Offline', isSuccessor: false };
+    const successor = { ...identity, id: candidate.profileId, name: 'Different successor name', isSuccessor: true,
+      state: stopped ? 'Offline' : 'Process running' };
+    if (fault === 'wrong root') successor.sharedWorldId = 'B'.repeat(64);
+    if (fault === 'unknown after Stop') successor.state = 'Unknown';
+    const onOwner = location === 'owner';
+    const connection = { connectionId: fixtureIds.connection, state: 'Connected', lastConnectedUtc: new Date().toISOString(),
+      hostProfileName: onOwner ? 'Successor PC' : 'Original owner', servers: [onOwner ? successor : original] };
+    const directory = { localServers: [onOwner ? original : successor], friendHosts: [connection] };
+    const reads = [];
+    let clicks = 0;
+    let snapshot = null;
+    let selected = null;
+    const row = { count: async () => 1, locator: selector => {
+      assert.equal(selector, '.remote-hosting-badge');
+      return { count: async () => stopped || fault === 'missing badge' ? 0 : 1,
+        innerText: async () => onOwner ? 'Hosted by Successor PC' : 'Hosting on this PC' };
+    }, click: async () => {
+      clicks++;
+      const profileId = stopped ? original.id : candidate.profileId;
+      selected = profileId;
+      snapshot = onOwner && !stopped && fault !== 'wrong route' ? { mode: 'Friend', connectionId: connection.connectionId,
+        endpoint: candidate.endpoint, profiles: [{ id: candidate.profileId, runOperationId: candidate.runId }] } :
+        { mode: 'Host', settings: { profiles: [{ id: profileId }] }, runs: [{ profileId, runOperationId: candidate.runId }] };
+      if (fault === 'wrong connection') snapshot.connectionId = fixtureIds.otherDevice;
+      if (fault === 'wrong successor profile') snapshot.profiles[0].id = fixtureIds.third;
+      if (fault === 'wrong session') snapshot.profiles[0].runOperationId = fixtureIds.backup;
+    } };
+    const region = { getByRole: (role, options) => {
+      if (role === 'heading') {
+        assert.equal(options.level, 4);
+        return { count: async () => fault === 'successor host group' ? 1 : onOwner ? 0 : 1, innerText: async () => 'Original owner' };
+      }
+      assert.equal(role, 'button');
+      if (options.name.source === '^Open ') return { count: async () => fault === 'duplicate world row' ? 2 : 1 };
+      assert.ok(options.name.test(`Open Our world on ${onOwner ? 'this PC' : 'Original owner'}`), 'the original owner labels the route');
+      return row;
+    } };
+    const page = { getByRole: (role, options) => {
+      assert.equal(role, 'region'); assert.equal(options.name, 'Servers'); assert.equal(options.exact, true); return region;
+    } };
+    const verify = runInNewContext(`${helpers}\n;verifyWorldSidebar`, {
+      candidate, input: { profileId: original.id }, exact: value => new RegExp(`^${value}$`),
+      read: async (_page, endpoint) => { reads.push(endpoint); assert.ok(endpoint === '/api/local/servers' || endpoint === undefined); return endpoint ? directory : snapshot; },
+      selectedLocalProfile: async () => selected, until: async (action, predicate, label) => {
+        const value = await action(); assert.equal(Boolean(predicate(value)), true, label); return value;
+      }
+    });
+    if (fault) {
+      await assert.rejects(verify(page, location, stopped), /canonical signed|one original-world|exact successor/u);
+      assert.equal(clicks, ['wrong route', 'wrong connection', 'wrong successor profile', 'wrong session'].includes(fault) ? 1 : 0,
+        'missing proof never leads to a UI click');
+    } else {
+      const proof = await verify(page, location, stopped);
+      assert.equal(proof.singleOriginalRow, true); assert.equal(proof.exactRoute, true); assert.equal(proof.noSuccessorHostGroup, true);
+      assert.equal(proof.hostingBadge, !stopped); assert.equal(clicks, 1);
+    }
+    assert.ok(reads.length > 0, 'the helper observes exact read-only directory/snapshot responses');
+  };
+  await run('candidate', false);
+  await run('owner', false);
+  await run('owner', true);
+  for (const fault of ['wrong root', 'missing badge', 'duplicate world row', 'successor host group',
+    'wrong route', 'wrong connection', 'wrong successor profile', 'wrong session']) await run('owner', false, fault);
+  await run('owner', true, 'unknown after Stop');
+});
+
 test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {
   const state = createFixtureState('host-ready');
   const before = JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices });

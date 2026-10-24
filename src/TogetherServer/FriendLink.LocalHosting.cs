@@ -69,6 +69,25 @@ internal sealed partial class FriendLink
         { return false; }
     }
 
+    // A projection cannot repair a missing enrolled identity by generating a
+    // different key. Initial enrollment keeps its separate key-creation path.
+    private ECDsa? LoadExistingSharingKey()
+    {
+        var owner = config?.PeerWorld is not null && SharedWorldDeviceId == Guid.Empty;
+        var bytes = data.LoadProtected(owner ? "shared-world-signing-key.protected" :
+            $"shared-world-pc-signing-{SharedWorldDeviceId:N}.protected");
+        if (bytes is null) return null;
+        var key = ECDsa.Create();
+        try
+        {
+            key.ImportPkcs8PrivateKey(bytes, out var length);
+            if (length == bytes.Length) return key;
+            key.Dispose();
+            return null;
+        }
+        catch { key.Dispose(); throw; }
+    }
+
     private LocalHostingAccess ReadLocalHostingAccess(Guid profileId, bool verifyFiles, bool permissionOnly = false)
     {
         var profile = view.Profiles.SingleOrDefault(item => item.Id == profileId) ??
@@ -80,6 +99,10 @@ internal sealed partial class FriendLink
             name, profile?.GameKind ?? profile?.Kind, null, false, code, message);
         if (config is null)
             return Denied("NotPaired", "Choose a saved Host connection first.");
+        var sourceId = SharedWorldSourceProfileId(profileId);
+        if (sourceId is null)
+            return Denied("UnknownProfile", "This server is not part of the selected shared world session.");
+        profileId = sourceId.Value;
         if (config.KnownRevoked || view.ConnectionCode == "Revoked")
             return Denied("Revoked", "The owner removed this PC's saved access. Ask them for a new server code.");
         if (view.ConnectionCode == "AccessExpired")
@@ -93,15 +116,17 @@ internal sealed partial class FriendLink
         var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
         if (floor is null || owner is null)
             return Denied("SharingPermissionUnknown", "This PC has not verified the current sharing permission. Check again while connected to the Host.");
+        if (config.PeerWorld is { } pinnedRoot && (pinnedRoot.ProfileId != profileId ||
+            pinnedRoot.GroupId != floor.GroupId || pinnedRoot.OwnerPublicKey != owner))
+            return Denied("SharingReviewRequired", "The saved sharing permission or world history needs review. Check again to verify the current signed history.");
         var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{profileId:N}.protected");
         var roster = bytes is { Length: > 0 } && bytes.LongLength <= SharedWorldService.MaximumManifestBytes
             ? JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json) : null;
         if (roster is null)
             return Denied("SharingPermissionUnknown", "This PC has not verified the current sharing permission. Check again while connected to the Host.");
-        var keyBytes = data.LoadProtected($"shared-world-pc-signing-{SharedWorldDeviceId:N}.protected");
-        if (keyBytes is null) return Denied("HostingIdentityRequired", "Check this PC's sharing identity with the Host first.");
-        using var key = ECDsa.Create();
-        key.ImportPkcs8PrivateKey(keyBytes, out _);
+        var originalOwner = config.PeerWorld is not null && SharedWorldDeviceId == Guid.Empty;
+        using var key = LoadExistingSharingKey();
+        if (key is null) return Denied("HostingIdentityRequired", "Check this PC's sharing identity with the Host first.");
         if (!SharedWorldRosterTrust.Verify(roster) || roster.ProfileId != profileId ||
             roster.GroupId != floor.GroupId || roster.Epoch != floor.Epoch ||
             roster.Revision != floor.Revision || roster.Signature != floor.Signature ||
@@ -111,9 +136,12 @@ internal sealed partial class FriendLink
             return Denied("SigningIdentityChanged", "The Host's world identity changed. Ask the owner to review it.");
         var member = roster.Members.SingleOrDefault(item => item.DeviceId == SharedWorldDeviceId);
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
-        if (member is not null && member.PublicKey != publicKey)
+        if (originalOwner && publicKey != config.PeerWorld!.OwnerPublicKey ||
+            member is not null && member.PublicKey != publicKey)
             return Denied("HostingIdentityRequired", "Check this PC's sharing identity with the Host first.");
-        if (!SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId, publicKey,
+        if (originalOwner
+            ? SharedWorldPeerTrust.AccessFromRoster(config.PeerWorld!, roster, Guid.Empty, publicKey) is not { Receive: true, EligibleHost: true }
+            : !SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId, publicKey,
                 grants => grants.Receive && grants.EligibleHost))
             return Denied("HostingPermissionRequired", "The owner has not allowed this PC to host this server. Ask them to turn on Allow friends to host this server on the Host PC and check this PC's access.");
         // A verified signed denial is actionable before this PC has followed

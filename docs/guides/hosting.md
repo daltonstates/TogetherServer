@@ -75,11 +75,19 @@ use its tabs:
 | Permission presets | Status only, Can start, and Trusted helper set the four general permissions together and clear per-server exceptions. Mixed choices show Custom. |
 | **Access time** | Set or clear an owner access deadline independently of assignments and permissions. |
 | Temporary helper | Allow a one-hour or eight-hour helper grant within existing assignments; expiry or End now restores saved permissions. |
-| Remove access | Revoke this PC without affecting other PCs. |
+| **Remove access** for a selected server | Remove this PC from that server and keep its other server access and permissions. |
+| **Remove all server access** | Revoke this PC's saved access to every server on this Host. |
 
 Add-time and View-logs permissions start off. Start and Stop do not imply
 either permission. A server assignment alone can provide status and connection
 details without lifecycle controls.
+
+Opening Friend access from a server selects that server. The global PC list
+opens on **All servers**. Review the selected scope before removing access.
+A new approved invitation can grant access again; removal does not ban a person
+or computer. Internal credentials used for shared-world hosting are managed by
+the app and do not appear as extra Friend PCs. Existing PC permissions stay
+with their original access.
 
 Access time offers 1 hour, 8 hours, 1 day, 7 days, 30 days, 90 days, or
 **Clear deadline**. Advanced accepts a future local date/time with a UTC preview,

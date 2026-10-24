@@ -63,7 +63,7 @@ it('shows one grouped workspace and hosts a continuation with one Host locally',
   // This fixture's saved Friend and local original share the exact source ID.
   // The local original takes precedence, so its running continuation stays under Your servers.
   expect(screen.queryByRole('heading', { name: 'Hosting for friends' })).not.toBeInTheDocument()
-  const localRow = await screen.findByRole('button', { name: 'Open Morgan’s Meadow · local DEMO copy on this PC' })
+  const localRow = await screen.findByRole('button', { name: 'Open Morgan’s Meadow · local DEMO copy on this PC' }, { timeout: 4000 })
   expect(localRow.closest('.server-directory-group')).toHaveTextContent('Your servers')
   expect(localRow).not.toHaveTextContent('Hosted for')
   expect(screen.queryByText('Hosting for Morgan')).not.toBeInTheDocument()

@@ -117,6 +117,52 @@ function directoryNavigation(directory, name, profileId, now) {
   const owner = anchor.host ? anchor.host.hostProfileName || anchor.host.connectionName : 'this PC';
   return { target: route.target, label: `Open ${worldName} on ${owner}` };
 }
+async function verifyWorldSidebar(page, location, stopped = false) {
+  const onOwner = location === 'owner';
+  const directory = await until(() => read(page, '/api/local/servers'), view => {
+    const original = (onOwner ? view.localServers : view.friendHosts.flatMap(host => host.servers))
+      .filter(server => server.id === input.profileId && !server.isSuccessor && server.sharedWorldId === candidate.groupKey &&
+        server.originalProfileId === input.profileId);
+    const successor = (onOwner ? view.friendHosts.flatMap(host => host.servers) : view.localServers)
+      .filter(server => server.id === candidate.profileId && server.isSuccessor && server.sharedWorldId === candidate.groupKey &&
+        server.originalProfileId === input.profileId);
+    return original.length === 1 && successor.length === 1 && original[0].state === 'Offline' &&
+      successor[0].state === (stopped ? 'Offline' : 'Process running');
+  }, `${location} canonical signed original world and exact successor state`);
+  const name = onOwner && !stopped ? 'Join' : 'Host';
+  const profileId = onOwner ? input.profileId : candidate.profileId;
+  const plan = directoryNavigation(directory, name, profileId, Date.now());
+  const expectedKind = onOwner && !stopped ? 'friend' : 'local';
+  const expectedProfile = stopped ? input.profileId : candidate.profileId;
+  if (plan.target.kind !== expectedKind || plan.target.profileId !== expectedProfile)
+    throw new Error('The single signed world row selected the wrong original or successor profile');
+  const hostingPc = onOwner ? directory.friendHosts.find(host => host.connectionId === plan.target.connectionId) : null;
+  const badge = onOwner ? `Hosted by ${hostingPc?.hostProfileName || hostingPc?.connectionName}` : 'Hosting on this PC';
+  const originalHost = onOwner ? null : directory.friendHosts.find(host => host.servers.some(server =>
+    server.id === input.profileId && server.sharedWorldId === candidate.groupKey && server.originalProfileId === input.profileId));
+  const region = page.getByRole('region', { name: 'Servers', exact: true });
+  const row = region.getByRole('button', { name: exact(plan.label) });
+  const singleRow = async () => {
+    if (await row.count() !== 1 || await region.getByRole('button', { name: /^Open /u }).count() !== 1 ||
+      await region.getByRole('heading', { level: 4 }).count() !== (onOwner ? 0 : 1)) return false;
+    if (!onOwner && (await region.getByRole('heading', { level: 4 }).innerText()).trim() !==
+      (originalHost?.hostProfileName || originalHost?.connectionName)) return false;
+    const badges = row.locator('.remote-hosting-badge');
+    return stopped ? await badges.count() === 0 : await badges.count() === 1 && (await badges.innerText()).trim() === badge;
+  };
+  await until(singleRow, Boolean, `${location} one original-world sidebar row with exact hosting badge`);
+  await row.click();
+  await until(async () => ({ snapshot: await read(page), selected: expectedKind === 'local' ? await selectedLocalProfile(page) : null }), value => {
+    const snapshot = value.snapshot;
+    if (expectedKind === 'friend') return snapshot.mode === 'Friend' && snapshot.connectionId === plan.target.connectionId &&
+      snapshot.endpoint.replace(/\/$/, '') === candidate.endpoint && snapshot.profiles.length === 1 &&
+      snapshot.profiles[0].id === candidate.profileId && snapshot.profiles[0].runOperationId === candidate.runId;
+    return snapshot.mode === 'Host' && value.selected === expectedProfile && snapshot.settings.profiles.some(profile => profile.id === expectedProfile) &&
+      (stopped || snapshot.runs.some(run => run.profileId === candidate.profileId && run.runOperationId === candidate.runId));
+  }, `${location} sidebar routes to the exact ${stopped ? 'original' : 'successor'} PC and profile`);
+  await until(singleRow, Boolean, `${location} canonical row remains after navigation`);
+  return { singleOriginalRow: true, hostingBadge: !stopped, exactRoute: true, noSuccessorHostGroup: true };
+}
 async function nav(page, name, requestedProfileId) {
   // Host and Join are directory selections in the current UI, not header tabs.
   if (name === 'Host' || name === 'Join') {
@@ -616,6 +662,7 @@ try {
     await nav(friend, 'Overview');
     if (active.runs.filter(run => run.state === 'Ready').length) throw new Error('Fixture falsely reports game readiness');
     await visible(friend.getByRole('button', { name: 'Stop server', exact: true })).waitFor({ state: 'visible', timeout });
+    report.guidedHosting.sidebar = await verifyWorldSidebar(friend, 'candidate');
     await shot(friend, '06-candidate-running');
   });
   await stage('signed first-run discovery and Connect on owner', async () => {
@@ -648,7 +695,8 @@ try {
     'owner connected to exact advertised candidate profile, session and endpoint');
     if (hostingStartRequests !== 1) throw new Error('Connect or polling repeated guided Start');
     report.signedDiscovery = { exactWorldRoot: true, exactCandidateSession: true, exactBranch: true,
-      authorizedWithoutConflict: true, exactAdvertisedEndpoint: true, exactConnectSelection: true };
+      authorizedWithoutConflict: true, exactAdvertisedEndpoint: true, exactConnectSelection: true,
+      sidebar: await verifyWorldSidebar(host, 'owner') };
     await shot(host, '07-owner-connected-new-host');
     await friend.setViewportSize({ width: 430, height: 920 });
     await geometry(friend); await shot(friend, '07-narrow-candidate');
@@ -657,6 +705,8 @@ try {
   await stage('candidate owner Stop', async () => {
     await nav(friend, 'Host', candidate.profileId); await optional(friend, 'Return to selected server'); await nav(friend, 'Overview');
     await stop(friend); await shot(friend, '08-candidate-stopped');
+    report.signedDiscovery.stoppedSidebar = await verifyWorldSidebar(host, 'owner', true);
+    await shot(host, '08-owner-after-candidate-stop');
     await verifyOwnedPayload(completedSave.originalDirectory, completedSave.version.files, 'host');
     await verifyOwnedPayload(completedSave.receiverDirectory, completedSave.version.files, 'friend-a');
     if (hostingStartRequests !== 1 || hostingPrepareRequests !== 1) throw new Error('Discovery, polling or Stop repeated hosting intent');

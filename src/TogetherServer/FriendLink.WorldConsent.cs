@@ -7,8 +7,30 @@ internal sealed partial class FriendLink
 {
     private sealed record WorldConsentChange(SharedWorldPeerRoot Root, Guid DeviceId, long Revision);
 
+    // A successor's authenticated local profile is an alias for its pinned
+    // source world. Never resolve an arbitrary local profile through a cache.
+    private Guid? SharedWorldSourceProfileId(Guid profileId)
+    {
+        if (profileId == Guid.Empty) return null;
+        if (config?.PeerWorld is not { } root) return profileId;
+        return SharedWorldPeerTrust.ValidRoot(root) &&
+            (profileId == root.ProfileId || config.PeerWorldLocalProfileId == profileId)
+            ? root.ProfileId : null;
+    }
+
+    private Guid[] ReceiveConsentProfileIds(Guid profileId)
+    {
+        var sourceId = SharedWorldSourceProfileId(profileId);
+        if (sourceId is null) return [];
+        return config?.PeerWorld is not null && config.PeerWorldLocalProfileId is { } localId && localId != Guid.Empty
+            ? new[] { sourceId.Value, localId }.Distinct().ToArray() : [sourceId.Value];
+    }
+
     private SharedWorldPeerRoot? ReceiveConsentRoot(Guid profileId)
     {
+        var sourceId = SharedWorldSourceProfileId(profileId);
+        if (sourceId is null) return null;
+        profileId = sourceId.Value;
         var current = config;
         if (current is null || current.SharedWorldSigningKeys?.GetValueOrDefault(profileId) is not { } owner ||
             current.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId) is not { } group || group == Guid.Empty)
@@ -20,12 +42,13 @@ internal sealed partial class FriendLink
     private bool HasSharedWorldReceiveConsent(Guid profileId)
     {
         var current = config;
-        var legacy = current?.ConsentedSharedWorldProfiles?.Contains(profileId) == true &&
-            !withdrawnSharedConsent.ContainsKey(profileId);
+        var profiles = ReceiveConsentProfileIds(profileId);
+        var withdrawn = profiles.Any(withdrawnSharedConsent.ContainsKey);
+        var legacy = profiles.Any(id => current?.ConsentedSharedWorldProfiles?.Contains(id) == true) && !withdrawn;
         var root = ReceiveConsentRoot(profileId);
-        return root is null ? legacy : new WorldPeerReceiveConsentStore(data).Effective(root,
+        return root is null ? current?.PeerWorld is null && legacy : new WorldPeerReceiveConsentStore(data).Effective(root,
             current!.PeerWorldMemberDeviceId ?? current.DeviceId,
-            legacy || !withdrawnSharedConsent.ContainsKey(profileId) && AutomaticHostingReceiveConsent(root));
+            legacy || !withdrawn && AutomaticHostingReceiveConsent(root));
     }
 
     // Shared hosting includes keeping and forwarding the server's completed
@@ -36,7 +59,7 @@ internal sealed partial class FriendLink
     {
         try
         {
-            if (config is null || config.KnownRevoked ||
+            if (config is null || config.KnownRevoked || SharedWorldDeviceId == Guid.Empty ||
                 view.ConnectionCode is "Revoked" or "AccessExpired" or "ApprovalPending" ||
                 config.PendingSharedWorldGroups?.ContainsKey(root.ProfileId) == true ||
                 config.SharedWorldConflicts?.Contains(root.ProfileId) == true)
@@ -77,14 +100,18 @@ internal sealed partial class FriendLink
         lock (sharedReceiptSync)
         {
             var root = ReceiveConsentRoot(profileId);
+            if (root is null && config?.PeerWorld is not null) return false;
             if (root is not null && config is { } current)
             {
                 var id = current.PeerWorldMemberDeviceId ?? current.DeviceId;
                 var expected = before is not null && before.Root == root && before.DeviceId == id ? before.Revision : 0;
                 if (!new WorldPeerReceiveConsentStore(data).Set(root, id, true, expected)) return false;
             }
-            withdrawnSharedConsent.TryRemove(profileId, out _);
-            if (sharedProfileCancellation.TryRemove(profileId, out var previous)) previous.Dispose();
+            foreach (var id in ReceiveConsentProfileIds(profileId))
+            {
+                withdrawnSharedConsent.TryRemove(id, out _);
+                if (sharedProfileCancellation.TryRemove(id, out var previous)) previous.Dispose();
+            }
             return true;
         }
     }
@@ -93,27 +120,36 @@ internal sealed partial class FriendLink
     // locks takes sharedReceiptSync first, then SharedWorldMutationGate.
     internal void RefreshWorldReceiveConsent(SharedWorldPeerRoot root, Guid deviceId)
     {
+        Guid[] profiles;
         lock (sharedReceiptSync)
         {
             if (ReceiveConsentRoot(root.ProfileId) != root || config is not { } current ||
                 (current.PeerWorldMemberDeviceId ?? current.DeviceId) != deviceId) return;
-            if (new WorldPeerReceiveConsentStore(data).Effective(root, deviceId, false))
+            profiles = ReceiveConsentProfileIds(root.ProfileId);
+            var enabled = new WorldPeerReceiveConsentStore(data).Effective(root, deviceId, false);
+            foreach (var profileId in profiles)
             {
-                withdrawnSharedConsent.TryRemove(root.ProfileId, out _);
-                if (sharedProfileCancellation.TryRemove(root.ProfileId, out var previous)) previous.Dispose();
-            }
-            else
-            {
-                withdrawnSharedConsent[root.ProfileId] = 1;
-                if (sharedProfileCancellation.TryGetValue(root.ProfileId, out var cancellation)) cancellation.Cancel();
+                if (enabled)
+                {
+                    withdrawnSharedConsent.TryRemove(profileId, out _);
+                    if (sharedProfileCancellation.TryRemove(profileId, out var previous)) previous.Dispose();
+                }
+                else
+                {
+                    withdrawnSharedConsent[profileId] = 1;
+                    if (sharedProfileCancellation.TryGetValue(profileId, out var cancellation)) cancellation.Cancel();
+                }
             }
         }
         lock (sharedScheduleSync)
         {
-            sharedRetryAfter.Remove(root.ProfileId);
-            sharedFailures.Remove(root.ProfileId);
+            foreach (var profileId in profiles)
+            {
+                sharedRetryAfter.Remove(profileId);
+                sharedFailures.Remove(profileId);
+            }
         }
-        sharedTransferHealth.Reset(root.ProfileId);
+        foreach (var profileId in profiles) sharedTransferHealth.Reset(profileId);
     }
 }
 

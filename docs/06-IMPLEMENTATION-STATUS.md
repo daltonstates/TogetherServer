@@ -11,6 +11,11 @@ history; published versions have their own
 
 - One Windows app hosts local servers and connects to Friends, with separate
   revocable access, pinned HTTPS, and fixed approved actions.
+- Friend PC lists omit internal shared-world session credentials. Ordinary
+  PCs keep their existing permissions. Removing access from a selected server
+  keeps the PC's other assignments and settings; **Remove all server access**
+  is a separately named action. A fresh approved invitation can grant access
+  again without restoring the removed credential or scope.
 - Shared hosting uses **Allow friends to host this server** and **Host locally**.
   Receiving and forwarding completed saves are automatic for approved members.
   Only a complete, verified local copy can become playable; signed announcements
@@ -18,9 +23,17 @@ history; published versions have their own
 - Signed original-world identity survives successor-local profile IDs and
   roster changes. Missing valid ancestry can be caught up; invalid signatures,
   changed ownership and divergent histories still require review.
+- An adopted connection's permission prompt and saved receive consent use the
+  pinned original world and member identity. Original-owner permission requires
+  its actual signing key and keeps local receive consent separate. Cached save
+  versions retain their signed original profile identity.
 - The original owner's remote Stop resolves authority against that signed
   original world. Current membership, permission, remote-control and fresh
   exact-zero player checks still apply at the successor.
+- The sidebar groups locations by verified original-world identity. New
+  shared locations wait for the canonical directory before entering the list;
+  snapshot status alone cannot briefly create another world entry. The row
+  identifies the hosting PC and routes actions to that actual location.
 - Valheim query recovery preserves the Steam challenge and bounds silent-query
   retries. Silence, malformed or contradictory replies remain Unknown.
   Remote and automatic Stop require a fresh trusted zero inside the lifecycle
@@ -28,10 +41,16 @@ history; published versions have their own
 
 ## Open work and acceptance limits
 
-- **Known hosting prompt issue:** Host locally on an adopted successor may
-  resolve permission against its local profile and incorrectly show that
-  sharing is unverified. Rehosting, consent and version normalization need
-  separate coverage. Remote Stop authority does not grant hosting consent.
+- The physical laptop's signed sharing-history failure is still unconfirmed.
+  Revoke/reinvite cases pass with retained and deleted old connections and
+  signing metadata. The error now names the failing verification step while
+  preserving signed ancestry and trust floors. A retry's complete extended
+  message is needed to identify that laptop's failure; history is not reset.
+- **Known adopted-copy preparation limit:** the permission prompt, consent
+  alias and cached-version identity have focused source coverage, but preparing
+  from an already adopted successor can still fail at the legacy received-copy
+  or branch lookup. Complete successor rehosting remains open. Remote Stop
+  authority does not grant local receiving or hosting consent.
 - Physical two-PC/LAN/WAN transfer, real game joins, recognizable saved changes,
   graceful Stop/restart, recovery and valued-world acceptance remain separate
   checks. Hosted or synthetic results do not close them.
@@ -43,6 +62,24 @@ history; published versions have their own
 - Current release builds are unsigned. The latest recorded hosted native check
   could not prove notification delivery, click or navigation because Windows
   was in QuietTime. Full native acceptance remains incomplete.
+
+## Current delivery
+
+Preview 0.3.3.9 is being prepared. All 71 source/synthetic groups, strict solution
+compilation, full UI lint and production bundling pass. The focused directory
+checks cover both snapshot-before-directory directions, independent worlds,
+ordinary local creation and unresolved known runs. The renderer/harness suite
+passes 49 pure checks. The local full UI run passes 1,482 of 1,483 cases; its
+remaining demo assertion waited less than the three-second directory poll.
+The same exact assertion now waits up to four seconds and all seven demo flows
+pass. The immutable hosted candidate still requires a full UI rerun, actual
+sidebar clicks before/after Stop, process, compatibility and packaging checks.
+
+The earlier candidate's actual screenshot revealed the first-frame duplicate
+and was superseded before publication. Earlier run identities, failures and
+measurements remain in ignored release evidence and CI. Final candidate hashes,
+CI results and public-download verification belong with the published release.
+The owner's active desktop and 29 unrelated pending files remain preserved.
 
 ## Repository maintenance
 

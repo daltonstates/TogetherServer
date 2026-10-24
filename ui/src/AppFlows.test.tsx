@@ -136,9 +136,11 @@ beforeEach(() => {
   friendDirectorySnapshot = friend()
   transport.read.mockReset().mockImplementation(async (path: string) => {
     if (path === '/api/local/snapshot') return state
-    if (path === '/api/local/servers') return directoryWithSnapshot(
-      directoryWithSnapshot(null, state.mode === 'Host' ? state : localDirectorySnapshot),
-      state.mode === 'Friend' ? state : friendDirectorySnapshot)
+    // The canonical endpoint admits locations independently of the UI's cache.
+    if (path === '/api/local/servers') return {
+      localServers: directoryWithSnapshot(null, state.mode === 'Host' ? state : localDirectorySnapshot).localServers,
+      friendHosts: directoryWithSnapshot(null, state.mode === 'Friend' ? state : friendDirectorySnapshot).friendHosts
+    }
     if (path === '/api/local/profile') return { displayName: 'Alex' }
     if (path === '/api/local/getting-started') return gettingStartedState
     if (path === '/api/local/required-setup') return { features: [{ id: 'profile-name', revision: 1, title: 'Your name', description: 'Share your name.', completed: true }] }
@@ -957,7 +959,7 @@ describe('Host task structure', () => {
     await act(async () => { finish({ ok: true, code: 'SeparateCopyStarted', message: 'Starting the latest save.', snapshot: state }) })
     const running = await screen.findByRole('region', { name: 'Newest owner continuation workspace' })
     expect(within(running).getByRole('progressbar', { name: 'Waiting for the game' })).toBeVisible()
-    expect(directory().getByRole('button', { name: 'Open Newest owner continuation on this PC' })).toHaveAttribute('aria-current', 'true')
+    expect(await directory().findByRole('button', { name: 'Open Newest owner continuation on this PC' }, { timeout: 4000 })).toHaveAttribute('aria-current', 'true')
     expect(directory().getByRole('button', { name: 'Open Unresolved retained copy on this PC' })).toBeInTheDocument()
     expect(directory().queryByRole('button', { name: 'Open Earlier owner continuation on this PC' })).not.toBeInTheDocument()
     expect(mutationCalls().filter(([path]) => path.endsWith('/start')).map(([path]) => path)).toEqual([`/api/local/profiles/${id}/start`])

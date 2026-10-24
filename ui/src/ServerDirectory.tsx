@@ -86,11 +86,12 @@ export const parseServerDirectory: Decoder<ServerDirectoryView> = value => {
 
 const blankCount = { playerCountRefreshing: false, playerCountFailureCount: 0,
   separateCopySourceProfileId: null, sourceName: null, sourceHostName: null }
-/** Overlay current canonical details immediately while the passive combined list catches up. */
+/** Refresh known locations; let the directory identify new shared-world aliases. */
 export function directoryWithSnapshot(directory: ServerDirectoryView | null, snapshot: Snapshot | null): ServerDirectoryView {
   const view = directory ?? { localServers: [], friendHosts: [] }
   if (!snapshot) return view
-  if (snapshot.mode === 'Host') return { ...view, localServers: snapshot.settings.profiles.map(profile => {
+  if (snapshot.mode === 'Host') return { ...view, localServers: snapshot.settings.profiles
+    .filter(profile => !directory || !profile.separateCopySourceProfileId || view.localServers.some(server => server.id === profile.id)).map(profile => {
     const run = snapshot.runs.find(item => item.profileId === profile.id)
     const prior = view.localServers.find(item => item.id === profile.id)
     const sourceHost = view.friendHosts.find(host => host.servers.some(server => server.id === profile.separateCopySourceProfileId))
@@ -111,20 +112,29 @@ export function directoryWithSnapshot(directory: ServerDirectoryView | null, sna
       sourceHostName: localSource ? null : prior?.sourceHostName ?? sourceHost?.hostProfileName ?? sourceHost?.connectionName ?? null }
   }) }
   const connections = snapshot.connections?.length ? snapshot.connections : snapshot.connectionId ? [snapshot] : []
-  const hosts = connections.map(host => ({ connectionId: host.connectionId, hostId: host.hostId || null,
+  const hosts = connections.flatMap(host => {
+    const prior = view.friendHosts.find(item => item.connectionId === host.connectionId)
+    // A snapshot has no signed world identity. Once the combined directory is
+    // available, let it admit new locations before overlaying their status so
+    // a newly connected successor cannot briefly become a second world.
+    if (directory && !prior) return []
+    const profiles = directory ? host.profiles.filter(profile => prior?.servers.some(server => server.id === profile.id)) : host.profiles
+    if (host.profiles.length && !profiles.length) return []
+    return [{ connectionId: host.connectionId, hostId: host.hostId || null,
     connectionName: host.connectionName || 'Saved friend', hostProfileName: host.hostProfileName ?? null,
     state: host.state, connectionCode: host.connectionCode ?? null, lastConnectedUtc: host.lastConnectedUtc,
     servers: !host.profiles.length && ['Disconnected', 'Disconnected/Unknown'].includes(host.state)
-      ? (view.friendHosts.find(prior => prior.connectionId === host.connectionId)?.servers ?? []).map(server => ({ ...server,
+      ? (prior?.servers ?? []).map(server => ({ ...server,
         state: 'Unknown', onlinePlayers: null, maxPlayers: null, playerCountTrusted: false, playerCountObservedUtc: null }))
-      : host.profiles.map(profile => ({ ...blankCount,
-      ...view.friendHosts.find(prior => prior.connectionId === host.connectionId)?.servers.find(server => server.id === profile.id),
+      : profiles.map(profile => ({ ...blankCount,
+      ...prior?.servers.find(server => server.id === profile.id),
       id: profile.id, name: profile.name, kind: profile.kind, state: profile.state,
       onlinePlayers: profile.onlinePlayers, maxPlayers: profile.maxPlayers, playerCountTrusted: profile.playerCountTrusted ?? false,
       playerObservationSource: profile.playerObservationSource ?? null, playerCountObservedUtc: profile.playerCountObservedUtc ?? null,
-      playerCountRefreshing: profile.playerCountRefreshing ?? false, playerCountFailureCount: profile.playerCountFailureCount ?? 0 })) }))
+      playerCountRefreshing: profile.playerCountRefreshing ?? false, playerCountFailureCount: profile.playerCountFailureCount ?? 0 })) }]
+  })
   return { ...view, friendHosts: snapshot.connections !== null ? hosts
-    : [...view.friendHosts.filter(host => !hosts.some(next => next.connectionId === host.connectionId)), ...hosts] }
+    : [...view.friendHosts.filter(host => !connections.some(next => next.connectionId === host.connectionId)), ...hosts] }
 }
 
 /** Retained storage stays in settings; only inactive duplicates leave the ordinary list. */

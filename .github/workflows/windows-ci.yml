@@ -294,6 +294,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Local pairing dispatcher compilation failed.' }
 
       - name: Verify loopback, assigned LAN and actual two-ended UX with the same candidate
+        env:
+          TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS: "1"
         run: |
           $ErrorActionPreference = 'Stop'
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
@@ -314,8 +316,11 @@ jobs:
           } | Sort-Object InterfaceIndex, IPAddress | Select-Object -First 1)
           if ($lan.Count -ne 1) { throw 'The hosted local pairing lane requires one assigned preferred private IPv4 address.' }
           $labRoot = Join-Path (Get-Location) 'local-data/local-pairing-lab'
+          $modeFailures = [Collections.Generic.List[string]]::new()
+          $passedModes = [Collections.Generic.List[string]]::new()
           try {
-            foreach ($mode in @('lan-api', 'ux', 'loopback')) {
+            foreach ($mode in @('ux', 'loopback', 'lan-api')) {
+              try {
               $before = @(if (Test-Path -LiteralPath $labRoot) { Get-ChildItem -LiteralPath $labRoot -Directory | ForEach-Object Name })
               $labArguments = @($harness, $candidate, '--local-pairing-lab-journey', '--allow-windowless-lab')
               if ($mode -ne 'loopback') { $labArguments += @('--lab-lan-address', $lan[0].IPAddress) }
@@ -350,6 +355,17 @@ jobs:
                   Copy-Item -LiteralPath $picture.FullName -Destination (Join-Path $destination.FullName $picture.Name)
                 }
               }
+              $reviewFiles = @(Get-ChildItem -LiteralPath $created[0].FullName -Recurse -File -Filter simple-hosting-latest-review.json)
+              if ($reviewFiles.Count -gt 8) { throw 'Diagnostic file count exceeds its bound.' }
+              $reviewNumber = 0
+              foreach ($reviewFile in $reviewFiles) {
+                if ($reviewFile.Length -gt 32768 -or ($reviewFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Lab review diagnostic exceeds its bound.' }
+                $reviews = @(Get-Content -LiteralPath $reviewFile.FullName -Raw | ConvertFrom-Json)
+                if ($reviews.Count -gt 16) { throw 'Lab review diagnostic record count exceeds its bound.' }
+                $reviews | Select-Object phase,reason,exceptionType,localCopies,canonicalCopies,branchCopies,knownHeadCount,verifiedPayloads,coveringCandidates,candidateKind |
+                  ConvertTo-Json -Depth 4 | Set-Content (Join-Path $destination.FullName ("latest-review-{0}.json" -f $reviewNumber)) -Encoding utf8
+                $reviewNumber++
+              }
               if ($runExitCode -ne 0 -or $report.outcome -ne 'Passed' -or @($report.stages).Count -eq 0 -or
                   @($report.stages | Where-Object state -ne 'Passed').Count -ne 0) { throw "The $mode lab did not pass every planned stage without skips." }
               foreach ($required in @('isolated-apps', 'cleanup')) {
@@ -380,10 +396,34 @@ jobs:
                   $uxReport.failurePathCoverage.hostingGrantWithdrawal -ne $true -or $uxReport.failurePathCoverage.localConsentAndCancel -ne $true)) {
                 throw 'The actual two-ended UX did not pass all ten stages and permission/consent failure paths with masked evidence.'
               }
+              if ($mode -eq 'ux') {
+                $sidebarProofs = @(
+                  @{record=$uxReport.guidedHosting.sidebar;hostingBadge=$true},
+                  @{record=$uxReport.signedDiscovery.sidebar;hostingBadge=$true},
+                  @{record=$uxReport.signedDiscovery.stoppedSidebar;hostingBadge=$false}
+                )
+                foreach ($sidebarProof in $sidebarProofs) {
+                  if ($null -eq $sidebarProof.record -or $sidebarProof.record.singleOriginalRow -ne $true -or
+                      $sidebarProof.record.hostingBadge -ne $sidebarProof.hostingBadge -or
+                      $sidebarProof.record.exactRoute -ne $true -or $sidebarProof.record.noSuccessorHostGroup -ne $true) {
+                    throw 'The actual two-ended UX omitted an exact single-world sidebar, hosting badge or click route before or after Stop.'
+                  }
+                }
+              }
               if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $candidateHash) { throw 'The downloaded candidate changed during local pairing acceptance.' }
               Write-Host "PASS ${mode}: every planned stage, observed zero windows, exact job cleanup and immutable candidate."
+              $passedModes.Add($mode)
+              } catch {
+                $modeFailures.Add($mode)
+                Write-Host "FAIL ${mode}: independent lab failed; see its retained redacted report and fixed failure code."
+                if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $candidateHash) { throw 'Candidate changed; refusing another mode.' }
+              }
             }
+            if ($passedModes.Count -ne 3 -or $modeFailures.Count -ne 0) { throw 'One or more independent lab modes failed; each retained result remains authoritative.' }
           } finally {
+            @{expectedModes=3;passed=@($passedModes.ToArray());failed=@($modeFailures.ToArray());
+              sourceRevision=$env:GITHUB_SHA;candidateSha256=$candidateHash;fullyAccepted=$false} | ConvertTo-Json -Depth 4 |
+              Set-Content (Join-Path $evidence.FullName 'mode-summary.json') -Encoding utf8
             $finalHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
             $context.finalCandidateSha256 = $finalHash
             $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'candidate.json') -Encoding utf8
