@@ -178,7 +178,7 @@ Completed post-Stop copies are the normal path. Sharing while a real game is
 running stays disabled until that exact installation passes its separate
 save/copy/transfer/load/change/restart checks. Hash verification alone cannot
 prove a real game loads or preserves progress. See the
-[implementation and verification record](../36-SHARED-HOSTING-SIMPLIFICATION.md).
+[current implementation and acceptance status](../06-IMPLEMENTATION-STATUS.md).
 
 ## Move a world without an online handoff
 

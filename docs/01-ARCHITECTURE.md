@@ -4,7 +4,7 @@ Shared hosting now derives Receive, EligibleHost and Reshare together from one
 original-Host policy. The signed fields remain internal authorization details.
 Verified receivers can seed completed copies through outbound pinned requests;
 explicit local hosting checks select one latest descendant and prepare fresh
-storage. See [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+storage. See [current implementation status](06-IMPLEMENTATION-STATUS.md).
 
 `WorldPeerService` identifies a world by its pinned original owner key, profile
 and group, independent of endpoint or successor-local credential ID. Protected
@@ -104,7 +104,7 @@ device's separate person name; pairing/status responses supply the Host's name.
 Friend protected configuration caches the observed Host name independently of
 its local saved alias. The loopback profile editor has exact bounded input and
 shares the mode/update gate without requiring Host role. New chat entries use
-these names without rewriting signed history. See [profile delivery](28-PROFILE-NAMES.md).
+these names without rewriting signed history. See [profile rules](00-PRODUCT.md#people-and-modes).
 
 `remote-rehearsal-v1` adds one fixed authenticated exchange over a marked synthetic staging profile. The loopback owner preparation creates only a multi-chunk fixture checkpoint, signed roster and published copy in staging storage; it never pairs a PC or grants Receive. The Friend flow reuses fresh status, the normal signing enrollment and roster checks, idempotent chat IDs, bounded verified transfer and signed receipts. Receive-only rehearsal receipt verification explicitly omits Eligible host; handoff still requires it by default. The report is an allowlisted seven-stage projection with no IDs, names, endpoints, pins, paths, hashes, messages or credentials. No new listener, remote shell, arbitrary target or telemetry poll is introduced.
 
@@ -127,10 +127,10 @@ saved configuration decide completion; explicit reviews may require a persisted
 revision acknowledgement. First app opening after installation or replacement
 checks the same local registry. Missing/error/unknown steps keep ordinary UI
 behind setup while background supervision and safe Stop/recovery remain usable.
-See [required feature setup](29-REQUIRED-FEATURE-SETUP.md).
+See [required setup rules](00-PRODUCT.md#people-and-modes).
 
 The six new slices reuse these boundaries. HostManager partials project bounded game requirements, backup bookmarks and weekly summaries, and guard simple settings through existing maintenance/offline/setup-checkpoint/hash/Undo controls. `GameCompatibility` reads only fixed reviewed metadata; protected owner versions bind to profile identity. `FriendLink.GameCompatibility` uses the saved pinned client, bounded response decoding, current assignment rechecks and an injected client-discovery/launch boundary. `GameClientLaunch` maps only three fixed Steam URIs; asynchronous availability inspection is followed by fresh authenticated status before dispatch. No Host string becomes an executable or argument. A manual Minecraft fallback adds no native picker or stored launcher path.
 
-Pinned notices are separate protected owner/current and verified Friend-copy records on the existing signed chat transport. Signed clears and monotonic revisions survive chat pruning; Friend merge cannot mutate owner notices. Backup catalog names/pins are separate from immutable completion/payload/setup hashes. The weekly projection uses archived typed session evidence without process queries, logs or lifecycle side effects. The independent `TogetherServer.FeatureChecks` entry point links only the dedicated pure/file/fake-adapter checks and never invokes the process-running legacy Program. See [the six-feature record](14-SIX-FEATURE-DELIVERY.md) for routes and remaining verification.
+Pinned notices are separate protected owner/current and verified Friend-copy records on the existing signed chat transport. Signed clears and monotonic revisions survive chat pruning; Friend merge cannot mutate owner notices. Backup catalog names/pins are separate from immutable completion/payload/setup hashes. The weekly projection uses archived typed session evidence without process queries, logs or lifecycle side effects. The independent `TogetherServer.FeatureChecks` entry point links only the dedicated pure/file/fake-adapter checks and never invokes the process-running legacy Program. See [acceptance requirements](04-IMPLEMENTATION-AND-ACCEPTANCE.md#v1-acceptance-gate) for routes and remaining verification.
 
 Keep the code close to these actual boundaries: GUI, settings/pairing, process supervisor, built-in game drivers, the explicit local custom-script driver, and companion HTTP API. Avoid schedulers, outboxes, migrations, third-party binary/plugin loading, multi-node abstractions, or cloud/provider code in v1. A later game follows [the built-in driver contract](07-ADDING-A-GAME.md) and can ship only with its own focused lifecycle and safety evidence.

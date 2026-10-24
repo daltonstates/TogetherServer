@@ -47,7 +47,7 @@ Preparation does not create a tag or publish. Obtain explicit owner
 authorization for those actions. Keep candidate bytes unchanged through
 verification, installer packaging, publication, and public-download checks.
 Record exact source, run/job/artifact identities, hashes, signature state,
-passes/failures/skips, and real-world limits in the release delivery document.
+passes/failures/skips, and real-world limits with the release and its CI run.
 
 After authorized publication, independently download all four assets without
 authentication and verify names, sizes, versions, digests, and stable/prerelease
@@ -70,8 +70,8 @@ so its users must directly install a four-part preview initially.
 Previews use production settings, credentials, and worlds. The checkbox is
 not staging isolation. Before distributing a preview, test it in both
 Host/Friend directions with the current stable app and verify data/update
-compatibility. See the [prerelease design](../30-PRERELEASE-UPDATES.md) and
-[release evidence index](../README.md#release-evidence).
+compatibility. Record incomplete acceptance in
+[current status](../06-IMPLEMENTATION-STATUS.md) and the release notes.
 
 ## How the app verifies an update
 
@@ -112,5 +112,6 @@ complete world backup or automatic schema rollback. Returning to an older
 binary requires a matching complete pre-migration data backup. Never lower a
 marker manually. Review quarantined or interrupted state through owner recovery.
 
-For current measured build and release status, follow the specific delivery
-record rather than copying its transient paths into the README.
+Keep release-specific measurements with the CI run and published release.
+Use [current status](../06-IMPLEMENTATION-STATUS.md) for unresolved acceptance;
+leave transient package paths and raw results out of the source tree.

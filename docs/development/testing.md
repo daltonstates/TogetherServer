@@ -97,12 +97,12 @@ separate six-stage exact-installation acceptance; fixture success cannot enable 
 ## Record evidence where it belongs
 
 Use [implementation and acceptance](../04-IMPLEMENTATION-AND-ACCEPTANCE.md)
-for required gates and the relevant [delivery record](../README.md#feature-and-delivery-records)
-for measured results. Record source revision, exact commands, candidate
+for required gates and [current status](../06-IMPLEMENTATION-STATUS.md)
+for open work. Store measured results with their CI run or release, including source revision, exact commands, candidate
 version/hash/signature, run/job/artifact identities, actual pass/fail/skip
-counts, and open external checks. Keep earlier failures visible when later
-checks supersede them. Do not copy transient build paths or raw test logs into
-the front-page README.
+counts, and open external checks. Preserve the run's failures and skips beside
+later results. Keep generated evidence under ignored `local-data/`, and do not
+commit raw test logs, screenshots or transient package paths.
 
 The [historical firewall cleanup tool](../11-FIREWALL-CHECK-RULE-CLEANUP.md)
 is a separate owner-reviewed operation; its pure mock test does not query the

@@ -1,28 +1,21 @@
-# Implementation order and acceptance
+# Implementation and acceptance
 
-The 2026-10-21 single-setting shared-hosting changes and their exact validation
-are recorded in [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
-Its one-confirmation flow supersedes earlier user-managed sharing steps.
-Source, synthetic transport, rendered UI and real multi-PC/game evidence remain
-separate acceptance categories.
+Deliver bounded changes against the current product, security and lifecycle
+rules. Shared hosting uses one owner setting and explicit Friend preparation
+and Start actions. Signed ancestry, current permission, complete verified
+copies and protected installation-specific live-save acceptance remain required.
+See [current status](06-IMPLEMENTATION-STATUS.md) for known issues and open work.
 
-The 2026-10-16 peer-world implementation and its current verification results
-are tracked in [delivery document 26](26-PEER-SHARED-WORLDS-DELIVERY.md).
-Source/synthetic checks cover solo/descendant recovery, signed directory and
-default conflicts, owner-offline catchup, permission boundaries, resumable
-ancestry, partial/tampered copies and installation-scoped acceptance. Component
-checks exercise explicit user actions with mocked APIs. These checks do not
-prove real peer networking, game availability, separate-PC transfer or actual
-game load/change/restart. Those checks require separately approved test PCs or
-an unattended Windows session. No real installed game is accepted by a fixture.
+Source, synthetic transport, component, rendered/native, physical multi-PC and
+real-game evidence answer different questions. A fixture never accepts a real
+installed game. Keep every failed, skipped or unavailable stage explicit.
 
-Foreground safety takes precedence over local process acceptance. Automated work must preserve the owner's foreground window and keyboard focus. Use `scripts/verify-code-only.ps1` on the active desktop; direct process runners and full release, desktop or installer checks require an explicitly approved separate PC or dedicated unattended Windows session. Hidden/tray mode and `-SkipDesktop` do not establish focus safety. Guarded scripts require `-AllowInteractiveTests` and refuse before launch without it. The 2026-10-05 full gate was stopped after the owner reported game interference; remaining stages are incomplete, not passed. Six early-refusal cases and PowerShell parsing passed without launching an app or fixture.
-
-Live-save slice validation on 2026-10-04 through 2026-10-05: PASS source fixed-action group covering duplicate requests, storage exhaustion, source mutation, cancellation, concurrent owner Stop, interrupted signed directory, guarded quarantine/withdrawal/retry, and invalid Bedrock resume preservation. Follow-up source checks pass for typed immutable snapshots, native Windows directory/file leases, actual attribute-only reparse substitutions, exact request cleanup and cancellation during the final native process check. PASS 43 focused live-save UI trust-decoder/action cases, 12 Minecraft fixture groups, five Factorio fixture groups and two Terraria fixture groups. Bedrock changes its disposable source at resume to prove copy-before-resume; a refused console dispatch returns review-required and preserves the hold. The earlier staging slice passed three packaged groups for exact-process completion, signed publication, pinned multi-chunk Receive/hash/receipt, both app restarts without replay, and concurrent Stop with post-Stop continuity. Final packaged verification of the integrated game candidates is pending. The symbolic-link subcase skips because this Windows user cannot create that link; junction and native reparse checks have separate coverage. All network results are loopback/synthetic. Real completion, immutable snapshot consistency, separate-PC transfer, game load/change/restart and browser/viewport acceptance remain unverified or unavailable; every real game's live action stays disabled.
-
-Guided world-load rehearsal validation on 2026-10-04: PASS source safety group (wrong backup/profile, payload damage, links, low space, changed binary, failed load, ordering, durable results and interrupted preparation); PASS three UI cases, lint and production bundle. PASS packaged disposable fixture process/copy drill with distinct roots and ports, original process still running, exact Start/Stop, app restart and cleanup. The packaged remote rehearsal additionally exercises verified received-copy preparation, owner-reported failure and cleanup without losing the source receipt. These are synthetic and loopback results. Separate-PC/network, real-game load and saved restart, and visual/viewport acceptance remain UNAVAILABLE or SKIPPED. No automatic game-load proof or live-capture acceptance was recorded.
-
-Keep the project small and deliver working vertical slices. Start implementation in the new chat; these documents are the handoff, not the implementation.
+Automated work must preserve the owner's foreground window and keyboard focus.
+Use `scripts/verify-code-only.ps1` on the active desktop. Process runners and
+full release, browser, desktop or installer checks require an explicitly
+approved separate PC or unattended Windows session. Hidden/tray mode and
+`-SkipDesktop` do not establish focus safety. Guarded scripts require
+`-AllowInteractiveTests`; setting it does not authorize the active desktop.
 
 ## Slice 1 — Local Host app and GUI
 
@@ -43,7 +36,7 @@ Keep the project small and deliver working vertical slices. Start implementation
   authoritative settings after completion; and retain confirmed safe Stop and
   recovery while background hosting/polling continue. Installer/native/update
   relaunch acceptance still requires an approved separate Windows session. See
-  [required feature setup delivery](29-REQUIRED-FEATURE-SETUP.md).
+  [required setup rules](00-PRODUCT.md#people-and-modes).
 
 - Add persistent owner-created server codes, pinned Host TLS identity, Friend outbound heartbeat, saved Host address, explicit per-friend server assignments, per-server Start/Stop/Extend permissions with global defaults, and typed remote actions. A code remains active until deliberately replaced and initially grants only its encoded server; every PC receives separate revocable access. Only the loopback owner GUI may approve a waiting PC or reassign a connected PC to zero, one, or several current saved profiles. Use one small HTTPS listener; the Host GUI remains loopback-only.
 - Implement the owner remote-control toggle and notice. Disabled remote Start/Stop must fail server-side immediately; status/heartbeat still communicates Disabled. Revoke one device and prove its credential stops working while another remains valid.
@@ -73,23 +66,15 @@ Keep the project small and deliver working vertical slices. Start implementation
 
 ## Server chat acceptance
 
-Remote rehearsal validation on 2026-10-04: PASS 148 UI tests, lint and production bundle; PASS the source rehearsal safety group (staging restriction, forged/wrong/stale receipts, expiry, wrong profile/message and environment labeling); PASS eight packaged core remote groups plus two new staging rehearsal groups. The packaged checks prove normal test pairing, separate Receive/consent, multi-chunk hashes and exact-copy confirmation, idempotent two-way signed chat, room removal, both-app restart and revocation. Rehearsal uses the existing interrupted-transfer/withdrawal implementation and its focused transfer checks. Browser discovery returned no connected browser, so rendered viewport acceptance is SKIPPED. No owner-controlled second-PC/network or approved game setup was supplied; separate-PC network and real-game join/load/restart acceptance remain UNAVAILABLE, not passed. Production was left running.
-
 - With two isolated Friend app processes paired to one disposable Host, send a Host issue report, have one Friend reply, and verify both Friends see the same accepted message IDs in that server's room. A different server room must remain separate. Verify that removing a PC denies its next chat sync without revoking unrelated server status, that adding it back restores sync, and that a revoked or expired device still fails before chat content is returned.
 - Verify message size/body caps, invalid signatures, wrong Host/profile IDs, duplicate retry IDs, stale timestamps, protected local copies, and recovery of a lost Host log from a signed Friend copy. Restart Host and Friend apps and confirm room history persists. Test offline draft queuing and later authenticated delivery without displaying queued text as delivered.
 - Test the actual selected direct Internet, private mesh, or advanced route on separate Friend PCs before claiming external chat reachability. The current design has no direct Friend-to-Friend exchange while the Host listener is offline; this must remain visible as a product limit until an authenticated peer route is built and accepted.
 
 ## V1 acceptance gate
 
-The [six-feature delivery](14-SIX-FEATURE-DELIVERY.md) passed authorized serialized focus-safe validation on 2026-10-08: final code-only gate, locked restore and source compilation with zero warnings/errors, all eight safe feature groups, complete JSDOM **274 tests/40 files**, targeted backup-refresh/notice regression **38 tests/two files**, production UI bundle and final app compilation embedding it with zero warnings/errors. The bundle retains one non-blocking warning for a JavaScript chunk over 500 kB. The new project lockfile was generated with the pinned SDK and existing versions; existing dependency lockfiles/pins were unchanged. Its separate `TogetherServer.FeatureChecks` entry point exercises pure/synthetic/protected-state logic and fake HTTP/client launch adapters only. The app, native handler, legacy process runner, browser, listener and game were never launched, and no commit was made.
-
-Initial failures were fixed and retained honestly: five decoder regex lint errors; metadata failure classification omitted `InvalidDataException`; one synthetic pairing test lacked the issuing generation; one UI assertion selected a notice draft removed during Save. Final safe groups and full JSDOM pass, including the reviewed canonical pin refresh and Java ASCII `.properties` whitespace cases. See docs/14 and ignored `local-data/feature-workers/cli-validation-result.md` for exact logs, slice evidence and limitations. These results certify source/synthetic behavior only; final review/commit remain coordinator-owned.
-
 Requirements acceptance includes hash-bound Java metadata, conservative executable-version identity, owner/manual fallback scope, mismatches/unknowns, bounded reviewed Factorio/Bedrock inventories, bundled and ambiguous-mod cases, old capability refusal, null/malformed/oversized responses, cancellation, assignment removal, revocation and exact owner expiry before/after asynchronous work. Open game acceptance uses fake adapters for exact Steam IDs, unsupported/manual/no-handler/failure results, tampered addresses, changed cards, revoked/unassigned access, cancellation and no poll/read launch side effect. No game is launched by those checks.
 
 The other source groups cover backup pin/name caps and immutable bytes/retention, exact seven-day archive projection and gaps, settings/list typed preview/hash/maintenance/checkpoint/Undo including Java whitespace semantics, and signed notice edit/clear/cache/room/revision/key/capability/expiry behavior. Real installed-client discovery and native Steam handler behavior, actual Minecraft/Valheim setting/list effects, real add-on loading, Friend-PC/network authorization, joins, recognizable save/load/restart and attended viewport checks remain external and unverified until an explicitly approved separate PC or unattended Windows session is supplied.
-
-All-server overview validation on 2026-10-04: PASS five focused component/projection cases covering loading, error and partial data, zero/one/many servers, fresh zero and stale Unknown counts, deadline suppression, missing versus failed backups, reviewed Attention routing, no private paths/device-only text, and stable selection after sorting. PASS lint, TypeScript/production bundle and the packaged served smoke against an isolated candidate. Responsive desktop/tablet/narrow rules are present; live visual/viewport checks remain SKIPPED because no browser is connected. No backend authority, polling interval or persistent storage was added.
 
 V1 is accepted only when the owner can run the bundled Host app; every Friend requesting controls uses the bundled Friend mode; remote Start/Stop and disable/revoke work over the deliberately selected direct, private-mesh, or advanced route; max-concurrent and one-world writer rules hold; no remote or automatic action treats an unknown player count as zero; Valheim starts, reports a real player transition, accepts a real friend, stops gracefully, and preserves a recognizable world change through restart. Record exact versions, commands, screenshots/log excerpts with private details removed, and pass/fail/skip counts.
 
@@ -121,30 +106,15 @@ The Host move kit must export a completed hash-verified backup without credentia
 
 ## Paired-PC planned hosting moves
 
-The 2026-10-19 slice adds selected paired-PC requests, recipient Accept/Decline,
-guided game preparation and signed connection discovery without owner address
-entry. First-save moves retain graceful Stop, exact final receipt, source
-fencing, fresh destination storage and explicit destination Start. Backups and
-sharing spacing also uses component-owned gaps, including expanded help and
-enlarged text. See the [delivery and acceptance record](31-PAIRED-PC-HOSTING-MOVES.md)
-for exact source, artifact hashes, composed UI evidence and remaining checks.
-
-PASS: 56 code-only source/synthetic groups, 219 final focused UI regressions,
-25 pure screenshot-fixture tests, production bundling and static EXE/embedded
-asset verification. The final hosted Windows rendered review passed all 35
-cases with no layout findings; 20 representative screenshots were inspected.
-The updated process/companion check sources compile but were not executed on
-the owner's desktop. Native process, separate-PC/network and real game
-save/load/Stop/restart acceptance remain pending; Minecraft remains fixture-only.
+Verify selected paired-PC requests, recipient Accept/Decline, guided game
+preparation and signed discovery without manual owner-address entry. First-save
+moves require graceful Stop, the exact final receipt, source fencing, fresh
+destination storage and explicit destination Start. Separate-PC/network and
+real-game save/load/Stop/restart acceptance remain independent gates.
 
 ## Page sidebars and adjustable widths
 
-The 2026-10-19 presentation slice removes the global navigation rail and gives
-Host, Join and App Settings shared resizable page layouts. Header navigation,
-guarded page changes, independent scrolling, remembered widths and narrow
-stacked layouts remain accessible. PASS: all 1,244 UI tests in 99 files, 26 pure
-renderer checks, the 56-group code-only gate, lint/typecheck/production bundle,
-and 45/45 hosted Windows viewport plans with 159 screenshots and no failures,
-layout findings, skips or missing files. Sixteen representative final screenshots
-were inspected. See [sidebar layout delivery](32-SIDEBAR-LAYOUT.md) for exact
-source/artifact identity, initial test corrections and acceptance boundaries.
+Verify Host, Join and App Settings navigation, guarded page changes, independent
+scrolling, remembered sidebar widths and narrow stacked layouts. Review desktop,
+tablet, touch and enlarged text without horizontal overflow. Source and mocked
+component checks do not replace rendered or native acceptance.
