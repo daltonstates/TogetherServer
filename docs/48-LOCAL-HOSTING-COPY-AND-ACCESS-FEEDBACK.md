@@ -78,3 +78,31 @@ Native rendering, actual Host/Friend PCs and the selected
 network route, receipt confirmation, real game join and saved restart remain
 unverified. No app, game, browser, console fixture or installer may be launched
 on the owner's active desktop for this change.
+
+## Portable test build
+
+PASS: Release single-file publish and static package inspection. The EXE is a
+Windows GUI binary containing the exact current assembly and all seven current
+UI assets. ProductVersion binds it to the committed source below. No app or
+game was launched to build or inspect it.
+
+| Field | Value |
+| --- | --- |
+| Source | `b7018f744020a3c34ddd48c66d14f9d77def51cb` |
+| Test EXE | `local-data/local-hosting-fix-b7018f7/TogetherServer.exe` in the original workspace |
+| File version | `0.3.3.6` |
+| Product version | `0.3.3.6+b7018f744020a3c34ddd48c66d14f9d77def51cb` |
+| Bytes | `66149437` |
+| SHA-256 | `f758e6220e4dbd16ff5d73829e0c341892da1ca0c84dc5900899b3e430cc1cf0` |
+| Authenticode | `NotSigned` |
+
+`package-evidence.json` and `SHA256SUMS.txt` accompany the EXE in its ignored
+output directory. This is an unreleased test build with the same numeric
+version as 0.3.3.6; the path, source suffix and hash distinguish it. It has no
+trusted-publisher claim and no tag, installer or release was created.
+
+Use this same test EXE on both PCs. Quit the existing TogetherServer app before
+opening it so the old running instance does not handle the launch. This
+portable uses the ordinary app's existing local data. Wait until a managed
+server has been stopped normally before quitting its app. No installation,
+replacement, listener enablement or game launch was performed by this work.
