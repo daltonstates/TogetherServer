@@ -115,6 +115,7 @@ use the document title to identify the topic.
 | 0.3.3.6 preview | [Hosting access and player-count prerelease delivery](47-0.3.3.6-PRERELEASE.md) |
 | 0.3.3.7 preview | [Verified-copy feedback prerelease delivery](49-0.3.3.7-PRERELEASE.md) |
 | 0.3.3.8 preview | [Remote hosting fixes and prerelease delivery](51-0.3.3.8-PRERELEASE.md) |
+| 0.3.3.9 preview | [Seamless world access, server removal and rejoin investigation](52-SEAMLESS-WORLD-ACCESS-AND-REJOIN.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).

@@ -1488,6 +1488,12 @@ function withPcs(devices: Device[]) {
       return { ok: true, code: 'Saved', message: 'Deadline saved.', accessExpiresUtc: device.accessExpiresUtc, accessExpired: false }
     }
     if (device && path.endsWith('/revoke')) device.revoked = true
+    const scopedRemoval = /^\/api\/local\/devices\/([^/]+)\/servers\/([^/]+)\/access$/.exec(path)
+    if (device && method === 'DELETE' && scopedRemoval) {
+      expect(rawBody).toBeUndefined()
+      device.assignedProfileIds = device.assignedProfileIds.filter(id => id !== scopedRemoval[2])
+      device.serverPermissions = device.serverPermissions.filter(permission => permission.profileId !== scopedRemoval[2])
+    }
     if (device && method === 'DELETE' && path === `/api/local/devices/${device.id}`)
       info.devices = info.devices.filter(item => item.id !== device.id)
     return { ok: true, code: 'Saved', message: 'Access saved.', snapshot: state }
@@ -1505,6 +1511,88 @@ const pcId = '44444444-4444-4444-8444-444444444441'
 const secondPcId = '44444444-4444-4444-8444-444444444442'
 
 describe('Friend PC settings flow', () => {
+  it('defaults server-origin access to that server, retains All servers through rerenders, and opens global access for all servers', async () => {
+    const otherId = '33333333-3333-4333-8333-333333333333'
+    host().settings.profiles.push({ ...host().settings.profiles[0], id: otherId, name: 'Other world' })
+    withPcs([testPc(pcId, 'Selected world PC'), { ...testPc(secondPcId, 'Other world PC'), assignedProfileIds: [otherId] }])
+    await openHost()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage friend access' }))
+    await screen.findByRole('region', { name: 'This Host PC' })
+    const filter = screen.getByRole('combobox', { name: 'Assigned server' })
+    expect(filter).toHaveValue(id)
+    expect(screen.getByRole('article', { name: 'Selected world PC' })).toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: 'Other world PC' })).not.toBeInTheDocument()
+    fireEvent.change(filter, { target: { value: 'all' } })
+    expect(screen.getByRole('article', { name: 'Other world PC' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search Friend PCs' }), { target: { value: 'world' } })
+    expect(screen.getByRole('combobox', { name: 'Assigned server' })).toHaveValue('all')
+    fireEvent.click(screen.getByRole('button', { name: 'Return to selected server' }))
+    await screen.findByRole('region', { name: 'Contract fixture workspace' })
+    fireEvent.click(pcSections().getByRole('button', { name: 'Access' }))
+    await screen.findByRole('region', { name: 'This Host PC' })
+    expect(screen.getByRole('combobox', { name: 'Assigned server' })).toHaveValue('all')
+    expect(screen.getByRole('article', { name: 'Other world PC' })).toBeInTheDocument()
+    expectNoMutation()
+  })
+
+  it('removes only the captured server through the atomic scope route and preserves concurrent other-server access', async () => {
+    const otherId = '33333333-3333-4333-8333-333333333333'
+    const addedId = '55555555-5555-4555-8555-555555555555'
+    for (const profileId of [otherId, addedId]) host().settings.profiles.push({ ...host().settings.profiles[0], id: profileId, name: `Other ${profileId}` })
+    const pc = { ...testPc(pcId, 'Laptop'), assignedProfileIds: [id, otherId],
+      serverPermissions: [{ profileId: otherId, canStart: false, canStop: true, canExtendTimer: false, canViewLogs: true }] }
+    withPcs([pc])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Laptop' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove Contract fixture access' }))
+    const otherGrant = structuredClone(pc.serverPermissions[0])
+    pc.assignedProfileIds.push(addedId)
+    pc.serverPermissions.push({ profileId: addedId, canStart: true, canStop: false, canExtendTimer: true, canViewLogs: false })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm remove Contract fixture access' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(transport.change.mock.calls.filter(([path]) => path.startsWith('/api/local/devices/')))
+      .toEqual([[`/api/local/devices/${pcId}/servers/${id}/access`, 'DELETE', expect.any(Function), undefined, undefined]])
+    expect(pc.assignedProfileIds).toEqual([otherId, addedId])
+    expect(pc.serverPermissions[0]).toEqual(otherGrant)
+    expect(pc.serverPermissions[1].profileId).toBe(addedId)
+    expect(pc.revoked).toBe(false)
+    expect(pc.canStart).toBe(true)
+    expect(pc.credentialExpiresUtc).not.toBeNull()
+    expectNoServerAction()
+  })
+
+  it('blocks scoped removal while PC drafts are unsaved and distinguishes all-server removal', async () => {
+    withPcs([testPc(pcId, 'Laptop')])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Laptop' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'PC details' }))
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'PC name' }), { target: { value: 'Unsaved name' } })
+    expect(within(dialog).getByRole('button', { name: 'Remove Contract fixture access' })).toBeDisabled()
+    expect(within(dialog).getByText('Save or discard your edits before removing server access.')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByText('All server access', { exact: true }))
+    expect(within(dialog).getByRole('button', { name: 'Remove all server access' })).toBeDisabled()
+    expectNoMutation()
+  })
+
+  it('rechecks current server existence before scoped removal and leaves the PC untouched when it changed', async () => {
+    const pc = testPc(pcId, 'Laptop')
+    withPcs([pc])
+    await openAccess()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }))
+    const dialog = screen.getByRole('dialog', { name: 'Manage access for Laptop' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove Contract fixture access' }))
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/snapshot'
+      ? { ...host(), settings: { ...host().settings, profiles: [] } } : read(path, ...args))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm remove Contract fixture access' }))
+    await within(dialog).findByText('This PC or server changed. Refresh access before removing it.')
+    expect(pc.assignedProfileIds).toEqual([id])
+    expect(pc.revoked).toBe(false)
+    expectNoMutation()
+  })
+
   it('saves password sharing through its separate scope and preserves it when changing an action preset', async () => {
     const pc = testPc(pcId, 'Password friend')
     withPcs([pc])

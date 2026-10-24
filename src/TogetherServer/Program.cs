@@ -1753,7 +1753,7 @@ app.MapGet("/api/local/companion", async () =>
         fingerprint,
         certificates = identity.State(),
         route = ConnectionRoutes.Normalize(snapshot.Settings.ConnectionRoute),
-        devices = pairing.Views(),
+        devices = pairing.OwnerPcViews(),
         stopSafety = companionServer.StopSafety(snapshot)
     });
 });
@@ -2165,6 +2165,25 @@ app.MapPut("/api/local/devices/{id:guid}/servers", async (Guid id, DeviceServerA
         if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
         var result = pairing.SetServerAccess(id, request.ProfileIds, request.Permissions,
             data.LoadSettings().Profiles.Select(profile => profile.Id));
+        if (result.Ok) await RepairDirtyRostersAsync();
+        return Results.Json(result);
+    }
+    finally { modeGate.Release(); }
+});
+app.MapDelete("/api/local/devices/{deviceId:guid}/servers/{profileId:guid}/access",
+    async (Guid deviceId, Guid profileId, HttpContext context) =>
+{
+    if (!HasSensitiveLocalGetHeader(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (context.Request.QueryString.HasValue || context.Request.ContentLength is > 0 ||
+        context.Request.Headers.ContainsKey("Transfer-Encoding") ||
+        await context.Request.Body.ReadAsync(new byte[1], context.RequestAborted) != 0)
+        return Results.BadRequest(new PairingDecision(false, "InvalidServerAccessRemoval",
+            "Remove access using only the selected PC and server IDs."));
+    await modeGate.WaitAsync(context.RequestAborted);
+    try
+    {
+        if (friendMode) return Results.Conflict(new { ok = false, code = "FriendMode" });
+        var result = pairing.RemoveServerAccess(deviceId, profileId);
         if (result.Ok) await RepairDirtyRostersAsync();
         return Results.Json(result);
     }

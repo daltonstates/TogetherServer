@@ -169,6 +169,8 @@ internal sealed class LocalPairingLabMode
             Regex.IsMatch(path, @"^/api/local/world-peers/[0-9a-fA-F]{64}/sharing$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/devices/[0-9a-fA-F-]{36}/(permissions|servers|access-expiry|shared-world/[0-9a-fA-F-]{36}(/grants)?)$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/(profiles|friend)/[0-9a-fA-F-]{36}/(protection|shared-world(/(consent|hosting))?|chat/(notice|members/[0-9a-fA-F-]{36}))$", RegexOptions.CultureInvariant);
+        if (method == "DELETE") return Regex.IsMatch(path,
+            @"^/api/local/devices/[0-9a-fA-F-]{36}/servers/[0-9a-fA-F-]{36}/access$", RegexOptions.CultureInvariant);
         if (method != "POST") return false;
         return path is "/api/local/friend/pair" or "/api/local/friend/poll" or "/api/local/quit" or
             "/api/local/required-setup/profile-name/complete" or "/api/local/ui-drafts/read" or "/api/local/ui-drafts/clear" ||

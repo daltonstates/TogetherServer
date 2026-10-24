@@ -473,6 +473,12 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const [deviceAccessTab, setDeviceAccessTab] = useState<DeviceAccessTab>('permissions')
   const [discardDeviceEdits, setDiscardDeviceEdits] = useState(false)
   const [removeDeviceConfirm, setRemoveDeviceConfirm] = useState(false)
+  const [removeServerConfirm, setRemoveServerConfirm] = useState(false)
+  const [serverRemovalScope, setServerRemovalScope] = useState<{ deviceId: string; profileId: string; name: string } | null>(null)
+  const currentServerRemovalScope = useRef(serverRemovalScope)
+  currentServerRemovalScope.current = serverRemovalScope
+  const removingServerAccess = useRef(false)
+  useEffect(() => () => { currentServerRemovalScope.current = null }, [])
   const [deadlineDraftState, setDeadlineDraftState] = useState({ dirty: false, saving: false })
   const [hostSettingsDraftDirty, setHostSettingsDraftDirty] = useState(false)
   const [hostSettingsSection, setHostSettingsSection] = useState<HostPcSection>('access')
@@ -1548,6 +1554,10 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     setDeviceAccessTab('permissions')
     setDiscardDeviceEdits(false)
     setRemoveDeviceConfirm(false)
+    setRemoveServerConfirm(false)
+    const profile = savedProfiles.find(profile => profile.id ===
+      (deviceFilters.serverId === 'all' ? selectedHostProfile?.id : deviceFilters.serverId) && device.assignedProfileIds.includes(profile.id))
+    setServerRemovalScope(profile ? { deviceId: device.id, profileId: profile.id, name: profile.name } : null)
     setDeadlineDraftState({ dirty: false, saving: false })
     setServerAccessDeviceId(device.id)
   }
@@ -1559,6 +1569,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     setServerAccessSearch('')
     setDiscardDeviceEdits(false)
     setRemoveDeviceConfirm(false)
+    setRemoveServerConfirm(false)
+    setServerRemovalScope(null)
     setNotice(null)
   }
   const closeDeviceServerAccess = () => {
@@ -1593,6 +1605,31 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
       }
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
+  }
+  const removeSelectedServerAccess = async () => {
+    const target = currentServerRemovalScope.current
+    if (!target || target.deviceId !== serverAccessDeviceId || pending || removingServerAccess.current ||
+      serverAccessHasDraft || deadlineDraftState.saving || snapshot?.mode !== 'Host') return
+    removingServerAccess.current = true
+    const navigation = navigationEpoch.current
+    setPending(target.deviceId)
+    try {
+      const [current, info] = await Promise.all([readSnapshot(), getJson('/api/local/companion', parseCompanionInfo)])
+      if (currentServerRemovalScope.current !== target || navigationEpoch.current !== navigation) return
+      const device = info.devices.find(device => device.id === target.deviceId && !device.revoked && device.paired)
+      if (current.mode !== 'Host' || !current.settings.profiles.some(profile => profile.id === target.profileId) || !device)
+        throw new Error('This PC or server changed. Refresh access before removing it.')
+      // The fixed scoped action rechecks canonical state atomically. Never send
+      // an older full assignment/permission list over another server's changes.
+      const result = await change(`/api/local/devices/${target.deviceId}/servers/${target.profileId}/access`, 'DELETE')
+      if (currentServerRemovalScope.current !== target) return
+      await refreshCompanion()
+      if (result.ok) finishDeviceServerAccess()
+      setNotice({ good: result.ok, text: result.message })
+      setActionNotices(notices => ({ ...notices, [target.deviceId]: { good: result.ok, text: result.message } }))
+    } catch (error) {
+      if (currentServerRemovalScope.current === target) setNotice({ good: false, text: errorMessage(error) })
+    } finally { removingServerAccess.current = false; setPending('') }
   }
   const extendCountdown = async (profileId: string, explicitMinutes?: number) => {
     const minutes = explicitMinutes ?? Number(countdownExtensions[profileId] ?? '15')
@@ -1664,12 +1701,14 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     } catch (error) { setNotice({ good: false, text: errorMessage(error) }) }
     finally { setPending('') }
   }
-  const openHostSettings = (section: HostPcSection = 'access') => {
+  const openHostSettings = (section: HostPcSection = 'access', accessProfileId?: string) => {
     void changeScope(() => {
       setNotice(null)
       setHostSettingsSection(section)
       setHostScope('pc')
       setWorkspacePage('host')
+      if (section === 'access') setDeviceFilters(current => ({ ...current,
+        serverId: accessProfileId && savedProfiles.some(profile => profile.id === accessProfileId) ? accessProfileId : 'all' }))
     })
     if (!routeDiscovery) void getJson('/api/local/network/routes', parseRouteDiscovery)
       .then(setRouteDiscovery)
@@ -1914,6 +1953,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const passwordAccessCount = serverAccessDevice ? passwordAccessServers.filter(profile => devicePasswordPermission(serverAccessDevice, profile.id)).length : 0
   const passwordAccessMixed = !!serverAccessDevice && passwordAccessServers.some(profile => devicePasswordPermission(serverAccessDevice, profile.id) !== (serverAccessDevice.canViewPassword ?? false))
   const serverAccessDirty = !!serverAccessDeviceId && serverAccessKey(serverAccessDraft, serverPermissionDraft) !== serverAccessOriginal
+  const serverAccessHasDraft = serverAccessDirty || deadlineDraftState.dirty || !!serverAccessDevice &&
+    ((deviceNames[serverAccessDevice.id] ?? serverAccessDevice.name).trim() !== serverAccessDevice.name ||
+      (permissionPresetDraft[serverAccessDevice.id] ?? matchingPermissionPreset(serverAccessDevice)) !== matchingPermissionPreset(serverAccessDevice))
   const normalizedServerSearch = serverAccessSearch.trim().toLocaleLowerCase()
   const visibleServerAccessProfiles = savedProfiles.filter(profile => !normalizedServerSearch ||
     `${profile.name} ${profileGameLabel(profile)}`.toLocaleLowerCase().includes(normalizedServerSearch))
@@ -2640,7 +2682,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                     {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : undefined} onClick={async () => { if (!await confirmOwnerLifecycle(profile.id, 'Restart')) return; hideConnectionDetails(addressKey); hideConnectionDetails(passwordKey); void run(`restart-${profile.id}`, `/api/local/profiles/${profile.id}/restart`, 'POST') }}><Icon name={pending === `restart-${profile.id}` ? 'loader' : 'refresh'} />{pending === `restart-${profile.id}` ? 'Restarting…' : 'Restart server'}</Button>}
                     {status?.state === 'Ready' && <Button className="secondary" disabled={!!pending || dirty || dataRecovery?.lifecycleBlocked} onClick={() => void safeRestart(profile.id)}><Icon name={pending === `safe-restart-${profile.id}` ? 'loader' : 'archive'} />{pending === `safe-restart-${profile.id}` ? 'Safely restarting…' : 'Back up and restart'}</Button>}
                     <Button className="secondary" disabled={!!pending || status?.state !== 'Offline'} onClick={() => openSetup(profile.id)}><Icon name="settings" />Edit setup</Button><Button className="secondary" onClick={() => openHostSettings('network')}><Icon name="link" />Network</Button><Button className="secondary" disabled={!!pending || dirty} onClick={() => void run(profile.id, `/api/local/profiles/${profile.id}/health`, 'POST')}><Icon name="refresh" />Check server health</Button>
-                    <Button className="secondary" onClick={() => openHostSettings('access')}><Icon name="users" />Friend access</Button>
+                    <Button className="secondary" onClick={() => openHostSettings('access', profile.id)}><Icon name="users" />Friend access</Button>
                     {profile.kind === 'Custom' && <Button className="text-button" onClick={() => selectHostTab('setup')}>Review Custom control test</Button>}
                     <Button className="secondary" onClick={() => setServerNotification({ id: profile.id, name: profile.name })}><Icon name="bell" />Server notifications</Button>
                     {status?.state === 'Failed' && <Button className="text-button" disabled={!!pending || dirty} onClick={async () => {
@@ -2670,7 +2712,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
               </div>
 
           {companion?.devices.some(device => device.paired && !device.revoked) && <div className="access-strip"><span>Friend controls are <strong>{draft.remoteControlsEnabled ? 'on' : 'paused'}</strong> · {companion.devices.filter(device => device.paired && !device.revoked).length} connected PC{companion.devices.filter(device => device.paired && !device.revoked).length === 1 ? '' : 's'}</span>
-            <Button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access')}>Manage friend access</Button></div>}
+            <Button className="secondary" disabled={!!pending || dirty} onClick={() => openHostSettings('access', selectedHostProfile?.id)}>Manage friend access</Button></div>}
             </section>
           </div>
         </section>
@@ -2738,7 +2780,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
               <div className="access-toggles settings-controls"><label className="setting-toggle"><span><strong>Allow Friend app connections</strong><small>Connections stay available while this Host app is running.</small></span><Input type="checkbox" checked={draft.companionListeningEnabled} disabled={!!pending} onChange={event => void saveHostFlags({ companionListeningEnabled: event.target.checked })} /></label>
                 <label className="setting-toggle"><span><strong>Allow remote Start and Stop</strong><small>Each PC keeps its own permissions and safety checks.</small></span><Input type="checkbox" checked={draft.remoteControlsEnabled} disabled={!!pending || !draft.companionListeningEnabled} onChange={event => void saveHostFlags({ remoteControlsEnabled: event.target.checked })} /></label></div>
               <FriendPcFilters value={deviceFilters} servers={savedProfiles} resultCount={visibleDevices.length}
-                totalCount={companion?.devices.filter(device => deviceFilters.status === 'revoked' ? device.revoked : !device.revoked).length ?? 0} onChange={setDeviceFilters} />
+                totalCount={companion?.devices.filter(device => deviceFilters.status === 'revoked' ? device.revoked : !device.revoked).length ?? 0}
+                onChange={setDeviceFilters} />
               {!companion ? <p role="status">Loading Friend access...</p> : visibleDevices.length ? <div className="friend-pc-grid" aria-label="Friend PCs">
                 {visibleDevices.map(device => <FriendPcCard key={device.id} device={device} servers={savedProfiles} nowMs={nowMs} busy={!!pending}
                   onManage={() => openDeviceServerAccess(device)} onApprove={() => void approveDevice(device.id)} onDelete={() => void deleteDevice(device)}
@@ -2771,9 +2814,21 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
           <nav className="settings-dialog-tabs" aria-label="PC access sections">
             {([['permissions', 'shield', 'Permissions'], ['servers', 'server', 'Servers'], ['time', 'clock', 'Access time'], ['details', 'monitor', 'PC details']] as const).map(([tab, icon, label]) =>
               <Button key={tab} aria-current={deviceAccessTab === tab ? 'page' : undefined} className={deviceAccessTab === tab ? 'selected' : ''} disabled={!!pending || deadlineDraftState.saving}
-                onClick={() => { if (tab === 'servers' && !serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab(tab); setRemoveDeviceConfirm(false) }}><Icon name={icon} />{label}</Button>)}
+                onClick={() => { if (tab === 'servers' && !serverAccessDirty) prepareDeviceServerAccess(serverAccessDevice); setDeviceAccessTab(tab); setRemoveDeviceConfirm(false); setRemoveServerConfirm(false) }}><Icon name={icon} />{label}</Button>)}
           </nav>
           <ActionFeedback notice={currentActionNotice(actionNotices[serverAccessDevice.id], snapshot, feedbackNowMs)} />
+          {serverRemovalScope?.deviceId === serverAccessDevice.id && serverAccessDevice.assignedProfileIds.includes(serverRemovalScope.profileId) &&
+            <section className="settings-dialog-stack" aria-label={`Access to ${serverRemovalScope.name}`}>
+              <div className="settings-danger-row"><span><strong>Access to {serverRemovalScope.name}</strong><small>Remove only this server. Other server access stays saved.</small></span>
+                <Button className="danger-outline" disabled={!!pending || serverAccessHasDraft || deadlineDraftState.saving}
+                  onClick={() => setRemoveServerConfirm(true)}>Remove {serverRemovalScope.name} access</Button></div>
+              {serverAccessHasDraft && <p className="helper-text">Save or discard your edits before removing server access.</p>}
+              {removeServerConfirm && <div className="settings-inline-confirm" role="alert"><strong>Remove {serverRemovalScope.name} access for this PC?</strong>
+                <p>This removes access to {serverRemovalScope.name}. You can invite this PC to that server again later.</p>
+                <div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => setRemoveServerConfirm(false)}>Keep server access</Button>
+                  <Button className="danger-outline" disabled={!!pending || serverAccessHasDraft || deadlineDraftState.saving}
+                    onClick={() => void removeSelectedServerAccess()}>Confirm remove {serverRemovalScope.name} access</Button></div></div>}
+            </section>}
           {notice && !notice.good && <DismissibleNotice noticeKey={notice.receivedAtMs} as="p" className="warning-text" role="status">{notice.text}</DismissibleNotice>}
           {discardDeviceEdits && <div className="settings-inline-confirm" role="alert"><strong>Discard unsaved PC changes?</strong><p>Changes you have already saved remain in place.</p><div className="actions"><Button className="secondary" disabled={!!pending || deadlineDraftState.saving} onClick={() => setDiscardDeviceEdits(false)}>Continue editing</Button><Button className="danger-outline" disabled={!!pending || deadlineDraftState.saving} onClick={finishDeviceServerAccess}>Discard changes</Button></div></div>}
           {deviceAccessTab === 'permissions' && <div className="settings-dialog-stack">
@@ -2846,8 +2901,10 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
             <div className="settings-detail-row"><strong>Last authenticated report</strong><span>{serverAccessDevice.lastHeartbeatUtc ? new Date(serverAccessDevice.lastHeartbeatUtc).toLocaleString() : 'No fresh report'}</span></div>
             <div className="settings-detail-row"><strong>Renewable credential</strong><span>{serverAccessDevice.credentialExpiresUtc ? `Expires ${new Date(serverAccessDevice.credentialExpiresUtc).toLocaleString()}` : 'Expiry unavailable'}</span><small>Separate from the access limit under Access time.</small></div>
             {serverAccessDevice.approvalPending && <div className="actions"><Button disabled={!!pending} onClick={() => void approveDevice(serverAccessDevice.id)}>Approve this PC</Button></div>}
-            <div className="settings-danger-row"><span><strong>Remove this PC's access</strong><small>Access ends on its next request.</small></span><Button className="danger-outline" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(true)}>Remove access</Button></div>
-            {removeDeviceConfirm && <div className="settings-inline-confirm" role="alert"><strong>Remove access for {serverAccessDevice.name}?</strong><p>This PC will need a new code to connect again.</p><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(false)}>Keep access</Button><Button className="danger-outline" disabled={!!pending} onClick={() => void revokeDevice(serverAccessDevice.id)}>Confirm remove access</Button></div></div>}
+            <details className="settings-disclosure"><summary>All server access</summary>
+              <div className="settings-danger-row"><span><strong>Remove all server access</strong><small>Ends this saved PC connection for every assigned server.</small></span><Button className="danger-outline" disabled={!!pending || serverAccessHasDraft || deadlineDraftState.saving} onClick={() => setRemoveDeviceConfirm(true)}>Remove all server access</Button></div>
+              {removeDeviceConfirm && <div className="settings-inline-confirm" role="alert"><strong>Remove all server access for {serverAccessDevice.name}?</strong><p>This PC will need a new code to connect again.</p><div className="actions"><Button className="secondary" disabled={!!pending} onClick={() => setRemoveDeviceConfirm(false)}>Keep access</Button><Button className="danger-outline" disabled={!!pending || serverAccessHasDraft || deadlineDraftState.saving} onClick={() => void revokeDevice(serverAccessDevice.id)}>Confirm remove all server access</Button></div></div>}
+            </details>
           </div>}
         </SettingsDialog>}
         </ResizableWorkspace>}

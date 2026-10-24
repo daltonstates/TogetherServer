@@ -142,6 +142,7 @@ internal sealed partial class FriendLink
             pinned is not null && current.OwnerPublicKey != pinned)
             return SharedFailure("RosterRejected", "The Host's current sharing list is invalid.");
         var chain = new SharedWorldRosterChainStore(data);
+        var verificationStep = RosterVerificationStep.SavedHistory;
         try
         {
             var hasChain = chain.HasState(profileId);
@@ -216,6 +217,7 @@ internal sealed partial class FriendLink
             var reviewPages = false;
             for (var pageNumber = 0; pageNumber < 4; pageNumber++)
             {
+                verificationStep = RosterVerificationStep.SavedHistory;
                 var localHeads = useAnchor ? chain.Heads(profileId) : [];
                 var anchor = localHeads.Count == 1 ? SharedWorldRosterTrust.Hash(localHeads[0]) : null;
                 async Task<HttpResponseMessage> FetchPageAsync(bool review)
@@ -226,6 +228,7 @@ internal sealed partial class FriendLink
                     if (anchor is not null) request.Headers.Add(SharedWorldRosterProtocol.AfterHeader, anchor);
                     return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 }
+                verificationStep = RosterVerificationStep.HostRevisions;
                 using var normalResponse = await FetchPageAsync(reviewPages);
                 // Older Hosts keep the ordinary anchor/root fallback. Only an
                 // explicit history review may retry unavailable metadata through
@@ -258,6 +261,7 @@ internal sealed partial class FriendLink
                         item.GroupId != current.GroupId || item.OwnerPublicKey != current.OwnerPublicKey ||
                         !SharedWorldRosterTrust.VerifySignature(item)))
                     return SharedFailure("RosterRejected", "The signed sharing page is invalid.");
+                verificationStep = RosterVerificationStep.SavedHistory;
                 // Legacy Hosts can replace their standalone roster between the current
                 // and page requests. Do not strand an older saved floor behind that
                 // newer root before a retry can fetch the matching current roster.
@@ -292,6 +296,7 @@ internal sealed partial class FriendLink
                     floorSeen = true;
                     useAnchor = false;
                 }
+                verificationStep = RosterVerificationStep.SignedAncestry;
                 foreach (var revision in page)
                 {
                     // Never jump over or substitute the exact protected floor
@@ -319,6 +324,7 @@ internal sealed partial class FriendLink
                 fullLastPage = page.Count == SharedWorldRosterChainStore.PageSize;
                 if (!fullLastPage) break;
             }
+            verificationStep = RosterVerificationStep.TrustedHistory;
             var heads = chain.Heads(profileId);
             if (fullLastPage && heads.Count == 1 && SharedWorldRosterTrust.Hash(heads[0]) !=
                 SharedWorldRosterTrust.Hash(current))
@@ -345,8 +351,19 @@ internal sealed partial class FriendLink
             return null;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or CryptographicException)
-        { return SharedFailure("RosterRejected", "The signed sharing history failed verification."); }
+        {
+            var detail = verificationStep switch
+            {
+                RosterVerificationStep.SavedHistory => "This PC could not read its saved sharing history.",
+                RosterVerificationStep.HostRevisions => "The Host's signed sharing revisions could not be read.",
+                RosterVerificationStep.SignedAncestry => "The received revisions could not be joined to this PC's saved sharing history.",
+                _ => "The final signed history could not be matched to this PC's trusted sharing record."
+            };
+            return SharedFailure("RosterRejected", "The signed sharing history failed verification. " + detail);
+        }
     }
+
+    private enum RosterVerificationStep { SavedHistory, HostRevisions, SignedAncestry, TrustedHistory }
 
     private bool HasCachedLegacyRosterFloor(Guid profileId, string? pinned, SharedRosterFloor? floor) =>
         CachedLegacyRosterFloor(profileId, pinned, floor) is not null;

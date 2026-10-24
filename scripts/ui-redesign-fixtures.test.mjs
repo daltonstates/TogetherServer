@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
-import { extraCases as accessReviewCases } from './ui-polish-access-review.mjs';
+import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
 import { simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
@@ -580,10 +580,12 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   assert.doesNotThrow(() => check(flags, hosted), 'both flags and the hosted Windows identity pass the pure guard');
   assert.doesNotThrow(() => check(['--list'], {}, 'linux'), 'the exact inventory-only invocation needs no browser authorization');
   assert.doesNotThrow(() => check(['--list', '--simple-shared-hosting-only'], {}, 'linux'), 'the bounded hosting inventory remains read-only');
+  assert.doesNotThrow(() => check(['--list', '--server-access-only'], {}, 'linux'), 'the bounded server-access inventory remains read-only');
   for (const [argv, env, platform] of [
     [[], hosted, 'win32'], [flags, {}, 'win32'],
     [['--list', '--allow-isolated-browser-tests'], {}, 'win32'], [['--list', 'capture'], {}, 'win32'],
     [['--list', '--setup-polish-only'], {}, 'win32'], [['--setup-polish-only'], hosted, 'win32'],
+    [['--server-access-only'], hosted, 'win32'], [['--list', '--simple-shared-hosting-only', '--server-access-only'], {}, 'win32'],
     [['--hosted-runner', 'github-actions'], hosted, 'win32'],
     [['github-actions', '--allow-isolated-browser-tests'], hosted, 'win32'],
     [flags, { ...hosted, RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'],
@@ -722,6 +724,74 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     assert.equal(screen.action, action);
     assert.equal(screen.screen.role, role);
     assert.equal(screen.screen.name, name);
+  }
+});
+
+test('server-access render mode pins twelve exact surfaces and all three candidate viewport variants', () => {
+  const expected = [
+    'server-access-global-friend-pcs', 'server-access-selected-friend-pcs',
+    'review-permissions-before-after', 'review-permissions-saved', 'review-individual-permissions', 'review-effective-access',
+    'review-assignment-before-after', 'review-assignment-saved', 'review-access-discard-review', 'review-helper-active',
+    'server-access-remove-server-review', 'review-remove-access-review'
+  ];
+  assert.deepEqual(serverAccessCaseIds, expected);
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const assignment = ast.statements.find(node => ts.isExpressionStatement(node) && node.expression.left?.getText(ast) === 'manifest.inventory');
+  const start = source.indexOf('const heading ='), end = source.indexOf('manifest.inventory =');
+  const inventory = source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory,coverage:manifest.coverage})';
+  const context = { manifest: {}, worldReviewCases, accessReviewCases, serverAccessCaseIds, args: ['--server-access-only'] };
+  const focused = runInNewContext(inventory, context);
+  assert.equal(focused.coverage.scope, 'server-access');
+  assert.equal(focused.coverage.plannedCaptures, 36);
+  assert.deepEqual(Array.from(focused.coverage.variants), ['darkdesktop', 'lightnarrow150', 'darkshortdesktop']);
+  assert.deepEqual(Array.from(new Set(focused.plans.map(plan => plan.testCase.id))), expected);
+  assert.equal(focused.inventory.length, 36);
+  assert.equal(new Set(focused.inventory.map(plan => plan.id)).size, 36);
+  for (const id of expected) {
+    const captures = focused.plans.filter(plan => plan.testCase.id === id);
+    assert.equal(captures.length, 3, `${id} cannot silently omit a viewport`);
+    assert.ok(captures.some(plan => plan.variant.viewport.width === 1280 && plan.variant.viewport.height === 900 && plan.variant.theme === 'dark'));
+    assert.ok(captures.some(plan => plan.variant.viewport.width === 390 && plan.variant.scale === 150));
+    assert.ok(captures.some(plan => plan.variant.viewport.width === 1280 && plan.variant.viewport.height === 650));
+    for (const plan of captures) {
+      assert.ok(fixtureScenarios.includes(plan.testCase.scenario));
+      if (plan.testCase.section?.[0] === 'This Host PC sections') assert.equal(plan.testCase.section[2], 'Access');
+      assert.ok(!(plan.testCase.steps ?? []).some(step => /^Confirm remove|^Start server$|^Stop server$/u.test(String(step.button ?? ''))),
+        'visual confirmation review never submits removal or lifecycle actions');
+    }
+  }
+  assert.throws(() => runInNewContext(inventory, { ...context, manifest: {},
+    accessReviewCases: accessReviewCases.filter(item => item.id !== 'server-access-remove-server-review') }),
+  /Required server-access review case is missing/u, 'a disappeared named surface fails the planner');
+  const scoped = accessReviewCases.find(item => item.id === 'server-access-remove-server-review');
+  assert.equal(scoped.section, undefined);
+  assert.equal(scoped.steps[0].button, 'Manage friend access', 'the scoped confirmation starts from the selected server action');
+  const all = accessReviewCases.find(item => item.id === 'review-remove-access-review');
+  assert.deepEqual(all.steps.slice(-3), [{ nav: 'PC access sections', button: 'PC details' },
+    { summary: 'All server access' }, { button: 'Remove all server access' }]);
+  assert.equal(all.screen.text, 'Remove all server access for Friend PC?');
+});
+
+test('server-access fixture evidence distinguishes selected and global views and keeps removal confirmations read-only', async () => {
+  const state = createFixtureState('host-server-access-review-multi');
+  const companion = contracts.parseCompanionInfo(get(state, '/api/local/companion'));
+  assert.deepEqual(companion.devices.map(device => device.assignedProfileIds), [[fixtureIds.primary], [fixtureIds.secondary]]);
+  const seen = [];
+  const page = { getByRole: (role, options) => {
+    seen.push([role, options.name]); return { waitFor: async () => {} };
+  }, getByText: () => ({ isVisible: async () => true }) };
+  for (const id of ['server-access-remove-server-review', 'review-remove-access-review']) {
+    const testCase = accessReviewCases.find(item => item.id === id);
+    const record = { assertions: [] };
+    await assertServerAccessUi(page, testCase, record, state);
+    assert.equal(record.assertions[0].submitted, false);
+  }
+  assert.deepEqual(seen, [['button', 'Confirm remove Weekend Valheim access'], ['button', 'Confirm remove all server access']]);
+  for (const request of [{ method: 'DELETE', path: `/api/local/devices/${fixtureIds.device}/servers/${fixtureIds.primary}/access` },
+    { method: 'POST', path: `/api/local/profiles/${fixtureIds.primary}/start` }]) {
+    await assert.rejects(assertServerAccessUi(page, accessReviewCases.find(item => item.id === 'server-access-remove-server-review'),
+      { assertions: [] }, { ...state, requests: [request] }), /must not submit removal or lifecycle/u);
   }
 });
 

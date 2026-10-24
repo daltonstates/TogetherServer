@@ -105,7 +105,6 @@ internal static partial class CoreRemoteJourney
         string? groupKey = null, receivedBranchVersionHash = null;
         string? candidateSessionState = null;
         Guid? candidateSessionId = null;
-        Guid ownerAlias = default, observerAlias = default;
         var discoveredHost = false;
         var connectedOwner = false;
         var connectedObserver = false;
@@ -594,20 +593,22 @@ internal static partial class CoreRemoteJourney
                         var result = await PostAsync<object, WorldPeerActionResult>(owner, $"/api/local/world-peers/{groupKey}/connect", connect);
                         LabRequire(result.Ok && result.Code == "PeerSessionConnected", "OriginalOwnerPeerConnectNotVerified");
                         LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(), "OriginalOwnerJoinModeRejected");
-                        await RequireCandidateConnectionAsync(owner, observedAfter);
+                        var ownerView = await RequireCandidateConnectionAsync(owner, observedAfter);
+                        LabRequire(ownerView.Profiles.Single().CanStop && !ownerView.Profiles.Single().CanStart &&
+                            !ownerView.Profiles.Single().CanViewPassword && ownerView.CredentialExpiresUtc > DateTimeOffset.UtcNow,
+                            "OriginalOwnerGuardedPermissionMissing");
                         connectedOwner = true;
                         var candidateDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
-                        LabRequire(candidateDevices.Count == 1, "OriginalOwnerCredentialMissing");
-                        ownerAlias = candidateDevices.Single().Id;
+                        LabRequire(candidateDevices.Count == 0, "InternalOwnerTransportBecameVisiblePc");
                         result = await PostAsync<object, WorldPeerActionResult>(second, $"/api/local/world-peers/{groupKey}/connect", connect);
                         LabRequire(result.Ok && result.Code == "PeerSessionConnected", "ObserverPeerConnectNotVerified");
-                        await RequireCandidateConnectionAsync(second, observedAfter);
+                        var observerView = await RequireCandidateConnectionAsync(second, observedAfter);
+                        LabRequire(!observerView.Profiles.Single().CanStart && !observerView.Profiles.Single().CanStop &&
+                            !observerView.Profiles.Single().CanViewPassword && observerView.CredentialExpiresUtc > DateTimeOffset.UtcNow,
+                            "ObserverObtainedOwnerSessionPermissions");
                         connectedObserver = true;
                         candidateDevices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
-                        LabRequire(candidateDevices.Count == 2 && candidateDevices.All(device => device.Id != deviceA && device.Id != deviceB &&
-                            device.AssignedProfileIds.SequenceEqual([localProfileId!.Value])), "CandidateCredentialsNotIndependent");
-                        observerAlias = candidateDevices.Single(device => device.Id != ownerAlias).Id;
-                        LabRequire(observerAlias != Guid.Empty && observerAlias != ownerAlias, "DistinctCandidateCredentialsRequired");
+                        LabRequire(candidateDevices.Count == 0, "InternalWorldTransportsBecameVisiblePcs");
                         LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "CandidateChatModeRejected");
                         var sent = await PostAsync<ChatPostRequest, ChatRoomView>(first, $"/api/local/profiles/{localProfileId}/chat/messages", new("New synthetic Host message"));
                         LabRequire(sent.Ok && sent.Entries.Count == 1, "CandidateChatRejected");
@@ -619,21 +620,26 @@ internal static partial class CoreRemoteJourney
                     });
                     await Stage("new-host-permission-isolation", async () =>
                     {
-                        LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(first,
-                            $"/api/local/devices/{ownerAlias}/permissions", new(true, false, Scope: "start"))).Ok, "CandidateOwnerPermissionRejected");
                         LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
                             new(RemoteControlsEnabled: true))).Ok, "CandidateRemoteControlsRejected");
                         var allowed = await RequireCandidateConnectionAsync(owner, DateTimeOffset.UtcNow.AddSeconds(-1));
                         var restricted = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
-                        LabRequire(allowed.Profiles.Single().CanStart && allowed.Profiles.Single().CanStop && !restricted.Profiles.Single().CanStart &&
+                        LabRequire(!allowed.Profiles.Single().CanStart && allowed.Profiles.Single().CanStop && !allowed.Profiles.Single().CanStopNow &&
+                            !restricted.Profiles.Single().CanStart &&
                             !restricted.Profiles.Single().CanStop && !restricted.Profiles.Single().CanViewPassword, "CandidatePermissionScopeLost");
                         var denied = await FriendActionAsync(second, localProfileId!.Value, "start");
                         LabRequire(!denied.Ok && denied.Code == "PermissionDenied", "ObserverObtainedOwnerLifecyclePermission");
                         var current = await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot");
                         LabRequire(current.Runs.Count(run => run.ProcessId is not null) == 1 &&
                             current.Runs.Single(run => run.ProfileId == localProfileId).RunOperationId == candidateSessionId, "DeniedStartChangedCandidateRun");
-                        LabRequire((await PutAsync<DevicePermissionRequest, PairingDecision>(first,
-                            $"/api/local/devices/{ownerAlias}/permissions", new(false, false, Scope: "start"))).Ok, "CandidateOwnerPermissionRevokeRejected");
+                        var countDenied = await FriendActionAsync(owner, localProfileId!.Value, "stop");
+                        LabRequire(!countDenied.Ok && countDenied.Code == "ServerNotReady", "OriginalOwnerBypassedUnknownFixtureCount");
+                        LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
+                            new(RemoteControlsEnabled: false))).Ok, "CandidateRemoteControlsPauseRejected");
+                        var controlsDenied = await FriendActionAsync(owner, localProfileId.Value, "stop");
+                        LabRequire(!controlsDenied.Ok && controlsDenied.Code == "RemoteControlsDisabled", "OriginalOwnerBypassedPausedControls");
+                        LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
+                            new(RemoteControlsEnabled: true))).Ok, "CandidateRemoteControlsResumeRejected");
                         return null;
                     });
                     await Stage("new-host-stop-and-transfer", async () =>
@@ -716,11 +722,11 @@ internal static partial class CoreRemoteJourney
                         var savedObserver = await ObserveAsync("ObserverBaselineConnection", second, () => WaitForConnectedAsync(second, allowDisabled: true));
                         var savedDevices = (await ObserveAsync("ReadBaselineDevices", first,
                             () => PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion"))).Devices;
-                        LabRequire(savedDevices.Count == 2 && savedDevices.All(device => device.Paired && !device.Revoked &&
-                            !device.CanStart && device.CanStop == (device.Id == ownerAlias) && !device.CanViewPassword) &&
-                            savedDevices.SingleOrDefault(device => device.Id == ownerAlias) is { CanStop: true } &&
-                            savedDevices.SingleOrDefault(device => device.Id == observerAlias) is { CanStop: false },
-                            "RestartCredentialBaselineInvalid");
+                        LabRequire(savedDevices.Count == 0 && savedOwner.Profiles.Single().CanStop &&
+                            !savedObserver.Profiles.Single().CanStop && !savedOwner.Profiles.Single().CanStart &&
+                            !savedObserver.Profiles.Single().CanStart && savedOwner.CredentialExpiresUtc > DateTimeOffset.UtcNow &&
+                            savedObserver.CredentialExpiresUtc > DateTimeOffset.UtcNow,
+                            "RestartAuthenticatedScopeBaselineInvalid");
                         var beforeCompanion = await ObserveAsync("ReadBaselineIdentity", first,
                             () => PairingLabGetAsync<JsonElement>(first, "/api/local/companion"));
                         var fingerprint = beforeCompanion.GetProperty("fingerprint").GetString();
@@ -765,18 +771,16 @@ internal static partial class CoreRemoteJourney
                             "RestartLostPublishedBranchCopy");
                         var persistedDevices = (await ObserveAsync("ReadRestoredDevices", first,
                             () => PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion"))).Devices;
-                        LabRequire(persistedDevices.Count == 2 && persistedDevices.All(device => savedDevices.Any(saved => saved.Id == device.Id &&
-                            saved.CredentialExpiresUtc == device.CredentialExpiresUtc && saved.AssignedProfileIds.SequenceEqual(device.AssignedProfileIds) &&
-                            saved.CanStop == device.CanStop) &&
-                            device.Paired && !device.Revoked && !device.CanStart && device.CanStop == (device.Id == ownerAlias) && !device.CanViewPassword),
-                            "RestartChangedCredentialOrPermissions");
+                        LabRequire(persistedDevices.Count == savedDevices.Count, "RestartExposedInternalWorldTransport");
                         // Reconnect before issuing Start: authenticated status and
                         // repeated polling must leave the prepared game offline.
                         foreach (var client in new[] { owner, second })
                         {
                             var offline = await ObserveAsync(client == owner ? "OwnerOfflineReconnection" : "ObserverOfflineReconnection", client,
                                 () => WaitForConnectedAsync(client, allowDisabled: true));
+                            var baseline = client == owner ? savedOwner : savedObserver;
                             LabRequire(offline.Endpoint == savedObserver.Endpoint && offline.HostId == savedObserver.HostId &&
+                                offline.ConnectionId == baseline.ConnectionId && offline.CredentialExpiresUtc == baseline.CredentialExpiresUtc &&
                                 offline.Profiles.Count == 1 && offline.Profiles.Single().Id == localProfileId &&
                                 offline.Profiles.Single().State == "Offline" && offline.Profiles.Single().RunOperationId is null &&
                                 offline.Profiles.Single().CanStop == (client == owner) &&
@@ -805,7 +809,10 @@ internal static partial class CoreRemoteJourney
                         var observerView = await ObserveAsync("ObserverFreshConnection", second, () => RequireCandidateConnectionAsync(second, freshAfter));
                         LabRequire(ownerView.HostId == savedOwner.HostId && observerView.HostId == savedObserver.HostId &&
                             ownerView.ConnectionId == savedOwner.ConnectionId && observerView.ConnectionId == savedObserver.ConnectionId &&
+                            ownerView.CredentialExpiresUtc == savedOwner.CredentialExpiresUtc &&
+                            observerView.CredentialExpiresUtc == savedObserver.CredentialExpiresUtc &&
                             !ownerView.Profiles.Single().CanStart && !observerView.Profiles.Single().CanStart &&
+                            ownerView.Profiles.Single().CanStop && !observerView.Profiles.Single().CanStop &&
                             !observerView.Profiles.Single().CanViewPassword, "RestartDidNotReusePinnedScopedConnections");
                         await ObserveWorkAsync("WaitSignedDiscovery", () => PairingLabWaitAsync(async () =>
                         {
@@ -829,26 +836,52 @@ internal static partial class CoreRemoteJourney
                     });
                     await Stage("new-host-revocation-isolation", async () =>
                     {
-                        // Revoke only the candidate's derived owner credential. The
-                        // owner's original world membership and Friend B stay intact.
-                        LabRequire((await PostAsync<object, PairingDecision>(first,
-                            $"/api/local/devices/{ownerAlias}/revoke", new { })).Ok, "CandidateOwnerAliasRevokeRejected");
+                        var removedConnection = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
+                        // Remove the ordinary member from this original server.
+                        // The resulting signed membership change must revoke its
+                        // derived session access without exposing transport IDs.
+                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(),
+                            "MemberRemovalOwnerModeRejected");
+                        LabRequire((await RemoveLabServerAccessAsync(owner, deviceB, profile.Id)).Ok, "SignedMemberServerRemovalRejected");
+                        var roster = await PairingLabGetAsync<SharedWorldRoster>(owner,
+                            $"/api/local/profiles/{profile.Id}/shared-world/governance");
+                        LabRequire(SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == profile.Id &&
+                            roster.OwnerPublicKey == signedRoster!.OwnerPublicKey && roster.GroupId == signedRoster.GroupId &&
+                            !roster.Members.Any(member => member.DeviceId == deviceB && !member.Revoked) &&
+                            roster.Members.Any(member => member.DeviceId == deviceA && !member.Revoked &&
+                                member.Grants is { Receive: true, EligibleHost: true, Reshare: true }),
+                            "ScopedRemovalChangedAnotherSignedMember");
+                        var originalPcs = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
+                        LabRequire(originalPcs.Single(device => device.Id == deviceB) is { Revoked: false, Paired: true } removed &&
+                            !removed.AssignedProfileIds.Contains(profile.Id), "ServerRemovalBecameGlobalPcRevocation");
+                        await SyncPeersAsync(first);
+                        var candidateGroup = (await PairingLabGetAsync<WorldPeerGroupView[]>(first, "/api/local/world-peers"))
+                            .Single(item => item.GroupKey == groupKey);
+                        LabRequire(!candidateGroup.State.Peers.Any(peer => peer.DeviceId == deviceB && peer.Authorized),
+                            "CandidateKeptRemovedMemberAuthority");
                         await PairingLabWaitAsync(async () =>
                         {
-                            var view = await PostAsync<object, FriendView>(owner, "/api/local/friend/poll", new { });
+                            var view = await PostAsync<object, FriendView>(second, "/api/local/friend/poll", new { });
                             return view.State == "Revoked" && view.ConnectionCode == "Revoked" &&
+                                view.ConnectionId == removedConnection.ConnectionId && view.HostId == removedConnection.HostId &&
                                 !view.CanStop && view.Profiles.Count == 0;
-                        }, "RevokedCandidateAliasStillAuthenticated");
-                        var observer = await RequireCandidateConnectionAsync(second, DateTimeOffset.UtcNow.AddSeconds(-1));
+                        }, "RemovedMemberSessionStillAuthenticated");
+                        LabRequire((await PostAsync<object, JsonElement>(owner, "/api/local/mode/friend", new { })).GetProperty("ok").GetBoolean(),
+                            "MemberRemovalOwnerFriendRestoreRejected");
+                        var currentOwner = await RequireCandidateConnectionAsync(owner, DateTimeOffset.UtcNow.AddSeconds(-1));
                         var devices = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices;
-                        LabRequire(devices.Single(device => device.Id == ownerAlias) is { Revoked: true, CanStop: false } &&
-                            devices.Single(device => device.Id == observerAlias) is { Revoked: false, Paired: true } &&
-                            !observer.Profiles.Single().CanStart && !observer.Profiles.Single().CanStop && !observer.Profiles.Single().CanViewPassword,
-                            "CandidateRevocationAffectedOtherCredential");
+                        LabRequire(devices.Count == 0 && currentOwner.Profiles.Single().CanStop &&
+                            !currentOwner.Profiles.Single().CanStart && !currentOwner.Profiles.Single().CanViewPassword,
+                            "MemberRemovalAffectedOriginalOwnerOrExposedTransport");
                         var denied = await FriendActionAsync(second, localProfileId!.Value, "start");
-                        LabRequire(!denied.Ok && denied.Code == "PermissionDenied", "RestartBroadenedObserverPermission");
+                        LabRequire(!denied.Ok && denied.Code == "UnknownProfile", "RemovedMemberRetainedLifecycleAccess");
+                        var ownerStop = await FriendActionAsync(owner, localProfileId.Value, "stop");
+                        LabRequire(!ownerStop.Ok && ownerStop.Code == "ServerNotReady", "OwnerStopBypassedCountAfterMemberRemoval");
                         var run = (await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot")).Runs.Single(item => item.ProfileId == localProfileId);
-                        LabRequire(run.RunOperationId == candidateSessionId && run.State == "Process running", "AliasRevocationChangedManagedRun");
+                        LabRequire(run.RunOperationId == candidateSessionId && run.State == "Process running" &&
+                            FriendLink.ReadReceivedLatest(Path.Combine(observerData, "received-shared-branches", groupKey!, prepared!.BranchHash!))?
+                                .VersionHash == receivedBranchVersionHash,
+                            "MemberRemovalChangedManagedRunOrDeletedReceivedCopy");
                         LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok,
                             "RestartedCandidateOwnerStopRejected");
                         _ = await WaitForRunStateAsync(first, localProfileId.Value, "Offline");
@@ -1178,6 +1211,18 @@ internal static partial class CoreRemoteJourney
         {
             throw new PairingLabFailure($"LocalGetTimedOutAt{sourceLine}");
         }
+    }
+
+    private static async Task<PairingDecision> RemoveLabServerAccessAsync(HttpClient client, Guid deviceId, Guid profileId)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Delete,
+            $"/api/local/devices/{deviceId}/servers/{profileId}/access");
+        request.Headers.Add("Origin", client.BaseAddress!.ToString().TrimEnd('/'));
+        request.Headers.Add("X-TogetherServer-Local", "1");
+        using var response = await client.SendAsync(request);
+        LabRequire(response.IsSuccessStatusCode, "ScopedServerAccessRemovalHttpRejected");
+        return await response.Content.ReadFromJsonAsync<PairingDecision>(Json) ??
+            throw new PairingLabFailure("ScopedServerAccessRemovalResponseMissing");
     }
 
     private static async Task PairingLabWaitAsync(Func<Task<bool>> check, string code, TimeSpan? timeout = null)

@@ -183,6 +183,8 @@ internal static partial class CoreRemoteJourney
 
             var candidateRun = candidateSnapshot.Runs.Single(item => item.ProfileId == prepared.LocalProfileId);
             LabRequire(candidateRun.RunOperationId is not null, "SimpleCandidateSessionMissing");
+            var visiblePcsBefore = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices
+                .Select(device => device.Id).Order().ToArray();
             activeCheck = "original-owner-session-connect";
             var ownerConnection = await PostAsync<object, WorldPeerActionResult>(owner,
                 $"/api/local/world-peers/{groupKey}/connect", new { deviceId = firstDevice, sessionId = candidateRun.RunOperationId.Value });
@@ -194,6 +196,9 @@ internal static partial class CoreRemoteJourney
                 ownerView.Profiles.Single().CanStop && !ownerView.Profiles.Single().CanStart &&
                 !ownerView.Profiles.Single().CanViewLogs && !ownerView.RemoteControlsEnabled,
                 "SimpleOriginalOwnerGuardedStopPermissionMissing");
+            var visiblePcsAfter = (await PairingLabGetAsync<PairingLabDevices>(first, "/api/local/companion")).Devices
+                .Select(device => device.Id).Order().ToArray();
+            LabRequire(visiblePcsAfter.SequenceEqual(visiblePcsBefore), "SimpleWorldOwnerTransportBecameExtraPc");
             // The disposable lab permits the passive directory but deliberately
             // excludes the sharing-management POST. This peer row uses the same
             // verified cached roster; the exact sharing projection has separate

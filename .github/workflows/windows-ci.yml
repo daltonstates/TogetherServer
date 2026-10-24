@@ -67,6 +67,108 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  server-access-ui:
+    name: Review server access with unchanged candidate UI
+    needs: candidate
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the same source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Retrieve the immutable candidate and bundled UI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-candidate
+          path: .
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Bind the rendered assets to the candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          $package = Get-Content local-data/release-candidate/package-evidence.json -Raw | ConvertFrom-Json
+          $actual = (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($candidate.source -cne $env:GITHUB_SHA -or $candidate.runId -ne $env:GITHUB_RUN_ID -or
+              $candidate.runAttempt -ne $env:GITHUB_RUN_ATTEMPT -or $candidate.job -cne 'candidate' -or
+              $candidate.sha256 -cne $actual -or $package.app.sha256 -cne $actual -or
+              $package.assembly.matchesCurrentBuild -ne $true -or @($package.assets).Count -lt 1 -or
+              @($package.assets).Count -gt 64) { throw 'Candidate UI provenance differs.' }
+          $uiRoot = (Resolve-Path ui/dist).Path
+          $prefix = $uiRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+          $files = @(Get-ChildItem $uiRoot -Recurse -File -Force)
+          if ($files.Count -ne @($package.assets).Count) { throw 'Candidate UI inventory differs.' }
+          $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($asset in $package.assets) {
+            $path = [IO.Path]::GetFullPath((Join-Path $uiRoot $asset.asset))
+            if (!$path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+                !$names.Add($asset.asset) -or
+                $asset.sha256 -cnotmatch '^[0-9a-f]{64}$' -or !(Test-Path -LiteralPath $path -PathType Leaf) -or
+                ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                (Get-Item -LiteralPath $path).Length -ne $asset.sizeBytes -or
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) {
+              throw 'An embedded candidate UI asset differs.'
+            }
+          }
+          New-Item -ItemType Directory -Path local-data/ui-redesign-visual-review -Force | Out-Null
+          @{sourceRevision=$env:GITHUB_SHA;candidateRunId=$env:GITHUB_RUN_ID;candidateSha256=$actual;
+            candidateJob='candidate';uiAssets=@($package.assets);rebuilt=$false;appLaunched=$false;
+            fullyAccepted=$false;boundary='Dedicated hosted synthetic UI review; no physical PC/game acceptance.'} |
+            ConvertTo-Json -Depth 7 | Set-Content local-data/ui-redesign-visual-review/candidate-context.json -Encoding utf8
+      - name: Install locked browser test dependencies
+        working-directory: ui
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked browser dependencies failed.' }
+          npx --no-install playwright install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned browser installation failed.' }
+      - name: Review server access on the dedicated hosted runner
+        shell: pwsh
+        run: |
+          # Explicit hosted opt-in. Never execute browser/native checks on the owner's active desktop.
+          node --test scripts/ui-redesign-fixtures.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Pure render fixtures failed.' }
+          node scripts/render-ui-redesign.mjs --server-access-only --allow-isolated-browser-tests --hosted-runner github-actions
+          if ($LASTEXITCODE -ne 0) { throw 'Server access rendered review failed.' }
+      - name: Verify immutable bytes after capture
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $contextPath = 'local-data/ui-redesign-visual-review/candidate-context.json'
+          if (!(Test-Path $contextPath)) { throw 'Candidate context was not established.' }
+          $context = Get-Content $contextPath -Raw | ConvertFrom-Json
+          if ($context.sourceRevision -cne $env:GITHUB_SHA -or
+              (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $context.candidateSha256 -or
+              @(Get-ChildItem ui/dist -Recurse -File -Force).Count -ne @($context.uiAssets).Count) { throw 'Candidate changed during review.' }
+          foreach ($asset in $context.uiAssets) {
+            $file = Get-Item -LiteralPath (Join-Path 'ui/dist' $asset.asset)
+            if ($file.Length -ne $asset.sizeBytes -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) { throw 'Rendered UI changed during review.' }
+          }
+          $manifest = Get-Content local-data/ui-redesign-visual-review/manifest.json -Raw | ConvertFrom-Json
+          $index = @($context.uiAssets | Where-Object asset -ceq 'index.html')
+          if ($index.Count -ne 1 -or $manifest.build.sourceRevision -cne $env:GITHUB_SHA -or
+              $manifest.build.indexSha256 -cne $index[0].sha256 -or
+              $manifest.coverage.scope -cne 'server-access' -or
+              $manifest.status -cne 'captured-awaiting-visual-inspection' -or $manifest.summary.planned -lt 1 -or
+              $manifest.summary.planned -ne $manifest.summary.attempted -or $manifest.summary.failed -ne 0 -or
+              $manifest.summary.skipped -ne 0 -or $manifest.summary.layoutFindings -ne 0 -or
+              @($manifest.fatalErrors).Count -ne 0) { throw 'Render evidence differs from the retained UI or has incomplete/failed captures.' }
+      - name: Preserve server access screenshots and identity proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: server-access-visual-review
+          path: local-data/ui-redesign-visual-review/
+          if-no-files-found: error
+          retention-days: 7
+
   verify:
     needs: candidate
     strategy:

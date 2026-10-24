@@ -1,7 +1,7 @@
 /** Additional real-UI screens backed only by synthetic in-memory access/setup state. */
 const heading = name => ({ role: 'heading', name });
 const region = name => ({ role: 'region', name });
-const accessSection = ['This Host PC sections', 'access', 'Friend access'];
+const accessSection = ['This Host PC sections', 'access', 'Access'];
 const openAccess = [{ button: 'Manage access', first: true }];
 const accessTab = name => ({ nav: 'PC access sections', button: name });
 const access = (id, steps, screen, scenario = 'host-access-review-multi') => ({
@@ -33,8 +33,15 @@ export const extraCases = [
   access('access-discard-review', [accessTab('Servers'), { button: 'Select all', within: '.server-picker-toolbar' },
     { button: 'Cancel', within: '.settings-dialog-footer' }], { css: '.settings-inline-confirm', text: 'Discard unsaved PC changes?' }),
   access('helper-active', [accessTab('Access time')], { css: '.temporary-helper', text: 'Its usual permissions return automatically.' }, 'host-access-helper-review'),
-  access('remove-access-review', [accessTab('PC details'), { button: 'Remove access' }],
-    { css: '.settings-inline-confirm', text: 'Remove access for Friend PC?' }),
+  access('remove-access-review', [accessTab('PC details'), { summary: 'All server access' }, { button: 'Remove all server access' }],
+    { css: '.settings-inline-confirm', text: 'Remove all server access for Friend PC?' }),
+  { id: 'server-access-global-friend-pcs', scenario: 'host-server-access-review-multi', workspace: 'Host', section: accessSection,
+    screen: { css: '.friend-pc-grid' } },
+  { id: 'server-access-selected-friend-pcs', scenario: 'host-server-access-review-multi', workspace: 'Host',
+    steps: [{ button: 'Manage friend access' }], screen: { css: '.friend-pc-grid' } },
+  { id: 'server-access-remove-server-review', scenario: 'host-server-access-review-multi', workspace: 'Host',
+    steps: [{ button: 'Manage friend access' }, ...openAccess, { button: 'Remove Weekend Valheim access' }],
+    screen: { css: '.settings-inline-confirm', text: 'Remove Weekend Valheim access for this PC?' } },
   { id: 'review-delete-pc', scenario: 'host-access-removed-review', workspace: 'Host', section: accessSection,
     steps: [{ select: /^PC status/, value: 'revoked' }, { button: 'Delete PC' }], screen: { role: 'dialog', name: 'Delete Second Friend PC?' } },
   { id: 'review-saved-host-picker', scenario: 'friend-access-picker-review', workspace: 'Join', action: 'picker',
@@ -69,12 +76,22 @@ export const extraCases = [
     screen: { role: 'checkbox', name: 'I have read and accept the terms for this download.' } }))
 ];
 
+// Explicit inventory: a removed or renamed access surface must fail the focused
+// planner rather than silently shrinking the rendered release evidence.
+export const serverAccessCaseIds = Object.freeze([
+  'server-access-global-friend-pcs', 'server-access-selected-friend-pcs',
+  'review-permissions-before-after', 'review-permissions-saved', 'review-individual-permissions', 'review-effective-access',
+  'review-assignment-before-after', 'review-assignment-saved', 'review-access-discard-review', 'review-helper-active',
+  'server-access-remove-server-review', 'review-remove-access-review'
+]);
+
 export const extraScenarioNames = Object.freeze([...new Set(extraCases.map(item => item.scenario))]);
 
 export function configure(state, helpers) {
   if (!extraScenarioNames.includes(state.scenario)) return;
   const { ids, clone, root, fixtureNow } = helpers;
   const later = new Date(Date.parse(fixtureNow) + 7 * 86_400_000).toISOString();
+  if (state.scenario === 'host-server-access-review-multi') state.devices[1].assignedProfileIds = [ids.secondary];
   if (state.scenario === 'host-access-deadline-review') Object.assign(state.devices[0], { accessExpiresUtc: later, accessExpired: false });
   if (state.scenario === 'host-access-helper-review') Object.assign(state.devices[0], {
     temporaryHelperActive: true, temporaryHelperUntilUtc: new Date(Date.parse(fixtureNow) + 3_600_000).toISOString() });
@@ -96,6 +113,34 @@ export function configure(state, helpers) {
   }
   if (state.scenario === 'host-access-review-offline')
     state.notifications.servers = [{ profileId: ids.primary, connectionId: null, allowedEvents: ['Lifecycle', 'Backup'] }];
+}
+
+export async function assertServerAccessUi(page, testCase, record, state) {
+  if (!serverAccessCaseIds.includes(testCase.id)) return;
+  if (state.requests.some(item => item.method === 'DELETE' || item.method !== 'GET' && /\/(?:start|stop|restart|revoke)$/u.test(item.path)))
+    throw new Error('Server-access visual review must not submit removal or lifecycle actions');
+  if (testCase.id === 'server-access-global-friend-pcs' || testCase.id === 'server-access-selected-friend-pcs') {
+    const selected = testCase.id === 'server-access-selected-friend-pcs';
+    const filter = page.getByRole('combobox', { name: 'Assigned server', exact: true });
+    if (await filter.inputValue() !== (selected ? state.host.settings.profiles[0].id : 'all') ||
+        await page.locator('.friend-pc-grid > .friend-pc-card').count() !== (selected ? 1 : 2))
+      throw new Error('Server-origin access must default to its selected server; global access must show all current PCs');
+    if (await page.locator('.friend-pc-grid').getAttribute('aria-label') !== 'Friend PCs')
+      throw new Error('The access grid lost its stable Friend PCs label');
+    record.assertions.push({ accessScope: selected ? 'SelectedServer' : 'AllServers', expectedPcCards: selected ? 1 : 2 });
+  }
+  if (testCase.id === 'server-access-remove-server-review') {
+    await page.getByRole('button', { name: 'Confirm remove Weekend Valheim access', exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+    if (!await page.getByText('This removes access to Weekend Valheim. You can invite this PC to that server again later.', { exact: true }).isVisible())
+      throw new Error('Scoped removal must identify its one server and explain later reinvitation');
+    record.assertions.push({ removalReview: 'SelectedServer', submitted: false, laterInviteExplained: true });
+  }
+  if (testCase.id === 'review-remove-access-review') {
+    await page.getByRole('button', { name: 'Confirm remove all server access', exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+    if (!await page.getByText('This PC will need a new code to connect again.', { exact: true }).isVisible())
+      throw new Error('All-server removal must retain its separate new-code explanation');
+    record.assertions.push({ removalReview: 'AllServers', submitted: false, separateConfirmation: true });
+  }
 }
 
 export function route(state, request, helpers) {
