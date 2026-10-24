@@ -1,0 +1,82 @@
+name: Verify immutable 0.3.3.8 final source checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [review/release-0338-final-source-checks]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-and-api:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out check-only verification source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Receive unchanged final candidate, fixtures and UI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/receive-release-0338-final-candidate.ps1
+      - name: Restore locked check inputs
+        run: |
+          dotnet restore TogetherServer.slnx --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked check restore failed.' }
+      - name: Compile strict checks and complete source and packaged API gates
+        run: |
+          # Explicit isolated hosted opt-in. Never execute apps or fixtures on the owner's active desktop.
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $expected = '5f0032eec7a469ee42a6210902e1f85878b015e4355d5c7379a85d8a4172dac4'
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/0338-final-source -Force
+          $context = Get-Content (Join-Path $evidence.FullName 'candidate-context.json') -Raw | ConvertFrom-Json
+          if ($context.sourceRevision -cne 'b7bb03d423e1bc2ad7f238929aac623415659bf8' -or
+              $context.verificationRevision -cne $env:GITHUB_SHA -or $context.candidateSha256 -cne $expected) {
+            throw 'Final check context differs from the frozen candidate.'
+          }
+          $checks = [Collections.Generic.List[object]]::new()
+          try {
+            $started = [DateTime]::UtcNow
+            foreach ($name in @('Feature', 'Companion')) {
+              dotnet build "checks/TogetherServer.${name}Checks/TogetherServer.${name}Checks.csproj" -c Release --no-restore -p:CodeOnlyVerification=true -warnaserror
+              if ($LASTEXITCODE -ne 0) { throw 'Strict disposable check compilation failed.' }
+            }
+            $checks.Add(@{name='Strict check compilation';outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+            $started = [DateTime]::UtcNow
+            dotnet checks/TogetherServer.FeatureChecks/bin/Release/net10.0-windows/TogetherServer.FeatureChecks.dll
+            if ($LASTEXITCODE -ne 0) { throw 'Final source groups failed.' }
+            $checks.Add(@{name='All 68 source/synthetic groups';outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+            if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'Candidate changed before API checks.' }
+            $started = [DateTime]::UtcNow
+            dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --qol-api-journey --allow-interactive-tests
+            if ($LASTEXITCODE -ne 0) { throw 'Final packaged API journey failed.' }
+            $checks.Add(@{name='QoL packaged API journey';outcome='passed';elapsedSeconds=([DateTime]::UtcNow-$started).TotalSeconds})
+          } finally {
+            $actual = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            @{sourceRevision=$context.sourceRevision;verificationRevision=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;
+              candidateRunId=$context.candidateRunId;candidateArtifactId=$context.candidateArtifactId;
+              candidateSha256=$actual;expectedChecks=3;checks=@($checks.ToArray());originalFailurePreserved=$true;
+              fullyAccepted=$false;nativeNotificationVerified=$false;realPcAccepted=$false;realGameAccepted=$false} |
+              ConvertTo-Json -Depth 6 | Set-Content (Join-Path $evidence.FullName 'report.json') -Encoding utf8
+            if ($actual -cne $expected) { throw 'Final candidate bytes changed.' }
+          }
+          if ($checks.Count -ne 3) { throw 'Final source/API gate did not complete.' }
+      - name: Retain final source and API evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-0338-final-source-evidence
+          path: local-data/ci-evidence/0338-final-source/
+          if-no-files-found: error
+          retention-days: 7

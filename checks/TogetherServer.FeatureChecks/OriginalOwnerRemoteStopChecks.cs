@@ -116,7 +116,7 @@ internal static class OriginalOwnerRemoteStopChecks
                 fixture.Data.SavePairingState(state);
                 fixture.Pairing = new(fixture.Data, fixture.Clock);
                 Require(state.ServerInvites.Count == 0 && pending is { CanStart: false, CanStop: true, CredentialHash: null, InviteHash: not null } &&
-                    !fixture.Pairing.CanStop(pending, fixture.LocalProfileId) && !fixture.Pairing.CanStop(owner, fixture.LocalProfileId),
+                    !fixture.Pairing.CanStop(pending, fixture.LocalProfileId) && !fixture.Pairing.CanStop(owner!, fixture.LocalProfileId),
                     "the legacy setup case did not distinguish configured Stop from authenticated action access");
             }
             var driver = new PolicyDriver();
