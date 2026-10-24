@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -13,8 +14,47 @@ internal static class ServerDirectoryChecks
     {
         CheckFixedRead();
         CheckCanonicalProjection();
+        CheckSignedWorldIdentity();
         CheckSavedHosts(root);
         return Task.CompletedTask;
+    }
+
+    private static void CheckSignedWorldIdentity()
+    {
+        using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var publicKey = Convert.ToBase64String(owner.ExportSubjectPublicKeyInfo());
+        var profile = Guid.NewGuid();
+        var draft = new SharedWorldRoster(3, Guid.NewGuid(), profile, 1, 1, true, publicKey, [], "",
+            SignerDeviceId: Guid.Empty, SignerPublicKey: publicKey);
+        SharedWorldRoster Sign(SharedWorldRoster value) => value with
+        {
+            Signature = Convert.ToBase64String(owner.SignData(SharedWorldRosterTrust.Basis(value), HashAlgorithmName.SHA256))
+        };
+        var roster = Sign(draft);
+        var original = new ServerDirectoryServer(profile, "Original world", GameKinds.Valheim,
+            "Offline", null, null, false, null, null, false, 0);
+        var successor = original with { Id = Guid.NewGuid(), Name = "Continued world" };
+        var sourceRow = ServerDirectory.WithWorld(original, roster, false);
+        var remoteRow = ServerDirectory.WithWorld(successor, roster, true);
+        Require(sourceRow.SharedWorldId is { Length: 64 } && remoteRow.SharedWorldId == sourceRow.SharedWorldId &&
+            remoteRow.OriginalProfileId == profile && remoteRow.IsSuccessor && !sourceRow.IsSuccessor,
+            "A signed continuation did not retain its original world identity across local profile IDs.");
+        var host = new ServerDirectoryHost(Guid.NewGuid(), Guid.NewGuid(), "Hosting PC", "Friend",
+            "Connected", null, DateTimeOffset.UtcNow, [remoteRow]);
+        var projected = ServerDirectory.Project([sourceRow], [host]);
+        Require(projected.FriendHosts[0].Servers[0].SourceName == "Original world",
+            "The remotely hosted world lost its original sidebar name.");
+        var differentGroup = ServerDirectory.WithWorld(successor, Sign(draft with { GroupId = Guid.NewGuid() }), true);
+        Require(differentGroup.SharedWorldId != sourceRow.SharedWorldId &&
+            ServerDirectory.Project([sourceRow], [host with { Servers = [differentGroup] }])
+                .FriendHosts[0].Servers[0].SourceName is null,
+            "Matching names or profile IDs merged different signed world groups.");
+        var forged = ServerDirectory.WithWorld(successor, roster with { GroupId = Guid.NewGuid() }, true);
+        Require(forged.SharedWorldId is null && forged.OriginalProfileId is null && !forged.IsSuccessor,
+            "Unverified sharing metadata acquired a sidebar grouping identity.");
+        var json = JsonSerializer.Serialize(projected);
+        Require(!json.Contains(publicKey, StringComparison.Ordinal) && !json.Contains(roster.Signature, StringComparison.Ordinal),
+            "The directory exposed signing keys or signatures instead of an opaque world identity.");
     }
 
     private static void CheckFixedRead()

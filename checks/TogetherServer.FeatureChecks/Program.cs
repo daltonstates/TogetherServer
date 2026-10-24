@@ -52,6 +52,8 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Local hosting permission before preparation", () => LocalHostingPermissionChecks.RunAsync(root)),
     ("Guided local shared hosting preparation", () => LocalHostingChecks.RunAsync(root)),
     ("Fixed shared hosting Start and repair actions", SharedHostingActionChecks.RunAsync),
+    ("Observed local hosting progress", LocalHostingProgressChecks.RunAsync),
+    ("Original owner guarded remote Stop", () => OriginalOwnerRemoteStopChecks.RunAsync(root)),
     ("Paired-PC hosting requests and exact final move", () => PlannedHandoffRequestChecks.RunAsync(root)),
     ("Two-PC planned move route proof", () => PlannedHandoffRouteChecks.RunAsync()),
     ("Read-only local hosting route checks", () => LocalHostingRouteChecks.RunAsync()),

@@ -305,13 +305,13 @@ internal sealed partial class FriendLink
                         revision.Signature == floor.Signature) floorSeen = true;
                     if (!chain.Contains(profileId, revision))
                     {
-                        var retained = !useAnchor ? chain.Heads(profileId) : [];
                         // Different legacy journals can omit one another's
                         // standalone snapshots. A root fallback may pass an older
-                        // verified snapshot, but never replace our exact floor,
-                        // skip a fork, or skip any schema-3 parent revision.
-                        if (retained.Count == 1 &&
-                            SharedWorldRosterChainStore.LegacyOwnerAdvance(retained[0], revision)) continue;
+                        // verified snapshot even after concurrent peer catch-up
+                        // advances our head to schema 3. Prove its position using
+                        // the retained legacy interval, never just the new tip;
+                        // equal counters, forks and schema-3 gaps still fail closed.
+                        if (!useAnchor && chain.SupersededLegacySnapshot(profileId, revision)) continue;
                         chain.Append(revision, pinned ?? current.OwnerPublicKey);
                     }
                 }
@@ -1041,13 +1041,7 @@ internal sealed partial class FriendLink
             return (null, SharingFailure(Guid.Empty, "NotPaired", "Connect to a Host first."));
         var selfId = SharedWorldDeviceId;
         if (config.PeerWorld is not null)
-        {
-            var cached = CachedPeerRoster(profileId);
-            using var peerKey = LoadPcSigningKey();
-            return cached is null ? (null, SharingFailure(selfId, "RosterUnavailable", "Sync approved peers to verify this world's current sharing list.")) :
-                (cached, SharedWorldSharingProjection.Build(cached, selfId,
-                    Convert.ToBase64String(peerKey.ExportSubjectPublicKeyInfo()), DateTimeOffset.UtcNow));
-        }
+            return PeerSharingRoster(profileId);
         if (!view.Profiles.Any(item => item.Id == profileId))
             return (null, SharingFailure(selfId, "UnknownProfile", "This server is not assigned to this PC."));
         if (!view.HostCapabilities.Contains(CompanionProtocol.SharedWorldsCapability, StringComparer.Ordinal))
@@ -1984,7 +1978,7 @@ internal sealed partial class FriendLink
     }
 
     public async Task<ReceivedSharedWorldResult> PullSharedWorldAsync(Guid profileId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, Action<long, long>? reportProgress = null)
     {
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
         SemaphoreSlim? profileGate = null;
@@ -1999,7 +1993,8 @@ internal sealed partial class FriendLink
             var attempt = sharedTransferHealth.Begin(profileId);
             try
             {
-                var result = await PullSharedWorldCoreAsync(profileId, vaultRoot, attempt, cancellationToken);
+                var result = await PullSharedWorldCoreAsync(profileId, vaultRoot, attempt, cancellationToken,
+                    reportProgress);
                 sharedTransferHealth.Complete(profileId, attempt, result);
                 return result;
             }
@@ -2025,7 +2020,8 @@ internal sealed partial class FriendLink
     }
 
     private async Task<ReceivedSharedWorldResult> PullSharedWorldCoreAsync(Guid profileId, string vaultRoot,
-        SharedWorldTransferHealth.Attempt attempt, CancellationToken cancellationToken)
+        SharedWorldTransferHealth.Attempt attempt, CancellationToken cancellationToken,
+        Action<long, long>? reportProgress = null)
     {
         var entered = false;
         try
@@ -2180,6 +2176,8 @@ internal sealed partial class FriendLink
             var totalBytes = SharedWorldService.BoundedTotalBytes(version.Files);
             var receivedBytes = totalBytes - remaining;
             attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
+            reportProgress?.Invoke(receivedBytes, totalBytes);
+            transferToken.ThrowIfCancellationRequested();
             var priorObservation = old is null ? null : ReadLocalReceiptObservation(root, old, deviceId);
             var progressStatus = new ReceivedSharedWorldStatus(true, version.Number, old?.Number,
                 "Receiving", null, receivedBytes, totalBytes,
@@ -2243,6 +2241,8 @@ internal sealed partial class FriendLink
                     offset += chunk.Length;
                     receivedBytes += chunk.Length;
                     attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
+                    reportProgress?.Invoke(receivedBytes, totalBytes);
+                    transferToken.ThrowIfCancellationRequested();
                     progressStatus = progressStatus with { ReceivedBytes = receivedBytes };
                     sharedTransfers[profileId] = progressStatus;
                     // Disposable fixture runs can hold a completed chunk open so the

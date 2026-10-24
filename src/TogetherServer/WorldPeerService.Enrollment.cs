@@ -9,6 +9,60 @@ public sealed record WorldPeerSessionEnrollment(PairingCredential Credential,
 
 internal sealed partial class WorldPeerService
 {
+    // Session credentials authorize one stored world's identity, not a profile
+    // GUID shared by unrelated roots. This is deliberately independent of the
+    // candidate's current hosting grant: the original owner can still request
+    // guarded Stop for its running world after future hosting is withdrawn.
+    internal static bool SessionProfileMatchesRoot(LocalData data, ServerProfile profile,
+        SharedWorldPeerRoot root, string? branchHash)
+    {
+        try
+        {
+            lock (SharedWorldMutationGate.For(data.RootPath))
+            {
+                if (!SharedWorldPeerTrust.ValidRoot(root) || profile.WorldLoadRehearsalId is not null)
+                    return false;
+                if (branchHash is not null)
+                {
+                    if (!SharedWorldPeerTrust.ValidHash(branchHash) ||
+                        profile.SeparateCopySourceProfileId != root.ProfileId ||
+                        profile.SeparateCopyBranchHash != branchHash) return false;
+                    var branch = new SharedWorldSeparateCopyStore(data).Read(root.ProfileId)
+                        .SingleOrDefault(item => item.BranchHash == branchHash);
+                    return branch is not null && SharedWorldSeparateCopyStore.Verify(branch) &&
+                        branch.Offer.Roster.OwnerPublicKey == root.OwnerPublicKey &&
+                        branch.Offer.Roster.ProfileId == root.ProfileId && branch.Offer.Roster.GroupId == root.GroupId &&
+                        profile.Kind == branch.Offer.Version.Game && profile.WorldId == branch.Offer.Version.WorldId;
+                }
+                if (profile.Id != root.ProfileId || profile.SeparateCopySourceProfileId is not null ||
+                    profile.SeparateCopyBranchHash is not null) return false;
+                var authority = new WorldAuthorityStore(data).LocalAuthorizedHead(profile.Id);
+                // ReadRoster must never generate a local owner identity while
+                // authorizing an unrelated unbound profile.
+                if (authority is null)
+                {
+                    var bytes = data.LoadProtected("shared-world-signing-key.protected");
+                    if (bytes is null) return false;
+                    using var key = ECDsa.Create();
+                    key.ImportPkcs8PrivateKey(bytes, out var read);
+                    if (read != bytes.Length || Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) != root.OwnerPublicKey)
+                        return false;
+                }
+                var roster = new SharedWorldService(data, new SessionRosterReadOnlyCapture()).ReadRoster(profile);
+                return roster is not null && roster.OwnerPublicKey == root.OwnerPublicKey &&
+                    roster.ProfileId == root.ProfileId && roster.GroupId == root.GroupId;
+            }
+        }
+        catch (Exception error) when (PeerFailure(error) || error is InvalidOperationException or NullReferenceException)
+        { return false; }
+    }
+
+    private sealed class SessionRosterReadOnlyCapture : ISharedWorldCaptureAdapter
+    {
+        public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId) =>
+            throw new InvalidOperationException("Session identity reads cannot capture world files.");
+    }
+
     internal static PairingDecision CredentialMembershipDecision(LocalData data, PairedDevice device,
         DateTimeOffset now, Func<Guid, Guid, PairingDecision>? originalAccess = null)
     {
@@ -65,10 +119,8 @@ internal sealed partial class WorldPeerService
             }
             var profile = data.LoadSettings().Profiles.SingleOrDefault(item => item.Id == device.ProfileId);
             if (data.Recovery.Notices.Any(notice => notice.StateFile == "host.json")) return Review();
-            if (profile is null || device.AssignedProfileIds?.Contains(device.ProfileId) != true || !(device.PeerWorldBranchHash is null
-                ? profile.Id == source && profile.SeparateCopySourceProfileId is null
-                : profile.SeparateCopySourceProfileId == source &&
-                    profile.SeparateCopyBranchHash == device.PeerWorldBranchHash)) return Removed();
+            if (profile is null || device.AssignedProfileIds?.Contains(device.ProfileId) != true) return Removed();
+            if (!SessionProfileMatchesRoot(data, profile, group.Root, device.PeerWorldBranchHash)) return Review();
             return new(true, "PeerMembershipActive", "This PC remains an approved member of the selected world.");
         }
         catch (Exception error) when (PeerFailure(error) || error is InvalidOperationException or NullReferenceException)
@@ -84,8 +136,7 @@ internal sealed partial class WorldPeerService
         var run = snapshot.Runs.SingleOrDefault(item => item.RunOperationId == input.SessionId);
         var profile = run is null ? null : snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == run.ProfileId);
         if (profile is null || run!.State is not ("Ready" or "Starting" or "Listening" or "Process running") ||
-            !(profile.Id == group.Root.ProfileId && profile.SeparateCopySourceProfileId is null ||
-              profile.SeparateCopySourceProfileId == group.Root.ProfileId)) return null;
+            !SessionProfileMatchesRoot(data, profile, group.Root, profile.SeparateCopyBranchHash)) return null;
         var own = Access(group, group.DeviceId, Convert.ToBase64String(LocalPublicKey(group)));
         if (own is not { Receive: true, EligibleHost: true }) return null;
         var branch = profile.SeparateCopyBranchHash;
@@ -146,6 +197,13 @@ internal sealed partial class WorldPeerService
 
 public sealed partial class PairingService
 {
+    // Guid.Empty denotes the original owner only after AuthorizationDecision
+    // verifies this credential's current signed root, owner key and exact local
+    // profile binding. Never turn a member's hosting or sharing grant into Stop.
+    private static bool IsOriginalOwnerSession(PairedDevice device, Guid profileId) =>
+        device.PeerWorldGroupKey is not null && device.PeerWorldSourceDeviceId == Guid.Empty &&
+        device.ProfileId == profileId;
+
     private PairingDecision PeerMembershipDecision(PairedDevice alias, DateTimeOffset now) =>
         WorldPeerService.CredentialMembershipDecision(data, alias, now, (sourceId, profileId) =>
         {
@@ -267,6 +325,7 @@ public sealed partial class FriendService
                 PeerWorld = root,
                 PeerWorldMemberDeviceId = deviceId,
                 PeerWorldBranchHash = enrollment.BranchHash,
+                PeerWorldLocalProfileId = enrollment.LocalProfileId,
                 SharedWorldSigningKeys = new() { [root.ProfileId] = root.OwnerPublicKey },
                 SharedRosterFloors = new() { [root.ProfileId] = new(root.GroupId, roster.Epoch, roster.Revision, roster.Signature) },
                 ApprovedSharedWorldGroups = new() { [root.ProfileId] = root.GroupId },

@@ -178,6 +178,54 @@ internal static partial class CoreRemoteJourney
                 peer.Routes.Any(route => route.Address == $"https://{lanAddress}:{ports[4]}")), "SimpleCandidateRouteNotLearned");
             Pass("normal-friend-prepare-and-start");
 
+            var candidateRun = candidateSnapshot.Runs.Single(item => item.ProfileId == prepared.LocalProfileId);
+            LabRequire(candidateRun.RunOperationId is not null, "SimpleCandidateSessionMissing");
+            var ownerConnection = await PostAsync<object, WorldPeerActionResult>(owner,
+                $"/api/local/world-peers/{groupKey}/connect", new { deviceId = firstDevice, sessionId = candidateRun.RunOperationId.Value });
+            LabRequire(ownerConnection.Ok && ownerConnection.Code == "PeerSessionConnected", "SimpleOwnerSuccessorConnectionRejected");
+            await ModeAsync(owner, hostMode: false);
+            var ownerView = await WaitForConnectedAsync(owner, allowDisabled: true);
+            LabRequire(ownerView.Profiles.Count == 1 && ownerView.Profiles.Single().Id == prepared.LocalProfileId &&
+                ownerView.Profiles.Single().CanStop && !ownerView.Profiles.Single().CanStart &&
+                !ownerView.Profiles.Single().CanViewLogs && !ownerView.RemoteControlsEnabled,
+                "SimpleOriginalOwnerGuardedStopPermissionMissing");
+            var sharing = await PostAsync<object, SharedWorldSharingView>(owner,
+                $"/api/local/friend/{prepared.LocalProfileId}/shared-world/sharing/check", new { });
+            LabRequire(sharing.Available && sharing.Code == "OriginalOwner" && sharing.SelfDeviceId == Guid.Empty,
+                "SimpleOriginalOwnerSuccessorRosterUnavailable");
+            var directory = await PairingLabGetAsync<ServerDirectoryView>(owner, "/api/local/servers");
+            var originalRow = directory.LocalServers.Single(item => item.Id == profile.Id);
+            var successorRow = directory.FriendHosts.SelectMany(item => item.Servers).Single(item => item.Id == prepared.LocalProfileId);
+            LabRequire(originalRow.SharedWorldId == groupKey && successorRow.SharedWorldId == groupKey &&
+                originalRow.OriginalProfileId == profile.Id && successorRow.OriginalProfileId == profile.Id &&
+                !originalRow.IsSuccessor && successorRow.IsSuccessor,
+                "SimpleOwnerDirectorySplitOneSignedWorld");
+            var disabledStop = await FriendActionAsync(owner, prepared.LocalProfileId.Value, "stop");
+            LabRequire(!disabledStop.Ok && disabledStop.Code == "RemoteControlsDisabled", "SimpleOwnerBypassedRemoteControlsOff");
+            await ModeAsync(first, hostMode: true);
+            LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
+                new(RemoteControlsEnabled: true))).Ok, "SimpleCandidateRemoteControlsEnableRejected");
+            try
+            {
+                ownerView = await WaitForConnectedAsync(owner);
+                LabRequire(ownerView.Profiles.Single().CanStop && !ownerView.Profiles.Single().CanStopNow &&
+                    ownerView.Profiles.Single().State == "Process running", "SimpleFixtureBecameTrustedEmptyGame");
+                var countBlockedStop = await FriendActionAsync(owner, prepared.LocalProfileId.Value, "stop");
+                LabRequire(!countBlockedStop.Ok && countBlockedStop.Code == "ServerNotReady", "SimpleOwnerBypassedUntrustedFixtureCount");
+                var unchangedRun = (await PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot")).Runs
+                    .Single(item => item.ProfileId == prepared.LocalProfileId);
+                LabRequire(unchangedRun.ProcessId == candidateRun.ProcessId && unchangedRun.RunOperationId == candidateRun.RunOperationId,
+                    "SimpleBlockedOwnerStopChangedManagedRun");
+            }
+            finally
+            {
+                LabRequire((await PutAsync<HostControlPolicyChange, ActionResult>(first, "/api/local/settings/control-policy",
+                    new(RemoteControlsEnabled: false))).Ok, "SimpleCandidateRemoteControlsResetRejected");
+                await ModeAsync(first, hostMode: false);
+                await ModeAsync(owner, hostMode: true);
+            }
+            Pass("original-owner-stop-keeps-controls-and-count-gates");
+
             // Keep the original offline until the listener-less receiver holds
             // the descendant, so a direct producer transfer cannot satisfy the relay check.
             await host.StopOwnedAsync();

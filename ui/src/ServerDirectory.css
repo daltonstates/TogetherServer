@@ -12,6 +12,8 @@
 .server-directory-row strong { font-weight: 600; overflow-wrap: anywhere; }
 .server-directory-row small { color: var(--color-text-muted); font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
 .server-directory-row .guest-hosting-badge { color: var(--color-accent-text); font-weight: 600; }
+.server-directory-row .remote-hosting-badge { display: flex; gap: 4px; align-items: center; color: var(--color-accent-text); font-weight: 600; }
+.remote-hosting-badge > svg { flex: none; }
 .server-directory-host h4 { margin: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--color-text-muted); }
 .server-directory-host h4 small { display: block; }
 .server-directory-empty { margin: 4px 10px; color: var(--color-text-muted); font-size: 12px; }

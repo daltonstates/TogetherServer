@@ -150,14 +150,56 @@ internal sealed partial class FriendLink
         finally { ReleaseRetained(); }
     }
 
+    private (SharedWorldRoster? Roster, SharedWorldSharingView View) PeerSharingRoster(Guid profileId)
+    {
+        var selfId = SharedWorldDeviceId;
+        if (!MatchesPeerSessionProfile(profileId) || config?.PeerWorld is not { } root)
+            return (null, SharingFailure(selfId, "UnknownProfile", "This server is not part of the selected shared world session."));
+        var cached = CachedPeerRoster(root.ProfileId);
+        if (cached is null)
+            return (null, SharingFailure(selfId, "RosterUnavailable", "Sync approved peers to verify this world's current sharing list."));
+        using var key = LoadPcSigningKey();
+        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        if (SharedWorldPeerTrust.AccessFromRoster(root, cached, selfId, publicKey) is null)
+            return (null, SharingFailure(selfId, "PermissionDenied", "This PC no longer has access to this world's sharing list."));
+        // The original owner is proved by its pinned key rather than a
+        // synthetic roster member. Sharing edits still use its Host workspace.
+        return (cached, selfId == Guid.Empty
+            ? new(true, false, selfId, cached.Revision, "OriginalOwner",
+                "You own this world. Remote Stop remains subject to the current Host controls and a fresh zero-player count.",
+                [], DateTimeOffset.UtcNow)
+            : SharedWorldSharingProjection.Build(cached, selfId, publicKey, DateTimeOffset.UtcNow));
+    }
+
+    private bool MatchesPeerSessionProfile(Guid profileId)
+    {
+        if (config?.PeerWorld is not { } root || profileId == Guid.Empty) return false;
+        if (profileId == root.ProfileId || config.PeerWorldLocalProfileId == profileId) return true;
+        if (config.PeerWorldLocalProfileId is not null || view.ConnectionCode is not null ||
+            !view.ProtocolCompatible || view.State is not ("Connected" or "Disabled") ||
+            view.LastConnectedUtc is null || view.Profiles.Count != 1 || view.Profiles[0].Id != profileId)
+            return false;
+        // Older saved peer credentials lacked the local profile binding. Only
+        // the authenticated, unambiguous session status may supply that ID.
+        config.PeerWorldLocalProfileId = profileId;
+        SaveConfig();
+        return true;
+    }
+
     private SharedWorldRoster? CachedPeerRoster(Guid profileId)
     {
         if (config?.PeerWorld is not { } root || root.ProfileId != profileId || config.KnownRevoked) return null;
+        if (config.SharedWorldSigningKeys.GetValueOrDefault(profileId) != root.OwnerPublicKey ||
+            config.ApprovedSharedWorldGroups.GetValueOrDefault(profileId) != root.GroupId ||
+            config.PendingSharedWorldGroups.ContainsKey(profileId)) return null;
         var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{profileId:N}.protected");
         if (bytes is null || bytes.Length > SharedWorldService.MaximumManifestBytes) return null;
         var roster = JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json);
+        var floor = config.SharedRosterFloors.GetValueOrDefault(profileId);
         return roster is not null && roster.OwnerPublicKey == root.OwnerPublicKey && roster.GroupId == root.GroupId &&
             roster.ProfileId == profileId && SharedWorldRosterTrust.Verify(roster) &&
+            floor is not null && floor.GroupId == roster.GroupId && floor.Epoch == roster.Epoch &&
+            floor.Revision == roster.Revision && floor.Signature == roster.Signature &&
             new WorldAuthorityStore(data).TrustsCurrentRoster(roster) ? roster : null;
     }
 

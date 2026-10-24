@@ -189,14 +189,20 @@ internal static class WorldPeerEnrollmentChecks
         internal Fixture(string root)
         {
             Data = new(Path.Combine(root, "peer-enrollment-" + Guid.NewGuid().ToString("N")));
-            Source = new(Public(Owner), Guid.NewGuid(), Guid.NewGuid());
-            Data.SaveSettings(new HostSettings { Profiles = [new() { Id = Source.ProfileId, SharedSavesEnabled = true }] });
+            var profile = new ServerProfile { Id = Guid.NewGuid(), SharedSavesEnabled = true, WorldId = "SyntheticPeerEnrollment" };
+            profile.WorldDirectory = Data.NewWorldDirectory(profile.Id);
+            Data.SaveSettings(new HostSettings { Profiles = [profile] });
             Data.SaveProtected("shared-world-signing-key.protected", Owner.ExportPkcs8PrivateKey());
             Pairing = new(Data, Clock);
-            var invite = Pairing.IssueServer(Source.ProfileId, true, false, "https://192.0.2.60:5131", new string('A', 64), false);
-            Original = Pairing.Activate(new(Source.ProfileId, invite.Code, true)) ?? throw new InvalidOperationException("synthetic original pairing failed");
+            var invite = Pairing.IssueServer(profile.Id, true, false, "https://192.0.2.60:5131", new string('A', 64), false);
+            Original = Pairing.Activate(new(profile.Id, invite.Code, true)) ?? throw new InvalidOperationException("synthetic original pairing failed");
             Require(Bind(Pairing, Original.DeviceId, Member).Ok, "synthetic canonical identity enrollment failed");
-            Publish();
+            Roster = new SharedWorldService(Data, new WorldBackupService(Data, Clock))
+                .PublishRoster(profile, Pairing.SharedRosterMembers(profile.Id));
+            Source = new(Public(Owner), profile.Id, Roster.GroupId);
+            new SharedWorldRosterChainStore(Data).Append(Roster, Source.OwnerPublicKey);
+            Pairing.ConfirmSharedRosterPublished(Source.ProfileId, Roster);
+            SaveMembership();
             Alias = Pairing.EnrollPeerWorld(Source, Roster, Original.DeviceId, Public(Member), Source.ProfileId, null) ??
                 throw new InvalidOperationException("synthetic metadata-only session enrollment failed");
         }

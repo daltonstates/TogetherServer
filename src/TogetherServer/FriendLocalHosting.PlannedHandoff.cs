@@ -102,7 +102,8 @@ internal sealed partial class FriendLocalHostingService
     }
 
     private async Task<LocalHostingStatus> PreparePlannedAsync(FriendService.LocalHostingConnection connection,
-        Guid profileId, LocalHostingPrepareRequest input, CancellationToken cancellationToken)
+        Guid profileId, LocalHostingPrepareRequest input, CancellationToken cancellationToken,
+        LocalHostingProgressStore.Operation progress)
     {
         var link = connection.Link;
         var request = await link.HandoffRequestAsync(profileId, cancellationToken) ??
@@ -136,7 +137,8 @@ internal sealed partial class FriendLocalHostingService
             }
             if (request.RecipientState != "Completed")
             {
-                var pulled = await link.PullSharedWorldAsync(profileId, cancellationToken);
+                progress.Report("Receiving", "Receiving the planned move's completed save.");
+                var pulled = await link.PullSharedWorldAsync(profileId, cancellationToken, progress.Transfer);
                 if (!pulled.Ok && request.Pending) return await Result(pulled.Code, pulled.Message);
             }
             access = await link.LocalHostingAccessAsync(profileId, false, cancellationToken, verifyFiles: true);
@@ -148,6 +150,7 @@ internal sealed partial class FriendLocalHostingService
             if (request.Pending && request.FinalVersionHash != version.VersionHash)
                 return await Result("WaitingForSuccessorCopy", "The exact final post-Stop save is still being received.");
             var snapshot = await manager.CompanionSnapshotAsync();
+            progress.Report("ServerSetup", "Checking the game setup for this planned hosting move.");
             var local = ReadPlannedLocal(profileId, request.RequestId!.Value);
             if (local is not null && local.SetupIdentity != PortableSetupIdentity(version))
                 return await Result("LocalServerSetupRequired", "The shared game's required setup changed. Review this PC's matching installation before the move continues.");
@@ -157,6 +160,7 @@ internal sealed partial class FriendLocalHostingService
                     return await Result("LocalHostingReviewRequired", "This world already has a local profile. Existing progress was kept; review it before moving hosting.");
                 var server = await Task.Run(() => FindServer(version, snapshot.Settings.Profiles, input.ServerFile), cancellationToken);
                 if (server is null) return await Result("InstalledServerRequired", "Install or select the matching dedicated server, then prepare again. No game software was downloaded.");
+                progress.Report("Ports", "Checking the local game and control ports.");
                 var ports = await manager.LocalHostingPortsAsync(version, null, cancellationToken);
                 if (!ports.Available) return await Result("LocalPortsRequired", "The game's complete local port plan needs attention.");
                 var password = version.Game == GameKinds.Valheim ? input.GamePassword ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(12)) : null;
@@ -189,6 +193,7 @@ internal sealed partial class FriendLocalHostingService
                 data.SaveProtected(PlannedLocalName(profileId), JsonSerializer.SerializeToUtf8Bytes(local));
             }
             if (synchronizeListener is not null) await synchronizeListener();
+            progress.Report("Connection", "Checking this PC's incoming hosting connection.");
             var route = routeCheck is null ? null : await routeCheck.CurrentAsync(cancellationToken);
             if (route?.Identity is not { Enabled: true, Active: true, ListenerOwned: true } identity ||
                 !SharedWorldPeerTrust.ValidRoute(new(identity.Endpoint, identity.CertificateFingerprint ?? "")))
@@ -214,16 +219,19 @@ internal sealed partial class FriendLocalHostingService
                     await link.HandoffRequestAsync(profileId, cancellationToken) ?? request, cancellationToken) :
                     await Result(confirmed.Code, confirmed.Message);
             }
+            progress.Report("Verifying", "Verifying the planned move's final signed save and receipt.");
             var staged = await link.StagePlannedHandoffAsync(profileId, cancellationToken);
             if (!staged.Ok) return await Result(staged.Code, staged.Message);
             var record = new WorldAuthorityStore(data).ReadUniqueHead(profileId);
             if (record is null) return await Result("HandoffProofPending", "The signed final hosting decision is still being verified.");
+            progress.Report("PreparingCopy", "Restoring the verified final save into this PC's hosting storage.");
             var restored = await manager.RestoreSharedSuccessorAsync(profileId,
                 new(record.RecordHash, local.Setup, access.Name, access.Name, local.GamePassword,
                     local.ExecutablePath, local.PreparedServerRoot, local.FactorioRconPort), cancellationToken);
             if (!restored.Ok) return await Result(restored.Code, restored.Message);
             // The original owner is a distinct authenticated observer. It uses
             // the saved signed certificate pin, never a typed address.
+            progress.Report("Connection", "Waiting for the original owner to verify this PC's pinned hosting route.");
             var observed = await link.RequestOwnerHandoffRouteCheckAsync(profileId, request.RequestId.Value, cancellationToken);
             if (!observed.Ok) return await Result(observed.Code, observed.Message);
             var finished = await manager.FinishSharedSuccessorAsync(profileId,

@@ -1317,9 +1317,21 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     using var permit = RemoteStopSafety.TryAcquire(snapshot, profileId, data, games);
                     if (!permit.Allowed)
                         return new(false, permit.Code, permit.Reason);
+                    bool StillAuthorized()
+                    {
+                        var currentAccess = pairing.AuthorizeActiveDevice(deviceId, out var current);
+                        return currentAccess.Ok && current is not null && manager.RemoteControlsEnabled &&
+                            !manager.LifecycleBlocked && manager.RemoteMaintenanceBlocker(profileId) is null &&
+                            RemoteActionPolicy.Allowed(pairing, current, profileId, action);
+                    }
+                    // The lifecycle gate can be queued, and fresh driver reads
+                    // can take time. Re-resolve current access on both sides of
+                    // those reads without reacquiring the manager's gate.
+                    bool StillSafe(ManagedRun run) =>
+                        StillAuthorized() && permit.StillSafe(run) && StillAuthorized();
                     result = action == RemoteActionKind.Stop
-                        ? await manager.StopAsync(profileId, permit.StillSafe)
-                        : await manager.RestartAsync(profileId, permit.StillSafe);
+                        ? await manager.StopAsync(profileId, StillSafe)
+                        : await manager.RestartAsync(profileId, StillSafe);
                 }
                 else
                     result = action switch

@@ -45,6 +45,13 @@ export const simpleHostingCases = [
   friend('recovered-retry', 'prepare'),
   friend('directory-removed', 'prepare', { fixture: { simpleHosting: 'prepare', removedHost: true },
     steps: [], screen: { role: 'region', name: 'Servers' } }),
+  ...['Receiving', 'Verifying'].map(phase => friend(`progress-${phase.toLowerCase()}`, 'prepare', {
+    fixture: { simpleHosting: 'prepare', hostingProgress: phase }, pendingState: true,
+    steps: [{ button: 'Host locally' }, { button: 'Host locally', within: 'dialog[open]' }],
+    screen: { role: 'region', name: 'Hosting progress' } })),
+  ...['Running', 'Stopped'].map(session => ({ id: `simple-hosting-directory-remote-${session.toLowerCase()}`,
+    scenario: 'host-offline', workspace: 'Host', fixture: { directoryRemote: session },
+    steps: [], screen: { role: 'region', name: 'Servers' } })),
 ];
 export const simpleHostingVariants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100 },
@@ -122,7 +129,44 @@ export function assertRemovedAccessBounds({ label, checkbox, text, display }) {
 export async function assertSimpleHostingUi(page, testCase, record, state) {
   if (!testCase.id.startsWith('simple-hosting-')) return;
   const writes = hostingWrites(state);
-  if (testCase.id.includes('-owner-')) {
+  if (testCase.fixture?.hostingProgress) {
+    const modal = page.getByRole('dialog', { name: 'Host locally', exact: true });
+    const live = modal.getByRole('region', { name: 'Hosting progress', exact: true });
+    const phase = testCase.fixture.hostingProgress;
+    await live.waitFor({ state: 'visible', timeout: 8000 });
+    if (phase === 'Receiving') {
+      await live.getByText('25% received', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+      state.hostingProgressReceivedBytes = 3145728;
+      await live.getByText('75% received', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+      const bytes = live.getByRole('progressbar', { name: 'Shared save bytes received', exact: true });
+      if (await bytes.getAttribute('value') !== '3145728' || await bytes.getAttribute('max') !== '4194304' ||
+          !await live.getByText('3 MiB of 4 MiB', { exact: true }).isVisible())
+        throw new Error('Hosting progress must update using the current completed/total transfer bytes');
+    } else {
+      const stage = live.getByRole('progressbar', { name: 'Verifying the save files', exact: true });
+      await stage.waitFor({ state: 'visible', timeout: 8000 });
+      if (await stage.getAttribute('aria-valuenow') !== null || await live.getByText(/\d+%/u).count())
+        throw new Error('Verification has no measured denominator and must stay indeterminate');
+    }
+    if (!await live.locator('.local-hosting-elapsed').isVisible() || writes.length !== 1 || !writes[0].path.endsWith('/prepare') ||
+        !state.requests.some(item => item.method === 'GET' && item.path.endsWith('/hosting/progress')) || state.simpleHostingStarted)
+      throw new Error('Live progress needs elapsed feedback and passive progress reads during the one pending preparation');
+    record.assertions.push({ liveHostingPhase: phase, realTransferBytes: phase === 'Receiving' ? [1048576, 3145728, 4194304] : null,
+      fabricatedAggregatePercent: false, progressReadOnly: true });
+  } else if (testCase.fixture?.directoryRemote) {
+    const directory = page.getByRole('region', { name: 'Servers', exact: true });
+    const world = directory.getByRole('button', { name: 'Open Weekend Valheim on this PC', exact: true });
+    await world.waitFor({ state: 'visible', timeout: 8000 });
+    const running = testCase.fixture.directoryRemote === 'Running';
+    if (await world.count() !== 1 || await directory.getByRole('heading', { level: 4, name: 'Remote friend', exact: true }).count() ||
+        await directory.getByRole('button', { name: /Remote continuation/u }).count() ||
+        await world.getByText('Hosted by Remote friend', { exact: true }).count() !== Number(running))
+      throw new Error('A shared world needs one original owner row with the remote-host badge only while hosting');
+    if (running && (state.mode !== 'Friend' || state.friend.profiles[0]?.id !== state.directoryRemoteProfileId))
+      throw new Error('The original world row must open the actual successor-PC profile');
+    if (!running && state.mode !== 'Host') throw new Error('A stopped successor must leave the original local world selected');
+    record.assertions.push({ ownerWorldRows: 1, successorSidebarRows: 0, actualSuccessorControls: running, stoppedSuccessorHidden: !running });
+  } else if (testCase.id.includes('-owner-')) {
     const workspace = page.locator('.shared-world-workspace');
     if (await workspace.getByRole('checkbox').count() !== 1) throw new Error('Host sharing must have exactly one switch');
     if (await workspace.getByRole('button', { name: /Manage sharing|Move hosting|Approve selected copy/u }).count())

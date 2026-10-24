@@ -44,6 +44,7 @@ public sealed class FriendConfiguration
     public SharedWorldPeerRoot? PeerWorld { get; set; }
     public Guid? PeerWorldMemberDeviceId { get; set; }
     public string? PeerWorldBranchHash { get; set; }
+    public Guid? PeerWorldLocalProfileId { get; set; }
 }
 
 public sealed record SharedRosterFloor(Guid GroupId, long Epoch, long Revision, string Signature);

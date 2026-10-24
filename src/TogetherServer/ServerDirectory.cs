@@ -6,7 +6,8 @@ public sealed record ServerDirectoryServer(Guid Id, string Name, string Kind, st
     int? OnlinePlayers, int? MaxPlayers, bool PlayerCountTrusted,
     string? PlayerObservationSource, DateTimeOffset? PlayerCountObservedUtc,
     bool PlayerCountRefreshing, int PlayerCountFailureCount,
-    Guid? SeparateCopySourceProfileId = null, string? SourceName = null, string? SourceHostName = null);
+    Guid? SeparateCopySourceProfileId = null, string? SourceName = null, string? SourceHostName = null,
+    string? SharedWorldId = null, Guid? OriginalProfileId = null, bool IsSuccessor = false);
 
 public sealed record ServerDirectoryHost(Guid ConnectionId, Guid HostId, string ConnectionName,
     string? HostProfileName, string State, string? ConnectionCode, DateTimeOffset? LastConnectedUtc,
@@ -22,6 +23,14 @@ internal static class ServerDirectory
 
     internal static bool Fresh(DateTimeOffset? observed, DateTimeOffset now) =>
         observed is { } time && time <= now && now - time <= MaximumObservationAge;
+
+    internal static ServerDirectoryServer WithWorld(ServerDirectoryServer row, SharedWorldRoster roster,
+        bool successor)
+    {
+        if (!SharedWorldRosterTrust.Verify(roster)) return row;
+        var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, roster.ProfileId, roster.GroupId);
+        return row with { SharedWorldId = root.GroupKey, OriginalProfileId = root.ProfileId, IsSuccessor = successor };
+    }
 
     internal static IReadOnlyList<ServerDirectoryServer> LocalRows(HostSnapshot snapshot, DateTimeOffset now) =>
         snapshot.Settings.Profiles.Take(MaximumEntries).Select(profile =>
@@ -42,20 +51,25 @@ internal static class ServerDirectory
         IReadOnlyList<ServerDirectoryHost> hosts)
     {
         var visibleHosts = hosts.Where(host => host.State != "Revoked" && host.ConnectionCode != "Revoked").ToArray();
-        return new(local.Take(MaximumEntries).Select(server =>
+        ServerDirectoryServer Origin(ServerDirectoryServer server)
         {
-            if (server.SeparateCopySourceProfileId is not { } sourceId) return server;
+            var sourceId = server.OriginalProfileId ?? server.SeparateCopySourceProfileId;
+            if (sourceId is null || !server.IsSuccessor && server.SeparateCopySourceProfileId is null) return server;
+            bool Matches(ServerDirectoryServer row) => server.SharedWorldId is { } world
+                ? row.SharedWorldId == world && row.Id == sourceId && !row.IsSuccessor
+                : row.Id == sourceId && !row.IsSuccessor;
             var source = visibleHosts.SelectMany(host => host.Servers
-                .Where(profile => profile.Id == sourceId).Select(profile => (Host: host, Server: profile)))
+                .Where(Matches).Select(profile => (Host: host, Server: profile)))
                 .FirstOrDefault();
-            var localSource = local.FirstOrDefault(profile => profile.Id == sourceId &&
-                profile.SeparateCopySourceProfileId is null);
+            var localSource = local.FirstOrDefault(profile => Matches(profile) && profile.SeparateCopySourceProfileId is null);
             return server with
             {
                 SourceName = source.Server?.Name ?? localSource?.Name,
                 SourceHostName = source.Host?.HostProfileName ?? source.Host?.ConnectionName
             };
-        }).ToArray(), hosts.Take(MaximumEntries).ToArray());
+        }
+        return new(local.Take(MaximumEntries).Select(Origin).ToArray(), hosts.Take(MaximumEntries)
+            .Select(host => host with { Servers = host.Servers.Select(Origin).ToArray() }).ToArray());
     }
 }
 
@@ -67,6 +81,32 @@ public sealed partial class HostManager
     internal IReadOnlyList<ServerDirectoryServer> ServerDirectoryRows()
     {
         var snapshot = Volatile.Read(ref lastCompanionSnapshot)!;
-        return ServerDirectory.LocalRows(snapshot, clock.GetUtcNow());
+        return ServerDirectory.LocalRows(snapshot, clock.GetUtcNow()).Select(row =>
+        {
+            var profile = snapshot.Settings.Profiles.Single(item => item.Id == row.Id);
+            try
+            {
+                lock (SharedWorldMutationGate.For(data.RootPath))
+                {
+                    if (profile.SeparateCopySourceProfileId is { } sourceId && profile.SeparateCopyBranchHash is { } hash)
+                    {
+                        var branch = new SharedWorldSeparateCopyStore(data).Read(sourceId)
+                            .SingleOrDefault(item => item.BranchHash == hash);
+                        return branch is not null && SharedWorldSeparateCopyStore.Verify(branch)
+                            ? ServerDirectory.WithWorld(row, branch.Offer.Roster, true) : row;
+                    }
+                    var authority = new WorldAuthorityStore(data).LocalAuthorizedHead(profile.Id);
+                    // A passive directory must not create a replacement owner
+                    // identity when its protected key is missing or unreadable.
+                    if (authority is null && data.LoadProtected("shared-world-signing-key.protected") is null) return row;
+                    var roster = sharedWorlds.ReadRoster(profile);
+                    return roster is null ? row : ServerDirectory.WithWorld(row, roster, authority is not null);
+                }
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or
+                System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or
+                UnauthorizedAccessException or ArgumentException)
+            { return row; }
+        }).ToArray();
     }
 }

@@ -45,6 +45,12 @@ internal static class FriendLocalHostingRoutes
             announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync,
             latestSource: peers is null ? null : peers.ResolveLatestRecoverySourceAsync);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
+        app.MapGet(route + "/progress", (HttpContext context, Guid profileId) =>
+        {
+            if (!Fixed(context, true) || context.Request.ContentLength is > 0) return Results.StatusCode(403);
+            if (!friendMode()) return Results.StatusCode(409);
+            return Results.Json(service.Progress(profileId));
+        });
         app.MapGet(route + "/access", async (HttpContext context, Guid profileId) =>
         {
             if (!Fixed(context, true)) return Results.StatusCode(403);

@@ -43,7 +43,8 @@ describe('strict combined server directory', () => {
   it('rejects malformed metadata, duplicate identities, and oversized input', () => {
     for (const patch of [{ id: 'invalid' }, { onlinePlayers: -1 }, { onlinePlayers: '0' }, { playerCountTrusted: 'true' },
       { playerCountRefreshing: undefined }, { playerCountFailureCount: -1 }, { playerCountObservedUtc: 'never' },
-      { separateCopySourceProfileId: 'world-name' }, { sourceHostName: 4 }])
+      { separateCopySourceProfileId: 'world-name' }, { sourceHostName: 4 }, { sharedWorldId: 'world-name', originalProfileId: ids.local },
+      { sharedWorldId: 'A'.repeat(64) }, { originalProfileId: ids.local }, { isSuccessor: true }, { isSuccessor: 'true' }])
       expect(() => parseServerDirectory({ localServers: [{ ...server(), ...patch }], friendHosts: [] })).toThrow()
     expect(() => parseServerDirectory({ localServers: [server(), server()], friendHosts: [] })).toThrow(/duplicate/)
     expect(() => parseServerDirectory({ localServers: [], friendHosts: [host(), host()] })).toThrow(/duplicate/)
@@ -53,6 +54,87 @@ describe('strict combined server directory', () => {
 })
 
 describe('one grouped server list', () => {
+  it('keeps a remotely hosted owner world in Your servers and routes controls to the actual hosting PC', () => {
+    const identity = { sharedWorldId: 'A'.repeat(64), originalProfileId: ids.local }
+    const actions = show({ localServers: [server({ ...identity, isSuccessor: false, state: 'Offline' })],
+      friendHosts: [host({ servers: [server({ ...identity, id: ids.guest, name: 'Successor local profile', isSuccessor: true })] })] },
+    { selection: { kind: 'friend', connectionId: ids.connection, profileId: ids.guest } })
+    const world = screen.getByRole('button', { name: 'Open Our world on this PC' })
+    expect(world.closest('.server-directory-group')).toHaveTextContent('Your servers')
+    expect(world).toHaveAttribute('aria-current', 'true')
+    expect(world).toHaveTextContent('Hosted by Morgan')
+    expect(world).toHaveTextContent('0 / 10 online')
+    expect(screen.queryByRole('heading', { name: 'Morgan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open Successor local profile/ })).not.toBeInTheDocument()
+    fireEvent.click(world)
+    expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.guest })
+  })
+
+  it('keeps one original friend entry while another friend hosts, and removes the successor after the session closes', () => {
+    const identity = { sharedWorldId: 'B'.repeat(64), originalProfileId: ids.source }
+    const original = host({ state: 'Disconnected/Unknown', lastConnectedUtc: null,
+      servers: [server({ ...identity, id: ids.source, name: 'Shared meadow', isSuccessor: false, state: 'Offline' })] })
+    const successor = host({ connectionId: ids.removed, hostProfileName: 'Alex', connectionName: 'Alex’s PC',
+      servers: [server({ ...identity, id: ids.guest, name: 'Alex’s continuation', isSuccessor: true })] })
+    const view = { localServers: [], friendHosts: [original, successor] }
+    const onSelect = vi.fn()
+    const rendered = render(<ServerDirectory view={view} selection={null} nowMs={now} busy={false}
+      onRetry={vi.fn()} onSelect={onSelect} onAddLocal={vi.fn()} onConnect={vi.fn()} />)
+    const world = screen.getByRole('button', { name: 'Open Shared meadow on Morgan' })
+    expect(world).toHaveTextContent('Hosted by Alex')
+    expect(screen.queryByRole('heading', { name: 'Alex' })).not.toBeInTheDocument()
+    fireEvent.click(world)
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.removed, profileId: ids.guest })
+    rendered.rerender(<ServerDirectory view={{ ...view, friendHosts: [original, { ...successor,
+      servers: successor.servers.map(server => ({ ...server, state: 'Offline' })) }] }} selection={null} nowMs={now} busy={false}
+      onRetry={vi.fn()} onSelect={onSelect} onAddLocal={vi.fn()} onConnect={vi.fn()} />)
+    const closed = screen.getByRole('button', { name: 'Open Shared meadow on Morgan' })
+    expect(closed).not.toHaveTextContent('Hosted by')
+    expect(screen.queryByRole('heading', { name: 'Alex' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Alex’s continuation|Open Alex’s PC/ })).not.toBeInTheDocument()
+    fireEvent.click(closed)
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.source })
+  })
+
+  it('uses the original friend row when this PC hosts it and keeps unrelated successor-PC worlds separate', () => {
+    const identity = { sharedWorldId: 'C'.repeat(64), originalProfileId: ids.source }
+    const actions = show({ localServers: [server({ ...identity, id: ids.guest, name: 'Local continuation',
+      separateCopySourceProfileId: ids.source, sourceName: 'Shared meadow', sourceHostName: 'Morgan', isSuccessor: true })],
+    friendHosts: [host({ servers: [server({ ...identity, id: ids.source, name: 'Shared meadow', state: 'Offline', isSuccessor: false })] }),
+      host({ connectionId: ids.removed, hostProfileName: 'Alex', servers: [server({ name: 'Shared meadow',
+        sharedWorldId: 'D'.repeat(64), originalProfileId: ids.local, isSuccessor: false })] })] })
+    const world = screen.getByRole('button', { name: 'Open Shared meadow on Morgan' })
+    expect(world).toHaveTextContent('Hosting on this PC')
+    expect(screen.queryByRole('heading', { name: 'Hosting for friends' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open Shared meadow on Alex' })).toBeInTheDocument()
+    fireEvent.click(world)
+    expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'local', profileId: ids.guest })
+  })
+
+  it('does not use a disconnected successor’s stale Ready state as the active hosting route', () => {
+    const identity = { sharedWorldId: 'E'.repeat(64), originalProfileId: ids.local }
+    const actions = show({ localServers: [server({ ...identity, isSuccessor: false, state: 'Offline' })],
+      friendHosts: [host({ state: 'Disconnected/Unknown', lastConnectedUtc: null,
+        servers: [server({ ...identity, id: ids.guest, isSuccessor: true })] })] })
+    const world = screen.getByRole('button', { name: 'Open Our world on this PC' })
+    expect(world).not.toHaveTextContent('Hosted by')
+    expect(world).toHaveTextContent('Offline')
+    fireEvent.click(world)
+    expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'local', profileId: ids.local })
+  })
+
+  it('keeps the actual successor route when player-count evidence is Unknown', () => {
+    const identity = { sharedWorldId: 'E'.repeat(64), originalProfileId: ids.local }
+    const actions = show({ localServers: [server({ ...identity, isSuccessor: false, state: 'Offline' })],
+      friendHosts: [host({ servers: [server({ ...identity, id: ids.guest, state: 'Unknown',
+        onlinePlayers: null, playerCountTrusted: false, isSuccessor: true })] })] })
+    const world = screen.getByRole('button', { name: 'Open Our world on this PC' })
+    expect(world).toHaveTextContent('Hosted by Morgan')
+    expect(world).toHaveTextContent('Players —')
+    fireEvent.click(world)
+    expect(actions.onSelect).toHaveBeenLastCalledWith({ kind: 'friend', connectionId: ids.connection, profileId: ids.guest })
+  })
+
   it('lists one inactive owner server without changing its retained profiles or selected logical identity', () => {
     const view: ServerDirectoryView = { localServers: [server({ state: 'Offline' }),
       server({ id: ids.guest, name: 'Earlier continuation', state: 'Offline', separateCopySourceProfileId: ids.local }),
@@ -241,4 +323,18 @@ it('removes a forgotten friend immediately when the current snapshot supplies th
   const combined = directoryWithSnapshot(directory(), empty)
   expect(combined.friendHosts).toEqual([])
   expect(combined.localServers).toEqual(directory().localServers)
+})
+
+it('preserves signed world identity during current Friend snapshot overlays', () => {
+  const identity = { sharedWorldId: 'F'.repeat(64), originalProfileId: ids.local, isSuccessor: true }
+  const prior = host({ servers: [server({ ...identity, id: ids.guest })] })
+  const snapshot: FriendSnapshot = { mode: 'Friend', state: 'Connected', detail: '', endpoint: '',
+    lastConnectedUtc: new Date(now).toISOString(), remoteControlsEnabled: true, canStart: true, canStop: true,
+    connectionId: ids.connection, connections: null, hostCapabilities: [],
+    profiles: [{ id: ids.guest, name: 'Current remote copy', kind: 'Valheim', state: 'Ready', onlinePlayers: 1, maxPlayers: 10,
+      canStart: true, canStop: true, canStopNow: false, canRestartNow: false, runOperationId: null, joinAddress: null,
+      stopReason: null, restartReason: null, autoShutdownAtUtc: null, autoShutdownReason: null, maintenanceEnabled: false,
+      maintenanceMessage: null, canExtendTimer: false, timerExtensionMinutes: 0, timerExtensionRemainingMinutes: 0, canViewLogs: false }] }
+  const combined = directoryWithSnapshot({ localServers: [], friendHosts: [prior] }, snapshot)
+  expect(combined.friendHosts[0].servers[0]).toMatchObject({ ...identity, id: ids.guest, onlinePlayers: 1 })
 })

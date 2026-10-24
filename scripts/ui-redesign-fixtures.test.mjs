@@ -78,6 +78,7 @@ const localHosting = pureDecoders('FriendLocalHosting.tsx', ['boundedText', 'par
   guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   hashPattern: /^[0-9a-f]{64}$/i, parsePlannedHandoffStatus
 });
+const hostingProgress = pureDecoders('LocalHostingProgress.tsx', ['parseHostingProgress']);
 const requiredSetup = pureDecoders('RequiredFeatureSetup.tsx', ['parseRequiredSetup'], { ContractError: contracts.ContractError });
 const gettingStarted = pureDecoders('useGettingStarted.ts', ['parseGettingStarted'], { ContractError: contracts.ContractError });
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
@@ -614,7 +615,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 81, 'twenty-seven shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
+  assert.equal(simple.plans.length, 93, 'thirty-one shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -841,7 +842,7 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 27);
+  assert.equal(simpleHostingCases.length, 31);
   assert.equal(simpleHostingVariants.length, 3);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
@@ -921,6 +922,48 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   await assert.rejects(assertSimpleHostingUi(continuationPage, continuation, { assertions: [] }, returnedOwner),
     /Owner continuation sharing must use its exact original policy/u,
     'reading active save status is valid, but editing the child policy remains rejected');
+});
+
+test('hosting progress fixtures expose passive byte updates and indeterminate verification during one pending preparation', () => {
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const prepare = { allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null };
+  for (const phase of ['Receiving', 'Verifying']) {
+    const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'prepare', hostingProgress: phase });
+    assert.equal(routeFixture(state, { method: 'GET', path: `${base}/progress` }).body, null);
+    assert.equal(routeFixture(state, { method: 'POST', path: `${base}/prepare`, body: prepare }).pending, true);
+    const first = hostingProgress.parseHostingProgress(get(state, `${base}/progress`));
+    assert.equal(first.phase, phase);
+    assert.equal(first.state, 'Working');
+    assert.equal(first.totalBytes, 4194304);
+    assert.equal(first.percent, phase === 'Receiving' ? 25 : null);
+    state.hostingProgressReceivedBytes = 3145728;
+    const next = hostingProgress.parseHostingProgress(get(state, `${base}/progress`));
+    assert.equal(next.percent, phase === 'Receiving' ? 75 : null);
+    assert.equal(next.receivedBytes, phase === 'Receiving' ? 3145728 : 4194304);
+    assert.equal(state.simpleHostingStarted, false);
+    assert.equal(state.requests.filter(item => item.method !== 'GET').length, 1);
+    const plan = simpleHostingCases.find(item => item.fixture?.hostingProgress === phase);
+    assert.equal(plan.pendingState, true);
+    assert.equal(plan.screen.name, 'Hosting progress');
+  }
+});
+
+test('owner remote-host directory fixtures bind one signed identity through running and stopped successor sessions', () => {
+  for (const session of ['Running', 'Stopped']) {
+    const state = createFixtureState({ id: 'host-offline', directoryRemote: session });
+    const directory = get(state, '/api/local/servers');
+    const original = directory.localServers[0];
+    const successor = directory.friendHosts[0].servers[0];
+    assert.equal(original.sharedWorldId, successor.sharedWorldId);
+    assert.equal(original.id, successor.originalProfileId);
+    assert.equal(original.isSuccessor, false);
+    assert.equal(successor.isSuccessor, true);
+    assert.notEqual(original.id, successor.id);
+    assert.equal(successor.state, session === 'Running' ? 'Ready' : 'Offline');
+    assert.doesNotThrow(() => contracts.parseSnapshot(state.host));
+    assert.doesNotThrow(() => contracts.parseFriendSnapshot(state.friend));
+    assert.ok(simpleHostingCases.some(item => item.fixture?.directoryRemote === session));
+  }
 });
 
 test('hosting review distinguishes initial permission failures from access changes after entry', async () => {

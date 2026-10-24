@@ -3,8 +3,9 @@ namespace TogetherServer;
 // Friend Stop is allowed only when the selected built-in driver or an exactly
 // matching owner-certified Custom profile returns a
 // fresh, authoritative zero-player count. The count is checked once for the UI
-// decision and again inside HostManager's lifecycle gate immediately before the
-// graceful stop signal. Unknown fails closed; local Host Stop is independent.
+// decision. Two fresh driver observations inside HostManager's lifecycle gate
+// must then both be exact zero immediately before the graceful stop signal.
+// Unknown fails closed; local Host Stop is independent.
 public static class RemoteStopSafety
 {
     public static StopPermit TryAcquire(HostSnapshot snapshot, Guid profileId, LocalData data,
@@ -68,7 +69,10 @@ public sealed class StopPermit : IDisposable
     public static StopPermit Denied(string code, string reason) => new(false, code, reason);
 
     public bool StillSafe(ManagedRun run) => Allowed && run.OperationId == operationId && driver is not null &&
-        driver.Health(run) is { Ok: true, State: "Ready", OnlinePlayers: 0, PlayerCountTrusted: true };
+        Empty(driver.Health(run)) && Empty(driver.Health(run));
+
+    private static bool Empty(GameHealthResult result) =>
+        result is { Ok: true, State: "Ready", OnlinePlayers: 0, PlayerCountTrusted: true };
 
     public void Dispose() { }
 }

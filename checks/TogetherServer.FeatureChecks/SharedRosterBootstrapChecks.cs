@@ -18,7 +18,9 @@ internal static class SharedRosterBootstrapChecks
         await ReviewedSchema3FloorAsync(root);
         await FencedHistoryReviewAsync(root);
         await FencedRosterCatchUpAsync(root);
+        await ConcurrentLegacyBootstrapAsync(root);
         await RecoveredFloorReceivesSaveAsync(root);
+        await TransferProgressCancellationAsync(root);
         using (var fixture = new Fixture(root))
         {
             fixture.Current = fixture.Legacy;
@@ -430,6 +432,101 @@ internal static class SharedRosterBootstrapChecks
         }
     }
 
+    private static async Task ConcurrentLegacyBootstrapAsync(string root)
+    {
+        foreach (var fault in new[] { "none", "sibling", "same-epoch", "same-revision", "schema3", "bad-signature" })
+        {
+            using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+            fixture.Trusted = fixture.Bootstrap;
+            fixture.SaveCache(fixture.Bootstrap);
+            var nextLegacy = fixture.Sign(fixture.Bootstrap with { Epoch = 3, Revision = 3 });
+            fixture.Current = fixture.Child(nextLegacy);
+            var older = fault switch
+            {
+                "sibling" => fixture.Sign(fixture.Bootstrap with { OwnerOverride = !fixture.Bootstrap.OwnerOverride }),
+                "same-epoch" => fixture.Sign(fixture.Legacy with { Epoch = fixture.Bootstrap.Epoch }),
+                "same-revision" => fixture.Sign(fixture.Legacy with { Revision = fixture.Bootstrap.Revision }),
+                "schema3" => fixture.Sign(fixture.Legacy with
+                {
+                    Schema = 3,
+                    SignerDeviceId = Guid.Empty,
+                    SignerPublicKey = fixture.Legacy.OwnerPublicKey
+                }),
+                "bad-signature" => fixture.Legacy with { Signature = new string('A', 88) },
+                _ => fixture.Legacy
+            };
+            fixture.RemoteHistory = [older, nextLegacy, fixture.Current];
+            fixture.BeforeRootPage = () =>
+            {
+                // Peer catch-up shares this protected journal and can finish
+                // while the companion's root-fallback HTTP request is in flight.
+                Require(fixture.Chain.Count(fixture.ProfileId) == 1 &&
+                    fixture.Chain.Contains(fixture.ProfileId, fixture.Bootstrap),
+                    "bootstrap did not retain its exact cached legacy floor before the request");
+                fixture.Chain.Append(nextLegacy, nextLegacy.OwnerPublicKey);
+                fixture.Chain.Append(fixture.Current, fixture.Current.OwnerPublicKey);
+            };
+            var checkedSharing = await fixture.CheckAsync();
+            Require(fixture.RootFallbacks == 1 && fixture.PageRequests == 2 &&
+                fixture.Chain.Count(fixture.ProfileId) == 3 &&
+                fixture.Chain.Contains(fixture.ProfileId, fixture.Bootstrap),
+                "concurrent peer catch-up replaced the protected bootstrap or repeated root requests");
+            if (fault == "none")
+            {
+                Require(checkedSharing.Available &&
+                    checkedSharing.Revision == fixture.Current.Revision &&
+                    (await fixture.CheckHostingAsync()).Allowed && fixture.PageRequests == 2,
+                    "a valid legacy root became a verification failure after concurrent peer catch-up: " +
+                        checkedSharing.Code);
+                fixture.AssertFloor(fixture.Current);
+            }
+            else
+            {
+                Require(!checkedSharing.Available && checkedSharing.Code == "RosterRejected",
+                    "concurrent peer catch-up skipped a forked or unverified legacy snapshot: " + fault);
+                fixture.AssertFloor(fixture.Bootstrap);
+            }
+            Require(fixture.ManifestRequests == 0 && fixture.ChunkRequests == 0 && fixture.ReceiptRequests == 0,
+                "roster bootstrap alone downloaded or confirmed a save");
+        }
+    }
+
+    private static async Task TransferProgressCancellationAsync(string root)
+    {
+        using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+        fixture.Current = fixture.Child(fixture.Bootstrap);
+        fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+        fixture.PrepareFirstSave();
+        await fixture.ConnectAsync();
+        Require((await fixture.SetConsentAsync(true)).Ok, "synthetic receiving consent was not saved");
+        using var cancellation = new CancellationTokenSource();
+        var progress = new List<(long Received, long Total)>();
+        var canceled = false;
+        try
+        {
+            await fixture.PullAsync(cancellation.Token, (received, total) =>
+            {
+                progress.Add((received, total));
+                if (received > 0 && received < total) cancellation.Cancel();
+            });
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { canceled = true; }
+        var totalBytes = fixture.PublishedPayload.LongLength;
+        Require(canceled && progress.SequenceEqual(new[]
+            { (0L, totalBytes), ((long)SharedWorldService.ChunkBytes, totalBytes) }) &&
+            fixture.ChunkRequests == 1 && fixture.ReceiptRequests == 0 &&
+            FriendLink.ReadReceivedLatest(fixture.ReceiveRoot) is null,
+            "byte progress ignored cancellation or promoted an incomplete save");
+        progress.Clear();
+        var resumed = await fixture.PullAsync(reportProgress: (received, total) => progress.Add((received, total)));
+        Require(resumed is { Ok: true, Code: "SaveReceived", Status.ReceiptConfirmed: true } &&
+            progress.SequenceEqual(new[]
+                { ((long)SharedWorldService.ChunkBytes, totalBytes), (totalBytes, totalBytes) }) &&
+            fixture.ChunkRequests == 2 && fixture.ReceiptRequests == 1 &&
+            FriendLink.ReadReceivedLatest(fixture.ReceiveRoot)?.VersionHash == fixture.PublishedVersion!.VersionHash,
+            "resumed byte progress lost its partial baseline or bypassed complete verification and receipt");
+    }
+
     private static async Task RecoveredFloorReceivesSaveAsync(string root)
     {
         using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
@@ -651,6 +748,7 @@ internal static class SharedRosterBootstrapChecks
         public IReadOnlyList<SharedWorldRoster>? RemoteHistory { get; set; }
         public bool RosterPagesUnavailable { get; set; }
         public bool ReviewPagesAvailable { get; set; }
+        public Action? BeforeRootPage { get; set; }
         public int PageFailures { get; set; }
         public int CurrentRequests { get; private set; }
         public int PageRequests { get; private set; }
@@ -768,9 +866,10 @@ internal static class SharedRosterBootstrapChecks
             (link ?? throw new InvalidOperationException("Connect the synthetic PC first."))
                 .SetSharedWorldConsentAsync(ProfileId, enabled);
 
-        public Task<ReceivedSharedWorldResult> PullAsync() =>
+        public Task<ReceivedSharedWorldResult> PullAsync(CancellationToken cancellationToken = default,
+            Action<long, long>? reportProgress = null) =>
             (link ?? throw new InvalidOperationException("Connect the synthetic PC first."))
-                .PullSharedWorldAsync(ProfileId);
+                .PullSharedWorldAsync(ProfileId, cancellationToken, reportProgress);
 
         public async Task ScheduledPullAsync()
         {
@@ -834,6 +933,12 @@ internal static class SharedRosterBootstrapChecks
                     return Task.FromResult(fenced);
                 }
                 if (PageFailures > 0) { PageFailures--; throw new HttpRequestException("synthetic lost roster response"); }
+                if (LastAnchor is null)
+                {
+                    var beforeRootPage = BeforeRootPage;
+                    BeforeRootPage = null;
+                    beforeRootPage?.Invoke();
+                }
                 if (RemoteHistory is not null && LastAnchor is not null)
                 {
                     var position = Array.FindIndex(RemoteHistory.ToArray(), item => SharedWorldRosterTrust.Hash(item) == LastAnchor);

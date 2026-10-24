@@ -11,6 +11,7 @@ export type DirectoryServer = {
   playerCountTrusted: boolean; playerObservationSource: string | null; playerCountObservedUtc: string | null
   playerCountRefreshing: boolean; playerCountFailureCount: number
   separateCopySourceProfileId: string | null; sourceName: string | null; sourceHostName: string | null
+  sharedWorldId?: string | null; originalProfileId?: string | null; isSuccessor?: boolean
   requiresReview?: boolean
 }
 export type DirectoryHost = { connectionId: string; hostId: string | null; connectionName: string; hostProfileName: string | null
@@ -56,12 +57,20 @@ function list<T>(value: unknown, decode: (item: unknown) => T, key: (item: T) =>
 }
 function server(value: unknown): DirectoryServer {
   const item = object(value)
+  const sharedWorldId = item.sharedWorldId == null ? null : text(item.sharedWorldId)
+  const originalProfileId = item.originalProfileId == null ? null : identifier(item.originalProfileId)
+  const isSuccessor = item.isSuccessor === undefined ? false : flag(item.isSuccessor)
+  if (sharedWorldId !== null && !/^[a-f\d]{64}$/i.test(sharedWorldId) ||
+    (sharedWorldId === null) !== (originalProfileId === null) || isSuccessor && sharedWorldId === null)
+    throw new Error('The server list contains an invalid shared-world identity.')
   return { id: identifier(item.id)!, name: text(item.name)!, kind: text(item.kind)!, state: text(item.state)!,
     onlinePlayers: count(item.onlinePlayers), maxPlayers: count(item.maxPlayers), playerCountTrusted: flag(item.playerCountTrusted),
     playerObservationSource: text(item.playerObservationSource, true), playerCountObservedUtc: timestamp(item.playerCountObservedUtc),
     playerCountRefreshing: flag(item.playerCountRefreshing), playerCountFailureCount: count(item.playerCountFailureCount) ?? 0,
     separateCopySourceProfileId: identifier(item.separateCopySourceProfileId, true), sourceName: text(item.sourceName, true),
-    sourceHostName: text(item.sourceHostName, true) }
+    sourceHostName: text(item.sourceHostName, true),
+    ...(item.sharedWorldId !== undefined || item.originalProfileId !== undefined || item.isSuccessor !== undefined
+      ? { sharedWorldId, originalProfileId, isSuccessor } : {}) }
 }
 export const parseServerDirectory: Decoder<ServerDirectoryView> = value => {
   const root = object(value)
@@ -93,6 +102,8 @@ export function directoryWithSnapshot(directory: ServerDirectoryView | null, sna
       playerObservationSource: run?.playerObservationSource ?? null, playerCountObservedUtc: run?.playerCountObservedUtc ?? null,
       playerCountRefreshing: run?.playerCountRefreshing ?? false, playerCountFailureCount: run?.playerCountFailureCount ?? 0,
       separateCopySourceProfileId: profile.separateCopySourceProfileId ?? null,
+      ...(prior?.sharedWorldId ? { sharedWorldId: prior.sharedWorldId, originalProfileId: prior.originalProfileId,
+        isSuccessor: prior.isSuccessor } : {}),
       requiresReview: run?.processId != null && run.state === 'Offline' ||
         !!snapshot.startupRecovery?.items.some(item => item.profileId === profile.id && ['Ready to resume', 'Needs review'].includes(item.state)) ||
         !!recovery && recovery.state !== 'Recovered',
@@ -106,7 +117,9 @@ export function directoryWithSnapshot(directory: ServerDirectoryView | null, sna
     servers: !host.profiles.length && ['Disconnected', 'Disconnected/Unknown'].includes(host.state)
       ? (view.friendHosts.find(prior => prior.connectionId === host.connectionId)?.servers ?? []).map(server => ({ ...server,
         state: 'Unknown', onlinePlayers: null, maxPlayers: null, playerCountTrusted: false, playerCountObservedUtc: null }))
-      : host.profiles.map(profile => ({ ...blankCount, id: profile.id, name: profile.name, kind: profile.kind, state: profile.state,
+      : host.profiles.map(profile => ({ ...blankCount,
+      ...view.friendHosts.find(prior => prior.connectionId === host.connectionId)?.servers.find(server => server.id === profile.id),
+      id: profile.id, name: profile.name, kind: profile.kind, state: profile.state,
       onlinePlayers: profile.onlinePlayers, maxPlayers: profile.maxPlayers, playerCountTrusted: profile.playerCountTrusted ?? false,
       playerObservationSource: profile.playerObservationSource ?? null, playerCountObservedUtc: profile.playerCountObservedUtc ?? null,
       playerCountRefreshing: profile.playerCountRefreshing ?? false, playerCountFailureCount: profile.playerCountFailureCount ?? 0 })) }))
@@ -132,6 +145,53 @@ export function ordinaryLocalServers(view: ServerDirectoryView): DirectoryServer
   })
 }
 
+type DirectoryLocation = { server: DirectoryServer; target: ServerSelection; host?: DirectoryHost }
+type SidebarServer = {
+  anchor: DirectoryLocation; route: DirectoryLocation; locations: DirectoryLocation[]
+  name: string; hostedBy: string | null; multipleHosts: boolean
+}
+
+function sameSelection(a: ServerSelection | null, b: ServerSelection): boolean {
+  return a?.kind === b.kind && a.profileId === b.profileId &&
+    (a.kind === 'local' || b.kind === 'friend' && a.connectionId === b.connectionId)
+}
+
+function connectedHost(host: DirectoryHost | undefined, nowMs: number): boolean {
+  if (!host) return true
+  const lastConnected = host.lastConnectedUtc ? Date.parse(host.lastConnectedUtc) : NaN
+  return ['Connected', 'Disabled'].includes(host.state) && Number.isFinite(lastConnected) &&
+    lastConnected <= nowMs && nowMs - lastConnected <= 15_000
+}
+
+/** Signed world identity controls grouping; the selected action still names the actual hosting PC. */
+function sidebarServers(view: ServerDirectoryView, selection: ServerSelection | null, nowMs: number): SidebarServer[] {
+  const ordinary = ordinaryLocalServers(view)
+  const locations: DirectoryLocation[] = [
+    ...view.localServers.filter(server => server.sharedWorldId || ordinary.includes(server))
+      .map(server => ({ server, target: { kind: 'local' as const, profileId: server.id } })),
+    ...view.friendHosts.flatMap(host => host.servers.map(server => ({ server, host,
+      target: { kind: 'friend' as const, connectionId: host.connectionId, profileId: server.id } })))
+  ]
+  const worlds = new Map<string, DirectoryLocation[]>()
+  for (const location of locations) {
+    const { server, target } = location
+    const key = server.sharedWorldId && server.originalProfileId
+      ? `shared:${server.sharedWorldId.toUpperCase()}:${server.originalProfileId.toLowerCase()}` : JSON.stringify(target)
+    worlds.set(key, [...worlds.get(key) ?? [], location])
+  }
+  return [...worlds.values()].map(family => {
+    const anchor = family.find(({ server }) => !server.isSuccessor && server.id === server.originalProfileId) ?? family[0]
+    const active = family.filter(({ server, host }) => connectedHost(host, nowMs) &&
+      (['Ready', 'Starting', 'Stopping', 'Process running', 'Listening', 'Unknown'].includes(server.state) || server.requiresReview))
+    const route = active.length === 1 ? active[0] : active.find(location => sameSelection(selection, location.target)) ?? anchor
+    const successor = route.server.isSuccessor === true && active.includes(route)
+    return { anchor, route, locations: family,
+      name: anchor.server.isSuccessor ? anchor.server.sourceName || anchor.server.name : anchor.server.name,
+      hostedBy: successor ? route.host ? route.host.hostProfileName || route.host.connectionName : 'this PC' : null,
+      multipleHosts: active.length > 1 }
+  })
+}
+
 export function GuestHostingLabel({ server }: { server: Pick<DirectoryServer, 'separateCopySourceProfileId' | 'sourceName' | 'sourceHostName'> }) {
   if (!server.separateCopySourceProfileId) return null
   return <p className="guest-hosting-label"><Icon name="users" size={16} /><span><strong>Hosting for {server.sourceHostName || 'a friend'}</strong>
@@ -154,32 +214,41 @@ export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, 
   const [search, setSearch] = useState('')
   const [showRemoved, setShowRemoved] = useState(false)
   const query = search.trim().toLocaleLowerCase()
-  const matches = (row: DirectoryServer, owner = '') => `${row.name} ${gameLabel(row.kind)} ${row.sourceName ?? ''} ${row.sourceHostName ?? ''} ${owner}`.toLocaleLowerCase().includes(query)
+  const removed = (host: DirectoryHost) => host.connectionCode === 'Revoked' || host.state === 'Revoked'
+  const visibleHosts = view.friendHosts.filter(host => showRemoved || !removed(host))
+  const entries = sidebarServers({ ...view, friendHosts: visibleHosts }, selection, nowMs)
+  const matches = (entry: SidebarServer) => [entry.name, entry.hostedBy ?? '', ...entry.locations.map(({ server, host }) =>
+    `${server.name} ${gameLabel(server.kind)} ${server.sourceName ?? ''} ${server.sourceHostName ?? ''} ${host?.connectionName ?? ''} ${host?.hostProfileName ?? ''}`)]
+    .join(' ').toLocaleLowerCase().includes(query)
   const ordinaryLocal = ordinaryLocalServers(view)
-  const local = ordinaryLocal.filter(row => matches(row))
   const selectedLocal = selection?.kind === 'local' ? view.localServers.find(server => server.id === selection.profileId) : undefined
   const selectedLocalId = ordinaryLocal.some(server => server.id === selectedLocal?.id) ? selectedLocal?.id : selectedLocal &&
     ordinaryLocal.find(server => (server.separateCopySourceProfileId ?? server.id) ===
       (selectedLocal.separateCopySourceProfileId ?? selectedLocal.id))?.id
   const owned = (server: DirectoryServer) => !!originalLocalServer(server, view.localServers)
-  const own = local.filter(owned)
-  const hostedForFriends = local.filter(server => !owned(server))
-  const removed = (host: DirectoryHost) => host.connectionCode === 'Revoked' || host.state === 'Revoked'
-  const friends = view.friendHosts.filter(host => showRemoved || !removed(host)).map(host => ({ ...host,
-    servers: host.servers.filter(row => matches(row, `${host.connectionName} ${host.hostProfileName ?? ''}`)) }))
-    .filter(host => host.servers.length || !query || `${host.connectionName} ${host.hostProfileName ?? ''}`.toLocaleLowerCase().includes(query))
-  const row = (server: DirectoryServer, target: ServerSelection, host?: DirectoryHost) => {
-    const selected = selection?.kind === target.kind && (target.kind === 'local' ? selectedLocalId : selection.profileId) === server.id &&
-      (target.kind === 'local' || selection.kind === 'friend' && selection.connectionId === target.connectionId)
+  const local = entries.filter(entry => !entry.anchor.host && matches(entry))
+  const own = local.filter(entry => owned(entry.anchor.server))
+  const hostedForFriends = local.filter(entry => !owned(entry.anchor.server))
+  const friends = visibleHosts.map(host => ({ ...host,
+    entries: entries.filter(entry => entry.anchor.host?.connectionId === host.connectionId && matches(entry)) }))
+    .filter(host => host.entries.length || !host.servers.length && (!query || `${host.connectionName} ${host.hostProfileName ?? ''}`.toLocaleLowerCase().includes(query)))
+  const row = (entry: SidebarServer) => {
+    const { server, target, host } = entry.route
+    const selected = entry.locations.some(location => sameSelection(selection, location.target)) ||
+      target.kind === 'local' && selection?.kind === 'local' && selectedLocalId === server.id
     const guest = !!server.separateCopySourceProfileId && !host && !owned(server)
-    const owner = host ? host.hostProfileName || host.connectionName : 'this PC'
-    const connected = !host || ['Connected', 'Disabled'].includes(host.state) && !!host.lastConnectedUtc && nowMs - Date.parse(host.lastConnectedUtc) <= 15_000
-    return <Button className={`server-directory-row${selected ? ' selected' : ''}`} key={`${target.kind}-${host?.connectionId ?? ''}-${server.id}`}
-      aria-label={`Open ${server.name} on ${owner}`} aria-current={selected ? 'true' : undefined} disabled={busy}
+    const originalHost = entry.anchor.host
+    const owner = originalHost ? originalHost.hostProfileName || originalHost.connectionName : 'this PC'
+    const connected = connectedHost(host, nowMs)
+    return <Button className={`server-directory-row${selected ? ' selected' : ''}`} key={`${entry.anchor.target.kind}-${originalHost?.connectionId ?? ''}-${entry.anchor.server.id}`}
+      aria-label={`Open ${entry.name} on ${owner}`} aria-current={selected ? 'true' : undefined} disabled={busy}
       onClick={() => onSelect(target)}>
-      <Icon name={guest ? 'users' : host ? 'link' : 'server'} size={17} />
-      <span><strong>{server.name}</strong><small>{gameLabel(server.kind)} · {connected ? playerLabel(server, nowMs) : 'Host offline · status unavailable'}</small>
-        {guest && <small className="guest-hosting-badge">Hosted for {server.sourceHostName || 'a friend'}</small>}</span>
+      <Icon name={entry.hostedBy ? 'monitor' : guest ? 'users' : host ? 'link' : 'server'} size={17} />
+      <span><strong>{entry.name}</strong><small>{gameLabel(server.kind)} · {connected ? playerLabel(server, nowMs) : 'Host offline · status unavailable'}</small>
+        {entry.hostedBy && <small className="remote-hosting-badge"><Icon name="monitor" size={13} />
+          {entry.hostedBy === 'this PC' ? 'Hosting on this PC' : `Hosted by ${entry.hostedBy}`}</small>}
+        {entry.multipleHosts && <small className="remote-hosting-badge">Multiple hosting PCs · review shared saves</small>}
+        {guest && !entry.hostedBy && <small className="guest-hosting-badge">Hosted for {server.sourceHostName || 'a friend'}</small>}</span>
     </Button>
   }
   return <section className="server-directory" aria-label="Servers">
@@ -188,14 +257,14 @@ export function ServerDirectory({ view, selection, nowMs, busy, error, onRetry, 
     <div className="server-directory-actions"><Button className="secondary" data-guide="host-create" disabled={busy} onClick={onAddLocal}><Icon name="plus" size={15} />New server</Button>
       <Button className="secondary" disabled={busy} onClick={onConnect}><Icon name="link" size={15} />Connect</Button></div>
     {error && <p className="helper-text" role="status">The full server list is unavailable. <Button className="text-button" onClick={onRetry}>Retry</Button></p>}
-    <div className="server-directory-group"><h3>Your servers</h3>{own.map(server => row(server, { kind: 'local', profileId: server.id }))}
+    <div className="server-directory-group"><h3>Your servers</h3>{own.map(row)}
       {!own.length && <p className="server-directory-empty">{query ? 'No matching servers.' : 'Create a server on this PC.'}</p>}</div>
     {hostedForFriends.length > 0 && <div className="server-directory-group"><h3>Hosting for friends</h3>
-      {hostedForFriends.map(server => row(server, { kind: 'local', profileId: server.id }))}</div>}
+      {hostedForFriends.map(row)}</div>}
     <div className="server-directory-group"><h3>Friend servers</h3>{friends.map(host => <div className="server-directory-host" key={host.connectionId}>
       <h4>{host.hostProfileName || host.connectionName}{removed(host) && <small>Access removed</small>}</h4>
-      {host.servers.map(server => row(server, { kind: 'friend', connectionId: host.connectionId, profileId: server.id }, host))}
-      {!host.servers.length && <Button className="server-directory-row" disabled={busy} onClick={() => onSelect({ kind: 'friend', connectionId: host.connectionId, profileId: '' })}>
+      {host.entries.map(row)}
+      {!host.entries.length && <Button className="server-directory-row" disabled={busy} onClick={() => onSelect({ kind: 'friend', connectionId: host.connectionId, profileId: '' })}>
         Open {host.connectionName}<small>{host.state} · No assigned servers</small></Button>}</div>)}
       {!friends.length && <p className="server-directory-empty">{query ? 'No matching friends.' : 'Connect using a friend’s server code.'}</p>}</div>
     {view.friendHosts.some(removed) && <label className="server-directory-removed"><Input type="checkbox" checked={showRemoved} onChange={event => setShowRemoved(event.target.checked)} /><span>Show removed access</span></label>}

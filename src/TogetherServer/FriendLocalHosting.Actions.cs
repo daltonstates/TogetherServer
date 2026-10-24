@@ -71,14 +71,25 @@ internal sealed partial class FriendLocalHostingService
         CancellationToken cancellationToken)
     {
         using var connection = friend.RetainLocalHostingConnection();
+        if (connection is null) return new(false, "NotPaired", "Choose the saved Host connection first.");
+        using var progress = hostingProgress.Begin(connection.Link, profileId);
+        var result = await StartPreparedForConnectionAsync(connection, profileId, input, progress, cancellationToken);
+        progress.Complete(result.Ok, result.Message);
+        return result;
+    }
+
+    private async Task<LocalHostingActionResult> StartPreparedForConnectionAsync(FriendService.LocalHostingConnection connection,
+        Guid profileId, LocalHostingStartRequest input, LocalHostingProgressStore.Operation progress,
+        CancellationToken cancellationToken)
+    {
         LocalHostingActionResult Refused(string code, string message) => new(false, code, message);
         static LocalHostingActionResult Basic(ActionResult result) => new(result.Ok, result.Code, result.Message);
-        if (connection is null) return Refused("NotPaired", "Choose the saved Host connection first.");
         var access = await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Review this server again.");
         if (!access.Allowed) return Refused(access.Code, access.Message);
         if (!access.Consented) return Refused("LocalConsentRequired", "Allow shared saves on this PC before hosting.");
+        progress.Report("Verifying", "Repeating the prepared save, server and port checks.");
         var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken,
             checkedAccess: access));
         if (!status.ReadyForManualStart || status.Running || status.LocalProfileId != input.LocalProfileId ||
@@ -88,6 +99,7 @@ internal sealed partial class FriendLocalHostingService
             return Refused("LocalHostingActionRequired", status.Remedy.Message);
         if (input.RequestId is null && latestSource is not null && access.Root is { } latestRoot)
         {
+            progress.Report("LatestSave", "Checking that no newer completed save arrived before Start.");
             var latest = await latestSource(latestRoot, cancellationToken);
             if (!latest.Ok || latest.Source is null)
             {
@@ -126,12 +138,14 @@ internal sealed partial class FriendLocalHostingService
             return Refused("PeerDiscoveryRequired", "This PC's signed Host address could not be shared. Recheck shared-hosting setup before starting.");
         // The local Host instruction permits publishing this PC's signed
         // address to current members, using its already enabled listener.
+        progress.Report("Connection", "Sharing this PC's signed hosting address with approved peers.");
         var announced = await announceHosting(root, cancellationToken);
         if (!announced.Ok) return Refused(announced.Code, announced.Message);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
         if (input.RequestId is null && latestSource is not null)
         {
+            progress.Report("LatestSave", "Confirming the latest verified progress immediately before Start.");
             var latest = await latestSource(root, cancellationToken);
             if (!latest.Ok || latest.Source is null) return Refused(latest.Code, latest.Message);
             var current = await manager.VerifiedLocalContinuationAsync(profileId, input.LocalProfileId, cancellationToken);
@@ -141,6 +155,7 @@ internal sealed partial class FriendLocalHostingService
             await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, cancellationToken);
         }
         cancellationToken.ThrowIfCancellationRequested();
+        progress.Report("Starting", "Starting the checked game server on this PC. Waiting for the Host's result.");
         if (input.RequestId is { } requestId)
         {
             if (status.HandoffRequest is not { RecipientState: "Completed" } handoff || handoff.RequestId != requestId ||

@@ -41,12 +41,41 @@ internal sealed partial class FriendLink
                     profile.OnlinePlayers is >= 0 && ServerDirectory.Fresh(profile.PlayerCountObservedUtc, now);
                 var state = currentResponse ? profile.State : "Unknown";
                 if (state == "Ready" && !ServerDirectory.Fresh(profile.PlayerCountObservedUtc, now)) state = "Unknown";
-                return new ServerDirectoryServer(profile.Id, profile.Name, profile.GameKind ?? profile.Kind,
+                var row = new ServerDirectoryServer(profile.Id, profile.Name, profile.GameKind ?? profile.Kind,
                     state, trusted ? profile.OnlinePlayers : null, trusted ? profile.MaxPlayers : null,
                     trusted, currentResponse ? profile.PlayerObservationSource : null,
                     currentResponse ? profile.PlayerCountObservedUtc : null,
                     currentResponse && profile.PlayerCountRefreshing,
                     currentResponse ? profile.PlayerCountFailureCount : 0);
+                try
+                {
+                    lock (SharedWorldMutationGate.For(data.RootPath))
+                    {
+                        if (saved?.PeerWorld is { } root)
+                        {
+                            // A peer enrollment binds exactly one local server
+                            // to the pinned original world. No name-based merge.
+                            var localId = saved.PeerWorldLocalProfileId ??
+                                (profiles.Count == 1 ? profiles[0].Id : (Guid?)null);
+                            var peerRoster = localId == profile.Id ? CachedPeerRoster(root.ProfileId) : null;
+                            return peerRoster is null ? row : ServerDirectory.WithWorld(row, peerRoster, true);
+                        }
+                        if (saved?.SharedRosterFloors.GetValueOrDefault(profile.Id) is not { } floor ||
+                            saved.SharedWorldSigningKeys.GetValueOrDefault(profile.Id) is not { } owner ||
+                            saved.ApprovedSharedWorldGroups.GetValueOrDefault(profile.Id) != floor.GroupId ||
+                            saved.PendingSharedWorldGroups.ContainsKey(profile.Id)) return row;
+                        var bytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{profile.Id:N}.protected");
+                        var roster = bytes is { Length: > 0 } && bytes.Length <= SharedWorldService.MaximumManifestBytes
+                            ? System.Text.Json.JsonSerializer.Deserialize<SharedWorldRoster>(bytes, Json) : null;
+                        return roster is not null && roster.OwnerPublicKey == owner && roster.ProfileId == profile.Id &&
+                            roster.GroupId == floor.GroupId && roster.Epoch == floor.Epoch && roster.Revision == floor.Revision &&
+                            roster.Signature == floor.Signature && new WorldAuthorityStore(data).TrustsCurrentRoster(roster)
+                            ? ServerDirectory.WithWorld(row, roster, false) : row;
+                    }
+                }
+                catch (Exception error) when (error is IOException or InvalidDataException or System.Text.Json.JsonException or
+                    System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+                { return row; }
             }).ToArray());
     }
 }

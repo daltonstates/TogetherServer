@@ -105,6 +105,58 @@ it.each(['action', 'card'] as const)('hides the %s entry after a failed permissi
   expect(calls).toEqual([`${base}/hosting/access`])
 })
 
+it('shows elapsed indeterminate feedback for a stalled status check without polling mutation progress', async () => {
+  vi.useFakeTimers()
+  const calls: { url: string; method?: string }[] = []
+  let finishChecks!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method })
+    if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })
+    return new Promise<Response>(resolve => { finishChecks = resolve })
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  const progress = within(screen.getByRole('region', { name: 'Hosting progress' }))
+  expect(progress.getByRole('progressbar', { name: 'Checking this PC...' })).not.toHaveAttribute('aria-valuenow')
+  expect(progress.getByText('2s elapsed')).toBeInTheDocument()
+  expect(calls).toEqual([{ url: `${base}/hosting/access`, method: undefined }, { url: `${base}/hosting`, method: undefined }])
+  await act(async () => { finishChecks(response(initial)) })
+  expect(screen.queryByRole('region', { name: 'Hosting progress' })).not.toBeInTheDocument()
+})
+
+it('shows a current progress failure while the preparation POST is pending without starting or unlocking another request', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = new Date(Date.now()).toISOString()
+  let progressState = { phase: 'Permission', state: 'Working', message: 'Checking current hosting access.',
+    startedUtc: began, updatedUtc: began, receivedBytes: 0, totalBytes: 0, percent: null }
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/progress')) return response(progressState)
+    if (init?.method) { writes.push(url); return new Promise<Response>(() => {}) }
+    return response(initial)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+  progressState = { ...progressState, state: 'Failed', message: 'The current save check failed. Existing saves were kept.',
+    updatedUtc: new Date(Date.now()).toISOString() }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  const live = within(screen.getByRole('region', { name: 'Hosting progress' }))
+  expect(live.getByText(progressState.message)).toBeInTheDocument()
+  expect(live.queryByRole('progressbar')).not.toBeInTheDocument()
+  expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Preparing this PC...' })).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+  expect(writes).toEqual([`${base}/hosting/prepare`])
+  expect(open).not.toHaveBeenCalled()
+})
+
 it.each(['network', 'http', 'malformed'] as const)('retries %s permission failures with only a fresh access read', async failure => {
   let accessReads = 0
   const calls: { url: string; method?: string; headers?: HeadersInit }[] = []

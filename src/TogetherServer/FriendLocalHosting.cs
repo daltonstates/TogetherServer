@@ -207,9 +207,19 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     {
         using var connection = friend.RetainLocalHostingConnection();
         if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        using var progress = hostingProgress.Begin(connection.Link, profileId);
+        var result = await PrepareForConnectionAsync(connection, profileId, request, progress, cancellationToken);
+        progress.Complete(result.Ok, result.Message);
+        return result;
+    }
+
+    private async Task<LocalHostingStatus> PrepareForConnectionAsync(FriendService.LocalHostingConnection connection,
+        Guid profileId, LocalHostingPrepareRequest request, LocalHostingProgressStore.Operation progress,
+        CancellationToken cancellationToken)
+    {
         var link = connection.Link;
         if (request.RequestId is not null)
-            return await PreparePlannedAsync(connection, profileId, request, cancellationToken);
+            return await PreparePlannedAsync(connection, profileId, request, cancellationToken, progress);
         if ((await link.HandoffRequestAsync(profileId, cancellationToken)) is { RecipientState: "Requested" or "Accepted" or "Prepared" or "Completed" })
             return Unavailable("HostingRequestConfirmationRequired", "Review and accept the planned hosting request before preparing this PC.");
         bool SameConnection() => friend.CurrentLocalHostingConnection(connection);
@@ -244,16 +254,19 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             // an outbound seed before it has its first local hosting branch.
             if (latestSource is not null && access.Root is { } receivingRoot)
             {
+                progress.Report("Connection", "Checking this PC's connection for receiving a completed save.");
                 var receiving = await PrepareReceivingRouteAsync(request, receivingRoot, cancellationToken);
                 if (receiving is not null) return await Result(receiving.Code, receiving.Message);
                 if (!SameConnection()) return await Result("ConnectionChanged", "The selected server changed. Check hosting again.");
             }
             if ((status.LocalProfileId is null || latestSource is not null) && link.View().State is "Connected" or "Disabled")
             {
-                var pulled = await link.PullSharedWorldAsync(profileId, cancellationToken);
+                progress.Report("Receiving", "Looking for the latest completed save on the connected Host.");
+                var pulled = await link.PullSharedWorldAsync(profileId, cancellationToken, progress.Transfer);
                 if (!pulled.Ok && pulled.Code != "NetworkUnavailable")
                     return await Result(pulled.Code, "The shared save could not be verified. Review shared-save status before hosting.");
             }
+            progress.Report("Verifying", "Checking the received save's files and signed sharing history.");
             access = await link.LocalHostingAccessAsync(profileId, false, cancellationToken, verifyFiles: status.LocalProfileId is null);
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
             if (!access.Allowed) return await Result(access.Code, access.Message);
@@ -263,6 +276,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             var createBranch = status.BranchHash is null;
             if (latestSource is not null && access.Root is { } root)
             {
+                progress.Report("LatestSave", "Checking approved PCs for the latest verified progress.");
                 var latest = await latestSource(root, cancellationToken);
                 if (!SameConnection()) return await Result("ConnectionChanged", "The selected server changed. Check hosting again.");
                 if (!latest.Ok || latest.Source is null)
@@ -295,6 +309,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
                 return await Result("SplitWarningRequired", "Confirm hosting on this PC. Other players will use its connection, and any different progress stays protected.");
             if (request.RequirePeerConnection)
             {
+                progress.Report("Connection", "Checking this PC's saved incoming connection.");
                 if (synchronizeListener is not null) await synchronizeListener();
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
@@ -328,6 +343,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             var previousLocalProfileId = status.LocalProfileId;
             if (createBranch)
             {
+                progress.Report("PreparingCopy", "Preparing a separate signed hosting copy. Existing saves stay protected.");
                 var offer = await link.PrepareSoloRecoveryOfferAsync(profileId, selectedSource?.BranchHash, selectedSource);
                 if (!offer.Ok) return await Result(offer.Code, "The exact signed save could not be prepared. Review shared-save status.");
                 if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
@@ -350,12 +366,14 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             var snapshot = await manager.CompanionSnapshotAsync();
             var existing = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == status.LocalProfileId);
             var preferred = existing ?? snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == previousLocalProfileId);
+            progress.Report("Ports", "Checking the local game and control ports.");
             var ports = await manager.LocalHostingPortsAsync(branch.Offer.Version, preferred, cancellationToken);
             if (!ports.Available) return await Result("LocalPortsRequired", "A complete local game-port plan is unavailable. Review the running servers and retry.");
             var setup = new TakeoverLocalSetup(status.ServerFile, branch.Offer.Version.PortableSetup.GameVersion,
                 branch.Offer.Version.PortableSetup.AddOns ?? [], true, ports.ControlPort, ports.GamePort);
             if (existing is null)
             {
+                progress.Report("ServerSetup", "Preparing the installed game server and restoring the verified hosting copy.");
                 MinecraftInstallation? minecraft = null;
                 if (branch.Offer.Version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock)
                 {
@@ -376,6 +394,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
                 if (!restored.Ok) return await Result(restored.Code, restored.PendingChecks?.FirstOrDefault() ?? restored.Message);
             }
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
+            progress.Report("Verifying", "Verifying this PC's prepared save and game setup before Start.");
             var finished = await manager.FinishSeparateCopyAsync(profileId, new(branch.BranchHash, setup));
             cancellationToken.ThrowIfCancellationRequested();
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. The prepared world was kept; review it before Start.");
@@ -388,6 +407,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             }
             if (request.RequirePeerConnection)
             {
+                progress.Report("Connection", "Checking the hosting listener and sharing this PC's signed address with approved peers.");
                 // The explicit guided hosting instruction also permits sharing
                 // this exact signed branch's address with its approved group.
                 // Register it before Sync: the first listener otherwise remains

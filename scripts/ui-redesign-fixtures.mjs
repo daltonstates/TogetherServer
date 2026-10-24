@@ -207,6 +207,8 @@ export function createFixtureState(scenario = 'host-ready') {
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
     gettingStarted: { offered: false, intent: 'Choose', dismissed: false }, hostingRemedy: options.hostingRemedy ?? null,
     simpleHosting: options.simpleHosting ?? null, simpleHostingPrepared: false, simpleHostingStarted: false,
+    hostingProgress: options.hostingProgress ?? null, hostingProgressReads: 0, hostingProgressPending: false,
+    directoryRemote: options.directoryRemote ?? null,
     ownerContinuations: options.ownerContinuations === true,
     update: { state: 'Current', currentVersion: '0.3.2', latestVersion: null, message: boundary, publisherTrust: 'Development build',
       releaseNotes: '', releaseNotesUrl: null, snoozedUntilUtc: null, promptSnoozed: false, versionSkipped: false },
@@ -287,6 +289,14 @@ export function createFixtureState(scenario = 'host-ready') {
     host.hostingPower.managedServerRunning = true;
     state.sharingEnabled = true;
   }
+  if (state.directoryRemote) {
+    const original = host.settings.profiles[0];
+    const continuation = { ...clone(original), id: ids.secondary, name: 'Remote continuation' };
+    state.directoryRemoteProfileId = continuation.id;
+    Object.assign(friend, { connectionName: 'Remote friend’s PC', hostProfileName: 'Remote friend',
+      profiles: [publicProfile(continuation, makeRun(continuation, state.directoryRemote === 'Running' ? 'Ready' : 'Offline', 0))],
+      chatProfiles: [{ id: continuation.id, name: continuation.name, supported: true }] });
+  }
   return state;
 }
 
@@ -323,7 +333,8 @@ function serverDirectory(state) {
     playerCountTrusted: trusted, playerObservationSource: current ? run?.playerObservationSource ?? null : null,
     playerCountObservedUtc: observed, playerCountRefreshing: current && run?.playerCountRefreshing === true,
     playerCountFailureCount: current ? run?.playerCountFailureCount ?? 0 : 0,
-    separateCopySourceProfileId: profile.separateCopySourceProfileId ?? null, sourceName: null, sourceHostName: null };
+    separateCopySourceProfileId: profile.separateCopySourceProfileId ?? null, sourceName: null, sourceHostName: null,
+    ...(state.directoryRemote ? { sharedWorldId: hash, originalProfileId: ids.primary, isSuccessor: profile.id === ids.secondary } : {}) };
   };
   const connections = state.friend.connections?.length ? state.friend.connections : [state.friend];
   const friendHosts = connections.filter(host => host.connectionId && !/first-use|firstuse|setup/.test(state.scenario))
@@ -524,6 +535,16 @@ export function routeFixture(state, request) {
       const allowed = !!state.hostingRemedy;
       return reply({ allowed, code: allowed ? 'HostingAllowed' : 'HostingPermissionRequired', message: boundary });
     }
+    if (!host && suffix === 'shared-world/hosting/progress' && method === 'GET') {
+      if (!state.hostingProgressPending) return reply(null);
+      const receiving = state.hostingProgress === 'Receiving';
+      state.hostingProgressReads++;
+      const receivedBytes = state.hostingProgressReceivedBytes ?? 1048576;
+      return reply({ phase: state.hostingProgress, state: 'Working',
+        message: receiving ? 'Receiving the completed synthetic save.' : 'Checking every received synthetic file against its signed hash.',
+        startedUtc: fixtureNow, updatedUtc: fixtureNow, receivedBytes: receiving ? receivedBytes : 4194304,
+        totalBytes: 4194304, percent: receiving ? receivedBytes / 4194304 * 100 : null });
+    }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting' && method === 'GET') {
       if (state.simpleHostingReadFailure) return unavailable('Hosting automatic checks');
       return reply(simpleHostingStatus(state, id, boundary));
@@ -533,6 +554,10 @@ export function routeFixture(state, request) {
           body.allowReceiving !== true || body.acceptSplitWarning !== true || body.requirePeerConnection !== true ||
           body.serverFile !== null || body.gamePassword !== null) return null;
       if (!['prepare', 'ready'].includes(state.simpleHosting)) return reply(simpleHostingStatus(state, id, boundary));
+      if (state.hostingProgress) {
+        state.hostingProgressPending = true;
+        return { ...reply(simpleHostingStatus(state, id, boundary)), pending: true };
+      }
       state.simpleHostingPrepared = true;
       return reply(simpleHostingStatus(state, id, boundary));
     }

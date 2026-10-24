@@ -6,6 +6,7 @@ import { Icon } from './Icon'
 import { SettingsDialog } from './SettingsPresentation'
 import { parsePlannedHandoffStatus, type PlannedHandoffStatus } from './plannedHandoff'
 import { LocalHostingGuide, localHostingAccessBlocker } from './LocalHostingGuide'
+import { LocalHostingProgress } from './LocalHostingProgress'
 import './FriendLocalHosting.css'
 
 const stepKeys = ['permission', 'server', 'save', 'ports', 'connection'] as const
@@ -175,6 +176,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const serverField = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [pendingAction, setPendingAction] = useState<HostingAction | null>(null)
+  const [actionStartedAt, setActionStartedAt] = useState(Date.now)
   const [error, setError] = useState('')
   const [serverFile, setServerFile] = useState('')
   const [password, setPassword] = useState('')
@@ -277,7 +279,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         const sequence = ++request.current
         const abort = new AbortController()
         currentRead = abort
-        setChecking(true); setChecksCurrent(false)
+        setActionStartedAt(Date.now()); setChecking(true); setChecksCurrent(false)
         timeout = window.setTimeout(() => {
           if (active && sequence === request.current) {
             setChecksCurrent(false); setChecking(false); plannedAuthorization.current = null; setPlannedOperation(null)
@@ -322,7 +324,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const sequence = ++request.current
     const abort = new AbortController()
     controller.current = abort
-    setBusy(true); setPendingAction('checks'); setChecking(true); setChecksCurrent(false); setError(''); setActionMessage('')
+    setActionStartedAt(Date.now()); setBusy(true); setPendingAction('checks'); setChecking(true); setChecksCurrent(false); setError(''); setActionMessage('')
     const timeout = window.setTimeout(() => {
       abort.abort()
       if (sequence === request.current) { startIntent.current = null; setChecksCurrent(false); setChecking(false); setError('Hosting checks timed out. Retry the checks.'); setBusy(false); setPendingAction(null); mutation.current = false; ++request.current }
@@ -349,7 +351,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const sequence = ++request.current
     const abort = new AbortController()
     controller.current = abort
-    setBusy(true); setPendingAction('prepare'); setError(''); setActionMessage('')
+    setActionStartedAt(Date.now()); setBusy(true); setPendingAction('prepare'); setError(''); setActionMessage('')
     const timeout = window.setTimeout(() => {
       if (sequence !== request.current || authorization && plannedAuthorization.current !== authorization) return
       abort.abort(); ++request.current; mutation.current = false; setBusy(false); setPendingAction(null)
@@ -403,7 +405,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const sequence = ++request.current
     const abort = new AbortController()
     controller.current = abort
-    setBusy(true); setPendingAction(accept ? 'accept' : 'decline'); setError(''); setActionMessage('')
+    setActionStartedAt(Date.now()); setBusy(true); setPendingAction(accept ? 'accept' : 'decline'); setError(''); setActionMessage('')
     const timeout = window.setTimeout(() => {
       if (sequence !== request.current) return
       abort.abort(); ++request.current; mutation.current = false; setBusy(false); setPendingAction(null)
@@ -463,7 +465,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const sequence = ++request.current
     const abort = new AbortController()
     controller.current = abort
-    setBusy(true); setPendingAction('start'); setError(''); setActionMessage('')
+    setActionStartedAt(Date.now()); setBusy(true); setPendingAction('start'); setError(''); setActionMessage('')
     const localProfileId = target.localProfileId
     const timeout = window.setTimeout(() => {
       if (sequence !== request.current) return
@@ -521,7 +523,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     if (!status?.game || !onBrowseServerFile || mutation.current || checking || disabled) return
     mutation.current = true
     const sequence = ++request.current
-    setError(''); setActionMessage(''); setBusy(true); setPendingAction('browse')
+    setError(''); setActionMessage(''); setActionStartedAt(Date.now()); setBusy(true); setPendingAction('browse')
     try {
       const selected = await onBrowseServerFile(status.game)
       if (sequence === request.current) {
@@ -613,8 +615,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       <div className="local-hosting-flow" aria-busy={busy}>
         {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. The app will get the latest available save, check this PC and start when it is ready.</p>}
         <>
-          {busy ? <p role="status">{hostingActions[pendingAction ?? 'checks'].label}</p> :
-            waitingForHost ? <p role="status">Waiting for the current Host to finish the latest save.</p> :
+          {busy || checking || waitingForHost ? <LocalHostingProgress key={`${scope}:${pendingAction ?? (waitingForHost ? 'waiting' : 'checks')}:${actionStartedAt}:${request.current}`}
+            startedAt={actionStartedAt}
+            endpoint={busy && (pendingAction === 'prepare' || pendingAction === 'start') ? `${base}/hosting/progress` : undefined}
+            title={waitingForHost && !busy ? 'Waiting for the current Host’s final save' : hostingActions[pendingAction ?? 'checks'].label}
+            message={waitingForHost && !busy ? 'Keep TogetherServer open on both PCs. The final save must arrive and pass verification before Start.' :
+              hostingActions[pendingAction ?? 'checks'].message} /> :
             status?.running ? <p>This server is already hosted on this PC.</p> : attention &&
             <section className="local-hosting-next" aria-label="Next hosting step"><h3>{attention.title}</h3><p>{attention.message}</p></section>}
           {(attention?.kind === 'ChooseServer' || status?.needsServerFile) && <div className="local-hosting-fix">

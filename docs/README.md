@@ -66,6 +66,7 @@ use the document title to identify the topic.
 - [Paired-PC hosting moves](31-PAIRED-PC-HOSTING-MOVES.md)
 - [Guided setup and shared hosting](35-GUIDED-SETUP-AND-SHARED-HOSTING.md)
 - [Single-setting shared hosting and automatic latest saves](36-SHARED-HOSTING-SIMPLIFICATION.md)
+- [Remote hosting history, progress, original-owner Stop and sidebar identity](50-REMOTE-HOSTING-HISTORY-PROGRESS-AND-OWNER-STOP.md)
 
 ### Access, setup, and updates
 
@@ -111,6 +112,9 @@ use the document title to identify the topic.
 | 0.3.3.3 preview | [Friend hosting fixes and prerelease delivery](42-FRIEND-HOSTING-SETUP-AND-0.3.3.3.md) |
 | 0.3.3.4 preview | [Valheim publication fix and prerelease delivery](43-VALHEIM-SHARED-SAVE-PUBLICATION-AND-0.3.3.4.md) |
 | 0.3.3.5 preview | [Shared-hosting history repair and prerelease delivery](44-SHARED-HOSTING-HISTORY-AND-FEEDBACK.md) |
+| 0.3.3.6 preview | [Hosting access and player-count prerelease delivery](47-0.3.3.6-PRERELEASE.md) |
+| 0.3.3.7 preview | [Verified-copy feedback prerelease delivery](49-0.3.3.7-PRERELEASE.md) |
+| 0.3.3.8 preview | [Remote hosting fixes and prerelease delivery](51-0.3.3.8-PRERELEASE.md) |
 
 Public downloads and release notes are on
 [GitHub Releases](https://github.com/daltonstates/TogetherServer/releases).

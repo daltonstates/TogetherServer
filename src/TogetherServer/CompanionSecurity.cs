@@ -1086,12 +1086,15 @@ public sealed partial class PairingService
                 heartbeats.TryGetValue(device.Id, out var heartbeat);
                 var fresh = heartbeat is not null && now - heartbeat.ReceivedUtc <= TimeSpan.FromSeconds(45);
                 var helper = IsTemporaryHelperActive(device);
+                var ownerStop = IsOriginalOwnerSession(device, device.ProfileId) &&
+                    device.CredentialHash is not null && AuthorizationDecision(device, now).Ok;
                 return new DeviceView(device.Id, device.ProfileId, device.AssignedProfileIds!.ToArray(),
-                    device.Name, helper || device.CanStart, helper || device.CanStop, IsRevoked(device),
+                    device.Name, helper || device.CanStart, helper || device.CanStop || ownerStop, IsRevoked(device),
                     device.CredentialHash is not null, device.CredentialExpiresUtc,
                     fresh ? heartbeat!.ReceivedUtc : null,
                     device.AssignedProfileIds.Select(profileId => new ServerPermissionView(profileId,
-                        helper || device.CanStartProfile(profileId), helper || device.CanStopProfile(profileId),
+                        helper || device.CanStartProfile(profileId), helper || device.CanStopProfile(profileId) ||
+                            ownerStop && profileId == device.ProfileId,
                         helper || device.CanExtendTimerForProfile(profileId), helper || device.CanViewLogsForProfile(profileId),
                         device.CanViewPasswordForProfile(profileId))).ToList(),
                     fresh ? heartbeat!.AppVersion : null, fresh ? heartbeat!.ProtocolVersion : null,
@@ -1688,7 +1691,8 @@ public sealed partial class PairingService
             var current = devices.SingleOrDefault(item => item.Id == device.Id && item.CredentialHash is not null);
             return current is not null && AuthorizationDecision(current, UtcNow).Ok &&
                 current.AssignedProfileIds!.Contains(profileId) &&
-                (IsTemporaryHelperActive(current) || current.CanStopProfile(profileId));
+                (IsOriginalOwnerSession(current, profileId) ||
+                 IsTemporaryHelperActive(current) || current.CanStopProfile(profileId));
         }
     }
 
