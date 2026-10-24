@@ -845,12 +845,28 @@ internal static partial class CoreRemoteJourney
                         LabRequire((await RemoveLabServerAccessAsync(owner, deviceB, profile.Id)).Ok, "SignedMemberServerRemovalRejected");
                         var roster = await PairingLabGetAsync<SharedWorldRoster>(owner,
                             $"/api/local/profiles/{profile.Id}/shared-world/governance");
-                        LabRequire(SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == profile.Id &&
+                        var scopedRemovalValid = SharedWorldRosterTrust.Verify(roster) && roster.ProfileId == profile.Id &&
                             roster.OwnerPublicKey == signedRoster!.OwnerPublicKey && roster.GroupId == signedRoster.GroupId &&
                             !roster.Members.Any(member => member.DeviceId == deviceB && !member.Revoked) &&
                             roster.Members.Any(member => member.DeviceId == deviceA && !member.Revoked &&
-                                member.Grants is { Receive: true, EligibleHost: true, Reshare: true }),
-                            "ScopedRemovalChangedAnotherSignedMember");
+                                member.Grants is { Receive: true, EligibleHost: true, Reshare: true });
+                        string ScopedRemovalFailure()
+                        {
+                            if (!SharedWorldRosterTrust.Verify(roster)) return "Signature";
+                            if (roster.ProfileId != profile.Id) return "Profile";
+                            if (roster.OwnerPublicKey != signedRoster!.OwnerPublicKey) return "Owner";
+                            if (roster.GroupId != signedRoster.GroupId) return "Group";
+                            if (roster.Members.Any(member => member.DeviceId == deviceB && !member.Revoked)) return "BStillActive";
+                            var retained = roster.Members.FirstOrDefault(member => member.DeviceId == deviceA);
+                            if (retained is null) return "AMissing";
+                            if (retained.Revoked) return "ARevoked";
+                            if (!retained.Grants.Receive) return "AReceive";
+                            if (!retained.Grants.EligibleHost) return "AHost";
+                            if (!retained.Grants.Reshare) return "AReshare";
+                            return "Unspecified";
+                        }
+                        LabRequire(scopedRemovalValid, scopedRemovalValid ? "ScopedRemovalChangedAnotherSignedMember" :
+                            "ScopedRemovalChangedAnotherSignedMember_" + ScopedRemovalFailure());
                         var originalPcs = (await PairingLabGetAsync<PairingLabDevices>(owner, "/api/local/companion")).Devices;
                         LabRequire(originalPcs.Single(device => device.Id == deviceB) is { Revoked: false, Paired: true } removed &&
                             !removed.AssignedProfileIds.Contains(profile.Id), "ServerRemovalBecameGlobalPcRevocation");

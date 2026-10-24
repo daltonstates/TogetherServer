@@ -2197,8 +2197,12 @@ await Check("malformed lifecycle state is quarantined and blocks Start until ack
         (await manager.MaintainCrashRecoveryAsync()).Single().Code == "DataRecoveryRequired",
         "recovery did not pause restart, remote/automatic stop, restore, or crash recovery while retaining local Stop");
     data.AcknowledgeRecovery();
-    Require((await manager.StartAsync(profile.Id)).Ok, "acknowledgement did not release a normal fixture Start");
-    Require((await manager.StopAsync(profile.Id)).Ok, "recovery fixture cleanup failed");
+    var recoveryStart = await manager.StartAsync(profile.Id);
+    Require(recoveryStart.Ok, "acknowledgement did not release a normal fixture Start");
+    var recoveryStop = await manager.StopAsync(profile.Id);
+    var recoveryStopCode = recoveryStop.Code is { Length: > 0 and <= 64 } && recoveryStop.Code.All(char.IsAsciiLetterOrDigit)
+        ? recoveryStop.Code : "Unspecified";
+    Require(recoveryStop.Ok, "recovery fixture cleanup failed: " + recoveryStopCode);
 });
 
 await Check("an interrupted lifecycle quarantine is reconstructed until owner acknowledgement", () =>
@@ -3909,10 +3913,10 @@ await Check("shared portable setup signs reviewed requirements without machine s
     var modSetup = SharedWorldPortableSetupReader.Capture(
         ServerSetupSnapshots.Read(factorio, ServerSetupSnapshots.Capture(factorio, data)));
     Require(modSetup.AddOns is [
-        {
-            Name: "fixturemod", Version: "1.0.0",
-            RequiredGameVersion: "2.0", Type: "Factorio mod"
-        }],
+    {
+        Name: "fixturemod", Version: "1.0.0",
+        RequiredGameVersion: "2.0", Type: "Factorio mod"
+    }],
         "enabled add-on requirements were not captured");
     Require(!JsonSerializer.Serialize(modSetup).Contains("fixturemod_1.0.0.zip", StringComparison.Ordinal),
         "local package filename escaped portable setup");

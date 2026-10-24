@@ -619,11 +619,12 @@ try
             "private synthetic profile was rejected");
         Require((await host.SetValheimPasswordAsync(logProfile.Id, "fixture-pass-123")).Ok,
             "private synthetic password was rejected");
-        Require((await host.StartAsync(logProfile.Id)).Ok, "private synthetic server did not start");
+        var privateLaunch = await host.StartAsync(logProfile.Id);
+        Require(privateLaunch.Ok, "private synthetic server did not start");
         var recorded = logData.LoadRuns().Single();
         fixturePid = recorded.ProcessId;
         fixtureStart = recorded.StartTimeUtcTicks;
-        await WaitForReady(host, logProfile.Id);
+        await WaitForReady(host, logProfile.Id, privateLaunch, logData, "private-log-count-readiness");
         try
         {
             var initial = (await host.SnapshotAsync()).Runs.Single(run => run.ProfileId == logProfile.Id);
