@@ -39,4 +39,7 @@ Factorio keeps literal `/server-save` over the existing protected loopback RCON 
 
 For each game separately, use an owner-installed disposable world on a real Windows Host and another owned PC. Record app/game versions, exact copy identity, completion signal, immutable copy result, transfer/hash/receipt, game load, recognizable in-game change and graceful save/Stop/restart. Include cancellation, failed output, changed process, storage exhaustion, interruption/retry and Bedrock resume recovery where applicable. Keep endpoints, credentials, personal identifiers, worlds and production logs outside Git.
 
-Loopback, source fixtures, TCP reachability and owner confirmations are separate evidence. No owner-controlled second PC/network or approved real-game setup was available for this delivery. All real completion, immutable snapshot, transfer, load, change and restart stages remain Unverified. See [the delivery record](13-FOUR-FEATURE-DELIVERY.md) for repository and packaged checks.
+Loopback, source fixtures, TCP reachability and owner confirmations are separate
+evidence. Record every real completion, immutable snapshot, transfer, load,
+change and restart stage explicitly; a synthetic pass cannot fill any of them.
+See [current status](06-IMPLEMENTATION-STATUS.md) for outstanding acceptance.

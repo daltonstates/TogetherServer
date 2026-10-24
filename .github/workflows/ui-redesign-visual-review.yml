@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       render_only:
-        description: 'Run only the UI assertion review; retain the existing packaged journey results.'
+        description: 'Review the current UI only; skip the packaged shared-hosting journey.'
         type: boolean
         default: false
   push:
@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   render:
@@ -22,20 +21,11 @@ jobs:
     steps:
       - name: Check out review source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          fetch-depth: ${{ inputs.render_only && '0' || '1' }}
       - name: Initialize hosted evidence directory
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path local-data/ui-redesign-visual-review | Out-Null
           @{ status = 'preparing'; evidence = 'Hosted UI-only synthetic screenshot harness'; revision = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content local-data/ui-redesign-visual-review/preparation.json
-      - name: Receive the exact retained candidate UI without rebuilding
-        if: inputs.render_only
-        id: retained-ui
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/receive-release-0333-ui-candidate.ps1
       - name: Install pinned Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -54,7 +44,6 @@ jobs:
           node --check scripts/simple-shared-hosting-review.mjs
           node --test scripts/ui-redesign-fixtures.test.mjs
       - name: Build bundled UI on the hosted runner
-        if: ${{ !inputs.render_only }}
         working-directory: ui
         run: npm run build
       - name: Install Chromium from locked Playwright
@@ -74,35 +63,6 @@ jobs:
           if ($env:SETUP_POLISH_REVIEW -eq 'true') { $reviewArguments += '--setup-polish-only' }
           if ($env:SIMPLE_HOSTING_REVIEW -eq 'true') { $reviewArguments += '--simple-shared-hosting-only' }
           node scripts/render-ui-redesign.mjs @reviewArguments
-      - name: Verify the captured UI still matches all retained candidate assets
-        if: always() && inputs.render_only && steps.retained-ui.outcome == 'success'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $evidence = 'local-data/ui-redesign-visual-review'
-          $context = Get-Content "$evidence/retained-ui-context.json" -Raw | ConvertFrom-Json
-          $files = @(Get-ChildItem ui/dist -Recurse -File -Force)
-          if ($context.sourceRevision -cne '7d6ab87a0d92f3a1e4c6f403a37a898e4807fa1d' -or
-              $context.verificationRevision -cne $env:GITHUB_SHA -or $files.Count -ne 7 -or @($context.uiAssets).Count -ne 7) {
-            throw 'Retained UI source or inventory changed during review.'
-          }
-          foreach ($asset in $context.uiAssets) {
-            $file = Get-Item -LiteralPath (Join-Path 'ui/dist' $asset.asset)
-            if ($file.Length -ne $asset.sizeBytes -or
-                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) {
-              throw 'A frozen candidate UI asset changed during review.'
-            }
-          }
-          $manifest = Get-Content "$evidence/manifest.json" -Raw | ConvertFrom-Json
-          if ($context.indexSha256 -cne '0093ec5af1464d59502ea0ced4cd208dd68919fcb9697ce5490de9f44436b48f' -or
-              $manifest.build.indexSha256 -cne $context.indexSha256 -or $manifest.build.sourceRevision -cne $env:GITHUB_SHA) {
-            throw 'The captured UI index differs from the exact retained candidate.'
-          }
-          @{sourceRevision=$context.sourceRevision;verificationRevision=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;
-            candidateArtifactId=$context.candidateArtifactId;candidateSha256=$context.candidateSha256;
-            indexSha256=$manifest.build.indexSha256;uiAssetCount=7;allFrozenUiBytesUnchanged=$true;
-            renderStatus=$manifest.status;renderSummary=$manifest.summary;rebuilt=$false;appLaunched=$false;fullyAccepted=$false} |
-            ConvertTo-Json -Depth 5 | Set-Content "$evidence/retained-ui-byte-proof.json" -Encoding utf8
       - name: Record hosted job outcome
         if: always()
         shell: pwsh
@@ -118,7 +78,7 @@ jobs:
           name: ui-redesign-visual-review
           path: local-data/ui-redesign-visual-review/
           if-no-files-found: error
-          retention-days: ${{ inputs.render_only && 7 || 1 }}
+          retention-days: 1
 
   simple-hosting:
     if: startsWith(github.ref_name, 'review/ui-redesign-simple-hosting-') && !inputs.render_only

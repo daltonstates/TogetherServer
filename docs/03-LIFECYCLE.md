@@ -5,7 +5,7 @@ network confirmation. Latest-save selection follows verified ancestry across
 approved PCs, with a final in-gate observation check. A returning original Host
 uses a newer continuation in fresh storage; no running world is overwritten.
 Conflicts and unshared local edits block automatic selection. See
-[delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+[current implementation status](06-IMPLEMENTATION-STATUS.md).
 
 Manual solo world recovery has no Host-loss timer, quorum, second-PC observation
 or save-age limit. A responding companion with an inaccessible game does not
@@ -96,7 +96,7 @@ Required setup after installation or replacement gates ordinary UI navigation,
 not runtime supervision or authentication. Existing managed runs, observations,
 Friend polling, exact-process recovery and safe Stop continue to use their
 existing gates. Completing a profile/review step never starts, stops, resumes or
-reconfigures a game server. See [required setup](29-REQUIRED-FEATURE-SETUP.md).
+reconfigures a game server. See [required setup rules](00-PRODUCT.md#people-and-modes).
 
 - Friend mode sends an authenticated outbound heartbeat and status request about every five seconds with device ID, version, and monotonic sequence. The Host uses **its receipt time** for freshness, not the Friend PC's clock. It does not send a local game-process indicator, and Friend presence does not participate in automatic shutdown.
 - A heartbeat older than roughly 45 seconds is Stale/Unknown. Retries are bounded. Host reachability and game-running status are separate fields in the GUI.

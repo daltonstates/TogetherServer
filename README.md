@@ -90,7 +90,7 @@ separate from TogetherServer; you handle their installation and terms.
 | Fix a connection or understand port checks | [Connection help](docs/guides/connection-help.md) |
 | Back up, restore, share saves, or move hosting | [Backups and shared hosting](docs/guides/backups-and-sharing.md) |
 | Build or work on TogetherServer | [Developer guide](docs/development/README.md) |
-| Find design decisions and validation records | [Documentation index](docs/README.md) |
+| Find engineering rules and current acceptance limits | [Documentation index](docs/README.md) |
 
 ## Build from source
 

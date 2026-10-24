@@ -5,7 +5,7 @@ forward and host together. Pinned signatures, membership, access deadlines,
 bounded manifests/chunks and file hashes remain enforced internally. A remote
 owner's choice opens no Friend listener; **Host locally** includes the local
 network confirmation. Outbound-only receivers can seed to an approved enabled
-listener. See [delivery record 36](36-SHARED-HOSTING-SIMPLIFICATION.md).
+listener. See [current implementation status](06-IMPLEMENTATION-STATUS.md).
 
 Peer capability `shared-world-peers-v1` adds only fixed challenge/exchange routes
 under a known world key. Transport requires literal-IP HTTPS, the exact TLS pin,
@@ -61,7 +61,7 @@ authenticated heartbeat after authorization and replay checks. Local labels,
 assignments and permissions remain separate. Names are Windows-protected at
 rest and excluded from activity/audit messages and support exports. The shared
 Host/Join profile editor requires exact loopback/header/origin/body checks; it
-has no companion profile-mutation route. See [profile delivery](28-PROFILE-NAMES.md).
+has no companion profile-mutation route. See [profile rules](00-PRODUCT.md#people-and-modes).
 
 - Host mode generates a TLS identity. Its certificate/private key stays on the Host in Windows-protected storage. Each saved server can have one current `TS3` code carrying the Host address, full certificate fingerprint, server profile ID, and random shared secret; the owner shares it through a trusted channel. The code remains active until the owner deliberately replaces it. Friend mode pins the Host identity and refuses mismatches without a "skip certificate checks" button.
 - The Host identity is stable independently of the advertised endpoint. Endpoint recovery begins from an existing saved connection and accepts a new endpoint only when its TLS certificate matches a currently accepted pin and the existing device credential authenticates. A replacement certificate is never trusted just because it appears at the new address.
@@ -110,7 +110,7 @@ per-feature revision acknowledgements. Only exact same-origin loopback requests
 can acknowledge registered current revisions. Missing setup data or a forged
 acknowledgement never grants identity, permissions or game lifecycle authority.
 Safe Stop and recovery remain available while ordinary UI waits for setup. See
-[required feature setup](29-REQUIRED-FEATURE-SETUP.md).
+[required setup rules](00-PRODUCT.md#people-and-modes).
 
 `game-requirements-v1` and `server-notices-v1` are additive capabilities. The requirements GET resolves only an assigned saved profile, requires a compatible protocol plus the exact feature capability header, rejects query/body input, and atomically rechecks current device access/assignment before and after the asynchronous metadata read. Responses are capped at 64 KiB, with at most 64 add-ons and 48-character versions; Host observation has a four-second deadline. The Friend proxy bounds declared and streamed bytes before JSON decoding, checks the returned scope/fields, and reauthenticates after local discovery. No profile path, protected state, credential, URL, executable choice, command or argument leaves through this response. Observed, owner-reported and manual sources stay distinct; unknown metadata is not a compatibility pass.
 

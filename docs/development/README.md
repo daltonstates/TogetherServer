@@ -22,9 +22,8 @@ Preserve unrelated changes, production data, and the owner's foreground app.
 | [contracts](../../contracts/) | Shared checked-in contract examples used by .NET and TypeScript. |
 | [scripts](../../scripts/) | Build, code-only verification, isolated packages, and guarded release tools. |
 | [installer](../../installer/) | Per-user Windows installer definition. |
-| [.github/workflows](../../.github/workflows/) | Hosted Windows validation and dedicated visual/release workflows. |
-| [docs](../README.md) | User guides, contributor workflows, design rules, and delivery evidence. |
-| [agent-prompts](../../agent-prompts/) | Bounded historical worker handoffs; confirm their scope against current code and rules. |
+| [.github/workflows](../../.github/workflows/) | Hosted Windows validation and visual reviews. |
+| [docs](../README.md) | User guides, contributor workflows, engineering rules, and current acceptance status. |
 | `local-data/` | Ignored build outputs, disposable test data, and local evidence. Keep worlds, secrets, binaries, and production logs out of Git. |
 
 ## Build
@@ -94,9 +93,29 @@ and a signed receipt. Its network scope labels distinguish loopback from
 owner-reported LAN or separate-network use; it never certifies a real game.
 
 Use the [local pairing lab](../LOCAL-PAIRING-LAB.md) for a disposable three-app
-rehearsal and the [development demo record](../31-DEVELOPMENT-DEMO.md) for UI
-scenarios. These launch app processes and require approved unattended testing.
+rehearsal. These checks launch app processes and require approved unattended testing.
 For a real connection test, use the [two-PC checklist](../TWO-PC-CONNECTION-TEST.md).
+
+For UI scenarios, prepare a separate fake-data demo without launching it:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-demo-package.ps1 -Build
+```
+
+Keep the packaged name **TogetherServer DEVELOPMENT DEMO.exe**. It uses its own
+demo data root, an in-memory fake transport, and a permanent fake-data banner.
+It does not construct a game manager, companion listener or updater. Reset
+discards the demo session. Demo screens prove no networking or game behavior;
+opening the native demo still requires the approved test session.
+
+## Interface wording
+
+Describe what happened and the next action in short sentences. Prefer the
+screen's own words: server, server code, backup, shared save, and PC. Name
+permissions and consequences explicitly, and give different controls different
+names. Keep parser details out of ordinary errors, while retaining technical
+fields needed for advanced work. Describe only the evidence observed: an open
+port, running process or verified copy cannot prove a join or saved progress.
 
 ## Contribute a bounded change
 
@@ -105,8 +124,9 @@ follow the [driver contract](../07-ADDING-A-GAME.md). Keep configuration, files,
 backup/restore, and owner-only mutations behind the local loopback boundary.
 Unknown counts never become zero; display logs never grant lifecycle authority.
 
-Update the relevant user guide when behavior changes. Put implementation
-details, exact validation results, remaining checks, and acceptance limits in
-the slice's delivery record, linked from the [documentation index](../README.md).
+Update the relevant user guide when behavior changes. Keep remaining work and
+acceptance limits in [current status](../06-IMPLEMENTATION-STATUS.md).
+Keep measured candidate evidence with its CI run or release, and generated
+reports under ignored `local-data/`; Git history retains earlier deliveries.
 Commit completed authorized work after appropriate validation. Tags and GitHub
 releases require explicit owner authorization.
