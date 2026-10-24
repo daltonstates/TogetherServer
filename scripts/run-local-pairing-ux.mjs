@@ -77,19 +77,70 @@ async function optional(page, name) {
   if (await match.count()) { await match.first().click(); return true; }
   return false;
 }
-async function nav(page, name) {
+async function selectedLocalProfile(page) {
+  return page.evaluate(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem('togetherserver.ui-preferences.v1') ?? 'null');
+      return typeof value?.selectedServer === 'string' && /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(value.selectedServer)
+        ? value.selectedServer : null;
+    } catch { return null; }
+  });
+}
+function directoryNavigation(directory, name, profileId, now) {
+  const locations = [
+    ...directory.localServers.map(server => ({ server, target: { kind: 'local', profileId: server.id } })),
+    ...directory.friendHosts.filter(host => host.state !== 'Revoked' && host.connectionCode !== 'Revoked')
+      .flatMap(host => host.servers.map(server => ({ server, host,
+        target: { kind: 'friend', connectionId: host.connectionId, profileId: server.id } })))
+  ];
+  const signed = item => /^[a-f\d]{64}$/i.test(item.server.sharedWorldId ?? '') &&
+    /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(item.server.originalProfileId ?? '');
+  const identity = item => signed(item)
+    ? `${item.server.sharedWorldId.toUpperCase()}:${item.server.originalProfileId.toLowerCase()}`
+    : JSON.stringify(item.target);
+  const requested = locations.filter(item => (name === 'Host' ? item.target.kind === 'local' : item.target.kind === 'friend') &&
+    (item.server.id === profileId || name === 'Join' && signed(item) && item.server.originalProfileId === profileId));
+  const roots = new Set(requested.map(identity));
+  if (roots.size !== 1) throw new Error('The exact requested directory world is missing or ambiguous');
+  const family = locations.filter(item => roots.has(identity(item)));
+  const anchor = family.find(item => !item.server.isSuccessor && item.server.id === item.server.originalProfileId) ?? family[0];
+  const active = family.filter(item => {
+    const checked = item.host?.lastConnectedUtc ? Date.parse(item.host.lastConnectedUtc) : NaN;
+    const current = !item.host || ['Connected', 'Disabled'].includes(item.host.state) && Number.isFinite(checked) && checked <= now && now - checked <= 15000;
+    return current && (['Ready', 'Starting', 'Stopping', 'Process running', 'Listening', 'Unknown'].includes(item.server.state) || item.server.requiresReview);
+  });
+  if (active.length > 1) throw new Error('Several hosting PCs need an explicit selection; the lab will not choose one');
+  const route = active[0] ?? anchor;
+  if (route.target.kind !== (name === 'Host' ? 'local' : 'friend') || name === 'Host' && route.server.id !== profileId)
+    throw new Error('The grouped world row does not route to the requested PC and profile');
+  const worldName = anchor.server.isSuccessor ? anchor.server.sourceName || anchor.server.name : anchor.server.name;
+  const owner = anchor.host ? anchor.host.hostProfileName || anchor.host.connectionName : 'this PC';
+  return { target: route.target, label: `Open ${worldName} on ${owner}` };
+}
+async function nav(page, name, requestedProfileId) {
   // Host and Join are directory selections in the current UI, not header tabs.
   if (name === 'Host' || name === 'Join') {
-    const rows = visible(page.locator('.server-directory-row'));
-    const target = rows;
-    for (let index = 0; index < await target.count(); index++) {
-      const label = await target.nth(index).getAttribute('aria-label') ?? '';
-      if (label && (name === 'Host' ? / on this PC$/.test(label) : !/ on this PC$/.test(label))) {
-        await target.nth(index).click(); return;
-      }
+    const snapshot = await read(page);
+    const selected = snapshot.mode === 'Host' ? await selectedLocalProfile(page) : null;
+    const profileId = requestedProfileId ?? (name === 'Host' ? selected : null) ?? input.profileId;
+    if (name === 'Host' && snapshot.mode === 'Host' && selected === profileId &&
+        snapshot.settings.profiles.some(profile => profile.id === profileId) && snapshot.runs.some(run => run.profileId === profileId)) return;
+    if (name === 'Join' && snapshot.mode === 'Friend' && snapshot.connectionId &&
+        snapshot.profiles.some(profile => profile.id === profileId)) return;
+    const directory = await read(page, '/api/local/servers');
+    if (name === 'Join' && directory.friendHosts.length === 0) {
+      await page.locator('.server-directory-actions').getByRole('button', { name: 'Connect', exact: true }).click(); return;
     }
-    if (name === 'Join') { await page.locator('.server-directory-actions').getByRole('button', { name: 'Connect', exact: true }).click(); return; }
-    throw new Error('No local directory server available');
+    const plan = directoryNavigation(directory, name, profileId, Date.now());
+    const row = visible(page.getByRole('button', { name: exact(plan.label) }));
+    if (await row.count() !== 1) throw new Error('The exact directory navigation row is missing or ambiguous');
+    await row.click({ timeout: 15000 });
+    await until(async () => ({ snapshot: await read(page), selected: name === 'Host' ? await selectedLocalProfile(page) : null }),
+      value => name === 'Host' ? value.snapshot.mode === 'Host' && value.selected === plan.target.profileId &&
+        value.snapshot.settings.profiles.some(profile => profile.id === plan.target.profileId) :
+        value.snapshot.mode === 'Friend' && value.snapshot.connectionId === plan.target.connectionId &&
+        value.snapshot.profiles.some(profile => profile.id === plan.target.profileId), 'exact directory navigation target');
+    return;
   }
   if (name === 'Local pairing lab') {
     const local = visible(page.getByRole('button', { name: /^Open Local pairing lab on this PC$/i }));
@@ -604,7 +655,7 @@ try {
     await friend.setViewportSize({ width: 1440, height: 1000 });
   });
   await stage('candidate owner Stop', async () => {
-    await nav(friend, 'Host'); await optional(friend, 'Return to selected server'); await nav(friend, 'Overview');
+    await nav(friend, 'Host', candidate.profileId); await optional(friend, 'Return to selected server'); await nav(friend, 'Overview');
     await stop(friend); await shot(friend, '08-candidate-stopped');
     await verifyOwnedPayload(completedSave.originalDirectory, completedSave.version.files, 'host');
     await verifyOwnedPayload(completedSave.receiverDirectory, completedSave.version.files, 'friend-a');

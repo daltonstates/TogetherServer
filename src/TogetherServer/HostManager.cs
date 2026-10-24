@@ -509,8 +509,9 @@ public sealed partial class HostManager
                 device.CredentialHash is not null) &&
                 (device.AssignedProfileIds ??
                     (device.ProfileId == Guid.Empty ? [] : [device.ProfileId])).Any(profileId =>
-                     device.CanStartProfile(profileId) || device.CanStopProfile(profileId) ||
-                     device.TemporaryHelperUntilUtc > clock.GetUtcNow()))))
+                     profileIds.Contains(profileId) &&
+                     (device.CanStartProfile(profileId) || device.CanStopProfile(profileId) || pairing.CanStop(device, profileId) ||
+                      device.TemporaryHelperUntilUtc > clock.GetUtcNow())))))
             return Result(false, "FriendPermissionRequired", "Invite a Friend PC with Start or Stop permission first.");
         foreach (var run in runs)
         {

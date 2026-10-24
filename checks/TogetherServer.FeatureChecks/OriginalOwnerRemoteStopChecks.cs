@@ -21,7 +21,128 @@ internal static class OriginalOwnerRemoteStopChecks
         PublishedProfilesRejectOtherRoots(root);
         WithdrawnHostingKeepsOwnerStop(root);
         TwoFreshEmptyObservations(root);
+        await OwnerControlPolicyBootstrapAsync(root);
         await SuccessorProfileUsesOriginalRosterAsync(root);
+    }
+
+    private static async Task OwnerControlPolicyBootstrapAsync(string root)
+    {
+        foreach (var access in new[] { "owner", "member", "revoked", "expired", "wrong-root", "removed-profile", "legacy-stop-invite" })
+        {
+            using var fixture = new Fixture(root, legacyRoster: access == "wrong-root");
+            var settings = fixture.Data.LoadSettings();
+            var profile = settings.Profiles.Single();
+            profile.Name = "Synthetic original-owner controls";
+            profile.ExecutablePath = Path.Combine(fixture.Data.RootPath, "never-run.synthetic");
+            profile.Backups.Enabled = false;
+            File.WriteAllText(profile.ExecutablePath, "synthetic installed-file identity; never executed");
+            settings.CompanionEndpoint = "https://192.0.2.99:5131";
+            settings.CompanionListeningEnabled = true;
+            settings.RemoteControlsEnabled = false;
+            fixture.Data.SaveSettings(settings);
+            Require(fixture.Authenticate(out var owner).Ok && owner is { CanStop: false } &&
+                fixture.Pairing.CanStop(owner, fixture.LocalProfileId),
+                "the policy case did not begin with a signed owner alias and derived-only Stop permission");
+            if (access is "member" or "revoked" or "legacy-stop-invite")
+                Require(fixture.Pairing.Revoke(fixture.Credential.DeviceId).Ok, "could not revoke the disposable owner alias");
+            if (access == "member")
+            {
+                var member = fixture.Pairing.EnrollPeerWorld(fixture.Source, fixture.Roster,
+                    fixture.MemberId, Public(fixture.Member), fixture.LocalProfileId, fixture.BranchHash);
+                Require(member is not null && fixture.Pairing.Authenticate(member.DeviceId, member.Credential, out var current).Ok &&
+                    !fixture.Pairing.CanStop(current!, fixture.LocalProfileId),
+                    "the unrelated member case was not authenticated with status-only session access");
+            }
+            if (access == "expired")
+            {
+                var deadline = fixture.Clock.Now.AddMinutes(1);
+                Require(fixture.Pairing.SetAccessExpiry(fixture.Credential.DeviceId,
+                    new(AccessExpiresUtc: deadline)).Ok, "could not set the disposable owner access deadline");
+                fixture.Clock.Now = deadline;
+                Require(fixture.Authenticate(out _).Code == "AccessExpired", "the policy case did not reach the exact access deadline");
+            }
+            if (access == "wrong-root")
+            {
+                using var stranger = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+                var otherRoot = new SharedWorldPeerRoot(Public(stranger), fixture.Source.ProfileId, fixture.Source.GroupId);
+                var draft = new SharedWorldRoster(2, otherRoot.GroupId, otherRoot.ProfileId, 1, 1, true,
+                    otherRoot.OwnerPublicKey, fixture.Roster.Members, "");
+                var otherRoster = draft with
+                {
+                    Signature = Convert.ToBase64String(stranger.SignData(
+                    SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256))
+                };
+                SaveGroups(fixture.Data, (fixture.Source, fixture.Roster, fixture.MemberId),
+                    (otherRoot, otherRoster, fixture.MemberId));
+                var state = fixture.Data.LoadPairingState();
+                var alias = state.Devices.Single();
+                alias.PeerWorldGroupKey = otherRoot.GroupKey;
+                alias.SharedWorldPublicKey = otherRoot.OwnerPublicKey;
+                fixture.Data.SavePairingState(state);
+                fixture.Pairing = new(fixture.Data, fixture.Clock);
+                Require(fixture.Authenticate(out _).Code == "PeerMembershipReviewRequired",
+                    "the policy case did not reject the other signed root's old credential");
+            }
+            if (access == "removed-profile")
+            {
+                var currentSettings = fixture.Data.LoadSettings();
+                var unrelated = new ServerProfile
+                {
+                    Name = "Unrelated synthetic server",
+                    WorldId = "SyntheticOtherWorld",
+                    ExecutablePath = profile.ExecutablePath,
+                    Backups = new() { Enabled = false }
+                };
+                unrelated.WorldDirectory = fixture.Data.NewWorldDirectory(unrelated.Id);
+                currentSettings.Profiles.Add(unrelated);
+                fixture.Data.SaveSettings(currentSettings);
+                var state = fixture.Data.LoadPairingState();
+                state.Devices.Single().AssignedProfileIds = [fixture.LocalProfileId, unrelated.Id];
+                fixture.Data.SavePairingState(state);
+                fixture.Pairing = new(fixture.Data, fixture.Clock);
+                Require(fixture.Authenticate(out var current).Ok && fixture.Pairing.CanStop(current!, fixture.LocalProfileId) &&
+                    !fixture.Pairing.CanStop(current!, unrelated.Id),
+                    "the removed-profile case did not isolate the original owner's exact Stop scope");
+            }
+            if (access == "legacy-stop-invite")
+            {
+                var invite = fixture.Pairing.Issue("Synthetic pending legacy PC", false, true,
+                    settings.CompanionEndpoint, new string('A', 64));
+                // Preserve an older saved invite's explicit server assignment.
+                // It can configure controls before activation but cannot act.
+                var state = fixture.Data.LoadPairingState();
+                var pending = state.Devices.Single(item => item.Id == invite.DeviceId);
+                pending.AssignedProfileIds = [fixture.LocalProfileId];
+                fixture.Data.SavePairingState(state);
+                fixture.Pairing = new(fixture.Data, fixture.Clock);
+                Require(state.ServerInvites.Count == 0 && pending is { CanStart: false, CanStop: true, CredentialHash: null, InviteHash: not null } &&
+                    !fixture.Pairing.CanStop(pending, fixture.LocalProfileId) && !fixture.Pairing.CanStop(owner, fixture.LocalProfileId),
+                    "the legacy setup case did not distinguish configured Stop from authenticated action access");
+            }
+            var driver = new PolicyDriver();
+            var manager = new HostManager(fixture.Data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly),
+                fixture.Clock, new NullHostingPowerGuard(), pairing: fixture.Pairing);
+            Require(!manager.RemoteControlsEnabled, "hosting consent automatically enabled remote controls");
+            ActionResult enabled;
+            if (access == "removed-profile")
+            {
+                var next = fixture.Data.LoadSettings();
+                next.Profiles.RemoveAll(item => item.Id == fixture.LocalProfileId);
+                next.RemoteControlsEnabled = true;
+                enabled = await manager.UpdateSettingsAsync(next);
+            }
+            else enabled = await manager.UpdateControlPolicyAsync(new(RemoteControlsEnabled: true));
+            var expectedEnable = access is "owner" or "legacy-stop-invite";
+            Require(enabled.Ok == expectedEnable && manager.RemoteControlsEnabled == expectedEnable &&
+                (expectedEnable || enabled.Code == "FriendPermissionRequired"),
+                "explicit remote-control enable did not use the current canonical owner Stop permission: " + access);
+            if (expectedEnable)
+                Require((await manager.UpdateControlPolicyAsync(new(RemoteControlsEnabled: false))).Ok &&
+                    !manager.RemoteControlsEnabled, "the owner could not explicitly pause remote controls again");
+            Require(driver.ProcessCalls == 0 && fixture.Data.LoadRuns().Count == 0 &&
+                !fixture.Data.HasProtected("host-certificate.protected"),
+                "the control-policy check launched/probed a game or created listener identity");
+        }
     }
 
     private static void RootCollisionsFailClosed(string root)
@@ -436,6 +557,27 @@ internal static class OriginalOwnerRemoteStopChecks
         public void PrepareStart(ServerProfile profile, ManagedRun run) => throw new InvalidOperationException("No Start is allowed.");
         public GameLaunchResult Start(ServerProfile profile, ManagedRun run) => throw new InvalidOperationException("No Start is allowed.");
         public Task<GameStopResult> StopAsync(Process process, ManagedRun run) => throw new InvalidOperationException("No process Stop is allowed.");
+    }
+
+    private sealed class PolicyDriver : IGameServerDriver
+    {
+        internal int ProcessCalls;
+        public string Kind => GameKinds.Fixture;
+        public string DisplayName => "Synthetic policy-only driver";
+        public bool ShowPortDiagnostics => false;
+        public bool SupportsCrashRecovery => false;
+        public bool SupportsBackups => false;
+        public string? ManagedSaveDirectory(ServerProfile profile) => profile.WorldDirectory;
+        public string ManagedExecutablePath(ServerProfile profile) => profile.ExecutablePath;
+        public IReadOnlyList<GamePort> Ports(ServerProfile profile) => [];
+        public string? JoinAddress(ServerProfile profile, string? publicIp) => null;
+        public GameValidation? ValidateForStart(ServerProfile profile) => throw RefuseProcess();
+        public void PrepareStart(ServerProfile profile, ManagedRun run) => throw RefuseProcess();
+        public GameLaunchResult Start(ServerProfile profile, ManagedRun run) => throw RefuseProcess();
+        public GameHealthResult Health(ManagedRun run) => throw RefuseProcess();
+        public Task<GameStopResult> StopAsync(Process process, ManagedRun run) => throw RefuseProcess();
+        private InvalidOperationException RefuseProcess()
+        { ProcessCalls++; return new("The policy-only driver cannot inspect, launch or stop a process."); }
     }
 
     private static string Public(ECDsa key) => Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());

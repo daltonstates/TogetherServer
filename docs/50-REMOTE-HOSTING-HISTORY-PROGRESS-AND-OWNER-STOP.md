@@ -44,6 +44,12 @@ authority without creating a missing or unreadable owner identity. Withdrawing
 future candidate hosting permission preserves the original owner's guarded Stop
 for an already-running world.
 
+The hosting PC can deliberately enable remote controls using that verified
+owner Stop permission. The setup eligibility check uses effective canonical
+permission and only profiles retained by the proposed settings. Existing raw
+Start/Stop invite setup remains supported; an unpaired invite still cannot act.
+Hosting/network consent alone leaves remote controls off.
+
 ## Visible progress and one world entry
 
 The local preparation and Start actions publish display-only progress through a

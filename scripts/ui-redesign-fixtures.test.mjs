@@ -915,6 +915,125 @@ test('capture scroll retries only detach failures and bounds repeated replacemen
   assert.deepEqual(budgets, [8000, 3000], 'retrying never resets the overall deadline');
 });
 
+test('two-ended lab keeps its exact selected local run despite the grouped row naming the original friend', async () => {
+  const source = readFileSync(new URL('run-local-pairing-ux.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('pairing-ux.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'nav');
+  const profileId = fixtureIds.secondary;
+  const snapshot = { mode: 'Host', settings: { profiles: [{ id: profileId, name: 'Shared lab', separateCopySourceProfileId: fixtureIds.primary }] },
+    runs: [{ profileId, state: 'Process running' }] };
+  let reads = 0;
+  const nav = runInNewContext(`${helper.getText(ast)}\n;nav`, {
+    input: { profileId: fixtureIds.primary }, read: async (_page, endpoint) => {
+      assert.equal(endpoint, undefined, 'keeping the current scope does not even need a directory lookup'); reads++; return snapshot;
+    }, selectedLocalProfile: async () => profileId
+  });
+  const page = { locator: () => assert.fail('do not click a grouped friend label or another saved server'),
+    getByRole: () => assert.fail('the exact current local run requires no navigation click') };
+  await nav(page, 'Host', profileId);
+  assert.equal(reads, 1);
+  assert.ok(source.includes("nav(friend, 'Host', candidate.profileId)"), 'candidate Stop names the previously verified exact local profile');
+});
+
+test('two-ended lab directory navigation follows signed target identity instead of original-owner label suffixes', async () => {
+  const source = readFileSync(new URL('run-local-pairing-ux.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('pairing-ux.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helpers = ['directoryNavigation', 'nav'].map(name => ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === name).getText(ast)).join('\n');
+  const identity = { sharedWorldId: 'A'.repeat(64), originalProfileId: fixtureIds.primary };
+  const original = { ...identity, id: fixtureIds.primary, name: 'Shared lab', state: 'Offline', isSuccessor: false };
+  const continuation = { ...identity, id: fixtureIds.secondary, name: 'Shared lab continuation', state: 'Process running', isSuccessor: true };
+  const host = servers => ({ connectionId: fixtureIds.connection, hostProfileName: 'Lab Owner', connectionName: 'Original PC',
+    state: 'Connected', lastConnectedUtc: new Date().toISOString(), servers });
+  for (const mode of ['Host', 'Join']) {
+    const directory = mode === 'Host' ? { localServers: [continuation], friendHosts: [host([original])] } :
+      { localServers: [original], friendHosts: [host([continuation])] };
+    const profileId = mode === 'Host' ? continuation.id : original.id;
+    let selected = null, clicks = 0;
+    let snapshot = mode === 'Host' ? { mode: 'Friend', profiles: [original] } :
+      { mode: 'Host', settings: { profiles: [original] }, runs: [{ profileId: original.id, state: 'Offline' }] };
+    const nav = runInNewContext(`${helpers}\n;nav`, {
+      input: { profileId: original.id }, read: async (_page, endpoint) => endpoint === '/api/local/servers' ? directory : snapshot,
+      selectedLocalProfile: async () => selected, visible: value => value,
+      exact: value => new RegExp(`^${value}$`), until: async (action, predicate) => {
+        const value = await action(); assert.equal(predicate(value), true, 'navigation verifies the actual canonical target after the UI click'); return value;
+      }
+    });
+    const page = { getByRole: (role, options) => {
+      assert.equal(role, 'button');
+      const expected = mode === 'Host' ? 'Open Shared lab on Lab Owner' : 'Open Shared lab on this PC';
+      assert.ok(options.name.test(expected), 'display ownership is independent of the actual navigation target');
+      return { count: async () => 1, click: async () => {
+        clicks++;
+        if (mode === 'Host') { selected = continuation.id; snapshot = { mode: 'Host', settings: { profiles: [continuation] }, runs: [{ profileId: continuation.id }] }; }
+        else snapshot = { mode: 'Friend', connectionId: fixtureIds.connection, profiles: [continuation] };
+      } };
+    } };
+    await nav(page, mode, profileId);
+    assert.equal(clicks, 1, 'exact target navigation uses one UI directory click and no lifecycle request');
+  }
+  const planner = runInNewContext(`${helpers}\n;directoryNavigation`);
+  assert.throws(() => planner({ localServers: [original], friendHosts: [host([continuation])] }, 'Host', original.id, Date.now()),
+    /does not route to the requested PC/u, 'an owner-labelled row cannot masquerade as a local target while the friend hosts');
+  assert.throws(() => planner({ localServers: [], friendHosts: [host([original]), { ...host([{ ...original, sharedWorldId: 'B'.repeat(64) }]),
+    connectionId: fixtureIds.otherDevice }] }, 'Join', original.id, Date.now()), /missing or ambiguous/u,
+    'unrelated signed worlds with the same original profile/name never choose an arbitrary row');
+});
+
+test('two-ended lab opens Connect for an unpaired Friend and preserves an existing exact Friend without clicking', async () => {
+  const source = readFileSync(new URL('run-local-pairing-ux.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('pairing-ux.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'nav');
+  for (const paired of [false, true]) {
+    let clicks = 0;
+    const reads = [];
+    const nav = runInNewContext(`${helper.getText(ast)}\n;nav`, {
+      input: { profileId: fixtureIds.primary }, read: async (_page, endpoint) => {
+        reads.push(endpoint ?? '/api/local/snapshot');
+        if (endpoint) { assert.equal(endpoint, '/api/local/servers'); return { localServers: [], friendHosts: [] }; }
+        return { mode: 'Friend', connectionId: paired ? fixtureIds.connection : '',
+          profiles: paired ? [{ id: fixtureIds.primary, name: 'Shared lab' }] : [] };
+      }
+    });
+    const page = { locator: selector => {
+      assert.equal(selector, '.server-directory-actions');
+      return { getByRole: (role, options) => {
+        assert.equal(role, 'button'); assert.equal(options.name, 'Connect'); assert.equal(options.exact, true);
+        return { click: async () => { clicks++; } };
+      } };
+    } };
+    await nav(page, 'Join');
+    assert.equal(clicks, paired ? 0 : 1);
+    assert.deepEqual(reads, paired ? ['/api/local/snapshot'] : ['/api/local/snapshot', '/api/local/servers'],
+      'navigation uses read-only evidence and never invokes a lifecycle API');
+  }
+});
+
+test('two-ended lab treats blank or malformed selection as absent and selects only the exact input Host row', async () => {
+  const source = readFileSync(new URL('run-local-pairing-ux.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('pairing-ux.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helpers = ['selectedLocalProfile', 'directoryNavigation', 'nav'].map(name => ast.statements.find(statement =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === name).getText(ast)).join('\n');
+  let preference = '', clicks = 0;
+  const profile = { id: fixtureIds.primary, name: 'Local pairing lab', state: 'Offline' };
+  const snapshot = { mode: 'Host', settings: { profiles: [profile] }, runs: [{ profileId: profile.id, state: 'Offline' }] };
+  const scope = { input: { profileId: profile.id }, localStorage: { getItem: () => JSON.stringify({ selectedServer: preference }) },
+    read: async (_page, endpoint) => endpoint ? { localServers: [profile], friendHosts: [] } : snapshot,
+    visible: value => value, exact: value => new RegExp(`^${value}$`), until: async (action, predicate) => {
+      const value = await action(); assert.equal(predicate(value), true); return value;
+    } };
+  const { nav, selectedLocalProfile } = runInNewContext(`${helpers}\n;({nav,selectedLocalProfile})`, scope);
+  const page = { evaluate: async callback => callback(), getByRole: (role, options) => {
+    assert.equal(role, 'button'); assert.ok(options.name.test('Open Local pairing lab on this PC'));
+    return { count: async () => 1, click: async () => { clicks++; preference = profile.id; } };
+  } };
+  for (const invalid of ['', 'not-a-profile', '   ']) {
+    preference = invalid;
+    assert.equal(await selectedLocalProfile(page), null);
+    await nav(page, 'Host');
+  }
+  assert.equal(clicks, 3, 'every missing preference falls back to the exact input profile, never an arbitrary first row');
+});
+
 test('optional guide fixtures stay quiet until opened and persist only the reviewed choice', () => {
   const state = createFixtureState('host-ready');
   const before = JSON.stringify({ host: state.host, friend: state.friend, devices: state.devices });
