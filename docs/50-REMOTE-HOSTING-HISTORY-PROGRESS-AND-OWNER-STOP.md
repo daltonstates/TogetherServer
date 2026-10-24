@@ -76,9 +76,12 @@ names or profile IDs remain separate. Display metadata grants no control.
 
 Coordinator captured the expected pre-fix history regression failure; the
 signed-directory and progress source groups passed on that first build.
-Focused source, complete code-only, UI, rendered, packaged and release results
-are recorded in [the 0.3.3.8 release record](51-0.3.3.8-PRERELEASE.md) as they
-complete. Builds, checks and commits are serialized by the coordinator.
+Completed source, code-only, UI, rendered, packaged and publication results are
+recorded in [the 0.3.3.8 release record](51-0.3.3.8-PRERELEASE.md), including the
+retained failed jobs, passing verification continuations and remaining display
+and acceptance limits. Version 0.3.3.8 is published as a prerelease; anonymous
+assets match the tested candidate. Builds, checks and commits are serialized by
+the coordinator.
 
 Local validation uses pure/protected-synthetic/fake-adapter checks, JSDOM,
 compilation and static package reads. Every app, game fixture, browser, console,
