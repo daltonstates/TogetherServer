@@ -71,35 +71,41 @@ history; published versions have their own
 
 ## Current delivery
 
-[Preview 0.3.3.9](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.9)
-is published from application source `2f434a628091eb2a6a58b10882310a40980bc952`.
-All 71 source/synthetic groups, 1,483 UI tests in 109 files, 49 pure harness
-checks, strict compilation, formatting, full lint and production bundling pass.
-The [primary Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40133447407)
-builds one candidate; the [retained-candidate continuation](https://github.com/daltonstates/TogetherServer/actions/runs/40135653155)
-passes all 27 Existing gates and UX 3 outer/10 inner, loopback 11 and same-PC
-assigned-LAN 18 pairing stages. Actual sidebar clicks reach the exact signed
-world, hosting PC and profile before and after Stop. The continuation changes
-only bounded check diagnostics and test whitespace, and verifies unchanged
-EXE, seven UI assets and 25 fixture files.
+[Preview 0.3.3.10](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.10)
+is published from application source `c84973f2096f1b697e978e2badf54fc999a3a5de`.
+Both concurrent-import failures were reproduced before their fixes. The new
+anchored-page regression covers six rejection boundaries, and exact historical
+replays preserve the protected journal and newer revocation.
 
+All 72 source/synthetic groups, 1,483 UI tests in 109 files, compilation,
+TypeScript, formatting, lint and production bundling pass. The
+[Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40143882850)
+passes all 15 functional jobs on the original attempt, including all 27 ordered
+Existing gates, 114 core checks, 11 shared-world journeys with no recovery
+scenarios skipped, and 46 companion checks. Hosted source-link cases ran;
+the local account's unsupported synthetic-link cases remain separately skipped.
+
+Pairing passes UX 3 outer/10 inner, loopback 11 and same-PC assigned-LAN 18
+stages. Signed sidebar clicks reach the hosting PC before and after Stop.
 Two automatic-sharing runs each pass nine stages with one Friend and one owner
-Start. Packaged API/browser/rehearsal, six legacy compatibility/update-handoff
-lanes, six installer smoke cases and three actual wizard choices pass. The
-access review passes 36 plans and 164 PNGs with no failures, skips or layout
-findings; 10 representative images were inspected. Native checks retain
-12 required passes, one QuietTime notification block and one inapplicable
-development-staging startup skip. Full native acceptance remains incomplete.
+Start. Six legacy compatibility/update-handoff lanes, six installer smoke
+cases and three actual wizard choices pass. Access review passes 36 plans and
+164 PNGs with no failures, skips or layout findings; three images were inspected.
+Browser evidence retains 14 passed and three unexercised journeys, 148 layouts
+and zero browser/request errors.
 
-An earlier candidate exposed the first-frame duplicate and was superseded.
-Initial cleanup, private synthetic readiness and signed-member preservation
-assertions did not recur against the unchanged application; their causes remain
-unexplained and no repair is claimed. Exact run identities, hashes and retained
-failures are recorded with the release and CI, rather than duplicated here.
-Anonymous downloads verified all four public assets, source/tag identity and
-unchanged prior releases; stable/latest remains 0.3.3. The owner's active desktop
-and 29 unrelated pending files remain preserved. Laptop history diagnosis,
-adopted-copy preparation and physical/game acceptance remain open as listed above.
+The raw Desktop job fails solely on the required QuietTime notification block:
+12 required native cases pass, one remains blocked and the development-startup
+case is inapplicable. All 14 window-control checks pass. The original package
+manifest retains incomplete acceptance flags, and the builds are unsigned.
+Full native acceptance remains incomplete.
+
+Anonymous downloads verified all four public assets, checksums, source/tag
+identity and unchanged prior releases; stable/latest remains 0.3.3. The owner's
+active desktop and 29 unrelated pending files remain preserved. Physical
+laptop retry, adopted-copy preparation and game/network acceptance remain open
+as listed above. Exact hashes and run/artifact identities stay with the
+release and CI.
 
 ## Repository maintenance
 
