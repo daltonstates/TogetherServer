@@ -206,6 +206,33 @@ internal static class SharedWorldRosterTrust
         return true;
     }
 
+    // Older owners could publish the same local edit first as a standalone
+    // legacy snapshot and later as an exact schema-3 child of an older snapshot.
+    // This proves a representation change, never a changed grant or a fork.
+    // Keep both signed records and the child's real signed parent as evidence.
+    internal static bool VerifyLegacyOwnerProjection(SharedWorldRoster roster,
+        SharedWorldRoster legacy, SharedWorldRoster parent, string pinnedOwnerPublicKey)
+    {
+        static bool PlainLegacy(SharedWorldRoster value) => value.Schema == 2 &&
+            value.PreviousRosterHash is null && value.SignerDeviceId is null &&
+            value.SignerPublicKey is null && value.OwnerLocalBaselineMembers is null &&
+            value.HostAcceptedUtc is null && value.HostAcceptanceSignature is null;
+        return roster is not null && legacy is not null && parent is not null &&
+            VerifySignature(roster) && PlainLegacy(legacy) && PlainLegacy(parent) && Verify(legacy) && Verify(parent) &&
+            roster.Schema == 3 && roster.SignerDeviceId == Guid.Empty &&
+            roster.SignerPublicKey == pinnedOwnerPublicKey &&
+            roster.HostAcceptedUtc is null && roster.HostAcceptanceSignature is null &&
+            roster.ProfileId == legacy.ProfileId && roster.GroupId == legacy.GroupId &&
+            roster.OwnerPublicKey == legacy.OwnerPublicKey &&
+            roster.OwnerPublicKey == pinnedOwnerPublicKey &&
+            roster.Epoch == legacy.Epoch && roster.Revision == legacy.Revision &&
+            roster.OwnerOverride == legacy.OwnerOverride &&
+            roster.Members.SequenceEqual(legacy.Members) &&
+            roster.OwnerLocalBaselineMembers is not null &&
+            roster.OwnerLocalBaselineMembers.SequenceEqual(legacy.Members) &&
+            VerifyRevision(roster, parent, pinnedOwnerPublicKey, DateTimeOffset.MinValue, false);
+    }
+
     internal static bool ValidKey(string? value)
     {
         try

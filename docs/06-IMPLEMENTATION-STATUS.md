@@ -28,6 +28,12 @@ history; published versions have their own
   retained owner-signed interval. Replaying an exact committed revision checks
   its protected index and signed file under the mutation lock, preserves the
   current head, and grants no access from an earlier roster.
+- A retained standalone legacy roster can join the owner's schema-3 encoding
+  of that exact same edit. The journal preserves the legacy signed bytes and
+  protected lookup, and retains the new revision's real signed parent in its
+  protected transaction and lookup. Both encodings must match counters, owner,
+  world, ordered members, keys, grants, deadlines, revocations and owner baseline.
+  Reads and recovery revalidate the proof; peer pages carry the exact parent.
 - An adopted connection's permission prompt and saved receive consent use the
   pinned original world and member identity. Original-owner permission requires
   its actual signing key and keeps local receive consent separate. Cached save
@@ -46,16 +52,31 @@ history; published versions have their own
 
 ## Open work and acceptance limits
 
-- The laptop's extended error identifies signed-ancestry import. Two concurrent
-  import schedules reproduce this failure in disposable source checks: an
-  anchored response carrying an intermediate legacy snapshot after peer sync
-  advanced, and an exact revision committed elsewhere between checking and
-  appending it. Both paths are repaired without resetting history. The owner
-  reports the same error on the laptop after the latest retry; its running
-  binary identity and exact failure have not been independently captured.
-  The physical laptop failure remains unresolved. Revoke/reinvite alone did
-  not reproduce it. Continue with the
-  [laptop diagnosis handoff](development/laptop-sharing-history-handoff.txt).
+- The laptop's actual installed process matches the published 0.3.3.10 version,
+  source and SHA-256. Its same-user production root has sufficient reserve.
+  A private, non-mutating metadata observation found a valid legacy revision 2
+  journal, while the Host's signed lineage contains its equivalent schema-3
+  revision 2 with a different exact parent. Root fallback skips legacy revision
+  1 as superseded, then `Append.ValidateNext` rejects schema-3 revision 2 as
+  unauthorized by its exact parent (`InvalidDataException`). The protected
+  connection's revision 7 is present in the verified Host lineage through 11.
+  The synthetic pre-fix regression reproduces the exact reported phase suffix.
+  This diagnosis is a deterministic replay of captured signed metadata and
+  source predicates, not an attached runtime stack trace.
+- The owner manually retried on 2026-10-25 at approximately 12:53:48 EDT and
+  reported the same error. Stable repeated before/after observations retain
+  byte-identical signed journals, floors, indexes and lookups; five ordinary
+  protected rewrites have identical decrypted bytes. No production recovery,
+  migration, key helper or repair ran. Captures used repeated bytes/timestamps
+  and structural validation rather than an atomic application lock. Evidence
+  remains owner-only on that laptop, outside Git; no worlds, logs or key files
+  were copied. The other PC's actual executable is inaccessible through the
+  available Windows remote read, so its version/hash remain unconfirmed.
+- The bounded projection fix still requires owner installation and a fresh
+  physical-laptop retry with existing data. Source/hosted passes do not establish
+  that retry, save receipt, readiness, game join or saved restart. The earlier
+  [laptop handoff](development/laptop-sharing-history-handoff.txt) records the
+  investigation's starting constraints, not a current success claim.
 - **Known adopted-copy preparation limit:** the permission prompt, consent
   alias and cached-version identity have focused source coverage, but preparing
   from an already adopted successor can still fail at the legacy received-copy
@@ -74,6 +95,25 @@ history; published versions have their own
   was in QuietTime. Full native acceptance remains incomplete.
 
 ## Current delivery
+
+Candidate **0.3.3.11** addresses the captured legacy/schema-3 projection failure.
+Its new synthetic group covers 65 scenarios: 21 positive and 44 rejection cases,
+including exact signed parent and baseline proof, old-floor retention, pending
+and file-stage restart recovery, unchanged ordinary pending formats, damaged
+protected evidence, newer revocation, symmetric peer exchange and page-boundary
+parent cursors. The laptop's private signed records satisfy the same pure
+projection predicate without constructing a production store.
+
+Local validation passes all 73 source groups across the broad run and focused
+reruns, 1,483 UI tests in 109 files, compilation without warnings, TypeScript,
+lint and production bundling. The broad source run initially failed one old
+assertion expecting an empty numeric-cursor page at the legacy boundary; that
+assertion now requires the exact parent proof replay and passes on rerun.
+Formatting findings were confined to the new check file and were corrected.
+Synthetic source-link cases remain skipped because this account cannot create
+symlinks. No packaged app, game/console fixture, listener, browser, installer or
+update journey ran on the active laptop. Hosted candidate/functional checks
+and a manual physical-laptop retry remain pending before release delivery.
 
 [Preview 0.3.3.10](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.10)
 is published from application source `c84973f2096f1b697e978e2badf54fc999a3a5de`.

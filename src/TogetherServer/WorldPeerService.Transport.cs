@@ -179,14 +179,19 @@ internal sealed partial class WorldPeerService : IDisposable
         var chain = new SharedWorldRosterChainStore(data);
         if (!chain.HasState(group.Root.ProfileId) && StandaloneRosterBaseline(group.Roster))
             chain.Append(group.Roster, group.Root.OwnerPublicKey);
+        var legacyParents = new Dictionary<string, SharedWorldRoster>(StringComparer.Ordinal);
         foreach (var roster in rosters)
         {
+            if (roster.Schema == 2) legacyParents[SharedWorldRosterTrust.Hash(roster)] = roster;
             if (chain.Contains(group.Root.ProfileId, roster)) continue;
             // A returning legacy PC may retain an intermediate owner snapshot
             // omitted by this journal. Ignore only a verified snapshot strictly
             // between retained legacy counters; current membership still decides
             // whether any metadata or operation is authorized below.
             if (chain.SupersededLegacySnapshot(group.Root.ProfileId, roster)) continue;
+            if (roster.PreviousRosterHash is { } parentHash &&
+                legacyParents.TryGetValue(parentHash, out var parent) &&
+                chain.TryAppendLegacyOwnerProjection(roster, parent, group.Root.OwnerPublicKey)) continue;
             var heads = chain.Heads(group.Root.ProfileId);
             if (heads.Count > 1) throw new InvalidDataException("Competing signed roster histories need review.");
             if (heads.Count == 0 && roster.Schema == 3 && (roster.Revision != 1 || roster.PreviousRosterHash is not null) ||
@@ -474,14 +479,21 @@ internal sealed partial class WorldPeerService : IDisposable
         if (rosters.Count > 8 || rosters.Any(value => value is null))
             throw new InvalidDataException("The peer roster page is oversized or invalid.");
         var chain = new SharedWorldRosterChainStore(data);
+        var legacyParents = new Dictionary<string, SharedWorldRoster>(StringComparer.Ordinal);
         foreach (var roster in rosters)
         {
             if (roster.ProfileId != group.Root.ProfileId || roster.GroupId != group.Root.GroupId ||
                 roster.OwnerPublicKey != group.Root.OwnerPublicKey || !SharedWorldRosterTrust.VerifySignature(roster))
                 throw new InvalidDataException("The signed peer roster crossed a world boundary.");
+            if (roster.Schema == 2) legacyParents[SharedWorldRosterTrust.Hash(roster)] = roster;
             if (!chain.Contains(group.Root.ProfileId, roster) &&
                 !chain.SupersededLegacySnapshot(group.Root.ProfileId, roster))
+            {
+                if (roster.PreviousRosterHash is { } parentHash &&
+                    legacyParents.TryGetValue(parentHash, out var parent) &&
+                    chain.TryAppendLegacyOwnerProjection(roster, parent, group.Root.OwnerPublicKey)) continue;
                 chain.Append(roster, group.Root.OwnerPublicKey);
+            }
         }
         var heads = chain.Heads(group.Root.ProfileId);
         if (heads.Count > 1) throw new InvalidDataException("Competing signed roster histories need review.");
@@ -489,7 +501,8 @@ internal sealed partial class WorldPeerService : IDisposable
         var latest = heads[0];
         if (!SharedWorldRosterTrust.Verify(latest) || latest.GroupId != group.Root.GroupId ||
             latest.OwnerPublicKey != group.Root.OwnerPublicKey ||
-            latest.Revision == group.Roster.Revision && latest.Signature != group.Roster.Signature)
+            latest.Revision == group.Roster.Revision && latest.Signature != group.Roster.Signature &&
+                !chain.ProvesLegacyOwnerProjection(group.Root.ProfileId, group.Roster, latest))
             throw new InvalidDataException("The signed roster floor changed.");
         group = group with { Roster = latest };
         SaveGroup(group);

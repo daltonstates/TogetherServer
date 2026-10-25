@@ -154,10 +154,11 @@ internal sealed partial class FriendLink
                 item.Revision == floor.Revision && item.Signature == floor.Signature;
             if (floor is not null && (floor.GroupId != current.GroupId ||
                 floor.Revision > current.Revision || floor.Epoch > current.Epoch ||
-                floor.Revision == current.Revision && floor.Signature != current.Signature))
+                floor.Revision == current.Revision && floor.Signature != current.Signature && current.Schema != 3))
                 return SharedFailure("RosterRollback", "The Host's sharing list is older or changed unexpectedly.");
             if (!hasChain && count == 0 && current.Schema == 3 &&
-                floor is not null && current.Epoch > floor.Epoch && current.Revision > floor.Revision &&
+                floor is not null && (current.Epoch > floor.Epoch && current.Revision > floor.Revision ||
+                    current.Epoch == floor.Epoch && current.Revision == floor.Revision) &&
                 CachedLegacyRosterFloor(profileId, pinned, floor) is { } legacyFloor)
             {
                 // A protected connection floor can predate peer journaling.
@@ -192,7 +193,8 @@ internal sealed partial class FriendLink
                         // signed chain below; the cache cannot replace its root.
                         floorCatchUpRequired = true;
                     }
-                    else
+                    else if (cachedFloor is null ||
+                        !chain.ProvesLegacyOwnerProjection(profileId, cachedFloor, local[0]))
                         return SharedFailure("RosterRollback", "The saved sharing history changed unexpectedly.");
                 }
                 var currentWasKnown = SharedWorldRosterTrust.Hash(local[0]) == SharedWorldRosterTrust.Hash(current);
@@ -215,6 +217,7 @@ internal sealed partial class FriendLink
             var fullLastPage = false;
             var useAnchor = true;
             var reviewPages = false;
+            var legacyParents = new Dictionary<string, SharedWorldRoster>(StringComparer.Ordinal);
             for (var pageNumber = 0; pageNumber < 4; pageNumber++)
             {
                 verificationStep = RosterVerificationStep.SavedHistory;
@@ -299,6 +302,8 @@ internal sealed partial class FriendLink
                 verificationStep = RosterVerificationStep.SignedAncestry;
                 foreach (var revision in page)
                 {
+                    if (revision.Schema == 2)
+                        legacyParents[SharedWorldRosterTrust.Hash(revision)] = revision;
                     // Never jump over or substitute the exact protected floor
                     // while repairing an older journal, even with signed legacy
                     // metadata. Keep the verified prefix usable on a later retry.
@@ -318,6 +323,14 @@ internal sealed partial class FriendLink
                         // the retained legacy interval, never just the new tip;
                         // equal counters, forks and schema-3 gaps still fail closed.
                         if (chain.SupersededLegacySnapshot(profileId, revision)) continue;
+                        // A legacy snapshot and the owner's schema-3 encoding of
+                        // that exact same edit can have equal counters. Preserve
+                        // the old record and prove the new record's real parent;
+                        // never substitute the legacy hash for a signed parent.
+                        if (revision.PreviousRosterHash is { } parentHash &&
+                            legacyParents.TryGetValue(parentHash, out var parent) &&
+                            chain.TryAppendLegacyOwnerProjection(revision, parent,
+                                pinned ?? current.OwnerPublicKey)) continue;
                         chain.Append(revision, pinned ?? current.OwnerPublicKey);
                     }
                 }
@@ -347,7 +360,9 @@ internal sealed partial class FriendLink
                   HasLegacyRosterBootstrap(profileId, chain, pinned!, floor)))
                 return SharedFailure("RosterRollback", "The Host omitted the previously trusted sharing list.");
             if (floor is not null && floor.GroupId == current.GroupId &&
-                floor.Revision == current.Revision && floor.Signature != current.Signature)
+                floor.Revision == current.Revision && floor.Signature != current.Signature &&
+                !(CachedLegacyRosterFloor(profileId, pinned, floor) is { } legacy &&
+                  chain.ProvesLegacyOwnerProjection(profileId, legacy, current)))
                 return SharedFailure("RosterRollback", "The Host changed an already trusted sharing list.");
             return null;
         }

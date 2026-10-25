@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TogetherServer;
 
@@ -18,11 +19,17 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
     private const long ReserveBytes = 1024L * 1024 * 1024;
     private sealed record Floor(int Schema, Guid ProfileId, Guid GroupId, string OwnerPublicKey,
         IReadOnlyList<string>? Hashes = null, long Count = 0,
-        IReadOnlyList<string>? Heads = null, bool UnreviewedOwnerEdit = false);
+        IReadOnlyList<string>? Heads = null, bool UnreviewedOwnerEdit = false,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        long? LegacyProjectionPosition = null);
     private sealed record Index(int Schema, long Offset, IReadOnlyList<string> Hashes);
     private sealed record Lookup(int Schema, Guid ProfileId, Guid GroupId,
-        string OwnerPublicKey, string Hash, long Position);
-    private sealed record Pending(int Schema, string OldFloorHash, string RosterHash, SharedWorldRoster Roster);
+        string OwnerPublicKey, string Hash, long Position,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        SharedWorldRoster? LegacyParent = null);
+    private sealed record Pending(int Schema, string OldFloorHash, string RosterHash, SharedWorldRoster Roster,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        SharedWorldRoster? LegacyParent = null);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object sync = SharedWorldMutationGate.For(data.RootPath);
     private static string FloorName(Guid id) => $"shared-roster-chain-{id:N}.protected";
@@ -72,6 +79,8 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 floor.Heads.Count == 0 && floor.Count != 0 ||
                 floor.Heads.Any(hash => !ValidHash(hash)) ||
                 floor.Heads.Distinct(StringComparer.Ordinal).Count() != floor.Heads.Count) ||
+            floor.LegacyProjectionPosition is { } projection &&
+                (floor.Schema != 2 || projection < 1 || projection >= floor.Count) ||
             floor.Schema is not (1 or 2))
             throw new InvalidDataException("Protected roster floor is invalid.");
     }
@@ -104,13 +113,15 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
     private void SaveIndex(Guid id, long number, IReadOnlyList<string> hashes) =>
         data.SaveProtected(IndexName(id, number), JsonSerializer.SerializeToUtf8Bytes(
             new Index(2, number * IndexSize, hashes), Json));
-    private void EnsureLookup(Guid id, Floor floor, string hash, long position)
+    private void EnsureLookup(Guid id, Floor floor, string hash, long position,
+        SharedWorldRoster? legacyParent = null)
     {
-        var expected = new Lookup(2, id, floor.GroupId, floor.OwnerPublicKey, hash, position);
+        var expected = new Lookup(2, id, floor.GroupId, floor.OwnerPublicKey, hash, position, legacyParent);
         var prior = data.LoadProtected(LookupName(id, hash));
         if (prior is not null)
         {
-            if (JsonSerializer.Deserialize<Lookup>(prior, Json) != expected)
+            var existing = JsonSerializer.Deserialize<Lookup>(prior, Json);
+            if (existing is null || JsonSerializer.Serialize(existing, Json) != JsonSerializer.Serialize(expected, Json))
                 throw new InvalidDataException("Protected roster lookup changed.");
             return;
         }
@@ -129,7 +140,42 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         if (index.Hashes.Count != Math.Min(IndexSize, floor.Count - index.Offset) ||
             index.Hashes[(int)(lookup.Position % IndexSize)] != hash)
             throw new InvalidDataException("Protected roster lookup disagrees with the journal.");
+        if (lookup.LegacyParent is { } parent)
+        {
+            if (lookup.Position == 0 || floor.LegacyProjectionPosition != lookup.Position)
+                throw new InvalidDataException("Legacy roster projection has no retained anchor.");
+            var priorIndex = LoadIndex(id, (lookup.Position - 1) / IndexSize);
+            if (priorIndex.Hashes.Count != Math.Min(IndexSize, floor.Count - priorIndex.Offset))
+                throw new InvalidDataException("Protected roster projection index is invalid.");
+            var anchorHash = priorIndex.Hashes[(int)((lookup.Position - 1) % IndexSize)];
+            var anchor = LoadRevision(id, anchorHash);
+            if (!SharedWorldRosterTrust.VerifyLegacyOwnerProjection(LoadRevision(id, hash),
+                    anchor, parent, floor.OwnerPublicKey) || !HasLookup(id, floor, anchorHash))
+                throw new InvalidDataException("Legacy roster projection proof is invalid.");
+        }
+        else if (floor.LegacyProjectionPosition == lookup.Position)
+            throw new InvalidDataException("Legacy roster projection proof is missing.");
         return true;
+    }
+    private SharedWorldRoster? LegacyParent(Guid id, string hash)
+    {
+        var bytes = data.LoadProtected(LookupName(id, hash)) ??
+            throw new InvalidDataException("Protected roster lookup is missing.");
+        return JsonSerializer.Deserialize<Lookup>(bytes, Json)?.LegacyParent;
+    }
+    internal bool ProvesLegacyOwnerProjection(Guid id, SharedWorldRoster legacy, SharedWorldRoster projection)
+    {
+        lock (sync)
+        {
+            if (!Contains(id, projection)) return false;
+            var floor = Ready(id);
+            var parent = LegacyParent(id, SharedWorldRosterTrust.Hash(projection));
+            if (parent is null && ValidHash(projection.PreviousRosterHash) &&
+                HasLookup(id, floor, projection.PreviousRosterHash!))
+                parent = LoadRevision(id, projection.PreviousRosterHash!);
+            return parent is not null &&
+                SharedWorldRosterTrust.VerifyLegacyOwnerProjection(projection, legacy, parent, floor.OwnerPublicKey);
+        }
     }
     // Legacy owners signed complete snapshots without a parent field. Retain
     // those exact signed snapshots in order, rather than replacing an earlier
@@ -144,13 +190,16 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
     private static string[] NextHeads(IReadOnlyList<string> heads, SharedWorldRoster roster, string hash) =>
         heads.Count == 0 || roster.Schema == 2 || heads[0] == roster.PreviousRosterHash
             ? [hash] : [heads[0], hash];
-    private void ValidateNext(SharedWorldRoster roster, Floor floor, bool firstAcceptance)
+    private void ValidateNext(SharedWorldRoster roster, Floor floor, bool firstAcceptance,
+        SharedWorldRoster? legacyParent = null)
     {
         if (roster.ProfileId != floor.ProfileId || roster.GroupId != floor.GroupId ||
             roster.OwnerPublicKey != floor.OwnerPublicKey)
             throw new InvalidDataException("Roster revision crossed a world boundary.");
         if (floor.Count == 0)
         {
+            if (legacyParent is not null)
+                throw new InvalidDataException("Legacy roster projection has no retained anchor.");
             if (!(roster.Schema is 1 or 2 && SharedWorldRosterTrust.Verify(roster)) &&
                 !SharedWorldRosterTrust.VerifyRevision(roster, null, floor.OwnerPublicKey,
                     (clock ?? TimeProvider.System).GetUtcNow(), firstAcceptance))
@@ -160,6 +209,12 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         if (floor.Heads is null || floor.Heads.Count != 1)
             throw new InvalidDataException("Competing roster revisions require owner review.");
         var head = LoadRevision(roster.ProfileId, floor.Heads[0]);
+        if (legacyParent is not null)
+        {
+            if (!SharedWorldRosterTrust.VerifyLegacyOwnerProjection(roster, head, legacyParent, floor.OwnerPublicKey))
+                throw new InvalidDataException("Legacy roster projection proof is invalid.");
+            return;
+        }
         if (LegacyOwnerAdvance(roster, head)) return;
         if (!ValidHash(roster.PreviousRosterHash))
             throw new InvalidDataException("Roster revision is not authorized by its exact parent.");
@@ -191,7 +246,8 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         stream.Write(bytes);
         stream.Flush(true);
     }
-    private void Advance(Guid id, Floor floor, SharedWorldRoster roster, string hash)
+    private void Advance(Guid id, Floor floor, SharedWorldRoster roster, string hash,
+        SharedWorldRoster? legacyParent = null)
     {
         var number = floor.Count / IndexSize;
         var staged = data.LoadProtected(IndexName(id, number));
@@ -209,11 +265,12 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             else if (index.Hashes.Count != expectedCount + 1 || index.Hashes[^1] != hash)
                 throw new InvalidDataException("Staged roster index changed.");
         }
-        EnsureLookup(id, floor, hash, floor.Count);
+        EnsureLookup(id, floor, hash, floor.Count, legacyParent);
         SaveFloor(id, floor with
         {
             Count = floor.Count + 1,
-            Heads = NextHeads(floor.Heads!, roster, hash),
+            Heads = legacyParent is null ? NextHeads(floor.Heads!, roster, hash) : [hash],
+            LegacyProjectionPosition = legacyParent is null ? floor.LegacyProjectionPosition : floor.Count,
             UnreviewedOwnerEdit = floor.UnreviewedOwnerEdit ||
                 floor.Count > 0 && roster.Schema == 3 && roster.SignerDeviceId == Guid.Empty &&
                 roster.OwnerLocalBaselineMembers is null
@@ -237,22 +294,23 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         {
             if (!HasLookup(id, floor, pending.RosterHash))
                 throw new InvalidDataException("Committed roster lookup is missing.");
+            EnsureLookup(id, floor, pending.RosterHash, floor.Count - 1, pending.LegacyParent);
             _ = LoadRevision(id, pending.RosterHash);
             data.DeleteProtected(PendingName(id));
             return;
         }
         if (pending.OldFloorHash != Digest(floor))
             throw new InvalidDataException("Pending roster revision disagrees with the protected floor.");
-        ValidateNext(pending.Roster, floor, false);
+        ValidateNext(pending.Roster, floor, false, pending.LegacyParent);
         WriteRevision(id, pending.RosterHash, pending.Roster);
-        Advance(id, floor, pending.Roster, pending.RosterHash);
+        Advance(id, floor, pending.Roster, pending.RosterHash, pending.LegacyParent);
         data.DeleteProtected(PendingName(id));
     }
     private void Migrate(Guid id, Floor old)
     {
         var pendingBytes = data.LoadProtected(PendingName(id));
         var pending = pendingBytes is null ? null : JsonSerializer.Deserialize<Pending>(pendingBytes, Json);
-        if (pendingBytes is not null && (pending is null || pending.Schema != 1 ||
+        if (pendingBytes is not null && (pending is null || pending.Schema != 1 || pending.LegacyParent is not null ||
             pending.OldFloorHash != LegacyDigest(old) || !ValidHash(pending.RosterHash) ||
             SharedWorldRosterTrust.Hash(pending.Roster) != pending.RosterHash))
             throw new InvalidDataException("Legacy pending roster revision is invalid.");
@@ -322,6 +380,12 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 throw new InvalidDataException("Roster floor and index disagree.");
             if (!HasLookup(id, floor, last.Hashes[^1]))
                 throw new InvalidDataException("Current roster lookup is missing.");
+        }
+        if (floor.LegacyProjectionPosition is { } projectionPosition)
+        {
+            var projection = RevisionAt(id, floor, projectionPosition);
+            if (LegacyParent(id, SharedWorldRosterTrust.Hash(projection)) is null)
+                throw new InvalidDataException("Legacy roster projection proof is missing.");
         }
         return floor;
     }
@@ -394,7 +458,12 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 if (roster.ProfileId != id || roster.GroupId != floor.GroupId ||
                     roster.OwnerPublicKey != floor.OwnerPublicKey)
                     throw new InvalidDataException("Roster revision crossed a world boundary.");
-                result.Add(roster);
+                // On the wire use the schema-3 child's real parent in place of
+                // its equivalent legacy anchor. Local Read still retains the
+                // exact legacy record; offsets and page bounds stay unchanged.
+                var projection = floor.LegacyProjectionPosition == i + 1 ? RevisionAt(id, floor, i + 1) : null;
+                var parent = projection is null ? null : LegacyParent(id, SharedWorldRosterTrust.Hash(projection));
+                result.Add(parent ?? roster);
             }
             return result;
         }
@@ -405,10 +474,23 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         {
             if (!ValidHash(hash)) throw new InvalidDataException("Roster anchor is invalid.");
             var floor = Ready(id);
-            if (!HasLookup(id, floor, hash)) return null;
+            if (!HasLookup(id, floor, hash))
+            {
+                // A page may end at the signed parent exported in place of the
+                // equivalent legacy anchor. Its protected proof gives that hash
+                // an exact cursor position without inventing a journal lookup.
+                if (floor.LegacyProjectionPosition is not { } position) return null;
+                var projection = RevisionAt(id, floor, position);
+                var parent = LegacyParent(id, SharedWorldRosterTrust.Hash(projection));
+                return parent is not null && SharedWorldRosterTrust.Hash(parent) == hash
+                    ? ReadPage(id, position) : null;
+            }
             var lookup = JsonSerializer.Deserialize<Lookup>(data.LoadProtected(LookupName(id, hash))!, Json)!;
             _ = LoadRevision(id, hash);
-            return ReadPage(id, checked(lookup.Position + 1));
+            var next = checked(lookup.Position + 1);
+            if (floor.LegacyProjectionPosition == next)
+                next = lookup.Position;
+            return ReadPage(id, next);
         }
     }
     internal IReadOnlyList<SharedWorldRoster> ReadAfterRevision(Guid id, long revision)
@@ -419,7 +501,23 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             var floor = Ready(id);
             if (floor.Heads!.Count > 1)
                 throw new InvalidDataException("Competing roster revisions require owner review.");
-            return ReadPage(id, PositionAfterRevision(id, floor, revision));
+            var position = PositionAfterRevision(id, floor, revision);
+            if (position > 1)
+            {
+                var boundary = RevisionAt(id, floor, position - 1);
+                var parent = RevisionAt(id, floor, position - 2);
+                // A numeric peer cursor cannot distinguish the legacy snapshot
+                // from the owner's equal-counter schema-3 representation. Send
+                // its signed parent as well, even from a canonical owner journal
+                // that never needed a local projection proof.
+                if (boundary.Revision == revision && boundary.Schema == 3 &&
+                    boundary.SignerDeviceId == Guid.Empty &&
+                    (LegacyParent(id, SharedWorldRosterTrust.Hash(boundary)) is not null ||
+                     parent.Schema == 2 && SharedWorldRosterTrust.VerifyRevision(boundary, parent,
+                         floor.OwnerPublicKey, DateTimeOffset.MinValue, false)))
+                    position -= 2;
+            }
+            return ReadPage(id, position);
         }
     }
     private SharedWorldRoster RevisionAt(Guid id, Floor floor, long position)
@@ -457,6 +555,8 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             var floor = Ready(id);
             if (floor.Heads!.Count != 1) return false;
             var position = PositionAfterRevision(id, floor, snapshot.Revision);
+            if (position > 0 && ProvesLegacyOwnerProjection(id, snapshot,
+                    RevisionAt(id, floor, position - 1))) return true;
             if (position >= floor.Count || !LegacyOwnerAdvance(RevisionAt(id, floor, position), snapshot)) return false;
             // A same-counter sibling is a fork, not redundant old metadata.
             if (position > 0)
@@ -472,7 +572,7 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
         lock (sync)
         {
             var floor = Ready(id);
-            var state = floor with { Count = 0, Heads = [], UnreviewedOwnerEdit = false };
+            var state = floor with { Count = 0, Heads = [], UnreviewedOwnerEdit = false, LegacyProjectionPosition = null };
             var result = new List<SharedWorldRoster>();
             for (long i = 0; i < floor.Count; i++)
             {
@@ -483,12 +583,14 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
                 if (!HasLookup(id, floor, hash))
                     throw new InvalidDataException("Protected roster lookup is missing.");
                 var roster = LoadRevision(id, hash);
-                ValidateNext(roster, state, false);
+                var legacyParent = LegacyParent(id, hash);
+                ValidateNext(roster, state, false, legacyParent);
                 result.Add(roster);
                 state = state with
                 {
                     Count = state.Count + 1,
-                    Heads = NextHeads(state.Heads!, roster, hash),
+                    Heads = legacyParent is null ? NextHeads(state.Heads!, roster, hash) : [hash],
+                    LegacyProjectionPosition = legacyParent is null ? state.LegacyProjectionPosition : i,
                     UnreviewedOwnerEdit = state.UnreviewedOwnerEdit ||
                         i > 0 && roster.Schema == 3 && roster.SignerDeviceId == Guid.Empty &&
                         roster.OwnerLocalBaselineMembers is null
@@ -496,14 +598,32 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             }
             if (!state.Heads!.SequenceEqual(floor.Heads!) ||
                 state.UnreviewedOwnerEdit != floor.UnreviewedOwnerEdit ||
+                state.LegacyProjectionPosition != floor.LegacyProjectionPosition ||
                 Directory.Exists(Root(id)) &&
                 Directory.EnumerateFiles(Root(id), "*.json", SearchOption.TopDirectoryOnly).LongCount() != floor.Count)
                 throw new InvalidDataException("Roster chain files changed or were rolled back.");
             return result;
         }
     }
+    internal bool TryAppendLegacyOwnerProjection(SharedWorldRoster roster, SharedWorldRoster parent,
+        string pinnedOwnerPublicKey, bool stopAfterPendingForChecks = false, bool stopAfterFileForChecks = false)
+    {
+        if (roster is null || parent is null) return false;
+        lock (sync)
+        {
+            var floor = Ready(roster.ProfileId);
+            if (floor.Heads is not { Count: 1 } ||
+                !SharedWorldRosterTrust.VerifyLegacyOwnerProjection(roster,
+                    LoadRevision(roster.ProfileId, floor.Heads[0]), parent, pinnedOwnerPublicKey)) return false;
+            AppendCore(roster, pinnedOwnerPublicKey, stopAfterPendingForChecks, stopAfterFileForChecks, parent);
+            return true;
+        }
+    }
     internal void Append(SharedWorldRoster roster, string pinnedOwnerPublicKey,
         bool stopAfterPendingForChecks = false, bool stopAfterFileForChecks = false)
+        => AppendCore(roster, pinnedOwnerPublicKey, stopAfterPendingForChecks, stopAfterFileForChecks);
+    private void AppendCore(SharedWorldRoster roster, string pinnedOwnerPublicKey,
+        bool stopAfterPendingForChecks, bool stopAfterFileForChecks, SharedWorldRoster? legacyParent = null)
     {
         lock (sync)
         {
@@ -533,9 +653,9 @@ internal sealed class SharedWorldRosterChainStore(LocalData data, TimeProvider? 
             if (floor.GroupId != roster.GroupId || floor.OwnerPublicKey != pinnedOwnerPublicKey ||
                 JsonSerializer.SerializeToUtf8Bytes(roster, Json).Length > SharedWorldService.MaximumManifestBytes)
                 throw new InvalidDataException("Roster chain identity or revision size changed.");
-            ValidateNext(roster, floor, true);
+            ValidateNext(roster, floor, true, legacyParent);
             data.SaveProtected(PendingName(roster.ProfileId), JsonSerializer.SerializeToUtf8Bytes(
-                new Pending(1, Digest(floor), hash, roster), Json));
+                new Pending(1, Digest(floor), hash, roster, legacyParent), Json));
             if (stopAfterPendingForChecks) return;
             WriteRevision(roster.ProfileId, hash, roster);
             if (stopAfterFileForChecks) return;

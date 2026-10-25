@@ -703,7 +703,10 @@ internal static class SharedHostingPermissionChecks
             chain.ReadAfterRevision(profile.Id, 1).Select(item => item.Signature).SequenceEqual([latest.Signature, child.Signature]) &&
             chain.ReadAfterRevision(profile.Id, 2).Select(item => item.Signature).SequenceEqual([latest.Signature, child.Signature]) &&
             chain.ReadAfterRevision(profile.Id, latest.Revision).Single().Signature == child.Signature &&
-            chain.ReadAfterRevision(profile.Id, child.Revision).Count == 0,
+            // Numeric peer cursors cannot distinguish a legacy standalone edit
+            // from its equal-counter owner child. Replay this boundary proof.
+            chain.ReadAfterRevision(profile.Id, child.Revision).Select(item => item.Signature)
+                .SequenceEqual([latest.Signature, child.Signature]),
             "repaired owner history lost its exact signed parent or protected anchor positions");
         Require((await fixture.Manager.SetSimpleSharedHostingAsync(profile.Id, true, CancellationToken.None)).Ok &&
             (await fixture.Manager.SharedWorldRosterAsync(profile.Id))!.Signature == child.Signature && chain.Count(profile.Id) == 3,
