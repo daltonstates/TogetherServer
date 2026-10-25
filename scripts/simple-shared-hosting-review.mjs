@@ -108,11 +108,16 @@ async function assertVisibleChecks(modal, record) {
         await checks.getByRole('button', { name: new RegExp(`^(?:Set up|Review) ${name}$`, 'u') }).count() !== 1)
       throw new Error('Each hosting check needs its visible result and setup or review action');
   }
-  const checked = modal.locator('.local-hosting-results time');
+  const checked = modal.locator('.local-hosting-check-time time');
   await checked.waitFor({ state: 'visible', timeout: 8000 });
   const dateTime = await checked.getAttribute('datetime');
   if (!Number.isFinite(Date.parse(dateTime ?? '')) || !/Last checked/u.test(await checked.textContent()))
     throw new Error('The hosting results must show their last successful check time');
+  const result = modal.getByRole('status', { name: 'Last check result', exact: true });
+  if (!await result.isVisible() || (await result.locator('strong').textContent() ?? '').trim().length < 5 ||
+      (await result.locator('p').textContent() ?? '').trim().length < 10 ||
+      await checks.locator('.local-hosting-check-next').count() !== 5)
+    throw new Error('The completed hosting check needs its visible result and next action');
   if (await modal.getByRole('region', { name: 'Local hosting setup guide', exact: true }).count() !== 1)
     throw new Error('The hosting checks need one local setup guide');
   record.assertions.push({ persistentHostingChecks: 5, lastCheckedUtc: dateTime, disclosureRequired: false });

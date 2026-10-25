@@ -68,7 +68,7 @@ jobs:
           retention-days: 1
 
   server-access-ui:
-    name: Review server access with unchanged candidate UI
+    name: Review server access and hosting wizard with unchanged candidate UI
     needs: candidate
     runs-on: windows-latest
     timeout-minutes: 25
@@ -165,6 +165,44 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: server-access-visual-review
+          path: local-data/ui-redesign-visual-review/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Review the hosting wizard on the dedicated hosted runner
+        shell: pwsh
+        run: |
+          # Reuse the exact embedded UI. No app, installer or UI rebuild occurs here.
+          node scripts/render-ui-redesign.mjs --simple-shared-hosting-only --allow-isolated-browser-tests --hosted-runner github-actions
+          if ($LASTEXITCODE -ne 0) { throw 'Hosting wizard rendered review failed.' }
+      - name: Verify hosting capture identity and completeness
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $context = Get-Content local-data/ui-redesign-visual-review/candidate-context.json -Raw | ConvertFrom-Json
+          if ($context.sourceRevision -cne $env:GITHUB_SHA -or
+              (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $context.candidateSha256 -or
+              @(Get-ChildItem ui/dist -Recurse -File -Force).Count -ne @($context.uiAssets).Count) { throw 'Candidate changed during hosting review.' }
+          foreach ($asset in $context.uiAssets) {
+            $file = Get-Item -LiteralPath (Join-Path 'ui/dist' $asset.asset)
+            if ($file.Length -ne $asset.sizeBytes -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) { throw 'Hosting review UI changed.' }
+          }
+          $manifest = Get-Content local-data/ui-redesign-visual-review/manifest.json -Raw | ConvertFrom-Json
+          $index = @($context.uiAssets | Where-Object asset -ceq 'index.html')
+          if ($index.Count -ne 1 -or $manifest.build.sourceRevision -cne $env:GITHUB_SHA -or
+              $manifest.build.indexSha256 -cne $index[0].sha256 -or
+              $manifest.coverage.scope -cne 'simple-shared-hosting' -or
+              $manifest.status -cne 'captured-awaiting-visual-inspection' -or $manifest.summary.planned -lt 1 -or
+              $manifest.summary.planned -ne $manifest.summary.attempted -or $manifest.summary.failed -ne 0 -or
+              $manifest.summary.skipped -ne 0 -or $manifest.summary.layoutFindings -ne 0 -or
+              @($manifest.fatalErrors).Count -ne 0) { throw 'Hosting capture identity or coverage differs.' }
+      - name: Preserve hosting wizard screenshots and identity proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hosting-wizard-visual-review
           path: local-data/ui-redesign-visual-review/
           if-no-files-found: error
           retention-days: 7
