@@ -472,12 +472,23 @@ internal static partial class CoreRemoteJourney
                     prepared = await ObserveAsync("PrepareLocal", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                         new(true, true, ServerFile: Path.GetFullPath(fixturePath))));
-                    LabRequire(prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
-                        prepared.ReadyForManualStart && !prepared.Running, "SyntheticHostingPreparationRejected");
+                    // This first action prepares the copy without incoming
+                    // consent. Its connection blocker must remain actionable;
+                    // only the later explicit LAN action can make Start ready.
+                    LabRequire(prepared.LocalProfileId is not null && prepared.LocalProfileId != Guid.Empty &&
+                        prepared.BranchHash is not null && !prepared.Ok && prepared.Allowed && prepared.Consented &&
+                        !prepared.ReadyForManualStart && !prepared.Running &&
+                        prepared.Code == "LocalConnectionSetupRequired" && prepared.Remedy?.Kind == "Connection" &&
+                        prepared.Steps.Select(step => step.Key).SequenceEqual(["permission", "server", "save", "ports", "connection"]) &&
+                        prepared.Steps.Take(4).All(step => step.State == "Ready") && prepared.Steps[4].State == "ActionRequired",
+                        "SyntheticHostingPreparationRejected");
                     var exactLocalProfile = prepared.LocalProfileId ?? throw new PairingLabFailure("PreparedProfileMissing");
+                    var exactBranchHash = prepared.BranchHash;
                     localProfileId = exactLocalProfile;
                     var before = await SnapshotAsync("BeforeStart");
                     LabRequire(before.Runs.All(run => run.ProcessId is null), "PreparationStartedProcess");
+                    LabRequire(!before.Settings.CompanionListeningEnabled && !before.Settings.RemoteControlsEnabled,
+                        "PreparationEnabledIncomingConnections");
                     if (lanAddress is not null)
                     {
                         // Save only explicit incoming consent. The exact guided
@@ -492,7 +503,12 @@ internal static partial class CoreRemoteJourney
                         prepared = await ObserveAsync("PrepareIncoming", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                             $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                             new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true)));
-                        LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId == exactLocalProfile &&
+                        LabRequire(prepared.Ok && prepared.Code == "LocalHostingPrepared" && prepared.ReadyForManualStart &&
+                            !prepared.Running && prepared.Allowed && prepared.Consented &&
+                            prepared.LocalProfileId == exactLocalProfile && prepared.BranchHash == exactBranchHash &&
+                            prepared.Steps.Select(step => step.Key).SequenceEqual(["permission", "server", "save", "ports", "connection"]) &&
+                            prepared.Steps.Take(4).All(step => step.State == "Ready") &&
+                            prepared.Steps[4].State is "Ready" or "Unknown" &&
                             prepared.Remedy is not { Kind: "Connection" or "Ports" or "Review" }, "LanHostingPreparationRejected");
                         WindowsListenerOwners.RequireTogetherServerOwner(appPorts[4], processes.Single(process => process.Role == "friend-a").Process);
                         preparedBranch = (await ObserveAsync("ReadBranchProof", first, () => PairingLabGetAsync<WorldSeparateCopyBranch[]>(first,
@@ -518,8 +534,9 @@ internal static partial class CoreRemoteJourney
                     if (lanAddress is null)
                     {
                         // Ordinary peer-route rules deliberately refuse loopback.
-                        LabRequire(!result.GetProperty("ok").GetBoolean() && prepared.Remedy?.Kind == "Connection" &&
-                            result.GetProperty("code").GetString() == "LocalHostingActionRequired", "LoopbackHostingConnectionBlockerMissing");
+                        LabRequire(!result.GetProperty("ok").GetBoolean() && !prepared.ReadyForManualStart &&
+                            prepared.Code == "LocalConnectionSetupRequired" && prepared.Remedy?.Kind == "Connection" &&
+                            result.GetProperty("code").GetString() == "LocalHostingPreparationRequired", "LoopbackHostingConnectionBlockerMissing");
                         LabRequire(after.Runs.All(run => run.ProcessId is null), "BlockedGuidedStartCreatedProcess");
                     }
                     else

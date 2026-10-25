@@ -537,6 +537,7 @@ export function routeFixture(state, request) {
       return reply({ allowed, code: allowed ? 'HostingAllowed' : 'HostingPermissionRequired', message: boundary });
     }
     if (!host && suffix === 'shared-world/hosting/progress' && method === 'GET') {
+      if (state.hostingStartPendingRequest) return { ...reply(null), pending: true };
       if (!state.hostingProgressPending) return reply(null);
       const receiving = state.hostingProgress === 'Receiving';
       state.hostingProgressReads++;
@@ -565,7 +566,10 @@ export function routeFixture(state, request) {
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting/start' && method === 'POST') {
       if (!simpleHostingStatus(state, id, boundary).readyForManualStart || Object.keys(body).sort().join(',') !== 'acceptSplitWarning,branchHash,localProfileId,requestId' ||
           body.branchHash !== 'A'.repeat(64) || body.localProfileId !== id || body.requestId !== null || body.acceptSplitWarning !== true) return null;
-      if (state.hostingStartPending) return { ...reply(result({ code: 'Starting', message: 'Synthetic Start result deliberately pending.' })), pending: true };
+      if (state.hostingStartPending) {
+        state.hostingStartPendingRequest = true;
+        return { ...reply(result({ code: 'Starting', message: 'Synthetic Start result deliberately pending.' })), pending: true };
+      }
       state.simpleHostingStarted = true;
       const run = state.host.runs.find(item => item.profileId === id);
       Object.assign(run, { state: 'Starting', detail: 'Starting the synthetic local copy.', onlinePlayers: null,

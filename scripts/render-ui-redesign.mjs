@@ -22,6 +22,7 @@ const { createFixtureState, routeFixture, fixtureNow, fixtureIds } = await impor
 const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.mjs');
 const { extraCases: accessReviewCases, serverAccessCaseIds, assertServerAccessUi } = await import('./ui-polish-access-review.mjs');
 const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
+const { uiReviewBuild } = await import('./ui-review-provenance.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'local-data/ui-redesign-visual-review');
 if (!listOnly) await mkdir(output, { recursive: true });
@@ -1258,8 +1259,10 @@ let server, browser;
 try {
   const dist = await realpath(resolve(root, 'ui/dist'));
   const indexBytes = await readFile(resolve(dist, 'index.html'));
-  manifest.build.indexSha256 = createHash('sha256').update(indexBytes).digest('hex');
-  manifest.build.sourceRevision = process.env.GITHUB_SHA ?? null;
+  const candidateContext = process.env.TOGETHERSERVER_UI_CANDIDATE_CONTEXT
+    ? JSON.parse((await readFile(process.env.TOGETHERSERVER_UI_CANDIDATE_CONTEXT, 'utf8')).replace(/^\uFEFF/u, '')) : undefined;
+  manifest.build = uiReviewBuild(createHash('sha256').update(indexBytes).digest('hex'), process.env.GITHUB_SHA ?? null, candidateContext);
+  if (candidateContext) manifest.sourceAuthority = 'Immutable candidate bundled UI identified by sourceRevision and candidateRunId; verificationRevision identifies the separate capture harness. Candidate bytes are not rebuilt or launched by this renderer.';
   const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.json': 'application/json' };
   server = createServer(async (req, res) => {
     try {

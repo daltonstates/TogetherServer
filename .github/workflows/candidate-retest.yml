@@ -1,0 +1,434 @@
+name: Retest immutable prepared-hosting candidate
+
+on:
+  push:
+    branches: ['review/candidate-retest-*']
+
+permissions:
+  contents: read
+  actions: read
+
+# The original candidate, fixtures and embedded UI are never rebuilt here.
+# Verification changes have their own revision; the first failed run is retained.
+env:
+  CANDIDATE_SOURCE: '1448f87d8acf156af883e96ea6c2ad2fda662d54'
+  CANDIDATE_RUN_ID: '40240756633'
+  CANDIDATE_ARTIFACT_ID: '12616982870'
+  CANDIDATE_SHA256: '831e0206801d5f326e54b403391512fdca26d4810c9cd607f22cc197f66ded79'
+  CANDIDATE_PRODUCT_VERSION: '0.3.3.13+1448f87d8acf156af883e96ea6c2ad2fda662d54'
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  pairing:
+    name: Retest all three pairing modes with original candidate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the verification revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Require unchanged product and build inputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor $env:CANDIDATE_SOURCE HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The original candidate source is not an ancestor.' }
+          $inputs = @('src', 'ui', 'installer', 'global.json', '.node-version', 'TogetherServer.slnx',
+            'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props',
+            'NuGet.config', 'NuGet.Config', 'Nuget.config', 'nuget.config',
+            ':(glob)**/Directory.Build.*', ':(glob)**/Directory.Packages.*',
+            'scripts/build.ps1', 'scripts/build-installer.ps1', 'scripts/prepare-github-release.ps1',
+            'scripts/prepare-staging-package.ps1', 'scripts/prepare-demo-package.ps1', 'scripts/verify-demo-package.py')
+          $changes = @(git diff --name-only $env:CANDIDATE_SOURCE HEAD -- @inputs)
+          if ($LASTEXITCODE -ne 0 -or $changes.Count -ne 0) { throw 'A product or build input changed after the immutable candidate.' }
+
+      - name: Retrieve the exact original candidate artifact and fixtures
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: '12616982870'
+          run-id: '40240756633'
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: .
+
+      - name: Verify and retain original candidate and packaging provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $artifact = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:CANDIDATE_ARTIFACT_ID"
+          if ([string]$artifact.id -cne $env:CANDIDATE_ARTIFACT_ID -or $artifact.name -cne 'windows-candidate' -or
+              $artifact.expired -ne $false -or [string]$artifact.workflow_run.id -cne $env:CANDIDATE_RUN_ID -or
+              $artifact.workflow_run.head_sha -cne $env:CANDIDATE_SOURCE) { throw 'Original artifact provenance differs.' }
+          $app = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $candidate = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          $package = Get-Content local-data/release-candidate/package-evidence.json -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash.ToLowerInvariant()
+          $productVersion = (Get-Item -LiteralPath $app).VersionInfo.ProductVersion
+          if ($hash -cne $env:CANDIDATE_SHA256 -or $productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or
+              $candidate.source -cne $env:CANDIDATE_SOURCE -or [string]$candidate.runId -cne $env:CANDIDATE_RUN_ID -or
+              [int]$candidate.runAttempt -lt 1 -or $candidate.job -cne 'candidate' -or $candidate.version -cne '0.3.3.13' -or
+              $candidate.productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or $candidate.sha256 -cne $hash -or
+              $package.app.sha256 -cne $hash -or $package.assembly.matchesCurrentBuild -ne $true -or
+              @($package.assets).Count -lt 1 -or @($package.assets).Count -gt 64) { throw 'Original candidate or static package identity differs.' }
+          $proof = New-Item -ItemType Directory -Path "local-data/ci-evidence/candidate-retest-$env:GITHUB_JOB" -Force
+          Copy-Item -LiteralPath local-data/release-candidate/candidate.json -Destination (Join-Path $proof.FullName 'original-candidate.json')
+          Copy-Item -LiteralPath local-data/release-candidate/package-evidence.json -Destination (Join-Path $proof.FullName 'original-package-evidence.json')
+          @{sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;candidateRunId=$env:CANDIDATE_RUN_ID;
+            candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;candidateSha256=$hash;productVersion=$productVersion;
+            originalCandidateRunAttempt=$candidate.runAttempt;verificationRunId=$env:GITHUB_RUN_ID;
+            verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT;rebuilt=$false;fullyAccepted=$false;
+            boundary='Original build/package proof retained unchanged; new dedicated hosted verification only.'} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof.FullName 'verification-context.json') -Encoding utf8
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install locked Playwright test dependencies
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked test dependency installation failed.' }
+          node -e 'if (require("./node_modules/playwright/package.json").version !== "1.64.0") throw new Error("Playwright version mismatch");'
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Playwright identity differs.' }
+          ./node_modules/.bin/playwright.cmd install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned browser installation failed.' }
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+
+      - name: Build only the CompanionChecks dispatcher and source dependencies
+        run: |
+          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dispatcher restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Dispatcher compilation failed.' }
+          if ((Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:CANDIDATE_SHA256) {
+            throw 'Dispatcher compilation changed the immutable candidate.'
+          }
+      - name: Verify loopback, assigned LAN and actual two-ended UX with the same candidate
+        env:
+          TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $harness = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
+          $candidateHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
+          $productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion
+          if ($productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or $candidateHash -cne $env:CANDIDATE_SHA256 -or $version -cne '0.3.3.13') { throw 'Local pairing candidate source identity mismatch.' }
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/local-pairing -Force
+          $context = [ordered]@{ sourceRevision = $env:CANDIDATE_SOURCE; verificationRevision = $env:GITHUB_SHA; candidateRunId = $env:CANDIDATE_RUN_ID; candidateArtifactId = $env:CANDIDATE_ARTIFACT_ID; productVersion = $productVersion; candidateSha256 = $candidateHash;
+            workflowRunId = $env:GITHUB_RUN_ID; workflowRunAttempt = $env:GITHUB_RUN_ATTEMPT; job = $env:GITHUB_JOB;
+            playwrightVersion = '1.64.0'; boundary = 'Dedicated hosted Windows runner; windowless synthetic same-PC tests only; no real game or WAN acceptance.' }
+          $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'candidate.json') -Encoding utf8
+          $upInterfaces = @(Get-NetAdapter -ErrorAction Stop | Where-Object Status -eq 'Up' | ForEach-Object InterfaceIndex)
+          $lan = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+            $_.AddressState.ToString() -eq 'Preferred' -and $_.InterfaceIndex -in $upInterfaces -and
+            $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
+          } | Sort-Object InterfaceIndex, IPAddress | Select-Object -First 1)
+          if ($lan.Count -ne 1) { throw 'The hosted local pairing lane requires one assigned preferred private IPv4 address.' }
+          $labRoot = Join-Path (Get-Location) 'local-data/local-pairing-lab'
+          $modeFailures = [Collections.Generic.List[string]]::new()
+          $passedModes = [Collections.Generic.List[string]]::new()
+          try {
+            foreach ($mode in @('ux', 'loopback', 'lan-api')) {
+              try {
+              $before = @(if (Test-Path -LiteralPath $labRoot) { Get-ChildItem -LiteralPath $labRoot -Directory | ForEach-Object Name })
+              $labArguments = @($harness, $candidate, '--local-pairing-lab-journey', '--allow-windowless-lab')
+              if ($mode -ne 'loopback') { $labArguments += @('--lab-lan-address', $lan[0].IPAddress) }
+              if ($mode -eq 'ux') { $labArguments += '--lab-ux' }
+              # The harness assigns apps, fixtures and the muted headless browser to its kill-on-close job.
+              # It receives the downloaded candidate, never the rebuilt source-output app or the rebuilding launcher.
+              dotnet @labArguments
+              $runExitCode = $LASTEXITCODE
+              $created = @(Get-ChildItem -LiteralPath $labRoot -Directory | Where-Object { $_.Name -notin $before })
+              if ($created.Count -ne 1 -or $created[0].Name -notmatch '^run-[0-9a-f]{32}$') { throw 'One exact new lab report directory was not identified.' }
+              $destination = New-Item -ItemType Directory -Path (Join-Path $evidence.FullName $mode) -Force
+              $reportPath = Join-Path $created[0].FullName 'report.json'
+              if (!(Test-Path -LiteralPath $reportPath) -or (Get-Item -LiteralPath $reportPath).Length -gt 262144) { throw 'The bounded lab report is missing or too large.' }
+              $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+              # Export fixed report fields only: no process paths, protected state, pairing material or synthetic saves.
+              $report | Select-Object schema, runId, startedUtc, endedUtc, durationMs, mode, physicalPcCount, outcome,
+                failedStage, failureCode, stages, uxStagePassed, apiHostChange, branchTransfer, cleanup, resources, windowObservation, acceptance |
+                ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'report.json') -Encoding utf8
+              $uxReport = $null
+              if ($mode -eq 'ux') {
+                $uxRoot = Join-Path $created[0].FullName 'ux'
+                $uxReportPath = Join-Path $uxRoot 'report.json'
+                if (!(Test-Path -LiteralPath $uxReportPath) -or (Get-Item -LiteralPath $uxReportPath).Length -gt 262144) { throw 'The bounded UX report is missing or too large.' }
+                $uxReport = Get-Content -LiteralPath $uxReportPath -Raw | ConvertFrom-Json
+                $uxReport | Select-Object ok, stages, errors, failedRequests, canceledRequests, controlPolicyChanges, boundaries, guidedHosting, preparationDiagnostics, hostingRequestDiagnostics, hostingUiTransitions, signedDiscovery, automaticSharing, copyIntegrity, failurePathCoverage, failure |
+                  ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination.FullName 'ux-report.json') -Encoding utf8
+                $pictures = @(Get-ChildItem -LiteralPath $uxRoot -File -Filter '*.png')
+                if ($pictures.Count -gt 64) { throw 'The masked UX screenshot count exceeds its bound.' }
+                foreach ($picture in $pictures) {
+                  if ($picture.Name -notmatch '^(?:[0-9]{2}-[a-z0-9-]+|failure-[0-9]+)\.png$' -or $picture.Length -gt 16MB -or
+                      ($picture.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'A masked UX screenshot failed its bounded export checks.' }
+                  Copy-Item -LiteralPath $picture.FullName -Destination (Join-Path $destination.FullName $picture.Name)
+                }
+              }
+              $reviewFiles = @(Get-ChildItem -LiteralPath $created[0].FullName -Recurse -File -Filter simple-hosting-latest-review.json)
+              if ($reviewFiles.Count -gt 8) { throw 'Diagnostic file count exceeds its bound.' }
+              $reviewNumber = 0
+              foreach ($reviewFile in $reviewFiles) {
+                if ($reviewFile.Length -gt 32768 -or ($reviewFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Lab review diagnostic exceeds its bound.' }
+                $reviews = @(Get-Content -LiteralPath $reviewFile.FullName -Raw | ConvertFrom-Json)
+                if ($reviews.Count -gt 16) { throw 'Lab review diagnostic record count exceeds its bound.' }
+                $reviews | Select-Object phase,reason,exceptionType,localCopies,canonicalCopies,branchCopies,knownHeadCount,verifiedPayloads,coveringCandidates,candidateKind |
+                  ConvertTo-Json -Depth 4 | Set-Content (Join-Path $destination.FullName ("latest-review-{0}.json" -f $reviewNumber)) -Encoding utf8
+                $reviewNumber++
+              }
+              if ($runExitCode -ne 0 -or $report.outcome -ne 'Passed' -or @($report.stages).Count -eq 0 -or
+                  @($report.stages | Where-Object state -ne 'Passed').Count -ne 0) { throw "The $mode lab did not pass every planned stage without skips." }
+              foreach ($required in @('isolated-apps', 'cleanup')) {
+                if (@($report.stages | Where-Object id -eq $required).Count -ne 1) { throw "The $mode lab omitted a required stage." }
+              }
+              $expected = @('isolated-apps', 'cleanup', 'two-ended-ux')
+              if ($mode -ne 'ux') {
+                $expected = @('isolated-apps', 'pinned-pairing', 'separate-permissions-and-consent', 'signed-chat',
+                  'synthetic-stop-copy-receipts', 'password-permission-revoke', 'unsupported-password-source-denied',
+                  'guided-hosting', 'local-copy-hosting', 'lost-response-cleanup', 'cleanup')
+                if ($mode -eq 'lan-api') {
+                  $expected += @('new-host-notice', 'new-host-authenticated-connect', 'new-host-permission-isolation',
+                    'new-host-stop-and-transfer', 'new-host-restart-reconnect', 'new-host-revocation-isolation', 'new-host-receipt-confirmed')
+                  if ($report.apiHostChange.discoveredHost -ne $true -or $report.apiHostChange.connectedOwner -ne $true -or
+                      $report.apiHostChange.connectedObserver -ne $true -or $report.apiHostChange.transferredCandidateCopy -ne $true -or
+                      $report.apiHostChange.restartedHostConnections -ne $true -or $report.apiHostChange.isolatedRevocation -ne $true) {
+                    throw 'The LAN lab omitted a required signed hosting, transfer, restart or credential-isolation proof.'
+                  }
+                }
+              }
+              if (@($report.stages).Count -ne $expected.Count -or @($report.stages | Where-Object id -notin $expected).Count -ne 0 -or
+                  @($report.stages.id | Select-Object -Unique).Count -ne $expected.Count) { throw "The $mode lab changed its required stage inventory." }
+              if ($report.cleanup.jobActiveProcesses -ne 0 -or $report.windowObservation.state -ne 'Passed' -or
+                  $report.windowObservation.samples -lt 1 -or $report.windowObservation.peakVisibleOwnedWindows -ne 0) { throw "The $mode lab failed window observation or exact job cleanup." }
+              if ($mode -eq 'ux' -and ($uxReport.ok -ne $true -or @($uxReport.stages).Count -ne 10 -or
+                  @($uxReport.stages | Where-Object passed -ne $true).Count -ne 0 -or @($uxReport.errors).Count -ne 0 -or
+                  @($uxReport.failedRequests).Count -ne 0 -or @($pictures).Count -lt 1 -or
+                  $uxReport.failurePathCoverage.hostingGrantWithdrawal -ne $true -or $uxReport.failurePathCoverage.localConsentAndCancel -ne $true)) {
+                throw 'The actual two-ended UX did not pass all ten stages and permission/consent failure paths with masked evidence.'
+              }
+              if ($mode -eq 'ux') {
+                $sidebarProofs = @(
+                  @{record=$uxReport.guidedHosting.sidebar;hostingBadge=$true},
+                  @{record=$uxReport.signedDiscovery.sidebar;hostingBadge=$true},
+                  @{record=$uxReport.signedDiscovery.stoppedSidebar;hostingBadge=$false}
+                )
+                foreach ($sidebarProof in $sidebarProofs) {
+                  if ($null -eq $sidebarProof.record -or $sidebarProof.record.singleOriginalRow -ne $true -or
+                      $sidebarProof.record.hostingBadge -ne $sidebarProof.hostingBadge -or
+                      $sidebarProof.record.exactRoute -ne $true -or $sidebarProof.record.noSuccessorHostGroup -ne $true) {
+                    throw 'The actual two-ended UX omitted an exact single-world sidebar, hosting badge or click route before or after Stop.'
+                  }
+                }
+              }
+              if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $candidateHash) { throw 'The downloaded candidate changed during local pairing acceptance.' }
+              Write-Host "PASS ${mode}: every planned stage, observed zero windows, exact job cleanup and immutable candidate."
+              $passedModes.Add($mode)
+              } catch {
+                $modeFailures.Add($mode)
+                Write-Host "FAIL ${mode}: independent lab failed; see its retained redacted report and fixed failure code."
+                if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $candidateHash) { throw 'Candidate changed; refusing another mode.' }
+              }
+            }
+            if ($passedModes.Count -ne 3 -or $modeFailures.Count -ne 0) { throw 'One or more independent lab modes failed; each retained result remains authoritative.' }
+          } finally {
+            @{expectedModes=3;passed=@($passedModes.ToArray());failed=@($modeFailures.ToArray());
+              sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;candidateRunId=$env:CANDIDATE_RUN_ID;candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;candidateSha256=$candidateHash;fullyAccepted=$false} | ConvertTo-Json -Depth 4 |
+              Set-Content (Join-Path $evidence.FullName 'mode-summary.json') -Encoding utf8
+            $finalHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            $context.finalCandidateSha256 = $finalHash
+            $context | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence.FullName 'candidate.json') -Encoding utf8
+            if ($finalHash -ne $candidateHash) { throw 'The downloaded candidate bytes changed.' }
+          }
+      - name: Preserve every pairing outcome and original provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-retest-pairing
+          path: |
+            local-data/ci-evidence/local-pairing/
+            local-data/ci-evidence/candidate-retest-pairing/
+          if-no-files-found: error
+          retention-days: 7
+
+  hosting-captures:
+    name: Retest all 99 hosting-wizard captures with original embedded UI
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the verification revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Require unchanged product and build inputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor $env:CANDIDATE_SOURCE HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The original candidate source is not an ancestor.' }
+          $inputs = @('src', 'ui', 'installer', 'global.json', '.node-version', 'TogetherServer.slnx',
+            'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props',
+            'NuGet.config', 'NuGet.Config', 'Nuget.config', 'nuget.config',
+            ':(glob)**/Directory.Build.*', ':(glob)**/Directory.Packages.*',
+            'scripts/build.ps1', 'scripts/build-installer.ps1', 'scripts/prepare-github-release.ps1',
+            'scripts/prepare-staging-package.ps1', 'scripts/prepare-demo-package.ps1', 'scripts/verify-demo-package.py')
+          $changes = @(git diff --name-only $env:CANDIDATE_SOURCE HEAD -- @inputs)
+          if ($LASTEXITCODE -ne 0 -or $changes.Count -ne 0) { throw 'A product or build input changed after the immutable candidate.' }
+
+      - name: Retrieve the exact original candidate artifact and fixtures
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: '12616982870'
+          run-id: '40240756633'
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: .
+
+      - name: Verify and retain original candidate and packaging provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $artifact = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:CANDIDATE_ARTIFACT_ID"
+          if ([string]$artifact.id -cne $env:CANDIDATE_ARTIFACT_ID -or $artifact.name -cne 'windows-candidate' -or
+              $artifact.expired -ne $false -or [string]$artifact.workflow_run.id -cne $env:CANDIDATE_RUN_ID -or
+              $artifact.workflow_run.head_sha -cne $env:CANDIDATE_SOURCE) { throw 'Original artifact provenance differs.' }
+          $app = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $candidate = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          $package = Get-Content local-data/release-candidate/package-evidence.json -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash.ToLowerInvariant()
+          $productVersion = (Get-Item -LiteralPath $app).VersionInfo.ProductVersion
+          if ($hash -cne $env:CANDIDATE_SHA256 -or $productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or
+              $candidate.source -cne $env:CANDIDATE_SOURCE -or [string]$candidate.runId -cne $env:CANDIDATE_RUN_ID -or
+              [int]$candidate.runAttempt -lt 1 -or $candidate.job -cne 'candidate' -or $candidate.version -cne '0.3.3.13' -or
+              $candidate.productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or $candidate.sha256 -cne $hash -or
+              $package.app.sha256 -cne $hash -or $package.assembly.matchesCurrentBuild -ne $true -or
+              @($package.assets).Count -lt 1 -or @($package.assets).Count -gt 64) { throw 'Original candidate or static package identity differs.' }
+          $proof = New-Item -ItemType Directory -Path "local-data/ci-evidence/candidate-retest-$env:GITHUB_JOB" -Force
+          Copy-Item -LiteralPath local-data/release-candidate/candidate.json -Destination (Join-Path $proof.FullName 'original-candidate.json')
+          Copy-Item -LiteralPath local-data/release-candidate/package-evidence.json -Destination (Join-Path $proof.FullName 'original-package-evidence.json')
+          @{sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;candidateRunId=$env:CANDIDATE_RUN_ID;
+            candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;candidateSha256=$hash;productVersion=$productVersion;
+            originalCandidateRunAttempt=$candidate.runAttempt;verificationRunId=$env:GITHUB_RUN_ID;
+            verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT;rebuilt=$false;fullyAccepted=$false;
+            boundary='Original build/package proof retained unchanged; new dedicated hosted verification only.'} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof.FullName 'verification-context.json') -Encoding utf8
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install locked Playwright test dependencies
+        working-directory: ui
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked test dependency installation failed.' }
+          node -e 'if (require("./node_modules/playwright/package.json").version !== "1.64.0") throw new Error("Playwright version mismatch");'
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Playwright identity differs.' }
+          ./node_modules/.bin/playwright.cmd install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned browser installation failed.' }
+      - name: Bind every rendered asset to the original candidate
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content local-data/release-candidate/package-evidence.json -Raw | ConvertFrom-Json
+          $uiRoot = (Resolve-Path ui/dist).Path
+          $prefix = $uiRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+          $files = @(Get-ChildItem $uiRoot -Recurse -File -Force)
+          if ($files.Count -ne @($package.assets).Count) { throw 'Candidate UI inventory differs.' }
+          $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach ($asset in $package.assets) {
+            $path = [IO.Path]::GetFullPath((Join-Path $uiRoot $asset.asset))
+            if (!$path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or !$names.Add($asset.asset) -or
+                $asset.sha256 -cnotmatch '^[0-9a-f]{64}$' -or !(Test-Path -LiteralPath $path -PathType Leaf) -or
+                ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                (Get-Item -LiteralPath $path).Length -ne $asset.sizeBytes -or
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) {
+              throw 'An embedded candidate UI asset differs.'
+            }
+          }
+          New-Item -ItemType Directory -Path local-data/ui-redesign-visual-review -Force | Out-Null
+          @{sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;candidateRunId=$env:CANDIDATE_RUN_ID;
+            candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;candidateSha256=$env:CANDIDATE_SHA256;
+            productVersion=$env:CANDIDATE_PRODUCT_VERSION;candidateJob='candidate';uiAssets=@($package.assets);
+            rebuilt=$false;appLaunched=$false;fullyAccepted=$false;
+            boundary='Dedicated hosted synthetic UI review of original embedded assets; no physical PC/game acceptance.'} |
+            ConvertTo-Json -Depth 7 | Set-Content local-data/ui-redesign-visual-review/candidate-context.json -Encoding utf8
+
+      - name: Verify pure fixtures and exact capture inventory
+        run: |
+          node --test scripts/ui-redesign-fixtures.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Pure render fixture checks failed.' }
+          $plan = node scripts/render-ui-redesign.mjs --list --simple-shared-hosting-only | ConvertFrom-Json
+          $inventory = @($plan.inventory)
+          if ($LASTEXITCODE -ne 0 -or $plan.coverage.scope -cne 'simple-shared-hosting' -or
+              $plan.coverage.plannedCaptures -ne 99 -or $inventory.Count -ne 99 -or @($inventory.id | Select-Object -Unique).Count -ne 99) {
+            throw 'The hosting capture inventory must contain exactly 99 unique cases.'
+          }
+
+      - name: Capture the full hosting wizard on the dedicated hosted runner
+        env:
+          TOGETHERSERVER_UI_CANDIDATE_CONTEXT: local-data/ui-redesign-visual-review/candidate-context.json
+        run: |
+          # Explicit hosted opt-in; never run browser/native checks on the owner's active desktop.
+          # Use the downloaded UI only: no app, installer, UI build or publish occurs.
+          node scripts/render-ui-redesign.mjs --simple-shared-hosting-only --allow-isolated-browser-tests --hosted-runner github-actions
+          if ($LASTEXITCODE -ne 0) { throw 'Hosting wizard rendered review failed.' }
+
+      - name: Verify immutable bytes and complete capture provenance
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $context = Get-Content local-data/ui-redesign-visual-review/candidate-context.json -Raw | ConvertFrom-Json
+          if ($context.sourceRevision -cne $env:CANDIDATE_SOURCE -or $context.verificationRevision -cne $env:GITHUB_SHA -or
+              $context.candidateRunId -cne $env:CANDIDATE_RUN_ID -or $context.candidateSha256 -cne $env:CANDIDATE_SHA256 -or
+              (Get-Item local-data/release-candidate/TogetherServer.exe).VersionInfo.ProductVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or
+              (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:CANDIDATE_SHA256 -or
+              @(Get-ChildItem ui/dist -Recurse -File -Force).Count -ne @($context.uiAssets).Count) { throw 'Candidate changed during hosting review.' }
+          foreach ($asset in $context.uiAssets) {
+            $file = Get-Item -LiteralPath (Join-Path 'ui/dist' $asset.asset)
+            if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -ne $asset.sizeBytes -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) { throw 'Hosting review UI changed.' }
+          }
+          $manifest = Get-Content local-data/ui-redesign-visual-review/manifest.json -Raw | ConvertFrom-Json
+          $plan = node scripts/render-ui-redesign.mjs --list --simple-shared-hosting-only | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Final capture inventory could not be read.' }
+          $inventory = @($plan.inventory)
+          $index = @($context.uiAssets | Where-Object asset -ceq 'index.html')
+          if ($index.Count -ne 1 -or $manifest.build.sourceRevision -cne $env:CANDIDATE_SOURCE -or
+              $manifest.build.verificationRevision -cne $env:GITHUB_SHA -or $manifest.build.candidateRunId -cne $env:CANDIDATE_RUN_ID -or
+              $manifest.build.candidateSha256 -cne $env:CANDIDATE_SHA256 -or $manifest.build.indexSha256 -cne $index[0].sha256 -or
+              $manifest.coverage.scope -cne 'simple-shared-hosting' -or $manifest.status -cne 'captured-awaiting-visual-inspection' -or
+              $inventory.Count -ne 99 -or $manifest.summary.planned -ne 99 -or $manifest.summary.attempted -ne 99 -or
+              @($manifest.inventory).Count -ne 99 -or @($manifest.cases).Count -ne 99 -or
+              @($manifest.cases.id | Select-Object -Unique).Count -ne 99 -or
+              @($manifest.cases | Where-Object id -notin $inventory.id).Count -ne 0 -or
+              @($manifest.cases | Where-Object status -notin @('captured', 'captured-intentional-error-state')).Count -ne 0 -or
+              $manifest.summary.failed -ne 0 -or $manifest.summary.skipped -ne 0 -or $manifest.summary.layoutFindings -ne 0 -or
+              @($manifest.fatalErrors).Count -ne 0) { throw 'Hosting capture identity or complete 99-case coverage differs.' }
+
+      - name: Preserve all hosting captures and original provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-retest-hosting-wizard
+          path: |
+            local-data/ui-redesign-visual-review/
+            local-data/ci-evidence/candidate-retest-hosting-captures/
+          if-no-files-found: error
+          retention-days: 7

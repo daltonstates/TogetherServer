@@ -108,6 +108,22 @@ export function assertPreparedHostingRequests(state, expectedStarts) {
   return { startRequests: writes.length, prepareRequests: 0 };
 }
 
+// Clock advancement dispatches the automatic read; it does not await its
+// response or React's loading/result paint. Finish both before scroll capture.
+export async function advancePreparedHostingCheck(page, modal, ticks) {
+  const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
+    response.request().method() === 'GET', { timeout: 8000 });
+  await page.clock.fastForward(ticks);
+  const response = await refreshed;
+  if (!response.ok()) throw new Error('The final automatic hosting check did not succeed');
+  await response.finished();
+  const start = modal.getByRole('button', { name: 'Start hosting', exact: true });
+  await page.waitForFunction(button => button.isConnected && !button.disabled, await start.elementHandle(), { timeout: 8000 });
+  await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+  if (await modal.getByRole('region', { name: 'Hosting progress', exact: true }).count())
+    throw new Error('The final automatic hosting check is still changing the captured dialog');
+}
+
 async function assertVisibleChecks(modal, record) {
   const checks = modal.getByRole('list', { name: 'Local hosting checks', exact: true });
   await checks.waitFor({ state: 'visible', timeout: 8000 });
@@ -332,11 +348,12 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await page.getByRole('region', { name: 'Play', exact: true }).getByRole('button', { name: 'Host locally', exact: true }).click();
       await start.waitFor({ state: 'visible', timeout: 8000 });
       await page.waitForFunction(button => !button.disabled, await start.elementHandle(), { timeout: 8000 });
-      await page.clock.fastForward(30001);
+      await advancePreparedHostingCheck(page, modal, 30001);
       assertPreparedHostingRequests(state, 1);
       if (state.simpleHostingStarted) throw new Error('A timed-out synthetic Start must not claim a running server');
       await page.clock.resume();
       record.assertions.push({ preparedStartTimedOut: true, timeoutAndNavigationReplay: false,
+        finalAutomaticCheckSettledBeforeCapture: true,
         ...assertPreparedHostingRequests(state, 1), evidence: 'Synthetic pending Start and browser clock only' });
     } else {
       const started = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting/start') &&

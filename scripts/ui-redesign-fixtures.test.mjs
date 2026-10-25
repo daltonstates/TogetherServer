@@ -8,7 +8,8 @@ import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
-import { assertPreparedHostingRequests, simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
+import { advancePreparedHostingCheck, assertPreparedHostingRequests, simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
+import { uiReviewBuild } from './ui-review-provenance.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
 const sourceRoot = process.env.TOGETHERSERVER_UI_SOURCE_ROOT
@@ -591,6 +592,53 @@ test('renderer guard precedes imports and refuses desktop execution by construct
     [flags, { ...hosted, RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'],
     [flags, hosted, 'linux']
   ]) assert.throws(() => check(argv, env, platform), /Refusing browser execution/);
+});
+
+test('render provenance separates immutable candidate source from the current verification harness', () => {
+  const indexSha256 = '1'.repeat(64), sourceRevision = 'a'.repeat(40), verificationRevision = 'b'.repeat(40);
+  const candidateSha256 = '2'.repeat(64);
+  const context = { sourceRevision, verificationRevision, candidateRunId: '40240756633', candidateSha256,
+    rebuilt: false, appLaunched: false, fullyAccepted: false,
+    uiAssets: [{ asset: 'index.html', sha256: indexSha256, sizeBytes: 123 },
+      { asset: 'assets/synthetic.js', sha256: '3'.repeat(64), sizeBytes: 456 }] };
+  assert.deepEqual(uiReviewBuild(indexSha256, verificationRevision),
+    { indexSha256, sourceRevision: verificationRevision, verificationRevision }, 'ordinary CI retains its source identity');
+  assert.deepEqual(uiReviewBuild(indexSha256, verificationRevision, context),
+    { indexSha256, sourceRevision, verificationRevision, candidateRunId: '40240756633', candidateSha256 },
+    'retesting unchanged candidate bytes does not relabel them as newly built verification source');
+  const mutations = [
+    value => { value.sourceRevision = 'candidate-main'; },
+    value => { value.verificationRevision = sourceRevision; },
+    value => { value.candidateRunId = 40240756633; },
+    value => { value.candidateRunId = '0'; },
+    value => { value.candidateSha256 = 'C'.repeat(64); },
+    value => { value.rebuilt = true; },
+    value => { delete value.appLaunched; },
+    value => { value.fullyAccepted = true; },
+    value => { value.uiAssets[0].sha256 = '4'.repeat(64); },
+    value => { value.uiAssets.push({ ...value.uiAssets[0], asset: 'INDEX.HTML' }); },
+    value => { value.uiAssets[1].asset = '../synthetic.js'; },
+    value => { value.uiAssets[1].asset = '/synthetic.js'; },
+    value => { value.uiAssets[1].asset = 'assets\\synthetic.js'; },
+    value => { value.uiAssets[1].asset = 'assets//synthetic.js'; },
+    value => { value.uiAssets[1].sizeBytes = -1; },
+    value => { value.uiAssets.shift(); },
+    value => { value.uiAssets = []; }
+  ];
+  for (const mutate of mutations) {
+    const altered = structuredClone(context); mutate(altered);
+    assert.throws(() => uiReviewBuild(indexSha256, verificationRevision, altered), /Candidate UI provenance is invalid/u);
+  }
+  assert.throws(() => uiReviewBuild(indexSha256, null, context), /Candidate UI provenance is invalid/u,
+    'an immutable retest cannot omit the actual verification revision');
+  for (const malformed of [null, false, 0, [], ''])
+    assert.throws(() => uiReviewBuild(indexSha256, verificationRevision, malformed), /Candidate UI provenance is invalid/u,
+      'an explicitly supplied malformed context cannot fall back to ordinary CI identity');
+  const renderer = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const bind = renderer.indexOf('manifest.build = uiReviewBuild(');
+  assert.ok(bind > 0 && bind < renderer.indexOf('server = createServer('), 'binding failures precede listener/browser creation');
+  assert.match(renderer, /process\.env\.TOGETHERSERVER_UI_CANDIDATE_CONTEXT/u);
+  assert.doesNotMatch(renderer, /process\.env\.GITHUB_SHA\s*=/u, 'candidate context never replaces the actual harness identity');
 });
 
 test('renderer uses the CommonJS Playwright export with a Chromium launcher', () => {
@@ -1333,6 +1381,9 @@ test('prepared-copy rendered journeys retain the entry label, exact Start footer
   const body = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true };
   const pending = routeFixture(state, { method: 'POST', path: `${base}/start`, body });
   assert.equal(pending.pending, true);
+  const passive = routeFixture(state, { method: 'GET', path: `${base}/progress` });
+  assert.equal(passive.pending, true, 'the timeout fixture explicitly retains its passive progress read until the UI aborts it');
+  assert.equal(passive.body, null, 'a missing progress response does not invent completion or byte evidence');
   assert.equal(state.simpleHostingStarted, false);
   assert.equal(JSON.stringify(state.host.runs), before, 'pending Start is not a synthetic running-server claim');
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -1343,6 +1394,49 @@ test('prepared-copy rendered journeys retain the entry label, exact Start footer
   }
   assert.deepEqual(assertPreparedHostingRequests(state, 1), { startRequests: 1, prepareRequests: 0 },
     'read-only refreshes and synthetic page changes do not submit another hosting instruction');
+});
+
+test('the prepared timeout capture waits for its automatic response, settled control and paint after advancing time', async () => {
+  let completeRead;
+  let loading = true;
+  const order = [];
+  const response = { url: () => 'http://fixture.invalid/api/local/friend/synthetic/shared-world/hosting',
+    request: () => ({ method: () => 'GET' }), ok: () => true,
+    finished: async () => { order.push('body-finished'); loading = false; } };
+  const button = { isConnected: true, get disabled() { return loading; } };
+  const modal = { getByRole: (role, options) => {
+    if (role === 'button') { assert.equal(options.name, 'Start hosting'); return { elementHandle: async () => button }; }
+    assert.equal(role, 'region'); assert.equal(options.name, 'Hosting progress');
+    return { count: async () => Number(loading) };
+  } };
+  const page = {
+    waitForResponse: (predicate, options) => {
+      order.push('response-registered'); assert.deepEqual(options, { timeout: 8000 });
+      assert.equal(predicate(response), true);
+      assert.equal(predicate({ ...response, url: () => `${response.url()}/progress` }), false);
+      assert.equal(predicate({ ...response, request: () => ({ method: () => 'POST' }) }), false);
+      return new Promise(resolve => { completeRead = resolve; });
+    },
+    clock: { fastForward: async ticks => { assert.equal(ticks, 30001); order.push('clock-advanced'); } },
+    waitForFunction: async (predicate, element, options) => {
+      assert.deepEqual(options, { timeout: 8000 }); assert.equal(predicate(element), true);
+      order.push('control-settled');
+    },
+    evaluate: async () => { assert.equal(loading, false); order.push('paint-settled'); }
+  };
+  const flight = advancePreparedHostingCheck(page, modal, 30001);
+  await Promise.resolve();
+  assert.deepEqual(order, ['response-registered', 'clock-advanced'], 'advancing timers alone cannot authorize capture');
+  assert.equal(loading, true);
+  completeRead(response);
+  await flight;
+  assert.deepEqual(order, ['response-registered', 'clock-advanced', 'body-finished', 'control-settled', 'paint-settled']);
+  loading = true;
+  const failed = advancePreparedHostingCheck(page, modal, 30001);
+  await Promise.resolve();
+  completeRead({ ...response, ok: () => false });
+  await assert.rejects(failed, /final automatic hosting check did not succeed/u,
+    'failed refreshes cannot be relabeled as a stable captured result');
 });
 
 test('hosting progress fixtures expose passive byte updates and indeterminate verification during one pending preparation', () => {
