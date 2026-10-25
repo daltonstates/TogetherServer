@@ -7,7 +7,10 @@ type StepKey = LocalHostingStatus['steps'][number]['key']
 export type LocalHostingGuideProps = {
   status: LocalHostingStatus | null
   selectedStep?: StepKey | null
+  recommendedStep?: StepKey
   busy: boolean
+  checking?: boolean
+  checksCurrent?: boolean
   feedback?: string
   onRetry: () => void
   onPrepare?: () => void
@@ -22,9 +25,9 @@ const guideSteps: { key: StepKey; label: string }[] = [
   { key: 'permission', label: 'Permission' }, { key: 'server', label: 'Server app' },
   { key: 'save', label: 'Save' }, { key: 'ports', label: 'Ports' }, { key: 'connection', label: 'Connection' }
 ]
-const historyCodes = ['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'SharedSaveHistoryNeedsReview',
+const historyCodes = ['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired',
   'VersionConflict', 'VersionChainInvalid', 'GroupMismatch', 'SourceReviewRequired', 'SeparateCopyReviewRequired']
-const integrityCodes = ['RosterRollback', 'VersionRollback', 'RosterRejected', 'AuthorityRejected', 'InvalidManifest',
+const integrityCodes = ['SharedSaveHistoryNeedsReview', 'RosterRollback', 'VersionRollback', 'RosterRejected', 'AuthorityRejected', 'InvalidManifest',
   'InvalidSave', 'SharedSaveInvalid', 'SharedSaveHashMismatch', 'HashMismatch', 'ChunkHashMismatch',
   'SharingReviewRequired', 'LocalHostingReviewRequired', 'HandoffReviewRequired', 'DataRecoveryRequired']
 const permissionUnknownCodes = ['SharingPermissionUnknown', 'RosterUnavailable', 'RosterCatchUpPending',
@@ -175,6 +178,15 @@ function saveHelp(status: LocalHostingStatus, props: LocalHostingGuideProps): He
       'After the owner resolves which history to continue, return here and recheck the save. The guide cannot merge worlds or pick the newest by date.'
     ], actions: [review, retry]
   }
+  if (status.code === 'SharedSaveHistoryNeedsReview') return {
+    title: 'Review the available shared save', instructions: [
+      status.message,
+      'Keep every existing save. Selecting and verifying a complete hosting copy still needs review.',
+      'Keep TogetherServer open on this PC and on an approved PC with the completed save. Ask the source Host to open Backups & sharing, choose Sharing & hosting and review its sharing notice and completed copy.',
+      'Recheck the save to refresh the available information. After reviewing the result, choose Host locally only when you want to retry preparation.'
+    ], note: 'Rechecking reads the current checks. It does not retry preparation or select a different save automatically.',
+    actions: [review, retry]
+  }
   if (status.code === 'RosterRollback') return {
     title: 'Refresh the saved sharing history', instructions: [
       'Keep TogetherServer open on this PC and on the original owner\'s PC. Make sure both apps are up to date.',
@@ -291,16 +303,16 @@ function waitingForAccess(key: StepKey, status: LocalHostingStatus, props: Local
 }
 
 export function LocalHostingGuide(props: LocalHostingGuideProps) {
-  const { status, selectedStep = null, busy, feedback, onRetry } = props
+  const { status, selectedStep = null, recommendedStep, busy, checking = false, checksCurrent = true, feedback, onRetry } = props
   const guideHeading = useRef<HTMLHeadingElement>(null)
   useEffect(() => {
     if (!selectedStep) return
     guideHeading.current?.focus({ preventScroll: true })
     guideHeading.current?.scrollIntoView?.({ block: 'start', inline: 'nearest' })
   }, [selectedStep])
-  const firstUnresolved = status ? status.steps.find(step => step.state !== 'Ready')?.key ?? 'connection' : 'permission'
+  const firstUnresolved = recommendedStep ?? (status ? status.steps.find(step => step.state !== 'Ready')?.key ?? 'connection' : 'permission')
   const revision = status ? JSON.stringify([status.code, status.allowed, status.readyForManualStart,
-    status.handoffRequest?.recipientState, status.steps.map(step => step.state)]) : 'unavailable'
+    status.handoffRequest?.recipientState, status.steps.map(step => step.state), recommendedStep]) : 'unavailable'
   const [choice, setChoice] = useState<{ key: StepKey; revision: string; requested: StepKey | null } | null>(null)
   const key = choice?.revision === revision && choice.requested === selectedStep ? choice.key : selectedStep ?? firstUnresolved
   const index = guideSteps.findIndex(step => step.key === key)
@@ -314,6 +326,17 @@ export function LocalHostingGuide(props: LocalHostingGuideProps) {
       'Retry the hosting checks. Wait for current permission, game and save results before continuing.'
     ], note: 'Unavailable checks stay unverified. Retrying here only reads the checks.', actions: [{ label: 'Retry hosting checks', run: onRetry }]
   }
+  const selectedCheck = status?.steps.find(step => step.key === key)
+  const waiting = status && key !== 'permission' && localHostingAccessBlocker(status)
+  const resultLabel = checking ? 'Checking' : !checksCurrent && status ? 'Previous result' : waiting || !selectedCheck ? 'Not checked' :
+    selectedCheck.state === 'Ready' ? 'Checked' : selectedCheck.state === 'ActionRequired' ? 'Needs attention' :
+      key === 'save' && !status?.localProfileId ? 'Not checked' : 'Unverified'
+  const resultMessage = checking ? 'Wait for the current check to finish. The steps below remain available to read.' :
+    waiting ? `This check is waiting for ${waiting === 'history' ? 'sharing history review' : 'hosting access to be verified'}. Follow the permission step first, then retry.` :
+    !checksCurrent && status ? 'This is the last available result. Retry the checks before starting.' :
+    key === 'save' && selectedCheck?.state === 'Unknown' && !status?.localProfileId ?
+      'Receiving and file verification run when you choose Host locally after reviewing the confirmation.' :
+    selectedCheck?.message ?? 'Current hosting access and setup results are not available yet. Retry the checks.'
   return <section className="local-hosting-guide" aria-label="Local hosting setup guide" aria-busy={busy}>
     <div className="local-hosting-guide-heading"><h3>Set up hosting on this PC</h3><span>Step {index + 1} of {guideSteps.length}</span></div>
     <nav aria-label="Hosting setup steps"><ol>{guideSteps.map((step, stepIndex) => <li key={step.key}>
@@ -321,7 +344,9 @@ export function LocalHostingGuide(props: LocalHostingGuideProps) {
         onClick={() => select(step.key)}>{stepIndex + 1}. {step.label}</Button>
     </li>)}</ol></nav>
     <div className="local-hosting-guide-content" data-step={key}>
+      <p className="local-hosting-guide-result"><strong>{resultLabel}:</strong> {resultMessage}</p>
       <h4 ref={guideHeading} tabIndex={-1}>{help.title}</h4>
+      <p className="local-hosting-guide-next-label">What to do next</p>
       <ol>{help.instructions.map((instruction, instructionIndex) => <li key={instructionIndex}>{instruction}</li>)}</ol>
       {help.note && <p className="local-hosting-guide-note">{help.note}</p>}
       <div className="local-hosting-guide-actions">{help.actions?.filter(action => action.run).map(action =>

@@ -18,6 +18,14 @@ copies; remote execution/path/command arguments are never accepted. Each
 successor issues a distinct local credential for the proved source member.
 Local removals, deadlines and newly learned signed revocations fail closed.
 
+Canonical member receipts remain schema 1 with a nonempty enrolled member ID.
+Production peer receipts for the original owner use schema 3, the empty owner
+ID, a separate signing domain and the exact pinned owner/world root. Private
+test schema 2 cannot be promoted into either production domain. A retained
+receipt is returned only for its exact fully reverified copy and current
+Receive permission/consent; receiving an acknowledgement does not require the
+receiver to enable forwarding. A lost acknowledgement reuses its receipt ID.
+
 Peer contact codes bootstrap only an already pinned world and contain signed
 addresses/identities, never bearer credentials. App invitation codes and direct
 app addresses use the same membership path. A game's friend/join code alone

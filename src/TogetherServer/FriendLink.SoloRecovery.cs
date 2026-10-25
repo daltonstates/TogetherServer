@@ -17,6 +17,8 @@ internal sealed partial class FriendLink
         if (config.KnownRevoked ||
             config.PendingSharedWorldGroups?.ContainsKey(profileId) == true)
             throw new InvalidDataException("Review removed access or the changed signed world history first.");
+        var access = ReadLocalHostingAccess(profileId, verifyFiles: false, permissionOnly: true);
+        if (!access.Allowed) throw new InvalidDataException(access.Message);
         var floor = config.SharedRosterFloors?.GetValueOrDefault(profileId);
         var owner = config.SharedWorldSigningKeys?.GetValueOrDefault(profileId);
         if (floor is null || owner is null ||
@@ -33,23 +35,29 @@ internal sealed partial class FriendLink
             roster.Revision != floor.Revision || roster.Signature != floor.Signature ||
             !new WorldAuthorityStore(data).TrustsCurrentRoster(roster))
             throw new InvalidDataException("The saved roster no longer matches the approved world and revision.");
-        using var key = LoadPcSigningKey();
-        if (!SharedWorldRosterTrust.HasRole(roster, SharedWorldDeviceId,
-                Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()),
-                grants => grants.Receive && grants.EligibleHost))
+        using var key = LoadExistingSharingKey() ??
+            throw new InvalidDataException("Check this PC's enrolled sharing identity before hosting.");
+        if (SharedWorldPeerTrust.AccessFromRoster(new(roster.OwnerPublicKey, profileId, roster.GroupId),
+                roster, SharedWorldDeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is not
+                { Receive: true, EligibleHost: true })
             throw new InvalidDataException("This PC needs active Receive and Eligible host grants.");
         return roster;
     }
 
     public async Task<WorldAuthorityOfferResult> PrepareSoloRecoveryOfferAsync(Guid profileId,
-        string? sourceBranchHash = null, WorldPeerRecoverySource? selectedSource = null)
+        string? sourceBranchHash = null, WorldPeerRecoverySource? selectedSource = null,
+        CancellationToken cancellationToken = default, Action<WorldPeerSourceProgress>? progress = null)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
-        await gate.WaitAsync();
+        var entered = false;
         try
         {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
             lock (SharedWorldMutationGate.For(data.RootPath))
             {
+                profileId = SharedWorldSourceProfileId(profileId) ??
+                    throw new InvalidDataException("Choose this saved connection's shared world before hosting.");
                 var roster = SoloRecoveryRoster(profileId);
                 var settings = data.LoadSettings();
                 if (!HostIdentity.TryEndpoint(settings.CompanionEndpoint, out var endpoint) ||
@@ -57,25 +65,33 @@ internal sealed partial class FriendLink
                     return new(false, "CandidateRouteUnavailable",
                         "Configure this PC's literal HTTPS address before preparing recovery. A local loopback address can be used for solo play.");
                 using var certificate = new HostIdentity(data).Ensure(settings.CompanionEndpoint);
-                using var key = LoadPcSigningKey();
+                using var key = LoadExistingSharingKey() ??
+                    throw new InvalidDataException("Check this PC's enrolled sharing identity before hosting.");
                 if (selectedSource is not null)
                 {
                     if (selectedSource.BranchHash != sourceBranchHash)
                         throw new InvalidDataException("The explicitly selected history changed before preparation.");
-                    selectedSource.Verify(data, new(roster.OwnerPublicKey, profileId, roster.GroupId));
+                    selectedSource.Verify(data, new(roster.OwnerPublicKey, profileId, roster.GroupId), cancellationToken,
+                        (bytes, total, files, count) => WorldPeerSourceProgress.Report(progress,
+                            new("Verifying", "Checking the exact protected source before preparing its signed hosting offer.", bytes, total, files, count)));
                 }
                 var sourceBranch = selectedSource?.Descriptor.Branch ?? (sourceBranchHash is null || selectedSource is not null ? null :
                     SharedWorldBranchVault.ReadBranch(data, roster, sourceBranchHash));
                 var sourceRoot = selectedSource?.Vault ?? (sourceBranch is null ? ReceivedRoot(profileId) :
                     SharedWorldBranchVault.Root(data, sourceBranch));
-                var offer = SharedWorldSeparateCopyStore.PrepareSoloOffer(sourceRoot,
-                    roster, config!.SharedRosterFloors![profileId], SharedWorldDeviceId, key,
-                    settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate),
-                    new WorldAuthorityStore(data), sourceBranch);
+                var offer = SharedWorldDeviceId == Guid.Empty ?
+                    SharedWorldSeparateCopyStore.PrepareOwnerOffer(sourceRoot, roster, key,
+                        settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate),
+                        new WorldAuthorityStore(data), sourceBranch) :
+                    SharedWorldSeparateCopyStore.PrepareSoloOffer(sourceRoot,
+                        roster, config!.SharedRosterFloors![profileId], SharedWorldDeviceId, key,
+                        settings.CompanionEndpoint, HostIdentity.Fingerprint(certificate),
+                        new WorldAuthorityStore(data), sourceBranch);
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(new SoloRecoveryPreparedOffer(offer,
                     sourceBranch, selectedSource), Json);
                 if (bytes.Length > 1024 * 1024)
                     throw new InvalidDataException("The signed recovery offer is oversized.");
+                cancellationToken.ThrowIfCancellationRequested();
                 data.SaveProtected(SoloOfferName(profileId), bytes);
                 return new(true, "SoloRecoveryPrepared",
                     "Review this recovery branch's exact verified save. Another server may still be running; this action does not select the group's default world.",
@@ -85,27 +101,32 @@ internal sealed partial class FriendLink
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
             CryptographicException or UnauthorizedAccessException or ArgumentException)
         { return new(false, "SoloRecoveryUnavailable", ex.Message); }
-        finally { gate.Release(); ReleaseRetained(); }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
     public async Task<WorldSeparateCopyResult> DeclareSoloRecoveryAsync(Guid profileId,
-        bool acceptSplitWarning)
+        bool acceptSplitWarning, CancellationToken cancellationToken = default,
+        Action<WorldPeerSourceProgress>? progress = null)
     {
         if (!TryRetain()) return new(false, "ConnectionClosed", "This connection is closing.");
-        await gate.WaitAsync();
+        var entered = false;
         try
         {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
             if (!acceptSplitWarning)
                 return new(false, "SplitWarningRequired",
                     "Confirm that another server may still be running and both histories will be preserved.");
             lock (SharedWorldMutationGate.For(data.RootPath))
             {
+                profileId = SharedWorldSourceProfileId(profileId) ??
+                    throw new InvalidDataException("Choose this saved connection's shared world before hosting.");
                 var roster = SoloRecoveryRoster(profileId);
                 var bytes = data.LoadProtected(SoloOfferName(profileId));
                 var prepared = bytes is { Length: > 0 and <= 1024 * 1024 }
                     ? JsonSerializer.Deserialize<SoloRecoveryPreparedOffer>(bytes, Json) : null;
                 var offer = prepared?.Offer;
-                if (!SharedWorldElection.VerifyOffer(offer) ||
+                if (!SharedWorldSeparateCopyStore.VerifySeparateOffer(offer) ||
                     offer!.Proposal.ProposerDeviceId != SharedWorldDeviceId ||
                     WorldAuthorityTrust.RosterHash(offer.Roster) != WorldAuthorityTrust.RosterHash(roster))
                     return new(false, "RecoveryOfferRejected", "Prepare and review this PC's current recovery branch first.");
@@ -115,14 +136,18 @@ internal sealed partial class FriendLink
                     certificate is null || !certificate.HasPrivateKey ||
                     HostIdentity.Fingerprint(certificate) != offer.CandidateTlsFingerprint)
                     return new(false, "CandidateIdentityChanged", "This PC's reviewed address or pinned HTTPS identity changed.");
-                using var key = LoadPcSigningKey();
+                using var key = LoadExistingSharingKey() ??
+                    throw new InvalidDataException("Check this PC's enrolled sharing identity before hosting.");
                 if (prepared!.SelectedSource is { } selected)
                 {
-                    selected.Verify(data, new(roster.OwnerPublicKey, profileId, roster.GroupId));
+                    selected.Verify(data, new(roster.OwnerPublicKey, profileId, roster.GroupId), cancellationToken,
+                        (bytes, total, files, count) => WorldPeerSourceProgress.Report(progress,
+                            new("Verifying", "Checking the exact protected source before recording its signed hosting branch.", bytes, total, files, count)));
                     if (selected.Descriptor.Version.VersionHash != offer.Version.VersionHash ||
                         selected.Descriptor.Branch?.BranchHash != prepared.SourceBranch?.BranchHash)
                         throw new InvalidDataException("The prepared recovery source no longer names the reviewed exact copy.");
                 }
+                cancellationToken.ThrowIfCancellationRequested();
                 var branch = new SharedWorldSeparateCopyStore(data).Declare(offer,
                     prepared.SelectedSource?.Vault ?? (prepared.SourceBranch is { } source ? SharedWorldBranchVault.Root(data, source) :
                         ReceivedRoot(profileId)), key, acceptSplitWarning, prepared.SourceBranch);
@@ -134,7 +159,7 @@ internal sealed partial class FriendLink
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
             CryptographicException or UnauthorizedAccessException or ArgumentException)
         { return new(false, "SoloRecoveryUnavailable", ex.Message); }
-        finally { gate.Release(); ReleaseRetained(); }
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 }
 

@@ -32,6 +32,24 @@ function currentStep(name: RegExp) {
 }
 
 describe('Local hosting setup guide', () => {
+  it('keeps the selected repair readable through a refresh and labels its last result after a failure', () => {
+    const status = withCheck('save', 'ActionRequired', { code: 'SharedChunkUnavailable',
+      message: 'Ask the source PC to share its completed backup again.' })
+    const { props, rerender, actions } = setup(status)
+    const heading = screen.getByRole('heading', { name: 'Get a completed verified save' })
+    expect(screen.getByText('What to do next')).toBeInTheDocument()
+    expect(screen.getByText('Needs attention:')).toBeInTheDocument()
+    rerender(<LocalHostingGuide {...props} busy checking checksCurrent={false} />)
+    expect(heading).toBeInTheDocument()
+    expect(screen.getByText('Checking:')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Recheck the save' })).toBeDisabled()
+    rerender(<LocalHostingGuide {...props} checksCurrent={false} />)
+    expect(heading).toBeInTheDocument()
+    expect(screen.getByText('Previous result:')).toBeInTheDocument()
+    expect(screen.getByText(/This is the last available result/)).toBeInTheDocument()
+    for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled()
+  })
+
   it('opens the first unresolved check and keeps manual navigation available without running actions', () => {
     const status: LocalHostingStatus = { ...withCheck('server', 'ActionRequired', { needsServerFile: true }),
       steps: prepared.steps.map(step => ['server', 'save', 'ports'].includes(step.key) ? { ...step, state: 'ActionRequired' } : step) }
@@ -81,6 +99,10 @@ describe('Local hosting setup guide', () => {
     Object.defineProperty(heading, 'scrollIntoView', { value: scroll, configurable: true })
 
     rerender(<LocalHostingGuide {...props} status={{ ...status, message: 'Automatic refresh finished.' }} />)
+    expect(previousControl).toHaveFocus()
+    expect(scroll).not.toHaveBeenCalled()
+
+    rerender(<LocalHostingGuide {...props} recommendedStep="save" />)
     expect(previousControl).toHaveFocus()
     expect(scroll).not.toHaveBeenCalled()
 
@@ -146,7 +168,7 @@ describe('Local hosting setup guide', () => {
       expect(screen.queryByText(/Turn on/)).not.toBeInTheDocument()
     })
 
-  it.each(['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'SharedSaveHistoryNeedsReview', 'VersionConflict'])(
+  it.each(['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'VersionConflict'])(
     'preserves different progress for owner review for %s', code => {
       const { actions } = setup(withCheck('save', 'ActionRequired', { code }))
       expect(screen.getByRole('heading', { name: 'Ask the owner to review different progress' })).toBeInTheDocument()
@@ -157,6 +179,20 @@ describe('Local hosting setup guide', () => {
       expect(actions.onReviewSharedSave).toHaveBeenCalledOnce()
       expect(actions.onPrepare).not.toHaveBeenCalled()
     })
+
+  it('keeps a general shared-save review distinct from confirmed different progress or damaged bytes', () => {
+    const status = withCheck('save', 'ActionRequired', { code: 'SharedSaveHistoryNeedsReview',
+      message: 'The available shared save could not be selected and verified. Keep its source PC reachable and retry.' })
+    const { actions, container } = setup(status)
+    expect(screen.getByRole('heading', { name: 'Review the available shared save' })).toBeInTheDocument()
+    expect(screen.getByText(status.message)).toBeInTheDocument()
+    expect(container).toHaveTextContent('Selecting and verifying a complete hosting copy still needs review.')
+    expect(container.textContent).not.toMatch(/two histories|different progress|conflicting saves|damaged|corrupt|failed hash/i)
+    expect(screen.queryByRole('button', { name: 'Prepare a checked copy' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Recheck the save' }))
+    expect(actions.onRetry).toHaveBeenCalledOnce()
+    expect(actions.onPrepare).not.toHaveBeenCalled()
+  })
 
   it.each(['VersionRollback', 'InvalidManifest', 'SharedSaveHashMismatch', 'SigningIdentityChanged', 'SharingReviewRequired'])(
     'keeps %s blocked for trusted history or file verification without a bypass action', code => {

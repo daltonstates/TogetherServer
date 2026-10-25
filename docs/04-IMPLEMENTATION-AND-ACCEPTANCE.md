@@ -17,6 +17,16 @@ approved separate PC or unattended Windows session. Hidden/tray mode and
 `-SkipDesktop` do not establish focus safety. Guarded scripts require
 `-AllowInteractiveTests`; setting it does not authorize the active desktop.
 
+Hosting-readiness regressions must include active preparation beyond 120
+seconds, stale/timestamp-only progress expiry, zero-byte file advancement,
+the overall deadline, stale-connection cancellation and late-result Start
+refusal. Generated multi-file copies must resume after interruption without
+changing their source, and reject damaged staged bytes before promotion.
+Completed-save distribution must distinguish signed inventory from verified
+payload/receipt, including the returning original owner, online peers,
+offline peers, lost acknowledgements, revocation, expiry and withdrawn consent.
+Physical game/load/change/Stop/receipt/restart evidence remains separate.
+
 ## Slice 1 — Local Host app and GUI
 
 - Create one Windows .NET 10 app that shows bundled React/TypeScript assets in its own window over a loopback-only local API, with a clear Host/Friend mode switch. Build and publish without requiring Node at runtime.

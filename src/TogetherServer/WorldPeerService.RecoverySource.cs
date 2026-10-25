@@ -11,7 +11,8 @@ internal sealed record WorldPeerRecoverySource(SharedWorldPeerRoot Root, string 
         string versionHash) => Path.Combine(data.RootPath, "world-peer-recovery-sources", root.GroupKey,
             branchHash, versionHash);
 
-    internal void Verify(LocalData data, SharedWorldPeerRoot expectedRoot)
+    internal void Verify(LocalData data, SharedWorldPeerRoot expectedRoot, CancellationToken cancellationToken = default,
+        Action<long, long, int, int>? progress = null)
     {
         if (Root != expectedRoot || !SharedWorldPeerTrust.ValidRoot(Root) || Descriptor is null || Descriptor.Version is null ||
             !SharedWorldPeerTrust.ValidHash(BranchHash) ||
@@ -21,7 +22,7 @@ internal sealed record WorldPeerRecoverySource(SharedWorldPeerRoot Root, string 
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The selected recovery source does not belong to this exact shared world.");
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, Vault);
-        var latest = FriendLink.ReadReceivedLatest(Vault);
+        var latest = FriendLink.ReadReceivedLatest(Vault, cancellationToken, progress);
         if (latest?.VersionHash != Descriptor.Version.VersionHash || latest.ProfileId != Root.ProfileId || latest.GroupId != Root.GroupId)
             throw new InvalidDataException("The explicitly selected recovery copy changed after review.");
         var records = new WorldAuthorityStore(data).Read(Root.ProfileId);
@@ -145,7 +146,8 @@ internal sealed partial class WorldPeerService
     // Callers may already hold refreshGate. Only the exact selected source vault
     // is locked here; no discovery, listener, game action or default selection occurs.
     internal async Task<WorldPeerRecoverySource> ResolveRecoverySourceAsync(string groupKey,
-        string? branchHash, CancellationToken cancellationToken, string? exactVersionHash = null)
+        string? branchHash, CancellationToken cancellationToken, string? exactVersionHash = null,
+        Action<WorldPeerSourceProgress>? progress = null)
     {
         var group = Find(groupKey) ?? throw new InvalidDataException("Choose a known shared world.");
         if (!await RecoveryAllowedAsync(group, cancellationToken))
@@ -199,6 +201,10 @@ internal sealed partial class WorldPeerService
         var descriptor = selected.Descriptor;
         var version = descriptor.Version;
         var selectedLane = branchHash ?? throw new InvalidDataException("The selected recovery lane is unavailable.");
+        var verificationMessage = "Rechecking the retained hosting copy against its signed file hashes.";
+        void VerificationProgress(long bytes, long total, int files, int count) =>
+            WorldPeerSourceProgress.Report(progress, new("Verifying", verificationMessage,
+                bytes, total, files, count));
         void RequireReviewedHeads(Group current)
         {
             if (reviewedHeads is null) return;
@@ -217,7 +223,7 @@ internal sealed partial class WorldPeerService
             var source = new WorldPeerRecoverySource(group.Root, selectedLane, descriptor, vault);
             if (ReadPeerPointer(vault)?.VersionHash == version.VersionHash)
             {
-                source.Verify(data, group.Root);
+                source.Verify(data, group.Root, cancellationToken, VerificationProgress);
                 if (!await RecoveryAllowedAsync(group, cancellationToken))
                     throw new InvalidDataException("Recovery permission or local save consent changed.");
                 RequireReviewedHeads(Find(groupKey) ?? throw new InvalidDataException("World membership changed."));
@@ -245,10 +251,19 @@ internal sealed partial class WorldPeerService
             var destination = SharedWorldService.SafeChild(vault, version.VersionHash);
             if (!Directory.Exists(destination))
             {
-                using var inputLease = WorldPeerVerifiedCopy.Open(data.RootPath, sourceDirectory, version, cancellationToken);
+                verificationMessage = "Checking the received source before making the protected hosting copy.";
+                using var inputLease = WorldPeerVerifiedCopy.Open(data.RootPath, sourceDirectory, version, cancellationToken,
+                    VerificationProgress);
                 var stage = SharedWorldService.SafeChild(vault, ".partial-" + version.VersionHash);
                 var payload = Path.Combine(stage, SharedWorldService.PayloadDirectory);
                 Directory.CreateDirectory(payload);
+                long prepared = 0;
+                var filesPrepared = 0;
+                void CopyProgress(long bytes) => WorldPeerSourceProgress.Report(progress,
+                    new("PreparingCopy", "Preparing the protected hosting copy on this PC. Final verification is still required.",
+                        prepared + bytes, total, filesPrepared, version.Files.Count));
+                CopyProgress(0);
+                var buffer = new byte[512 * 1024];
                 foreach (var file in version.Files)
                 {
                     if (!await RecoveryAllowedAsync(group, cancellationToken))
@@ -259,20 +274,38 @@ internal sealed partial class WorldPeerService
                     using var input = new FileStream(SharedWorldService.SafeChild(Path.Combine(sourceDirectory,
                         SharedWorldService.PayloadDirectory), file.Path), FileMode.Open, FileAccess.Read, FileShare.Read);
                     using var output = new FileStream(target, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
-                    if (output.Length == file.Length) continue;
-                    var resume = output.Length <= file.Length ? output.Length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes : 0;
-                    output.SetLength(resume); output.Position = resume; input.Position = resume;
-                    await input.CopyToAsync(output, cancellationToken);
+                    if (output.Length != file.Length)
+                    {
+                        var resume = output.Length <= file.Length ? output.Length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes : 0;
+                        output.SetLength(resume); output.Position = resume; input.Position = resume;
+                        CopyProgress(resume);
+                        while (input.Position < file.Length)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            var read = await input.ReadAsync(buffer, cancellationToken);
+                            if (read == 0) throw new InvalidDataException("The selected source ended before its signed length.");
+                            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                            CopyProgress(output.Position);
+                        }
+                    }
+                    prepared += file.Length;
+                    filesPrepared++;
+                    CopyProgress(0);
                 }
-                WorldPeerFileTransfer.VerifyStage(data.RootPath, payload, version);
+                verificationMessage = "Checking every staged hosting file against its signed hash.";
+                WorldPeerFileTransfer.VerifyStage(data.RootPath, payload, version, cancellationToken, VerificationProgress);
+                cancellationToken.ThrowIfCancellationRequested();
                 File.WriteAllBytes(Path.Combine(stage, "version.json"), System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(version, Json));
                 Directory.Move(stage, destination);
             }
-            using var complete = WorldPeerVerifiedCopy.Open(data.RootPath, destination, version, cancellationToken);
+            verificationMessage = "Verifying and holding the complete hosting copy for final permission checks.";
+            using var complete = WorldPeerVerifiedCopy.Open(data.RootPath, destination, version, cancellationToken,
+                VerificationProgress);
             void Commit()
             {
                 lock (stateSync)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var current = Find(groupKey);
                     using var key = current is null ? null : LocalKey(current);
                     if (current is null || key is null || current.DeviceId != group.DeviceId || !current.ReceiveConsented ||
@@ -287,7 +320,8 @@ internal sealed partial class WorldPeerService
             if (group.DeviceId == Guid.Empty) Commit();
             else if (!await friend.CommitPeerReceiveAsync(group.Root, group.DeviceId, Commit, cancellationToken))
                 throw new InvalidDataException("Local save consent changed before the selected source was recorded.");
-            source.Verify(data, group.Root);
+            verificationMessage = "Rechecking the committed protected hosting copy and signed history.";
+            source.Verify(data, group.Root, cancellationToken, VerificationProgress);
             return source;
         }
         finally { FriendLink.ReceiveGateFor(vault).Release(); }

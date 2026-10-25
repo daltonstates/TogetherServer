@@ -12,6 +12,7 @@ public sealed record SharedWorldReceiptResult(bool Ok, string Code);
 internal static class SharedWorldReceiptTrust
 {
     internal const int MaximumRequestBytes = 4096;
+    internal const int PeerOwnerSchema = 3;
     private static readonly JsonSerializerOptions WireJson = new(JsonSerializerDefaults.Web);
 
     internal static SharedWorldReceipt? Parse(byte[] body)
@@ -42,6 +43,33 @@ internal static class SharedWorldReceiptTrust
     internal static byte[] Basis(SharedWorldReceipt receipt) => Encoding.UTF8.GetBytes(
         FormattableString.Invariant(
             $"TogetherServer shared-world receipt v1\n{receipt.GroupId:N}\n{receipt.ProfileId:N}\n{receipt.VersionHash}\n{receipt.DeviceId:N}\n{receipt.RosterEpoch}\n{receipt.RosterRevision}\n{receipt.ReceiptId:N}"));
+
+    // Production peer catchup can return a copy to its original owner. Keep
+    // that acknowledgement separate from canonical member/election receipts
+    // and from schema-2 private-test receipts, including its signing domain.
+    internal static byte[] PeerOwnerBasis(SharedWorldReceipt receipt, SharedWorldPeerRoot root) =>
+        Encoding.UTF8.GetBytes(FormattableString.Invariant(
+            $"TogetherServer peer owner completed-copy receipt v1\n{root.OwnerPublicKey}\n{receipt.Schema}\n{receipt.GroupId:N}\n{receipt.ProfileId:N}\n{receipt.VersionHash}\n{receipt.DeviceId:N}\n{receipt.RosterEpoch}\n{receipt.RosterRevision}\n{receipt.ReceiptId:N}"));
+
+    internal static bool VerifyPeerOwner(SharedWorldReceipt? receipt, SharedWorldPeerRoot root)
+    {
+        if (receipt is null || receipt.Schema != PeerOwnerSchema || receipt.DeviceId != Guid.Empty ||
+            !SharedWorldPeerTrust.ValidRoot(root) || receipt.GroupId != root.GroupId ||
+            receipt.ProfileId != root.ProfileId || receipt.ReceiptId == Guid.Empty ||
+            receipt.RosterEpoch < 1 || receipt.RosterRevision < 1 ||
+            !SharedWorldPeerTrust.ValidHash(receipt.VersionHash) ||
+            receipt.Signature is not { Length: >= 80 and <= 192 }) return false;
+        try
+        {
+            using var key = ECDsa.Create();
+            var publicKey = Convert.FromBase64String(root.OwnerPublicKey);
+            key.ImportSubjectPublicKeyInfo(publicKey, out var consumed);
+            return consumed == publicKey.Length && key.KeySize == 256 && key.VerifyData(
+                PeerOwnerBasis(receipt, root), Convert.FromBase64String(receipt.Signature), HashAlgorithmName.SHA256);
+        }
+        catch (Exception error) when (error is FormatException or CryptographicException or ArgumentException)
+        { return false; }
+    }
 
     internal static bool Verify(SharedWorldReceipt? receipt, string publicKey)
     {

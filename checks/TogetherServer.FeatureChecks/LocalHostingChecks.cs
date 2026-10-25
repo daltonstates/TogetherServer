@@ -235,7 +235,7 @@ internal static class LocalHostingChecks
                 "Different progress needs review."));
         });
         var refused = await service.PrepareAsync(fixture.ProfileId, new(true, true));
-        Require(!refused.Ok && refused.Code == "HostingHistoryChoiceRequired" && !refused.ReadyForManualStart &&
+        Require(!refused.Ok && refused.Code == "SharedSaveHistoryNeedsReview" && !refused.ReadyForManualStart &&
             !(await service.StatusAsync(fixture.ProfileId)).ReadyForManualStart && attempts == 1 &&
             File.ReadAllBytes(Path.Combine(profile.WorldDirectory, "world.dat")).SequenceEqual(save) &&
             fixture.Data.LoadSettings().Profiles.Count == 1 && fixture.Driver.ProcessAttempts == 0,

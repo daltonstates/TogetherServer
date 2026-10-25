@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FriendLocalHosting, localHostingAttention, parseLocalHostingStatus, type LocalHostingStatus } from './FriendLocalHosting'
+import type { HostingProgress } from './LocalHostingProgress'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
 const localProfileId = '22222222-2222-4222-8222-222222222222'
@@ -55,6 +56,29 @@ async function confirmHosting() {
   const button = await dialog.findByRole('button', { name: /^(Host locally|Retry and start)$/ })
   await waitFor(() => expect(button).toBeEnabled())
   fireEvent.click(button)
+}
+
+async function pendingPreparation(progressAtPoll: () => HostingProgress) {
+  let release!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/progress')) return response(progressAtPoll())
+    if (init?.method) {
+      writes.push(url)
+      if (url.endsWith('/prepare')) { signal = init.signal; return new Promise<Response>(resolve => { release = resolve }) }
+      return response({ ok: true, code: 'Starting', message: 'Start requested.' })
+    }
+    return response(initial)
+  }))
+  const view = render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  return { view, writes, open, signal: () => signal, finish: (value: Response) => release(value) }
 }
 
 it.each(['action', 'card'] as const)('waits for confirmed permission before offering the %s entry', async presentation => {
@@ -155,6 +179,39 @@ it('shows a current progress failure while the preparation POST is pending witho
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
   expect(writes).toEqual([`${base}/hosting/prepare`])
   expect(open).not.toHaveBeenCalled()
+})
+
+it('retains an interrupted latest-save attempt and its phase after refreshing prerequisites without retrying preparation', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = new Date(Date.now()).toISOString()
+  const canceled = 'Hosting was canceled or interrupted. Existing saves were kept.'
+  const writes: string[] = []
+  let finishPreparation!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/access')) return response(initial)
+    if (url.endsWith('/progress')) return response({ phase: 'LatestSave', state: 'Failed', message: canceled,
+      startedUtc: began, updatedUtc: began, receivedBytes: 0, totalBytes: 0, percent: null })
+    if (init?.method) { writes.push(url); return new Promise<Response>(resolve => { finishPreparation = resolve }) }
+    return response({ ...initial, code: 'LocalHostingPreparationRequired' })
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog'))
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+  expect(dialog.getByRole('button', { name: 'Retry automatic checks' })).toBeDisabled()
+  await act(async () => { finishPreparation(new Response('', { status: 503 })) })
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(canceled)
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('Last step: Finding the latest completed save.')
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  expect(guide.getByRole('button', { name: '3. Save' })).toHaveAttribute('aria-current', 'step')
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await act(async () => {})
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(canceled)
+  expect(dialog.queryByText(/two different|different progress|history needs review/i)).not.toBeInTheDocument()
+  expect(writes).toEqual([`${base}/hosting/prepare`])
 })
 
 it.each(['network', 'http', 'malformed'] as const)('retries %s permission failures with only a fresh access read', async failure => {
@@ -353,12 +410,15 @@ it('reports an unchanged history failure after a pending retry, then shows the a
   expect(dialog.getByRole('button', { name: 'Checking this PC...' })).toBeDisabled()
   await act(async () => { release(response(blocked)) })
   expect(guide.getByRole('status')).toHaveTextContent('Check finished: sharing history needs review.')
+  expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('Refresh finished: results unchanged')
+  expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('sharing history needs review')
   expect(guide.getByRole('button', { name: 'Check hosting access again' })).toBeEnabled()
   fireEvent.click(guide.getByRole('button', { name: 'Check hosting access again' }))
   await act(async () => { release(response({ ...prepared, ok: false, code: 'PortInUse', readyForManualStart: false,
     message: 'The required game port is in use.',
     steps: prepared.steps.map(step => step.key === 'ports' ? { ...step, state: 'ActionRequired', message: 'The required game port is in use.' } : step) })) })
   expect(guide.getByRole('status')).toHaveTextContent('Check finished. Next: Local game ports.')
+  expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('Refresh finished: results updated')
   const rows = within(dialog.getByRole('list', { name: 'Local hosting checks' })).getAllByRole('listitem')
   expect(within(rows[3]).getByText('Needs attention')).toBeInTheDocument()
   expect(within(rows[3]).getByText('The required game port is in use.')).toBeInTheDocument()
@@ -469,8 +529,13 @@ it('explains preparation before confirmation, then preserves an actual save fail
   expect(guide.getByText(failed.message)).toBeInTheDocument()
   expect(guide.getByRole('button', { name: 'Review the shared saves' })).toBeEnabled()
   expect(guide.getByRole('button', { name: 'Recheck the save' })).toBeEnabled()
+  latest = unprepared // A status read reports prerequisites, not the last preparation outcome.
   fireEvent.click(guide.getByRole('button', { name: 'Recheck the save' }))
   await act(async () => {})
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(failed.message)
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('Refreshing checks does not retry this hosting attempt.')
+  expect(guide.getByRole('heading', { name: 'Get a completed verified save' })).toBeInTheDocument()
+  expect(guide.getByText(failed.message)).toBeInTheDocument()
   expect(calls.filter(call => call.method)).toEqual([{ url: `${base}/hosting/prepare`, method: 'POST' }])
   expect(calls.at(-1)).toEqual({ url: `${base}/hosting`, method: undefined })
   expect(open).not.toHaveBeenCalled()
@@ -728,7 +793,7 @@ it.each([true, false])('offers port setup only for an existing local profile (%s
   } else expect(dialog.queryByRole('button', { name: 'Open game setup' })).not.toBeInTheDocument()
 })
 
-it.each(['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'SharedSaveHistoryNeedsReview'])('keeps %s protected behind one comprehensible blocker', async code => {
+it.each(['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'])('keeps %s protected behind one comprehensible blocker', async code => {
   const writes: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
@@ -740,6 +805,23 @@ it.each(['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired', 'SharedSa
   expect(dialog.getByText(/All existing saves are kept/)).toBeInTheDocument()
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
   expect(dialog.queryByRole('combobox')).not.toBeInTheDocument()
+  expect(writes).toEqual([])
+})
+
+it('uses general save review for SharedSaveHistoryNeedsReview without asserting a history conflict or corruption', async () => {
+  const writes: string[] = []
+  const status: LocalHostingStatus = { ...initial, ok: false, code: 'SharedSaveHistoryNeedsReview',
+    message: 'The available shared save could not be selected and verified. Keep its source PC reachable and retry.' }
+  expect(localHostingAttention(status)?.kind).toBe('Review')
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => { if (init?.method) writes.push('POST'); return response(status) }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  expect(guide.getByRole('heading', { name: 'Review the available shared save' })).toBeInTheDocument()
+  expect(guide.getByText(status.message)).toBeInTheDocument()
+  expect(screen.getByRole('dialog').textContent).not.toMatch(/two different|different progress|conflicting saves|damaged|corrupt/i)
+  fireEvent.click(guide.getByRole('button', { name: 'Recheck the save' }))
+  await act(async () => {})
   expect(writes).toEqual([])
 })
 
@@ -888,6 +970,111 @@ it('bounds preparation and ignores a late result without retrying Start', async 
   expect(writes).toEqual([`${base}/hosting/prepare`])
 })
 
+it('keeps preparation active beyond 120 seconds while new copy-byte progress is observed, then accepts its result once', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingPreparation(() => ({ phase: 'PreparingCopy', state: 'Working', message: 'Preparing the hosting copy.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: Date.now() - began, totalBytes: 1_000_000, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(131_000) })
+  expect(flight.signal()?.aborted).toBe(false)
+  expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
+  expect(screen.getByRole('progressbar', { name: 'Hosting copy bytes prepared' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Retry automatic checks' })).toBeDisabled()
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+  await act(async () => { flight.finish(response(prepared)) })
+  expect(flight.open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_001) })
+  expect(flight.signal()?.aborted).toBe(false)
+  expect(flight.open).toHaveBeenCalledOnce()
+})
+
+it.each(['unchanged reply', 'timestamp only', 'counters without a newer timestamp'] as const)('expires preparation after 120 seconds without work progress despite %s polls', async mode => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingPreparation(() => ({ phase: 'PreparingCopy', state: 'Working',
+    message: `Waiting for progress at ${Date.now()}.`, startedUtc: new Date(began).toISOString(),
+    updatedUtc: new Date(mode === 'timestamp only' ? Date.now() : began).toISOString(),
+    receivedBytes: mode === 'counters without a newer timestamp' ? Date.now() - began : 256,
+    totalBytes: 1_000_000, completedFiles: 1, totalFiles: 4, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_249) })
+  expect(flight.signal()?.aborted).toBe(false)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(flight.signal()?.aborted).toBe(true)
+  const dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByRole('alert')).toHaveTextContent('No new preparation progress was reported for 2 minutes.')
+  expect(dialog.getByRole('alert')).toHaveTextContent('Last step: Preparing the hosting copy on this PC.')
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('1 of 4 files prepared for verification.')
+  expect(dialog.queryByText(/history conflict|different progress/i)).not.toBeInTheDocument()
+  await act(async () => { flight.finish(response(prepared)); await vi.advanceTimersByTimeAsync(30_000) })
+  expect(flight.open).not.toHaveBeenCalled()
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+})
+
+it('renews inactivity when a newer phase reports work without measured bytes', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingPreparation(() => ({ phase: Date.now() - began < 90_000 ? 'PeerSync' : 'LatestSave',
+    state: 'Working', message: 'Checking approved shared-save information.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: 0, totalBytes: 0, completedFiles: 0, totalFiles: 0, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(131_000) })
+  expect(flight.signal()?.aborted).toBe(false)
+  expect(screen.getByRole('progressbar', { name: 'Finding the latest completed save' })).not.toHaveAttribute('value')
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+  flight.view.unmount()
+  expect(flight.signal()?.aborted).toBe(true)
+})
+
+it('treats advancing file counts for zero-byte files as work progress', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingPreparation(() => ({ phase: 'PreparingCopy', state: 'Working', message: 'Preparing files for verification.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: 0, totalBytes: 0, completedFiles: Math.floor((Date.now() - began) / 1000), totalFiles: 1000, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(131_000) })
+  expect(flight.signal()?.aborted).toBe(false)
+  expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true')
+  expect(screen.getByText('130 of 1000 files prepared for verification.')).toBeInTheDocument()
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+  flight.view.unmount()
+  expect(flight.signal()?.aborted).toBe(true)
+})
+
+it('caps preparation at ten minutes despite continuous byte progress and ignores its late result', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingPreparation(() => ({ phase: 'PreparingCopy', state: 'Working', message: 'Preparing the hosting copy.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: Date.now() - began, totalBytes: 1_000_000, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(599_999) })
+  expect(flight.signal()?.aborted).toBe(false)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(flight.signal()?.aborted).toBe(true)
+  expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent('Preparation reached its 10-minute time limit.')
+  await act(async () => { flight.finish(response(prepared)); await vi.advanceTimersByTimeAsync(30_000) })
+  expect(flight.open).not.toHaveBeenCalled()
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+})
+
+it.each(['connection change', 'unmount'] as const)('aborts extended preparation on %s and clears its watchdog without retrying', async navigation => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingPreparation(() => ({ phase: 'PeerSync', state: 'Working', message: 'Checking approved PCs.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: Date.now() - began, totalBytes: 1_000_000, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(131_000) })
+  expect(flight.signal()?.aborted).toBe(false)
+  if (navigation === 'unmount') flight.view.unmount()
+  else flight.view.rerender(<FriendLocalHosting {...props} connectionId="second" onOpenHost={flight.open} />)
+  expect(flight.signal()?.aborted).toBe(true)
+  await act(async () => { flight.finish(response(prepared)); await vi.advanceTimersByTimeAsync(600_001) })
+  expect(flight.open).not.toHaveBeenCalled()
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+
 it('withdraws stale permission when an automatic check stalls', async () => {
   vi.useFakeTimers()
   let reads = 0
@@ -938,9 +1125,10 @@ it('retains the same check rows and timestamp through a failed retry, then recov
   await act(async () => { release(response(initial)) })
   result = 'error'
   fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
-  await waitFor(() => expect(dialog.getByText('The Host could not be reached.')).toBeInTheDocument())
+  await waitFor(() => expect(dialog.getByRole('alert')).toHaveTextContent('The Host could not be reached.'))
   expect(within(list).getAllByRole('listitem')).toEqual(rows)
   expect(dialog.getByText(/Showing the last results/)).toBeInTheDocument()
+  expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('Refresh failed')
   expect(within(dialog.getByRole('region', { name: 'Local hosting setup guide' })).getByRole('status')).toHaveTextContent('The checks could not finish.')
   expect(dialog.getByText(/Last checked/)).toHaveAttribute('datetime')
   expect(checked).toBeTruthy()
@@ -965,6 +1153,7 @@ it('keeps the list visible on the first pending read and updates a last-checked 
   const dialog = within(screen.getByRole('dialog'))
   const rows = within(dialog.getByRole('list', { name: 'Local hosting checks' })).getAllByRole('listitem')
   expect(rows).toHaveLength(5)
+  for (const row of rows) expect(within(row).getByText('Checking…')).toBeInTheDocument()
   expect(dialog.getByText(/Waiting for the first check/)).toBeInTheDocument()
   await act(async () => { release(response(initial)) })
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
@@ -995,6 +1184,46 @@ it('preserves displayed checks after an automatic timeout and ignores a late res
   await act(async () => { release(response(prepared)) })
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
   expect(writes).toEqual([])
+})
+
+it('explains unprepared checks without claiming a save failure or changing stable refresh text', async () => {
+  const status: LocalHostingStatus = { ...initial, code: 'LocalHostingPreparationRequired',
+    steps: initial.steps.map(step => step.key === 'save' ? { ...step, state: 'Unknown' } : step) }
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(status)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  const rows = within(dialog.getByRole('list', { name: 'Local hosting checks' })).getAllByRole('listitem')
+  for (const row of [rows[2], rows[3]]) {
+    expect(within(row).getByText('Not checked')).toBeInTheDocument()
+    expect(within(row).getAllByText(/Host locally/).length).toBeGreaterThan(0)
+  }
+  expect(within(rows[2]).getByText(/Receiving and file verification run after/)).toBeInTheDocument()
+  expect(within(rows[3]).getByText(/waiting for this PC’s hosting copy and game setup/)).toBeInTheDocument()
+  const refresh = dialog.getByRole('button', { name: 'Retry automatic checks' })
+  fireEvent.click(refresh)
+  await waitFor(() => expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('results unchanged'))
+  expect(refresh).toHaveTextContent('Retry automatic checks')
+  expect(writes).toEqual([])
+})
+
+it('shows a safe retryable refresh failure without reflecting an unexpected error, path or identifier', async () => {
+  let fail = false
+  const privateError = 'InternalLatestSelectionException C:\\Private\\save 33333333-3333-4333-8333-333333333333'
+  vi.stubGlobal('fetch', vi.fn(async () => fail
+    ? new Response(JSON.stringify({ code: 'UnexpectedInternalFailure', message: privateError }), { status: 500 })
+    : response(initial)))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  fail = true
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await waitFor(() => expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('Refresh failed'))
+  expect(dialog.getByRole('alert')).toHaveTextContent('The hosting request could not be checked.')
+  expect(dialog.queryByText(/InternalLatestSelectionException|Private|33333333/)).not.toBeInTheDocument()
+  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
 })
 
 it.each(['failed', 'timed out'])('keeps the entry hidden when a later permission read %s after an earlier denial', async failure => {

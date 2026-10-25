@@ -71,6 +71,114 @@ internal static class WorldPeerRecoverySelectionChecks
             await RefusesAsync(corrupt, "signed metadata ancestry selected a candidate with damaged payload bytes");
         }
         await CheckLatestGraphAsync(root);
+        await CheckInterrupted315FileCopyAsync(root);
+    }
+
+    private static async Task CheckInterrupted315FileCopyAsync(string root)
+    {
+        using (var interrupted = new Fixture(root, "interrupted-315-file-copy", fileCount: 315))
+        {
+            var receivedPointer = File.ReadAllBytes(Path.Combine(interrupted.Vault, "latest.json"));
+            var retained = await InterruptAt75FilesAsync(interrupted);
+            var partial = Path.Combine(retained, ".partial-" + interrupted.Third.VersionHash, SharedWorldService.PayloadDirectory);
+            var cached = interrupted.Third.Files.Take(75).Select(file =>
+                (File: file, Bytes: File.ReadAllBytes(Path.Combine(partial, file.Path)))).ToArray();
+            Require(cached.All(item => item.Bytes.LongLength == item.File.Length),
+                "cancelling at 75 did not keep the completed disposable file copies for retry");
+            RequireSourceUnchanged(interrupted, receivedPointer);
+            RequireNoHostingMutation(interrupted, retained);
+
+            Require((await interrupted.Service.SetReceivingAsync(interrupted.Root.GroupKey, false, default)).Ok,
+                "the synthetic receiver could not withdraw current consent before retry");
+            var deniedProgress = new List<WorldPeerSourceProgress>();
+            var denied = await interrupted.Service.ResolveLatestRecoverySourceAsync(interrupted.Root, default, deniedProgress.Add);
+            Require(!denied.Ok && denied.Code == "HostingPermissionRequired" &&
+                deniedProgress.All(item => item.Phase != "PreparingCopy") &&
+                cached.All(item => File.ReadAllBytes(Path.Combine(partial, item.File.Path)).SequenceEqual(item.Bytes)),
+                "retry bypassed current consent or changed the already retained 75 files while denied");
+            RequireSourceUnchanged(interrupted, receivedPointer);
+            RequireNoHostingMutation(interrupted, retained);
+
+            Require((await interrupted.Service.SetReceivingAsync(interrupted.Root.GroupKey, true, default)).Ok,
+                "the synthetic receiver could not restore current consent for retry");
+            var progress = new List<WorldPeerSourceProgress>();
+            var completed = await interrupted.Service.ResolveLatestRecoverySourceAsync(interrupted.Root, default, progress.Add);
+            var total = interrupted.Third.Files.Sum(file => file.Length);
+            Require(completed.Ok && completed.Source is not null && completed.Source.Vault == retained &&
+                completed.Source.Descriptor.Version.VersionHash == interrupted.Third.VersionHash &&
+                progress.Any(item => item.Phase == "PreparingCopy" && item.CompletedFiles == 315 &&
+                    item.TotalFiles == 315 && item.CompletedBytes == total && item.TotalBytes == total) &&
+                progress.Any(item => item.Phase == "Verifying" && item.CompletedFiles == 315 &&
+                    item.TotalFiles == 315 && item.CompletedBytes == total && item.TotalBytes == total),
+                "retry did not prepare and fully verify the exact 315-file latest source with byte/file progress");
+            completed.Source!.Verify(interrupted.Data, interrupted.Root);
+            Require(FriendLink.ReadReceivedLatest(retained)?.VersionHash == interrupted.Third.VersionHash &&
+                !Directory.Exists(Path.GetDirectoryName(partial)) &&
+                cached.All(item => File.ReadAllBytes(Path.Combine(retained, interrupted.Third.VersionHash,
+                    SharedWorldService.PayloadDirectory, item.File.Path)).SequenceEqual(item.Bytes)),
+                "retry did not reuse the retained files in one complete verified source");
+            RequireSourceUnchanged(interrupted, receivedPointer);
+            RequireNoHostingMutation(interrupted);
+        }
+        using (var damaged = new Fixture(root, "damaged-cached-315-file-copy", fileCount: 315))
+        {
+            var receivedPointer = File.ReadAllBytes(Path.Combine(damaged.Vault, "latest.json"));
+            var retained = await InterruptAt75FilesAsync(damaged);
+            var cachedFile = Path.Combine(retained, ".partial-" + damaged.Third.VersionHash,
+                SharedWorldService.PayloadDirectory, damaged.Third.Files[0].Path);
+            var changed = File.ReadAllBytes(cachedFile); changed[0] ^= 0x7F;
+            File.WriteAllBytes(cachedFile, changed); // Same length must still fail the final signed hash.
+            var progress = new List<WorldPeerSourceProgress>();
+            var rejected = await damaged.Service.ResolveLatestRecoverySourceAsync(damaged.Root, default, progress.Add);
+            Require(!rejected.Ok && rejected.Code == "SharedSaveHistoryNeedsReview" && rejected.Source is null &&
+                progress.Any(item => item.Phase == "PreparingCopy" && item.CompletedFiles == 315) &&
+                progress.Any(item => item.Phase == "Verifying"),
+                "a same-size damaged cached file became a complete source instead of failing final verification");
+            RequireSourceUnchanged(damaged, receivedPointer);
+            RequireNoHostingMutation(damaged, retained);
+        }
+    }
+
+    private static async Task<string> InterruptAt75FilesAsync(Fixture fixture)
+    {
+        using var stop = new CancellationTokenSource();
+        WorldPeerSourceProgress? cutoff = null;
+        var cancelled = false;
+        try
+        {
+            await fixture.Service.ResolveLatestRecoverySourceAsync(fixture.Root, stop.Token, item =>
+            {
+                if (item.Phase != "PreparingCopy" || item.CompletedFiles != 75 || cutoff is not null) return;
+                cutoff = item;
+                stop.Cancel();
+            });
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { cancelled = true; }
+        Require(cancelled && cutoff is { CompletedFiles: 75, TotalFiles: 315 } &&
+            cutoff.CompletedBytes > 0 && cutoff.CompletedBytes < cutoff.TotalBytes,
+            "actual latest-source retention did not cancel deterministically at 75 of 315 files");
+        return WorldPeerRecoverySource.StorageRoot(fixture.Data, fixture.Root, fixture.Lane, fixture.Third.VersionHash);
+    }
+
+    private static void RequireSourceUnchanged(Fixture fixture, byte[] pointer)
+    {
+        Require(File.ReadAllBytes(Path.Combine(fixture.Vault, "latest.json")).SequenceEqual(pointer) &&
+            FriendLink.ReadReceivedLatest(fixture.Vault)?.VersionHash == fixture.Third.VersionHash &&
+            fixture.Third.Files.All(file => File.ReadAllText(Path.Combine(fixture.Vault,
+                fixture.Third.VersionHash, SharedWorldService.PayloadDirectory, file.Path)) == "third"),
+            "preparing or cancelling the retained source changed its received pointer or original payload bytes");
+    }
+
+    private static void RequireNoHostingMutation(Fixture fixture, string? unpromoted = null)
+    {
+        Require((unpromoted is null || !File.Exists(Path.Combine(unpromoted, "latest.json"))) &&
+            fixture.Data.LoadSettings().Profiles.Count == 0 && !fixture.Data.LoadSettings().CompanionListeningEnabled &&
+            fixture.Data.LoadRuns().Count == 0 &&
+            new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.Root.ProfileId).Count == 0 &&
+            new WorldAuthorityStore(fixture.Data).Read(fixture.Root.ProfileId).Count == 0 &&
+            !fixture.Data.HasProtected(WorldAuthorityStore.HostingKeyName(fixture.Root.ProfileId)) &&
+            !Directory.EnumerateFiles(fixture.Data.RootPath, "separate-host-*.protected").Any(),
+            "source retention promoted an unfinished pointer, prepared a hosting branch/profile or recorded a Start");
     }
 
     private static async Task CheckLatestGraphAsync(string root)
@@ -138,7 +246,7 @@ internal static class WorldPeerRecoverySelectionChecks
         internal WorldPeerService Service { get; }
         private readonly FriendService friends;
 
-        internal Fixture(string parent, string name, bool includeSecond = true, bool foreignThird = false)
+        internal Fixture(string parent, string name, bool includeSecond = true, bool foreignThird = false, int fileCount = 1)
         {
             Data = new LocalData(Path.Combine(parent, "recovery-selection-" + name + "-" + Guid.NewGuid().ToString("N")));
             Root = new(Convert.ToBase64String(Owner.ExportSubjectPublicKeyInfo()), Guid.NewGuid(), Guid.NewGuid());
@@ -165,7 +273,7 @@ internal static class WorldPeerRecoverySelectionChecks
                 SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(2456, false, "Unknown", [], []),
                 [Fact("initial")], "", "", ""), Owner);
             var second = Child(First, "second");
-            Third = Child(second, "third");
+            Third = Child(second, "third", fileCount);
             if (foreignThird) Third = SharedWorldService.SignVersion(Third with { GroupId = Guid.NewGuid() }, Owner);
             Vault = Path.Combine(Data.RootPath, "received-shared-worlds", Guid.Empty.ToString("N"), Root.ProfileId.ToString("N"));
             Write(Vault, First, "initial");
@@ -180,23 +288,34 @@ internal static class WorldPeerRecoverySelectionChecks
                 (_, _) => throw new InvalidOperationException("No network is allowed in selection checks."));
         }
 
-        internal SharedWorldVersion Child(SharedWorldVersion parent, string payload) => SharedWorldService.SignVersion(parent with
-        { Number = parent.Number + 1, ParentHash = parent.VersionHash, BackupId = Guid.NewGuid(), Files = [Fact(payload)] }, Owner);
+        internal SharedWorldVersion Child(SharedWorldVersion parent, string payload, int fileCount = 1) => SharedWorldService.SignVersion(parent with
+        {
+            Number = parent.Number + 1,
+            ParentHash = parent.VersionHash,
+            BackupId = Guid.NewGuid(),
+            Files = fileCount == 1 ? [Fact(payload)] : Enumerable.Range(0, fileCount)
+                .Select(index => Fact(payload, $"world-{index:D3}.dat")).ToArray()
+        }, Owner);
         internal SharedWorldPeerAnnouncement Publish(SharedWorldVersion version) => Store.Publish(Guid.Empty, Owner,
             [], [], [new(Lane, First.VersionHash, version.VersionHash, version.ParentHash, version.Number)]);
         internal void Write(string root, SharedWorldVersion version, string payload)
         {
             var directory = Path.Combine(root, version.VersionHash);
             Directory.CreateDirectory(Path.Combine(directory, SharedWorldService.PayloadDirectory));
-            File.WriteAllText(Path.Combine(directory, SharedWorldService.PayloadDirectory, "world.dat"), payload);
+            foreach (var file in version.Files)
+            {
+                var path = SharedWorldService.SafeChild(Path.Combine(directory, SharedWorldService.PayloadDirectory), file.Path);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, payload);
+            }
             File.WriteAllBytes(Path.Combine(directory, "version.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
             FriendLink.KeepSignedManifest(root, version);
             File.WriteAllBytes(Path.Combine(root, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
         }
-        private static SharedWorldFile Fact(string payload)
+        private static SharedWorldFile Fact(string payload, string path = "world.dat")
         {
             var bytes = Encoding.UTF8.GetBytes(payload);
-            return new("world.dat", bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)));
+            return new(path, bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)));
         }
         public void Dispose() { Service.Dispose(); friends.Dispose(); Data.Dispose(); Owner.Dispose(); }
     }

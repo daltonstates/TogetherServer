@@ -2046,8 +2046,9 @@ internal sealed partial class FriendLink
         await gate.WaitAsync(cancellationToken);
         try
         {
-            return config is null ? null : Path.GetFullPath(Path.Combine(data.RootPath,
-                "received-shared-worlds", config.DeviceId.ToString("N"), profileId.ToString("N")));
+            // The transport credential can belong to a successor session; the
+            // receive gate must protect the same member vault as the transfer.
+            return config is null ? null : Path.GetFullPath(ReceivedRoot(profileId));
         }
         finally { gate.Release(); }
     }
@@ -2905,7 +2906,8 @@ internal sealed partial class FriendLink
         return key;
     }
 
-    internal static SharedWorldVersion? ReadReceivedLatest(string root)
+    internal static SharedWorldVersion? ReadReceivedLatest(string root, CancellationToken cancellationToken = default,
+        Action<long, long, int, int>? progress = null)
     {
         var path = Path.Combine(root, "latest.json");
         if (!File.Exists(path)) return null;
@@ -2916,9 +2918,17 @@ internal sealed partial class FriendLink
         if (version is null || !SharedWorldService.VerifySignature(version) ||
             !Directory.Exists(Path.Combine(root, version.VersionHash)))
             throw new InvalidDataException("The prior received version failed verification.");
+        var total = SharedWorldService.BoundedTotalBytes(version.Files);
+        long verified = 0;
+        var files = 0;
         foreach (var file in version.Files)
-            SharedWorldService.VerifyFile(SharedWorldService.SafeChild(
-                Path.Combine(root, version.VersionHash, SharedWorldService.PayloadDirectory), file.Path), file);
+        {
+            WorldPeerPayloadHash.VerifyFile(SharedWorldService.SafeChild(
+                Path.Combine(root, version.VersionHash, SharedWorldService.PayloadDirectory), file.Path), file, cancellationToken,
+                bytes => WorldPeerPayloadHash.Report(progress, verified + bytes, total, files, version.Files.Count));
+            verified += file.Length;
+            WorldPeerPayloadHash.Report(progress, verified, total, ++files, version.Files.Count);
+        }
         return version;
     }
 

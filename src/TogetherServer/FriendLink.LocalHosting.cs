@@ -5,7 +5,7 @@ namespace TogetherServer;
 
 internal sealed record LocalHostingAccess(bool Allowed, bool Consented, string Name,
     string? Game, SharedWorldVersion? Version, bool SaveVerified, string Code, string Message,
-    SharedWorldPeerRoot? Root = null);
+    SharedWorldPeerRoot? Root = null, bool PeerWorldConnection = false);
 
 internal sealed partial class FriendLink
 {
@@ -153,7 +153,7 @@ internal sealed partial class FriendLink
         if (permissionOnly)
             return new(true, consented, name, profile?.GameKind ?? profile?.Kind, null, false,
                 "HostingAllowed", "The owner allows this PC to host this server.",
-                new(roster.OwnerPublicKey, profileId, roster.GroupId));
+                new(roster.OwnerPublicKey, profileId, roster.GroupId), config.PeerWorld is not null);
         SharedWorldVersion? version = null;
         var verified = false;
         if (consented)
@@ -187,7 +187,7 @@ internal sealed partial class FriendLink
         { version = null; verified = false; }
         return new(true, consented, name, version?.Game ?? profile?.GameKind ?? profile?.Kind,
             version, verified, "HostingAllowed", "The owner allows this PC to host this server.",
-            new(roster.OwnerPublicKey, profileId, roster.GroupId));
+            new(roster.OwnerPublicKey, profileId, roster.GroupId), config.PeerWorld is not null);
     }
 }
 

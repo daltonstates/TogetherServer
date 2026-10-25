@@ -31,15 +31,17 @@ internal sealed partial class WorldPeerService
             {
                 if (response.VersionHash != descriptor.Version.VersionHash)
                     throw new InvalidDataException("The peer seed response changed the offered save.");
-                if (response.Code == "SeedKnown") break;
-                if (response.Code == "SeedComplete")
+                if (response.Code is "SeedKnown" or "SeedComplete")
                 {
                     if (response.Receipt is { } receipt)
                     {
+                        if (receipt.VersionHash != descriptor.Version.VersionHash)
+                            throw new InvalidDataException("The seeded-copy receipt names another save.");
                         var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
                         var accepted = AcceptReceipt(current, JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
                         if (!accepted.Ok) throw new InvalidDataException("The seeded-copy receipt did not verify.");
                     }
+                    if (response.Code == "SeedKnown") break;
                     return; // One completed payload per peer/pass.
                 }
                 if (response.Code == "SeedManifest" && response.ManifestHash is { } hash && response.ManifestNumber is { } number)
@@ -66,7 +68,12 @@ internal sealed partial class WorldPeerService
         WorldPeerSaveDescriptor descriptor, SharedWorldVersion? manifest, byte[]? bytes,
         int? fileIndex, long? offset, CancellationToken cancellationToken)
     {
-        if (!await ReceiveAllowedAsync(group, cancellationToken)) throw new OperationCanceledException("Save consent changed.");
+        var current = Find(group.Root.GroupKey);
+        using var key = current is null ? null : LocalKey(current);
+        if (current is null || key is null || !current.SharingEnabled ||
+            !await ReceiveAllowedAsync(current, cancellationToken) ||
+            Access(current, current.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is not { Receive: true, Reshare: true })
+            throw new OperationCanceledException("Save consent or forwarding permission changed.");
         var payload = JsonSerializer.SerializeToUtf8Bytes(new WorldPeerSeedRequest(descriptor, manifest, bytes), Json);
         var response = await SendPeerAsync(group, route, WorldPeerOperations.Seed, cancellationToken, payload,
             versionHash: descriptor.Version.VersionHash, fileIndex: fileIndex, chunkOffset: offset);
@@ -95,7 +102,8 @@ internal sealed partial class WorldPeerService
                 WorldPeerFileTransfer.KnownDescendant(vault, version, existing))
             {
                 using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, Path.Combine(vault, existing!.VersionHash), existing, cancellationToken);
-                return new("SeedKnown", version.VersionHash);
+                return new("SeedKnown", version.VersionHash, Receipt: existing.VersionHash == version.VersionHash
+                    ? await ReadRetainedReceiptAsync(group, descriptor, vault, cancellationToken) : null);
             }
             var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
             var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
@@ -113,7 +121,8 @@ internal sealed partial class WorldPeerService
                     if (ReadPeerPointer(retained)?.VersionHash == version.VersionHash)
                     {
                         using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, Path.Combine(retained, version.VersionHash), version, cancellationToken);
-                        return new("SeedKnown", version.VersionHash);
+                        return new("SeedKnown", version.VersionHash,
+                            Receipt: await ReadRetainedReceiptAsync(group, descriptor, retained, cancellationToken));
                     }
                     pending = await StageSeedHistoryAsync(group, descriptor, seed.Manifest, retained, anchor, cancellationToken);
                     return pending ?? await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken);

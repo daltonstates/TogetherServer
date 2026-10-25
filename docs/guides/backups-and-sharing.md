@@ -95,9 +95,12 @@ connection. It prepares the world and starts when the checks pass. If something
 needs your action, such as installing the server or fixing its connection,
 the dialog explains it and lets you continue. Game terms remain your choice.
 
-The five hosting checks stay visible while they refresh. **Last checked** shows
-the age of the displayed results. If a retry fails, the previous results stay
-visible and starting waits for a successful recheck. Choose **Show setup steps**
+The five hosting checks stay visible while they refresh. The check result says
+whether anything changed, when the check finished, and what to do next.
+**Refresh** checks the setup again; it does not retry a failed preparation.
+The last hosting attempt keeps its failed step and result visible. If a check
+fails, the previous results stay visible and starting waits for a successful
+recheck. Choose **Show setup steps**
 beside a check to open its part of the guide. The guide explains what to do on
 this PC and which changes need the original owner. A sharing-history or
 verification error needs review; it does not mean the owner turned sharing off.
@@ -105,6 +108,14 @@ verification error needs review; it does not mean the owner turned sharing off.
 The guide reports what a button is doing, then shows its result and the next
 step. If permission or sharing history is blocking preparation, later checks
 show **Not checked** until that prerequisite is verified.
+
+Preparing a hosting copy can take several minutes. The app shows bytes and
+files prepared locally separately from receiving a save from another PC.
+Those counts do not prove the final copy passed verification. Preparation
+continues while measured work advances; two minutes without progress or the
+overall ten-minute limit cancels that attempt. Existing saves remain intact.
+After a timeout, keep the source apps open and choose **Host locally** again
+to resume preparation. Refresh alone does not resume it.
 
 Hosting requires a configured incoming connection. Confirmation can enable
 that saved app connection; TogetherServer never changes Windows Firewall,
@@ -172,6 +183,13 @@ reachable approved PC must have the completed save to survive the current Host
 going offline. At least one previously learned pinned peer address must still
 work; the app has no cloud relay or automatic NAT setup. Offline PCs cannot
 learn new access removals until authenticated information reaches them.
+
+Use the current preview on the original Host and other approved receiving PCs.
+After a safe Stop, confirm the exact new completed save and its copy receipts,
+including the original Host when it receives a continuation back. An online
+app, a signed announcement, or a copy still in progress is not a confirmed
+delivery. Offline PCs can catch up when reachable; removed, expired, or
+nonconsenting PCs do not receive saves merely because they are online.
 
 If two sessions produced different progress, the app keeps both and blocks an
 automatic choice. Partial, damaged or private test copies never become the

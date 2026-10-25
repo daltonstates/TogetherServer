@@ -244,14 +244,12 @@ internal sealed partial class WorldPeerService
     private WorldPeerActionResult AcceptReceipt(Group group, byte[] payload)
     {
         var receipt = SharedWorldReceiptTrust.Parse(payload);
-        var member = receipt is null ? null : group.Roster.Members.SingleOrDefault(item => item.DeviceId == receipt.DeviceId);
-        if (receipt is null || member is null || !WorldGroupAccess.MayReceive(group.Roster, member.DeviceId, member.PublicKey) ||
-            receipt.GroupId != group.Root.GroupId || receipt.ProfileId != group.Root.ProfileId ||
-            receipt.RosterEpoch != group.Roster.Epoch || receipt.RosterRevision != group.Roster.Revision ||
-            !SharedWorldReceiptTrust.Verify(receipt, member.PublicKey))
-            return new(false, "PeerReceiptRejected", "The copy receipt is not authorized for this world.");
         lock (stateSync)
         {
+            var current = Find(group.Root.GroupKey);
+            if (current is null || receipt is null || !AuthorizedCopyReceipt(current, receipt))
+                return new(false, "PeerReceiptRejected", "The copy receipt is not authorized for this world.");
+            group = current;
             var bytes = data.LoadProtected(ReceiptName(group));
             var old = bytes is null ? [] : JsonSerializer.Deserialize<List<SharedWorldReceipt>>(bytes, Json) ?? [];
             if (old.Any(item => item.ReceiptId == receipt.ReceiptId))
@@ -261,6 +259,18 @@ internal sealed partial class WorldPeerService
             data.SaveProtected(ReceiptName(group), JsonSerializer.SerializeToUtf8Bytes(old, Json));
         }
         return new(true, "PeerReceiptStored", "The exact verified copy receipt was recorded.");
+    }
+
+    private bool AuthorizedCopyReceipt(Group group, SharedWorldReceipt receipt)
+    {
+        var publicKey = receipt.DeviceId == Guid.Empty ? group.Root.OwnerPublicKey :
+            group.Roster.Members.SingleOrDefault(item => item.DeviceId == receipt.DeviceId)?.PublicKey;
+        return publicKey is not null &&
+            Access(group, receipt.DeviceId, publicKey)?.Receive == true &&
+            receipt.GroupId == group.Root.GroupId && receipt.ProfileId == group.Root.ProfileId &&
+            receipt.RosterEpoch == group.Roster.Epoch && receipt.RosterRevision == group.Roster.Revision &&
+            (receipt.DeviceId == Guid.Empty ? SharedWorldReceiptTrust.VerifyPeerOwner(receipt, group.Root) :
+                SharedWorldReceiptTrust.Verify(receipt, publicKey));
     }
 
     private async Task<bool> ReceiveAllowedAsync(Group group, CancellationToken cancellationToken)
@@ -445,13 +455,14 @@ internal sealed partial class WorldPeerService
                 data.SaveProtected(SaveObservationName(current.Root), SHA256.HashData(
                     previousObservation.Concat(System.Text.Encoding.UTF8.GetBytes(version.VersionHash + "\n" + descriptor.Branch?.BranchHash)).ToArray()));
                 WorldPeerFileTransfer.Promote(vault, descriptor);
-                if (current.DeviceId == Guid.Empty) return;
-                var draft = new SharedWorldReceipt(1, current.Root.GroupId, current.Root.ProfileId, version.VersionHash,
+                var draft = new SharedWorldReceipt(current.DeviceId == Guid.Empty ? SharedWorldReceiptTrust.PeerOwnerSchema : 1,
+                    current.Root.GroupId, current.Root.ProfileId, version.VersionHash,
                     current.DeviceId, current.Roster.Epoch, current.Roster.Revision, Guid.NewGuid(), "");
                 receipt = draft with
                 {
                     Signature = Convert.ToBase64String(signingKey.SignData(
-                    SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
+                    current.DeviceId == Guid.Empty ? SharedWorldReceiptTrust.PeerOwnerBasis(draft, current.Root) :
+                        SharedWorldReceiptTrust.Basis(draft), HashAlgorithmName.SHA256))
                 };
             }
         }
@@ -477,29 +488,37 @@ internal sealed partial class WorldPeerService
     private async Task RetryRetainedReceiptAsync(Group group, SharedWorldPeerRoute route,
         WorldPeerSaveDescriptor descriptor, string vault, CancellationToken cancellationToken)
     {
-        if (group.DeviceId == Guid.Empty || !await ReceiveAllowedAsync(group, cancellationToken)) return;
+        if (!await ReceiveAllowedAsync(group, cancellationToken)) return;
+        var receipt = await ReadRetainedReceiptAsync(group, descriptor, vault, cancellationToken);
+        if (receipt is null || !ReceiptDeliveryDue(group, route, receipt)) return;
+        await DeliverReceiptAsync(group, route, receipt, JsonSerializer.SerializeToUtf8Bytes(receipt, Json), cancellationToken);
+    }
+
+    // A SeedKnown response may be retrying a lost SeedComplete reply. Return
+    // only the same persisted receipt after checking the complete retained copy.
+    private async Task<SharedWorldReceipt?> ReadRetainedReceiptAsync(Group group,
+        WorldPeerSaveDescriptor descriptor, string vault, CancellationToken cancellationToken)
+    {
+        if (!await ReceiveAllowedAsync(group, cancellationToken)) return null;
         var destination = SharedWorldService.SafeChild(vault, descriptor.Version.VersionHash);
         var path = Path.Combine(destination, "receipt.json");
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
-        if (!File.Exists(path)) return;
+        if (!File.Exists(path)) return null;
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if ((File.GetAttributes(input.SafeFileHandle) & FileAttributes.ReparsePoint) != 0) return;
+        if ((File.GetAttributes(input.SafeFileHandle) & FileAttributes.ReparsePoint) != 0) return null;
         var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(input, input.Length, cancellationToken);
-        if (bytes is null) return;
+        if (bytes is null) return null;
         var receipt = SharedWorldReceiptTrust.Parse(bytes);
         var current = Find(group.Root.GroupKey);
         using var key = current is null ? null : LocalKey(current);
         if (receipt is null || current is null || key is null || receipt.DeviceId != current.DeviceId ||
-            receipt.GroupId != current.Root.GroupId || receipt.ProfileId != current.Root.ProfileId ||
-            receipt.VersionHash != descriptor.Version.VersionHash || receipt.RosterEpoch != current.Roster.Epoch ||
-            receipt.RosterRevision != current.Roster.Revision ||
-            !SharedWorldReceiptTrust.Verify(receipt, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) ||
-            !ReceiptDeliveryDue(current, route, receipt) || !AuthorizedDescriptor(current, descriptor)) return;
+            receipt.VersionHash != descriptor.Version.VersionHash || !AuthorizedCopyReceipt(current, receipt) ||
+            !AuthorizedDescriptor(current, descriptor)) return null;
         var records = new WorldAuthorityStore(data).Read(current.Root.ProfileId);
         var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(current.Root, descriptor.Version, records);
         WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
         using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, destination, descriptor.Version, cancellationToken);
-        await DeliverReceiptAsync(current, route, receipt, bytes, cancellationToken);
+        return await ReceiveAllowedAsync(current, cancellationToken) ? receipt : null;
     }
 
     private async Task DeliverReceiptAsync(Group group, SharedWorldPeerRoute route, SharedWorldReceipt receipt,
@@ -597,8 +616,39 @@ internal sealed partial class WorldPeerService
             item.PublicKey == publicKey).Select(item => item.Session))
         {
             if (sessions.Any(item => item.SessionId == old.SessionId)) continue;
-            var stopped = old.State is "Stopped" or "Interrupted" ? old : old with
-            { Revision = old.Revision + 1, State = "Stopped", EndedUtc = DateTimeOffset.UtcNow };
+            var finalBranch = branches.FirstOrDefault(branch => branch.BranchHash == old.BranchHash &&
+                branch.BaseVersionHash == old.BaseVersionHash);
+            // Interrupted with no end is a still-managed uncertain session,
+            // not an immutable terminal record. A later completed Stop closes
+            // it with the same final head as a previously Ready session.
+            var closed = old.State == "Stopped" || old.State == "Interrupted" && old.EndedUtc is not null;
+            var finalHead = old.HeadVersionHash;
+            if (!closed && finalBranch is not null)
+            {
+                var candidate = local.FirstOrDefault(item =>
+                    SessionBranchHash(group, item.Descriptor) == old.BranchHash &&
+                    item.Descriptor.Version.VersionHash == finalBranch.HeadVersionHash);
+                if (candidate is not null)
+                    try
+                    {
+                        // A missing publication can expose the retained older
+                        // base, and a signed higher counter can still be a fork.
+                        // Only exact signed ancestry may advance this session.
+                        _ = await WorldPeerLatestSelection.SelectAsync(group.Root, [candidate.Descriptor],
+                            [old.HeadVersionHash ?? old.BaseVersionHash], (_, _) => Task.CompletedTask,
+                            (hash, number, token) => FindManifestAsync(group, hash, number, token), cancellationToken);
+                        finalHead = candidate.Descriptor.Version.VersionHash;
+                    }
+                    catch (Exception error) when (PeerFailure(error))
+                    { /* Preserve the already announced head when descent cannot be proved. */ }
+            }
+            var stopped = closed ? old : old with
+            {
+                Revision = old.Revision + 1,
+                State = "Stopped",
+                EndedUtc = DateTimeOffset.UtcNow,
+                HeadVersionHash = finalHead
+            };
             sessions.Add(stopped);
             if (branches.All(branch => branch.BranchHash != stopped.BranchHash))
             {
@@ -814,13 +864,23 @@ internal static class WorldPeerFileTransfer
                 throw new InvalidDataException("The peer save does not extend its complete authorized history.");
     }
 
-    internal static void VerifyStage(string dataRoot, string payloadRoot, SharedWorldVersion version)
+    internal static void VerifyStage(string dataRoot, string payloadRoot, SharedWorldVersion version,
+        CancellationToken cancellationToken = default, Action<long, long, int, int>? progress = null)
     {
+        var total = SharedWorldService.BoundedTotalBytes(version.Files);
+        long verified = 0;
+        var files = 0;
         foreach (var file in version.Files)
         {
             var path = SharedWorldService.SafeChild(payloadRoot, file.Path);
             SharedWorldService.EnsureUnlinkedRoot(dataRoot, path);
-            try { SharedWorldService.VerifyFile(path, file); }
+            try
+            {
+                WorldPeerPayloadHash.VerifyFile(path, file, cancellationToken,
+                    bytes => WorldPeerPayloadHash.Report(progress, verified + bytes, total, files, version.Files.Count));
+                verified += file.Length;
+                WorldPeerPayloadHash.Report(progress, verified, total, ++files, version.Files.Count);
+            }
             catch (InvalidDataException)
             {
                 // Only a disposable partial file is reset. A corrupt completed
@@ -857,7 +917,8 @@ internal sealed class WorldPeerVerifiedCopy : IDisposable
     private readonly List<SafeFileHandle> directories = [];
 
     internal static WorldPeerVerifiedCopy Open(string dataRoot, string destination,
-        SharedWorldVersion version, CancellationToken cancellationToken)
+        SharedWorldVersion version, CancellationToken cancellationToken,
+        Action<long, long, int, int>? progress = null)
     {
         var lease = new WorldPeerVerifiedCopy();
         try
@@ -885,6 +946,9 @@ internal sealed class WorldPeerVerifiedCopy : IDisposable
             var payload = NativeSnapshotDirectory.OpenDirectory(parent, SharedWorldService.PayloadDirectory, namespaceWrites: true);
             lease.directories.Add(payload);
             var opened = new Dictionary<string, SafeFileHandle>(StringComparer.OrdinalIgnoreCase) { [""] = payload };
+            var total = SharedWorldService.BoundedTotalBytes(version.Files);
+            long verified = 0;
+            var fileCount = 0;
             foreach (var file in version.Files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -904,9 +968,14 @@ internal sealed class WorldPeerVerifiedCopy : IDisposable
                 var stream = new FileStream(NativeSnapshotDirectory.OpenReadFile(directory, parts[^1]), FileAccess.Read);
                 lease.files.Add(stream);
                 if (stream.Length != file.Length || (File.GetAttributes(stream.SafeFileHandle) & FileAttributes.ReparsePoint) != 0 ||
-                    !Convert.ToHexString(SHA256.HashData(stream)).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
+                    !WorldPeerPayloadHash.Hash(stream, cancellationToken,
+                        bytes => WorldPeerPayloadHash.Report(progress, verified + bytes, total, fileCount, version.Files.Count))
+                        .Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("The completed peer payload failed full verification.");
+                verified += file.Length;
+                WorldPeerPayloadHash.Report(progress, verified, total, ++fileCount, version.Files.Count);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             return lease;
         }
         catch (Win32Exception error)

@@ -26,21 +26,27 @@ internal sealed partial class WorldPeerService
     // no incoming route can still send its signed history to an enabled peer;
     // unavailable peers never turn a known newer save into permission to start
     // an older copy. This does not select a Friend connection or group default.
+    internal Task<WorldPeerLatestSourceResult> ResolveLatestRecoverySourceAsync(
+        SharedWorldPeerRoot root, CancellationToken cancellationToken) =>
+        ResolveLatestRecoverySourceAsync(root, cancellationToken, null);
+
     internal async Task<WorldPeerLatestSourceResult> ResolveLatestRecoverySourceAsync(
-        SharedWorldPeerRoot root, CancellationToken cancellationToken)
+        SharedWorldPeerRoot root, CancellationToken cancellationToken, Action<WorldPeerSourceProgress>? progress)
     {
         var phase = "PeerSync";
         try
         {
+            WorldPeerSourceProgress.Report(progress, new("PeerSync", "Checking approved PCs for completed saves."));
             await SyncWorldAsync(root, cancellationToken);
             for (var attempt = 0; ; attempt++)
             {
-                var result = await ResolveLatestRecoverySourceOnceAsync(root, cancellationToken);
+                var result = await ResolveLatestRecoverySourceOnceAsync(root, cancellationToken, progress);
                 phase = "IncomingSeedWait";
                 if (result.Ok || attempt == 3 || !await ExpectIncomingSeedAsync(root, cancellationToken)) return result;
                 // A sender whose incoming listener is off may be between its
                 // normal five-second outbound polls. One confirmation waits
                 // up to fifteen seconds for that automatic transfer to arrive.
+                WorldPeerSourceProgress.Report(progress, new("PeerSync", "Waiting for an approved PC to finish sending its completed save."));
                 await seedDelay(TimeSpan.FromSeconds(5), cancellationToken);
             }
         }
@@ -67,7 +73,7 @@ internal sealed partial class WorldPeerService
     }
 
     private async Task<WorldPeerLatestSourceResult> ResolveLatestRecoverySourceOnceAsync(
-        SharedWorldPeerRoot root, CancellationToken cancellationToken)
+        SharedWorldPeerRoot root, CancellationToken cancellationToken, Action<WorldPeerSourceProgress>? progress)
     {
         var phase = "Membership";
         try
@@ -83,7 +89,8 @@ internal sealed partial class WorldPeerService
                 phase = "InitialObservation";
                 var observation = LatestObservationHash(root) ?? throw new InvalidDataException("The shared save observation changed.");
                 phase = "LatestSelection";
-                var selected = await LatestLocalSaveAsync(group, cancellationToken);
+                WorldPeerSourceProgress.Report(progress, new("LatestSave", "Checking complete local copies against the signed save history."));
+                var selected = await LatestLocalSaveAsync(group, cancellationToken, progress);
                 if (selected is null)
                     return new(false, "SharedSaveUnavailable", "No complete verified save is available on this PC yet. Keep the approved PCs online while the save copies.");
                 var lane = selected.Descriptor.Branch?.BranchHash ?? Store(group).Project().Branches
@@ -93,12 +100,13 @@ internal sealed partial class WorldPeerService
                 // immutable retention and the final permission check.
                 phase = "RetainExactSource";
                 var source = await ResolveRecoverySourceAsync(root.GroupKey, lane, cancellationToken,
-                    selected.Descriptor.Version.VersionHash);
+                    selected.Descriptor.Version.VersionHash, progress);
                 phase = "FinalRecheck";
+                WorldPeerSourceProgress.Report(progress, new("LatestSave", "Repeating current permission and newest-save checks before using the prepared copy."));
                 var current = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
                 if (LatestObservationHash(root) != observation)
                     return new(false, "LatestSaveChanged", "New shared save information arrived. Try Host locally again.");
-                var latest = await LatestLocalSaveAsync(current, cancellationToken);
+                var latest = await LatestLocalSaveAsync(current, cancellationToken, progress);
                 if (latest?.Descriptor.Version.VersionHash != source.Descriptor.Version.VersionHash ||
                     LatestObservationHash(root) != observation)
                     return new(false, "LatestSaveChanged", "A newer save arrived while preparing. Try Host locally again.", null);
@@ -162,7 +170,8 @@ internal sealed partial class WorldPeerService
         catch (Exception error) when (PeerFailure(error)) { return null; }
     }
 
-    private async Task<LocalSave?> LatestLocalSaveAsync(Group group, CancellationToken cancellationToken)
+    private async Task<LocalSave?> LatestLocalSaveAsync(Group group, CancellationToken cancellationToken,
+        Action<WorldPeerSourceProgress>? progress = null)
     {
         var state = Store(group).Project();
         if (state.Peers.Any(peer => peer.HasConflict))
@@ -190,8 +199,11 @@ internal sealed partial class WorldPeerService
             async (index, token) =>
             {
                 var item = local[index];
+                WorldPeerSourceProgress.Report(progress, new("LatestSave", "Checking the next complete local save candidate."));
                 using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, RecoverySourceDirectory(item),
-                    item.Descriptor.Version, token);
+                    item.Descriptor.Version, token, (bytes, total, files, count) =>
+                        WorldPeerSourceProgress.Report(progress, new("Verifying", "Checking a complete local save against its signed file hashes.",
+                            bytes, total, files, count)));
                 var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
                 var anchor = item.Descriptor.Branch?.Offer.Version ??
                     WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, item.Descriptor.Version, records);

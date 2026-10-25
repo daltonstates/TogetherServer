@@ -25,6 +25,10 @@
 .local-hosting-results { display: grid; gap: 1rem; min-inline-size: 0; padding: 1.15rem; border: 1px solid var(--color-border-subtle); border-radius: .6rem; }
 .local-hosting-results-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; }
 .local-hosting-results-heading h3 { margin: 0; font-size: .95rem; }
+.local-hosting-check-result, .local-hosting-attempt-result { display: grid; gap: .4rem; padding: .8rem; border: 1px solid var(--color-border); border-radius: .5rem; background: var(--color-surface-raised); line-height: 1.5; overflow-wrap: anywhere; }
+:is(.local-hosting-check-result, .local-hosting-attempt-result) p { margin: 0; }
+:is(.local-hosting-check-result, .local-hosting-attempt-result) small { color: var(--color-text-muted); }
+.local-hosting-checks .local-hosting-check-next { margin-block-start: .55rem; font-size: .8rem; }
 .local-hosting-check-time { margin: 0; font-size: .75rem; color: var(--color-text-muted); }
 .local-hosting-results .local-hosting-stale { margin: 0; padding: .7rem .85rem; border-radius: .4rem; background: var(--color-warning-bg); color: var(--color-warning-text); }
 .local-hosting-results > p { margin-block-end: 0; line-height: 1.55; }

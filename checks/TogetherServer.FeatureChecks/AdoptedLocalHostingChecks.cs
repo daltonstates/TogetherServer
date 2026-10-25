@@ -31,6 +31,8 @@ internal static class AdoptedLocalHostingChecks
         await OwnerProofAndExplicitConsentAsync(root);
         await MissingPeerKeysStayMissingAsync(root);
         await NormalizedVersionAsync(root);
+        await RootAwarePreparationAsync(root);
+        await PreparationChangesAsync(root);
         foreach (var fault in new[] { "wrong-profile", "wrong-root", "wrong-root-profile", "wrong-group", "stale-floor", "revoked-member",
             "expired-member", "receive-only", "known-revoked", "missing-key", "wrong-key", "bad-signature", "owner-placeholder" })
         {
@@ -134,6 +136,101 @@ internal static class AdoptedLocalHostingChecks
         fixture.AssertNoPreparation();
     }
 
+    private static async Task RootAwarePreparationAsync(string root)
+    {
+        foreach (var owner in new[] { false, true })
+        {
+            using var fixture = await Fixture.CreateAsync(root, adopted: true, owner: owner, preparation: true);
+            Require(fixture.Config.DeviceId != fixture.MemberId && fixture.LocalProfileId != fixture.Root.ProfileId,
+                "the adopted preparation regression did not separate transport, member and world identities");
+            if (owner) Require((await fixture.Link.SetSharedWorldConsentAsync(fixture.LocalProfileId, true)).Ok,
+                "owner preparation could not record its separate local consent");
+            var source = fixture.CompleteSource();
+            var sourceFiles = CaptureFiles(source.Vault);
+            var calls = 0;
+            var service = fixture.PreparationService((requested, _) =>
+            {
+                Require(requested == fixture.Root, "preparation selected the successor HTTP profile as the signed world");
+                calls++;
+                return Task.FromResult(new WorldPeerLatestSourceResult(true, "LatestSharedSaveReady", "Synthetic verified source.",
+                    source, new string('E', 64)));
+            });
+            var prepared = await service.PrepareAsync(fixture.LocalProfileId, new(true, true));
+            Require(prepared.Ok && prepared.ReadyForManualStart && !prepared.Running &&
+                prepared.LocalProfileId is not null && prepared.BranchHash is not null && calls == 1,
+                "adopted preparation did not produce a checked source-world hosting copy: " + prepared.Code + "; " + prepared.Message);
+            var local = fixture.Data.LoadSettings().Profiles.Single();
+            var branch = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.Root.ProfileId).Single();
+            Require(local.SeparateCopySourceProfileId == fixture.Root.ProfileId &&
+                local.SeparateCopyBranchHash == branch.BranchHash &&
+                branch.Offer.Proposal.ProfileId == fixture.Root.ProfileId &&
+                branch.Offer.Proposal.ProposerDeviceId == fixture.MemberId &&
+                branch.Offer.Version.VersionHash == source.Descriptor.Version.VersionHash &&
+                (owner ? SharedWorldSeparateCopyStore.IsOwnerOffer(branch.Offer) : SharedWorldElection.VerifyOffer(branch.Offer)) &&
+                fixture.Link.SeparateCopyBranches(fixture.LocalProfileId).Single().BranchHash == branch.BranchHash &&
+                fixture.Link.SeparateCopyBranches(Guid.NewGuid()).Count == 0,
+                "the prepared copy used a session credential/local profile, another world, or the wrong owner proposal domain");
+            var passive = await service.StatusAsync(fixture.LocalProfileId);
+            var byRoot = await service.StatusAsync(fixture.Root.ProfileId);
+            var repeated = await service.PrepareAsync(fixture.LocalProfileId, new(true, true));
+            Require(passive.ReadyForManualStart && byRoot.ReadyForManualStart &&
+                passive.LocalProfileId == prepared.LocalProfileId && passive.BranchHash == prepared.BranchHash &&
+                repeated.ReadyForManualStart && repeated.LocalProfileId == prepared.LocalProfileId &&
+                repeated.BranchHash == prepared.BranchHash &&
+                new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.Root.ProfileId).Count == 1 &&
+                !fixture.Data.LoadSettings().CompanionListeningEnabled && !fixture.Data.LoadSettings().RemoteControlsEnabled &&
+                fixture.Data.LoadRuns().Count == 0 && fixture.Driver.ProcessAttempts == 0,
+                "adopted polling/repeated preparation lost source-world identity, created another branch, enabled controls or started a process");
+            Require(FilesEqual(sourceFiles, CaptureFiles(source.Vault)), "preparation changed the verified original source bytes");
+            var guardedStart = await service.StartPreparedAsync(fixture.LocalProfileId,
+                new(prepared.LocalProfileId!.Value, prepared.BranchHash, null, true), default);
+            Require(!guardedStart.Ok && guardedStart.Code == "PeerDiscoveryRequired" &&
+                fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0,
+                "adopted Start lost its checked source identity or bypassed the signed discovery gate");
+            Require(!Directory.Exists(Path.Combine(fixture.Data.RootPath, "received-shared-worlds",
+                fixture.Config.DeviceId.ToString("N"))), "preparation made a world vault under a session transport credential");
+        }
+    }
+
+    private static async Task PreparationChangesAsync(string root)
+    {
+        foreach (var fault in new[] { "revoked", "expired", "withdrawn", "wrong-root", "damaged-copy", "unavailable" })
+        {
+            using var fixture = await Fixture.CreateAsync(root, adopted: true, preparation: true);
+            var source = fixture.CompleteSource();
+            var service = fixture.PreparationService(async (_, _) =>
+            {
+                switch (fault)
+                {
+                    case "revoked": fixture.ChangeMember(member => member with { Revoked = true }); break;
+                    case "expired": fixture.ChangeMember(member => member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) }); break;
+                    case "withdrawn":
+                        Require((await fixture.Link.SetSharedWorldConsentAsync(fixture.LocalProfileId, false)).Ok,
+                        "synthetic consent withdrawal failed"); break;
+                    case "wrong-root": source = source with { Root = fixture.Root with { ProfileId = fixture.LocalProfileId } }; break;
+                    case "damaged-copy":
+                        File.WriteAllText(Path.Combine(source.Vault, source.Descriptor.Version.VersionHash,
+                        SharedWorldService.PayloadDirectory, source.Descriptor.Version.Files[0].Path), "changed"); break;
+                    case "unavailable": return new(false, "SharedSaveUnavailable", "Keep the approved source reachable.");
+                }
+                return new(true, "LatestSharedSaveReady", "Synthetic source.", source, new string('E', 64));
+            });
+            var result = await service.PrepareAsync(fixture.LocalProfileId, new(true, true));
+            Require(!result.Ok && !result.ReadyForManualStart && fixture.Data.LoadSettings().Profiles.Count == 0 &&
+                new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.Root.ProfileId).Count == 0 &&
+                fixture.Driver.ProcessAttempts == 0 && !fixture.Data.LoadSettings().CompanionListeningEnabled &&
+                (fault is not ("revoked" or "expired") || result.Code == "HostingPermissionRequired") &&
+                (fault != "withdrawn" || result.Code == "LocalConsentRequired") &&
+                (fault != "unavailable" || result.Code == "SharedSaveUnavailable"),
+                "adopted source resolution bypassed current permission, consent or exact-copy checks: " + fault + "; " + result.Code);
+        }
+    }
+
+    private static Dictionary<string, byte[]> CaptureFiles(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        .ToDictionary(path => Path.GetRelativePath(root, path), File.ReadAllBytes, StringComparer.Ordinal);
+    private static bool FilesEqual(Dictionary<string, byte[]> before, Dictionary<string, byte[]> after) =>
+        before.Count == after.Count && before.All(item => after.TryGetValue(item.Key, out var bytes) && item.Value.AsSpan().SequenceEqual(bytes));
+
     private sealed class Fixture : IDisposable
     {
         internal readonly LocalData Data;
@@ -147,6 +244,9 @@ internal static class AdoptedLocalHostingChecks
         internal FriendLink Link = null!;
         internal FriendConfiguration Config = null!;
         internal FriendLocalHostingService Service = null!;
+        internal HostManager Manager = null!;
+        internal readonly LocalHostingChecks.FilesOnlyDriver Driver = new();
+        private readonly bool preparation;
         private FriendService.LocalHostingConnection? connection;
         private readonly Handler handler;
         internal int RequestCount => handler.Requests;
@@ -156,8 +256,9 @@ internal static class AdoptedLocalHostingChecks
         private const string Endpoint = "https://192.0.2.112:5131";
         private static readonly string Pin = new('A', 64);
 
-        private Fixture(string root, bool adopted, bool owner)
+        private Fixture(string root, bool adopted, bool owner, bool preparation)
         {
+            this.preparation = preparation;
             Data = new(Path.Combine(root, "adopted-hosting-" + Guid.NewGuid().ToString("N")));
             Root = new(Public(Owner), Guid.NewGuid(), Guid.NewGuid());
             MemberId = owner ? Guid.Empty : Guid.NewGuid();
@@ -170,9 +271,9 @@ internal static class AdoptedLocalHostingChecks
             handler = new(LocalProfileId);
         }
 
-        internal static async Task<Fixture> CreateAsync(string root, bool adopted, bool owner = false)
+        internal static async Task<Fixture> CreateAsync(string root, bool adopted, bool owner = false, bool preparation = false)
         {
-            var fixture = new Fixture(root, adopted, owner);
+            var fixture = new Fixture(root, adopted, owner, preparation);
             var credential = new PairingCredential(Guid.NewGuid(), new string('C', 64), DateTimeOffset.UtcNow.AddDays(60));
             if (!adopted)
             {
@@ -201,7 +302,9 @@ internal static class AdoptedLocalHostingChecks
             fixture.connection = fixture.Friends.RetainLocalHostingConnection() ?? throw new InvalidOperationException("no adopted connection");
             fixture.Link = fixture.connection.Link;
             fixture.Config = (FriendConfiguration)typeof(FriendLink).GetField("config", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(fixture.Link)!;
-            fixture.Service = new(fixture.Data, fixture.Friends, new HostManager(fixture.Data));
+            fixture.Manager = preparation ? new(fixture.Data,
+                new GameServerRegistry([fixture.Driver], PortProbeMode.ObserveOnly)) : new(fixture.Data);
+            fixture.Service = new(fixture.Data, fixture.Friends, fixture.Manager);
             return fixture;
         }
 
@@ -234,9 +337,30 @@ internal static class AdoptedLocalHostingChecks
             Config.SharedRosterFloors[Root.ProfileId] = new(Root.GroupId, Roster.Epoch, Roster.Revision, Roster.Signature);
         }
         internal SharedWorldVersion Version(Guid profileId) => SharedWorldService.SignVersion(new(4, Root.GroupId, 1, null,
-            profileId, GameKinds.Valheim, "SyntheticAdopted", DateTimeOffset.UtcNow, SharedWorldCaptureKinds.PostStopBackup,
+            profileId, preparation ? GameKinds.Fixture : GameKinds.Valheim, "SyntheticAdopted", DateTimeOffset.UtcNow, SharedWorldCaptureKinds.PostStopBackup,
             Guid.NewGuid(), new(2456, false, "Unknown", [], []),
             [new("world.db", 3, Convert.ToHexString(SHA256.HashData(new byte[] { 1, 2, 3 })))], "", "", ""), Owner);
+        internal WorldPeerRecoverySource CompleteSource()
+        {
+            var version = Version(Root.ProfileId);
+            Config.LastSharedHostManifests[Root.ProfileId] = version;
+            var lane = new string('D', 64);
+            var vault = WorldPeerRecoverySource.StorageRoot(Data, Root, lane, version.VersionHash);
+            var directory = Path.Combine(vault, version.VersionHash);
+            Directory.CreateDirectory(Path.Combine(directory, SharedWorldService.PayloadDirectory));
+            File.WriteAllBytes(Path.Combine(directory, SharedWorldService.PayloadDirectory, version.Files[0].Path), [1, 2, 3]);
+            File.WriteAllBytes(Path.Combine(directory, "version.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
+            FriendLink.KeepSignedManifest(vault, version);
+            File.WriteAllBytes(Path.Combine(vault, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
+            return new(Root, lane, new(version), vault);
+        }
+        internal FriendLocalHostingService PreparationService(
+            Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>> latest)
+        {
+            var executable = Path.Combine(Data.RootPath, "never-run.synthetic");
+            File.WriteAllText(executable, "file-only prepared server boundary; never executable");
+            return new(Data, Friends, Manager, _ => [executable], latestSource: latest);
+        }
         internal void AssertNoPreparation()
         {
             Require(Data.LoadSettings().Profiles.Count == 0 && !Data.LoadSettings().CompanionListeningEnabled &&
@@ -253,6 +377,9 @@ internal static class AdoptedLocalHostingChecks
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests++;
+            if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath ==
+                $"/api/companion/servers/{profileId}/shared-world/handoff/request")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             Require(request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/companion/heartbeat" &&
                 request.Headers.Authorization?.Scheme == "Bearer", "the permission fixture requested world, path, lifecycle or listener work");
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

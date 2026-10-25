@@ -17,8 +17,10 @@ internal sealed partial class FriendLocalHostingService
             { Allowed: false } when ConfirmedHostingDenial(status.Code) =>
                 new("Permission", "Ask the owner to review this PC's access", status.Message),
             { HandoffRequest.RecipientState: "Requested" } => new("Respond", "Review the hosting request", "Accept or decline the move before preparing this PC."),
-            { Code: "HostingHistoryChoiceRequired" or "WorldHistoryReviewRequired" or "SharedSaveHistoryNeedsReview" } =>
+            { Code: "HostingHistoryChoiceRequired" or "WorldHistoryReviewRequired" } =>
                 new("ChooseHistory", "Different progress needs review", "Two sessions have different progress. Every save is protected. Review the copies before hosting again."),
+            { Code: "SharedSaveHistoryNeedsReview" } =>
+                new("Review", "Review the completed shared save", "A complete latest save could not be verified. Keep approved PCs reachable, review shared-save status, and retry preparation after the problem is resolved."),
             {
                 Code: "LocalHostingReviewRequired" or "SharingReviewRequired" or "HandoffReviewRequired" or
                 "RosterRollback" or "RosterRejected" or "SigningIdentityChanged" or "HostingIdentityRequired"
@@ -89,6 +91,7 @@ internal sealed partial class FriendLocalHostingService
             return Refused("ConnectionChanged", "The selected Host changed. Review this server again.");
         if (!access.Allowed) return Refused(access.Code, access.Message);
         if (!access.Consented) return Refused("LocalConsentRequired", "Allow shared saves on this PC before hosting.");
+        var sourceProfileId = access.Root?.ProfileId ?? profileId;
         progress.Report("Verifying", "Repeating the prepared save, server and port checks.");
         var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken,
             checkedAccess: access));
@@ -97,20 +100,22 @@ internal sealed partial class FriendLocalHostingService
             return Refused("LocalHostingPreparationRequired", "Repeat this PC's automatic hosting checks before starting.");
         if (status.Remedy is { Kind: "Connection" or "Ports" or "Review" })
             return Refused("LocalHostingActionRequired", status.Remedy.Message);
-        if (input.RequestId is null && latestSource is not null && access.Root is { } latestRoot)
+        if (input.RequestId is null && HasLatestSource && access.Root is { } latestRoot)
         {
             progress.Report("LatestSave", "Checking that no newer completed save arrived before Start.");
-            var latest = await latestSource(latestRoot, cancellationToken);
+            var latest = await LatestSourceAsync(latestRoot, progress, cancellationToken);
             if (!latest.Ok || latest.Source is null)
             {
                 if (status.BranchHash is { } refusedBranch)
-                    await manager.InvalidateLocalHostingPreparationAsync(profileId, refusedBranch, cancellationToken);
+                    await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refusedBranch, cancellationToken);
                 return Refused(latest.Code, latest.Message);
             }
             if (!friend.CurrentLocalHostingConnection(connection))
                 return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
-            latest.Source.Verify(data, latestRoot);
-            var retained = await manager.VerifiedLocalContinuationAsync(profileId, input.LocalProfileId, cancellationToken);
+            latest.Source.Verify(data, latestRoot, cancellationToken, (bytes, total, files, count) =>
+                progress.Source(new("Verifying", "Repeating the protected source's file checks before Start.",
+                    bytes, total, files, count)));
+            var retained = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
             if (retained?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
                 return Refused("LatestSaveChanged", "A newer completed save is available. Continue hosting to check and use it before starting.");
         }
@@ -132,7 +137,7 @@ internal sealed partial class FriendLocalHostingService
         else
         {
             var branch = connection.Link.SeparateCopyBranches(profileId).SingleOrDefault(item => item.BranchHash == input.BranchHash);
-            root = branch is null ? null : new(branch.Offer.Roster.OwnerPublicKey, profileId, branch.Offer.Roster.GroupId);
+            root = branch is null ? null : new(branch.Offer.Roster.OwnerPublicKey, sourceProfileId, branch.Offer.Roster.GroupId);
         }
         if (root is null || announceHosting is null)
             return Refused("PeerDiscoveryRequired", "This PC's signed Host address could not be shared. Recheck shared-hosting setup before starting.");
@@ -143,12 +148,12 @@ internal sealed partial class FriendLocalHostingService
         if (!announced.Ok) return Refused(announced.Code, announced.Message);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
-        if (input.RequestId is null && latestSource is not null)
+        if (input.RequestId is null && HasLatestSource)
         {
             progress.Report("LatestSave", "Confirming the latest verified progress immediately before Start.");
-            var latest = await latestSource(root, cancellationToken);
+            var latest = await LatestSourceAsync(root, progress, cancellationToken);
             if (!latest.Ok || latest.Source is null) return Refused(latest.Code, latest.Message);
-            var current = await manager.VerifiedLocalContinuationAsync(profileId, input.LocalProfileId, cancellationToken);
+            var current = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
             if (!friend.CurrentLocalHostingConnection(connection) ||
                 current?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
                 return Refused("LatestSaveChanged", "A newer save arrived. Continue hosting to check the latest copy before starting.");

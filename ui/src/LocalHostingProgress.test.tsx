@@ -15,8 +15,47 @@ describe('honest hosting progress', () => {
     expect(parseHostingProgress(null)).toBeNull()
     expect(parseHostingProgress(progress())).toEqual(progress())
     for (const patch of [{ receivedBytes: -1 }, { receivedBytes: 1025 }, { totalBytes: 1.5 }, { percent: 101 },
-      { phase: '' }, { message: 3 }, { state: 'Ready' }, { startedUtc: 'later' }, { updatedUtc: '2026-10-23T12:00:00Z' }])
+      { phase: '' }, { message: 3 }, { state: 'Ready' }, { startedUtc: 'later' }, { updatedUtc: '2026-10-23T12:00:00Z' },
+      { completedFiles: 1 }, { completedFiles: -1, totalFiles: 3 }, { completedFiles: 4, totalFiles: 3 },
+      { completedFiles: 1.5, totalFiles: 3 }, { completedFiles: 0, totalFiles: '3' }])
       expect(() => parseHostingProgress({ ...progress(), ...patch })).toThrow(/progress/)
+  })
+
+  it('shows measured copy bytes and file counts as preparation still awaiting verification', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(instant)
+    let current = progress({ phase: 'PreparingCopy', message: 'Preparing the protected hosting copy.',
+      completedFiles: 75, totalFiles: 315 })
+    vi.stubGlobal('fetch', vi.fn(async () => response(current)))
+    const update = vi.fn()
+    render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." onUpdate={update} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.getByRole('progressbar', { name: 'Hosting copy bytes prepared' })).toHaveAttribute('value', '256')
+    expect(screen.getByText('25% of copy bytes prepared')).toBeInTheDocument()
+    expect(screen.getByText('75 of 315 files prepared for verification.')).toBeInTheDocument()
+    expect(screen.getByText(/These bytes still need final file verification/)).toBeInTheDocument()
+    expect(screen.queryByText('25% received')).not.toBeInTheDocument()
+    expect(update).toHaveBeenCalledExactlyOnceWith(current)
+    current = progress({ phase: 'Verifying', receivedBytes: 1024, completedFiles: 315, totalFiles: 315,
+      message: 'Verifying the prepared files.', updatedUtc: new Date(Date.now()).toISOString() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('progressbar', { name: 'Verifying the save files' })).not.toHaveAttribute('value')
+    expect(screen.getByText('315 of 315 files checked.')).toBeInTheDocument()
+    expect(screen.queryByText(/100%/)).not.toBeInTheDocument()
+    expect(update).toHaveBeenLastCalledWith(current)
+  })
+
+  it('hides default zero file counters and keeps non-copy file evidence neutral', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(instant)
+    let current = progress({ phase: 'Permission', receivedBytes: 0, totalBytes: 0, completedFiles: 0, totalFiles: 0 })
+    vi.stubGlobal('fetch', vi.fn(async () => response(current)))
+    render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.queryByText(/0 of 0 files/)).not.toBeInTheDocument()
+    current = progress({ phase: 'PeerSync', receivedBytes: 0, totalBytes: 0, completedFiles: 1, totalFiles: 4,
+      updatedUtc: new Date(Date.now()).toISOString() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText('1 of 4 files reported.')).toBeInTheDocument()
+    expect(screen.queryByText(/files prepared for verification|files checked/)).not.toBeInTheDocument()
   })
 
   it('updates real received bytes and then shows verification as an indeterminate stage', async () => {
@@ -99,9 +138,10 @@ describe('honest hosting progress', () => {
     vi.useFakeTimers(); vi.setSystemTime(instant)
     let current = progress()
     const requests: RequestInit[] = []
+    const result = vi.fn()
     const fetcher = vi.fn(async (_url: string, init?: RequestInit) => { requests.push(init ?? {}); return response(current) })
     vi.stubGlobal('fetch', fetcher)
-    const view = render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." />)
+    const view = render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." onResult={result} />)
     await act(async () => { await vi.advanceTimersByTimeAsync(250) })
     expect(screen.getByRole('progressbar')).toBeInTheDocument()
     current = progress({ state, message: state === 'Failed' ? 'The save check failed. Existing copies were kept.' : 'The local copy passed this preparation step.',
@@ -109,6 +149,8 @@ describe('honest hosting progress', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByRole('region', { name: 'Hosting progress' })).toHaveAttribute('aria-busy', 'false')
     expect(screen.getByText(current.message)).toBeInTheDocument()
+    expect(screen.getByText(/Last step: Receiving the save/)).toHaveTextContent('Updated 0s ago')
+    expect(result).toHaveBeenCalledExactlyOnceWith(current)
     expect(screen.getByText('Waiting for the operation result before continuing.')).toBeInTheDocument()
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
     expect(view.container.querySelector('.icon-spin')).toBeNull()
@@ -119,7 +161,19 @@ describe('honest hosting progress', () => {
     expect(screen.queryByText('A delayed Working update.')).not.toBeInTheDocument()
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
     expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(result).toHaveBeenCalledOnce()
     expect(requests.every(init => init.method === undefined)).toBe(true)
+  })
+
+  it('uses a fixed label for an unrecognized phase instead of exposing an internal phase name', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(instant)
+    vi.stubGlobal('fetch', vi.fn(async () => response(progress({ phase: 'InternalSelectionStep_33333333',
+      message: 'InternalSelectionException C:\\Private\\save', totalBytes: 0, receivedBytes: 0, percent: null }))))
+    render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.getByRole('progressbar', { name: 'Preparing this PC' })).toBeInTheDocument()
+    expect(screen.queryByText(/InternalSelection|Private|33333333/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Current step: Preparing this PC/)).toHaveTextContent('Updated 0s ago')
   })
 
   it('does not overlap stalled progress reads or mutate the hosting operation', async () => {

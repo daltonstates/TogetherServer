@@ -7,6 +7,16 @@ uses a newer continuation in fresh storage; no running world is overwritten.
 Conflicts and unshared local edits block automatic selection. See
 [current implementation status](06-IMPLEMENTATION-STATUS.md).
 
+The preparation UI permits measured work to continue beyond two minutes, with
+a two-minute inactivity deadline and an independent ten-minute overall/current
+instruction deadline. Only newer work observations with changed phase, bytes
+or file counts renew inactivity; polling cannot extend Start authorization.
+Large-file hashing and local copy loops observe cancellation between bounded
+chunks. Interrupted staging remains unplayable until full hash/ancestry and
+current permission/consent checks complete. No observation or refresh retries
+Start. A closed session's final save head cannot move backwards or change after
+its terminal record is published.
+
 Manual solo world recovery has no Host-loss timer, quorum, second-PC observation
 or save-age limit. A responding companion with an inaccessible game does not
 prevent an eligible receiver from recovering a separate verified history.

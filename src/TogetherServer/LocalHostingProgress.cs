@@ -2,7 +2,7 @@ namespace TogetherServer;
 
 public sealed record LocalHostingProgress(string Phase, string State, string Message,
     DateTimeOffset StartedUtc, DateTimeOffset UpdatedUtc, long ReceivedBytes,
-    long TotalBytes, int? Percent);
+    long TotalBytes, int? Percent, int CompletedFiles = 0, int TotalFiles = 0);
 
 // A display-only observation of the one local mutation. It never drives a
 // lifecycle decision or persists an instruction to resume work after restart.
@@ -48,7 +48,37 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
                     UpdatedUtc = store.time.GetUtcNow(),
                     ReceivedBytes = 0,
                     TotalBytes = 0,
-                    Percent = null
+                    Percent = null,
+                    CompletedFiles = 0,
+                    TotalFiles = 0
+                };
+            }
+        }
+
+        internal void Source(WorldPeerSourceProgress value)
+        {
+            lock (store.sync)
+            {
+                if (!ReferenceEquals(store.operation, token) || store.current?.State != "Working" ||
+                    value.CompletedBytes < 0 || value.TotalBytes < value.CompletedBytes ||
+                    value.CompletedFiles < 0 || value.TotalFiles < value.CompletedFiles) return;
+                var previous = store.current;
+                if (previous.Phase == value.Phase && previous.Message == value.Message &&
+                    previous.TotalBytes == value.TotalBytes && previous.TotalFiles == value.TotalFiles &&
+                    (value.CompletedBytes < previous.ReceivedBytes || value.CompletedFiles < previous.CompletedFiles)) return;
+                if (previous.Phase == value.Phase && previous.Message == value.Message &&
+                    previous.ReceivedBytes == value.CompletedBytes && previous.TotalBytes == value.TotalBytes &&
+                    previous.CompletedFiles == value.CompletedFiles && previous.TotalFiles == value.TotalFiles) return;
+                store.current = previous with
+                {
+                    Phase = value.Phase,
+                    Message = value.Message,
+                    UpdatedUtc = store.time.GetUtcNow(),
+                    ReceivedBytes = value.CompletedBytes,
+                    TotalBytes = value.TotalBytes,
+                    Percent = value.TotalBytes > 0 ? (int)(100m * value.CompletedBytes / value.TotalBytes) : null,
+                    CompletedFiles = value.CompletedFiles,
+                    TotalFiles = value.TotalFiles
                 };
             }
         }
@@ -69,7 +99,9 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
                     UpdatedUtc = store.time.GetUtcNow(),
                     ReceivedBytes = received,
                     TotalBytes = total,
-                    Percent = (int)(100m * received / total)
+                    Percent = (int)(100m * received / total),
+                    CompletedFiles = 0,
+                    TotalFiles = 0
                 };
             }
         }
