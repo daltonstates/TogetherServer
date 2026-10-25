@@ -19,7 +19,8 @@ history; published versions have their own
 - Shared hosting uses **Allow friends to host this server** and **Host locally**.
   Receiving and forwarding completed saves are automatic for approved members.
   Only a complete, verified local copy can become playable; signed announcements
-  and interrupted transfers cannot. Starting a prepared server stays explicit.
+  and interrupted transfers cannot. A prepared **Start hosting** action stays
+  explicit and does not repeat preparation.
 - Hosting checks retain their last result, failed preparation step and next
   action across Refresh. Refresh reads setup; it does not repeat preparation.
   Local protected-copy preparation and hash verification report measured
@@ -95,8 +96,8 @@ history; published versions have their own
   validates; the old connection floor is retained and the new floor matches
   the head. Original legacy revision and lookup bytes remain unchanged.
   This is physical-laptop ancestry-import evidence. The owner now sees the
-  hosting action and reached preparation. Save receipt, readiness, game join
-  and saved restart remain unconfirmed.
+  hosting action and reached preparation. That import established no game or
+  save-delivery acceptance; the later unattended Ready/Stop evidence is below.
   The earlier
   [laptop handoff](development/laptop-sharing-history-handoff.txt) records the
   investigation's starting constraints, not a current success claim.
@@ -120,11 +121,13 @@ history; published versions have their own
 - A separate review found that the target-world sync's 30-second network
   budget begins after its global gate wait and all saved-connection membership
   refreshes. Slow unrelated connections can delay discovery. No deadlock was
-  reproduced, and that risk does not explain the observed advancing partial
-  copy. Keep it separate from the measured retention cancellation.
-- Physical two-PC/LAN/WAN transfer, real game joins, recognizable saved changes,
-  graceful Stop/restart, recovery and valued-world acceptance remain separate
-  checks. Hosted or synthetic results do not close them.
+  reproduced. The prepared Start path now avoids that global work; initial
+  unprepared recovery can still perform full synchronization. This differs
+  from the earlier measured retention cancellation.
+- The approved unattended laptop test reached real server Ready and graceful
+  Stop. Physical multi-PC transfer, client joins, recognizable saved changes,
+  restart, recovery and valued-world acceptance remain separate checks.
+  Hosted or synthetic results do not close them.
 - Minecraft remains fixture-tested. Factorio and Terraria remain previews;
   Terraria has no trusted occupancy and cannot use Friend or automatic Stop.
 - Real-game live capture requires the
@@ -136,106 +139,95 @@ history; published versions have their own
 
 ## Current delivery
 
-The 0.3.3.12 preview addresses the laptop's measured interrupted local copy and
-unclear hosting wizard. It keeps failed-step results and concrete next actions,
-reports local-copy/hash bytes and file counts, and replaces the absolute
-120-second preparation cutoff with measured inactivity plus a fixed overall
-instruction limit. Original worlds, current permissions and trust floors are
-not reset. The installed laptop is independently confirmed as published
-0.3.3.11; a static EXE-resource check finds a matching installed Valheim
-server. These findings do not prove game readiness.
+Candidate 0.3.3.13 addresses the prepared-copy Start loop. A freshly checked
+prepared copy now offers **Start hosting**, sends one exact guarded Start and
+does not repeat Prepare. Typed blockers and timeout/navigation replay guards
+remain enforced. Start resolves the latest save once after address registration;
+its ten-second metadata budget covers its own world's waits and network work.
+It does not refresh every saved Host or repeat payload exchange. The immutable
+source, actual working world, current permission/consent, ancestry and final
+in-gate observation remain verified. Repeated announcement counters alone do
+not invalidate an otherwise identical material save observation.
 
-The active-copy UI regression fails against the unchanged 0.3.3.11 component
-at 131 seconds because the request was aborted, then passes against the fix.
-All 1,499 UI tests in 109 files and production bundling pass. TypeScript,
-lint, locked restore and compilation pass. Local synthetic source-link cases
-remain skipped because this account lacks symlink capability. The full
-75-group source run passes on hosted Windows, including the new distribution
-group, with no source-link skips. All 1,501 UI tests pass on hosted Windows and
-locally with two workers. Two default-parallel local runs timed out one
-unchanged App navigation case at ten seconds; its focused unchanged retry and
-the controlled full run pass. No assertion or timeout was weakened.
+Per-world metadata and challenge/exchange serialization preserve cursor and
+single-use challenge rules without holding metadata through payload work.
+Address registration advances only an already registered exact world's verified
+local roster and effective consent. Membership refresh merges current values
+atomically. Consent reads preserve retained connection identity and withdrawal
+without waiting for unrelated network-held connection gates. A confirmed or
+not-yet-due acknowledgement does not rehash a save; emitted receipts still
+require current verified payloads, with exact held-lease reuse within a request.
 
-New file-only regressions interrupt a generated 315-file source at 75 files,
-retain the source and partial copy, refuse after consent withdrawal, resume
-the same exact source, and reject same-size damaged staged bytes. Chunk
-hashing observes cancellation; display failures cannot truncate valid files
-or authorize bad hashes. Adopted member/original-owner preparation and
-returning-owner/online-observer completed-save distribution have focused
-synthetic coverage, including receipt-domain, lost-acknowledgement,
-revocation, expiry, missing-payload and terminal-head ancestry negatives.
+Backups now verify the copied destination and protected setup before creating
+completion metadata, promotion or catalog membership. Changed candidates return
+`BackupCompletionIntegrityFailed`; prior backups and live worlds stay intact.
+The generated regression covers the observed 43-to-47-byte configuration
+mismatch, equal-size tampering, protected-setup changes and missing setup.
 
-The first local replication run failed an existing receive-only receipt retry:
-a shared receipt helper incorrectly required forwarding to be enabled. That
-extra predicate was removed while preserving current Receive/consent and
-signature checks. A later test incorrectly counted an older catalog entry's
-chunks as retransmission of the completed new save; the counter now scopes the
-exact version. Its next negative case exposed duplicate announcements when an
-older copy of this PC's own history returned after a newer local publication.
-The bounded projection fix retains the older copy and signed claims; the
-dedicated distribution group now passes positive and rejection cases. The full
-hosted rerun passes against the unchanged candidate. Initial formatting findings in new
-checks were corrected. The hosted candidate UI review passes all 93 hosting
-captures with no missing captures or layout findings; representative desktop,
-failed-refresh and narrow-window guide screenshots at 150 percent were inspected. No
-application, game, listener, browser,
-native dialog, installer or update fixture was launched on the laptop.
-Physical hosting, game join/change, safe Stop, exact completed-save receipts
-on the main Host and every eligible online updated peer, and restart remain
-unverified until owner-controlled testing.
+The owner explicitly approved an unattended laptop session limited to this
+world, with the main Host stopped. The laptop is independently confirmed as the
+published 0.3.3.12 installed EXE, hash
+`0429caa78177872c5783ca9d5d071896190c60a8d6d80b1fbb731c035390bbac`, production
+default root. The connected main Host reports 0.3.3.12 and compatible protocol;
+its actual running EXE path/hash is not remotely available. No app-data reset,
+re-pairing, key replacement, trust-floor reset or original-world overwrite was
+used. Read-only evidence stays owner-only on this laptop, outside Git.
 
-Candidate source is `420c90963d6497f19735fca7eab585f4b9267a90`, portable
-SHA-256 `0429caa78177872c5783ca9d5d071896190c60a8d6d80b1fbb731c035390bbac`.
-The [candidate run](https://github.com/daltonstates/TogetherServer/actions/runs/40225799422)
-passes pairing UX 3/3 (ten inner stages), loopback 11/11, LAN 18/18 with no
-remaining owned processes, and two nine-stage automatic-sharing journeys with
-source 2 to descendant 3. Browser checks pass 14 journeys with three explicitly
-unexercised; all six compatibility lanes and packaging pass. Native has twelve
-required passes and one QuietTime block; all fourteen window-control cases
-pass. Overall acceptance remains incomplete.
+The actual 315-file, 119,452,903-byte received copy passed every file hash in
+1.647 seconds. An observed UI Start ended at its exact 120-second deadline.
+One guarded Start against the installed app then succeeded in 196.3 seconds:
+first peer sync/verification at 84.8 seconds, address phase at 90.9, second peer
+sync at 124.1, final verification at 184.3 and Start at 193.3. The real server
+reached Ready with a fresh trusted zero count. Graceful Stop completed in 6.5
+seconds; the exact managed process exited and no Valheim server remained.
+Native automation read the dialog but clicks failed with `coordinate input
+geometry is unavailable`; fixed same-origin app endpoints exercised the actual
+installed backend instead. No fixture, installer or full-release suite ran on
+the laptop.
 
-The first Existing gate passed core 114/0, then stopped after ten Shared Worlds
-groups on an access-denied partial receiving directory. Its retained error
-cannot distinguish current-stage creation/promotion from older-stage pruning.
-No new hash-helper handle leak or canonical/peer receive-gate mismatch was
-found. The unchanged-candidate retry stopped earlier at core 113/1: a warned
-copy could not stop after a second manual Start. It did not revisit the first
-failure. Their causes remain unestablished. Verification-only changes add fixed
-Stop-result fields and a current-versus-other partial-stage comparison. The
-[unchanged-candidate replay](https://github.com/daltonstates/TogetherServer/actions/runs/40229076009)
-passes both isolated cases and all 27 ordered Existing gates: core 114/0,
-Shared Worlds 11/0 with no recovery skips, Companion 46/0, all 1,501 UI tests,
-and 4,102-version signed-history catch-up. Verification source
-`80a3e82296009c517b45077b8cb0cd886bb1915d` does not rebuild or alter the
-original EXE. Later passes do not erase either earlier intermittent failure.
-The diagnostic assertions remain in the maintained checks; the one-off replay
-workflow remains on its review branch.
-The owner reports the real main-Host world already stopped; no tool stopped it.
+That Stop completed a rolling backup but sharing refused it. A reviewed pure
+read-only verifier identified `ReadAndVerifyManifest -> VerifyTree`,
+`InvalidDataException`, ordered entry mismatch: exactly one reviewed text
+configuration was 47 bytes instead of its manifest's 43 and had a different
+hash. All 315 paths/counts matched. The source working configuration and captured
+setup remained 43 bytes. The failed backup remains preserved; its writer or
+replacement mechanism is unestablished. A separate normal offline checkpoint
+completed and independently verified all payload/setup hashes. It did not
+rewrite the failed backup or any signed record. Neither a signed newer save
+nor delivery to the main Host is proved by those facts.
 
-The [0.3.3.12 prerelease](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.12)
-uses immutable application source `420c90963d6497f19735fca7eab585f4b9267a90`
-and annotated tag object `b008e574e6f6662b40a6615f2677313eb730a57e`.
-Release ID is `423645454`, published 2026-10-25 20:32:59 UTC. The portable is
-66,171,750 bytes with the SHA-256
-above; installer is 60,633,064 bytes, SHA-256
+Current validation: four focused source groups pass, including guided hosting,
+replication, completed-save delivery and bounded discovery; the two new
+integrity/discovery groups pass with the material-observation cases. All 1,509
+UI tests in 109 files pass with two workers. TypeScript, production bundle and
+lint pass; compilation reports zero warnings/errors. The full 77-group source
+run passes. Hosted candidate review and actual fixed-binary retry remain pending.
+Local source-link cases are skipped for this account's missing symlink
+capability. Real client join, recognizable saved change, exact new receipts on
+every eligible online updated PC, and saved restart remain unverified.
+
+No 0.3.3.13 tag or prerelease exists yet; both were checked unused. The published
+[0.3.3.12 preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.12)
+uses source `420c90963d6497f19735fca7eab585f4b9267a90`, tag object
+`b008e574e6f6662b40a6615f2677313eb730a57e`, release ID `423645454`, published
+2026-10-25 20:32:59 UTC. Its portable is 66,171,750 bytes with the hash above;
+installer is 60,633,064 bytes, SHA-256
 `78d05d7df9b2b0095b3fde5ef141c622e67fe3494cc632d8290a576446ede3c2`.
-All four public assets, their adjacent checksums, version resources and the
-tag's exact source were verified anonymously after publication. Both EXEs
-report file version 0.3.3.12 and are unsigned. Native notification and
-physical-PC acceptance remain incomplete. The laptop's actual running binary
-is still independently verified 0.3.3.11 until the owner manually updates;
-the other physical PC's running path/version/hash remains unavailable.
+All four assets/checksums, version resources and exact tag/source were verified
+anonymously. Both EXEs are unsigned. The inventory contains 27 releases;
+all prior records/assets were preserved and stable/latest remains 0.3.3.
 
-The prior [0.3.3.11 release](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.11)
-uses application/check/build source `cbf67ee13edde8e314aabb0976606c7266a81e2d`.
-Its [Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40216257190)
-had passing results for all 15 functional jobs after a targeted same-candidate
-pairing retest. The first pairing cleanup failure and later pass remain
-separate evidence. Required native notification testing was blocked by Windows
-QuietTime, so overall CI and full native acceptance remained incomplete.
-Stable/latest is still 0.3.3. The 0.3.3.12 release and tag were checked unused
-before creation. The inventory now contains 27 releases; all 26 prior release
-records and assets retain their IDs, names, sizes and digests.
+The [0.3.3.12 candidate run](https://github.com/daltonstates/TogetherServer/actions/runs/40225799422)
+passed 75 source groups, 1,501 UI tests, 93 hosting captures, pairing, automatic
+sharing, compatibility and packaging. Two Existing attempts failed separately
+on a receiving-stage access denial and warned-copy Stop; their causes remain
+unestablished. The [unchanged-candidate replay](https://github.com/daltonstates/TogetherServer/actions/runs/40229076009)
+passed both isolated cases and all 27 Existing gates, including core 114/0,
+Shared Worlds 11/0, Companion 46/0 and 4,102-version history catch-up. Later
+passes do not erase those failures. Native notification acceptance remains
+blocked by Windows QuietTime: twelve required cases pass and one is blocked;
+all fourteen separate window controls pass. Full native acceptance remains
+incomplete; packaging flags remain false.
 
 ## Repository maintenance
 

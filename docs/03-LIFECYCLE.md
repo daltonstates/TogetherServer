@@ -1,7 +1,11 @@
 # Process, heartbeat, and idle rules
 
 **Host locally** is one explicit preparation-and-Start instruction after its
-network confirmation. Latest-save selection follows verified ancestry across
+network confirmation. A freshly checked prepared copy exposes **Start hosting**;
+that explicit action repeats current Start guards without repeating preparation.
+Prepared Start discovers only that world's signed metadata within a ten-second
+network budget, including waits. Payload copying remains outside that metadata
+transaction. Latest-save selection follows verified ancestry across
 approved PCs, with a final in-gate observation check. A returning original Host
 uses a newer continuation in fresh storage; no running world is overwritten.
 Conflicts and unshared local edits block automatic selection. See
@@ -16,6 +20,11 @@ chunks. Interrupted staging remains unplayable until full hash/ancestry and
 current permission/consent checks complete. No observation or refresh retries
 Start. A closed session's final save head cannot move backwards or change after
 its terminal record is published.
+
+A backup becomes complete only after its copied destination and protected setup
+match their captured hashes. A completion mismatch cannot be catalogued or
+published. It returns a fixed integrity result and preserves the live world and
+earlier backups; signature and ancestry checks remain separate publication gates.
 
 Manual solo world recovery has no Host-loss timer, quorum, second-PC observation
 or save-age limit. A responding companion with an inaccessible game does not

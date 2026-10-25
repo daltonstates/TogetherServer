@@ -18,9 +18,11 @@ internal static class LocalHostingChecks
     internal static async Task RunAsync(string root)
     {
         Inputs();
+        await WorldPeerLocalHostingChecks.RunAsync(root);
         await OwnerSwitchAsync(root);
         await IncomingConsentAsync(root);
         await FirstIncomingListenerAsync(root);
+        await StartLatestSelectionAsync(root);
         await LatestSelectionBlocksAsync(root);
         await UnpreparedCopyStatusAsync(root);
         using (var automatic = new Fixture(root, granted: true, automaticReceiving: true))
@@ -242,6 +244,94 @@ internal static class LocalHostingChecks
             "known competing progress fell back to an older prepared world or polling revived a refused Start");
     }
 
+    private static async Task StartLatestSelectionAsync(string root)
+    {
+        foreach (var fault in new[] { "none", "announcement", "connection", "newer", "fork", "observation" })
+        {
+            using var fixture = new Fixture(root, granted: true);
+            var prepared = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
+            Require(prepared.ReadyForManualStart && prepared.LocalProfileId is not null && prepared.BranchHash is not null,
+                "the file-only Start check did not prepare its exact local copy");
+            var profile = fixture.Data.LoadSettings().Profiles.Single(item => item.Id == prepared.LocalProfileId);
+            var savePath = Path.Combine(profile.WorldDirectory, "world.dat");
+            var savedBytes = File.ReadAllBytes(savePath);
+            if (fault == "newer") fixture.AdvanceSource();
+            var stamp = new string('D', 64);
+            var latest = fixture.CompleteLatestObservation(prepared.BranchHash!, stamp);
+            var source = latest.Source!;
+            source.Verify(fixture.Data, source.Root);
+            var announcements = 0;
+            var resolutions = 0;
+            var observations = 0;
+            var announced = false;
+            fixture.Manager.SharedHostingObservation = world =>
+            {
+                observations++;
+                Require(world == source.Root && announcements == 1 && resolutions == 1,
+                    "the final observation fence ran before the exact post-announcement latest check");
+                return fault == "observation" ? new string('E', 64) : stamp;
+            };
+            LocalHostingRouteCheck? checker = fault == "connection" ? new(_ =>
+            {
+                var settings = fixture.Data.LoadSettings();
+                return Task.FromResult(new LocalHostingRouteSnapshot(settings.CompanionEndpoint, fixture.ControlPort,
+                    settings.CompanionBindAddress, false, false, CompanionListenerStates.Off, null, false));
+            }, (_, _, _) => throw new InvalidOperationException("A blocked synthetic listener cannot make a network probe.")) : null;
+            var service = fixture.WithStartAdapters((world, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Require(world == source.Root, "Start announced a different signed world");
+                announcements++;
+                announced = fault != "announcement";
+                return Task.FromResult(new WorldPeerActionResult(announced,
+                    announced ? "HostingAddressPrepared" : "PeerMembershipRequired", "Synthetic address result."));
+            }, (world, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Require(announced && announcements == 1 && world == source.Root,
+                    "Start resolved the latest save before its signed address was accepted");
+                resolutions++;
+                return Task.FromResult(fault == "fork" ?
+                    new WorldPeerLatestSourceResult(false, "SharedSaveHistoryNeedsReview", "Competing signed progress needs review.") : latest);
+            }, checker);
+            LocalHostingActionResult? result = null;
+            var reachedDriver = false;
+            try
+            {
+                result = await service.StartPreparedAsync(fixture.ProfileId,
+                    new(prepared.LocalProfileId!.Value, prepared.BranchHash, null, true), default);
+            }
+            catch (InvalidOperationException error) when (error.Message == "No process operation is permitted.")
+            { reachedDriver = true; }
+            if (fault == "none")
+                Require(reachedDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1 && observations == 1,
+                    "an exact verified Start did not reach only the final fake launch boundary after one latest resolution");
+            else
+            {
+                Require(result is { Ok: false } && !reachedDriver && fixture.Driver.ProcessAttempts == 0,
+                    "a refused Start crossed the fake process boundary");
+                if (fault == "connection")
+                    Require(announcements == 0 && resolutions == 0 && observations == 0,
+                        "a current connection blocker performed announcement or expensive latest-save work");
+                else if (fault == "announcement")
+                    Require(result.Code == "PeerMembershipRequired" && announcements == 1 && resolutions == 0 && observations == 0,
+                        "a rejected address announcement performed expensive latest-save work");
+                else
+                    Require(result.Code == (fault == "fork" ? "SharedSaveHistoryNeedsReview" : "LatestSaveChanged") &&
+                        announcements == 1 && resolutions == 1 && observations == (fault == "observation" ? 1 : 0),
+                        "Start lost its single post-announcement source check, exact-version comparison, or final observation fence");
+                if (fault is "newer" or "fork")
+                    Require(!(await fixture.Manager.RecordedLocalHostingStatusAsync(fixture.ProfileId,
+                        prepared.BranchHash!, default)).ReadyForManualStart &&
+                        !(await service.StatusAsync(fixture.ProfileId)).ReadyForManualStart,
+                        "a known newer or competing save left durable preparation ready or polling revived it");
+            }
+            Require(File.ReadAllBytes(savePath).SequenceEqual(savedBytes) && fixture.Data.LoadSettings().Profiles.Count == 1 &&
+                new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 1 && fixture.Data.LoadRuns().Count == 0,
+                "file-only Start changed the retained world, created another branch, or recorded a process");
+        }
+    }
+
     private static async Task FirstIncomingListenerAsync(string root)
     {
         foreach (var test in new[] { (Enabled: true, Starts: true, Announces: true), (Enabled: true, Starts: false, Announces: true),
@@ -313,9 +403,31 @@ internal static class LocalHostingChecks
                     result.Code == "PeerMembershipRequired" && !active,
                     "rejected signed-group registration kept Start readiness or activated the listener");
             else if (test.Starts)
+            {
                 Require(result.Ok && result.ReadyForManualStart && passive.ReadyForManualStart && !result.Running &&
                     result.Steps.Single(step => step.Key == "connection").State == "Unknown",
                     "a first owned private listener did not finish preparation or fabricated an outside/game route pass");
+                active = false;
+                var unavailable = FriendLocalHostingService.WithRemedy(await service.StatusAsync(fixture.ProfileId));
+                var retained = await fixture.Manager.RecordedLocalHostingStatusAsync(fixture.ProfileId,
+                    result.BranchHash!, CancellationToken.None);
+                Require(!unavailable.Ok && !unavailable.ReadyForManualStart &&
+                    unavailable.Code == "LocalConnectionSetupRequired" && unavailable.Remedy?.Kind == "Connection" &&
+                    unavailable.Steps.Take(4).All(step => step.State == "Ready") &&
+                    unavailable.Steps[4].State == "ActionRequired" &&
+                    unavailable.LocalProfileId == result.LocalProfileId && unavailable.BranchHash == result.BranchHash &&
+                    retained.ReadyForManualStart,
+                    "an unavailable current route advertised Start readiness or discarded the prepared copy instead of its typed connection remedy");
+                active = true;
+                var recovered = FriendLocalHostingService.WithRemedy(await service.StatusAsync(fixture.ProfileId));
+                Require(recovered.Ok && recovered.ReadyForManualStart && recovered.Code == "LocalHostingPrepared" &&
+                    recovered.Remedy is null && recovered.Steps[4].State == "Unknown" &&
+                    recovered.LocalProfileId == result.LocalProfileId && recovered.BranchHash == result.BranchHash &&
+                    new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 1 &&
+                    File.ReadAllText(Path.Combine(restored.WorldDirectory, "world.dat")) == "complete signed source bytes" &&
+                    fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0 && announceAttempts == 1,
+                    "passive route recovery required another preparation, mutated the signed copy, or performed a process or announcement operation");
+            }
             else
                 Require(!result.Ok && !result.ReadyForManualStart && !passive.ReadyForManualStart &&
                     result.Code == "LocalConnectionSetupRequired" &&
@@ -461,6 +573,21 @@ internal static class LocalHostingChecks
         internal WorldPeerLatestSourceResult LatestObservation(string branchHash, string observation) =>
             new(true, "LatestSharedSaveReady", "Synthetic latest-save observation.",
                 new(new(Public(owner), ProfileId, GroupId), branchHash, new(head), vault), observation);
+        internal WorldPeerLatestSourceResult CompleteLatestObservation(string branchHash, string observation)
+        {
+            var latest = LatestObservation(branchHash, observation);
+            var source = latest.Source!;
+            var retained = WorldPeerRecoverySource.StorageRoot(Data, source.Root, branchHash, head.VersionHash);
+            var directory = Path.Combine(retained, head.VersionHash);
+            Directory.CreateDirectory(Path.Combine(directory, SharedWorldService.PayloadDirectory));
+            File.Copy(Path.Combine(vault, head.VersionHash, SharedWorldService.PayloadDirectory, "world.dat"),
+                Path.Combine(directory, SharedWorldService.PayloadDirectory, "world.dat"));
+            File.WriteAllBytes(Path.Combine(directory, "version.json"), JsonSerializer.SerializeToUtf8Bytes(head, Json));
+            foreach (var version in FriendLink.ReadVerifiedReceivedManifestLineage(vault, head, null))
+                FriendLink.KeepSignedManifest(retained, version);
+            File.WriteAllBytes(Path.Combine(retained, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(head, Json));
+            return latest with { Source = source with { Vault = retained } };
+        }
         internal FriendLocalHostingService WithLatestSource(
             Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>> latest) =>
             new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")], latestSource: latest);
@@ -468,6 +595,12 @@ internal static class LocalHostingChecks
             Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>> announce) =>
             new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")],
                 routeCheck: checker, synchronizeListener: synchronize, announceHosting: announce);
+        internal FriendLocalHostingService WithStartAdapters(
+            Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>> announce,
+            Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>> latest,
+            LocalHostingRouteCheck? checker = null) =>
+            new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")],
+                routeCheck: checker, announceHosting: announce, latestSource: latest);
         private SharedWorldVersion Version(long number, string? parent, byte[] bytes) => SharedWorldService.SignVersion(new(4,
             GroupId, number, parent, ProfileId, GameKinds.Fixture, "SyntheticLocalHosting", DateTimeOffset.UtcNow,
             SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(ControlPort, false, "Unknown", [], []),

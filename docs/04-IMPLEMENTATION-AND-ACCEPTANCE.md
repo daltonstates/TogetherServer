@@ -27,6 +27,17 @@ payload/receipt, including the returning original owner, online peers,
 offline peers, lost acknowledgements, revocation, expiry and withdrawn consent.
 Physical game/load/change/Stop/receipt/restart evidence remains separate.
 
+A prepared confirmation must issue one guarded Start with no repeated Prepare,
+including after reopening or refreshing the dialog. Typed blockers, navigation,
+timeout and late responses cannot replay it. Test a blocked unrelated world,
+same-world metadata and wire waits, single-use challenge isolation, repeated
+unchanged announcements, material head/consent/conflict changes, and current
+revocation/expiry. Newer missing or divergent saves must not fall back to an
+older playable copy. Test changed staged payload length, equal-size tampering,
+and changed/missing protected setup before backup completion: no completion
+marker, catalogue entry or publication may accept the failed candidate, while
+the source and existing backups stay unchanged.
+
 ## Slice 1 — Local Host app and GUI
 
 - Create one Windows .NET 10 app that shows bundled React/TypeScript assets in its own window over a loopback-only local API, with a clear Host/Friend mode switch. Build and publish without requiring Node at runtime.

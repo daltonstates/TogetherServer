@@ -78,8 +78,9 @@ internal sealed partial class WorldPeerService
         var phase = "Membership";
         try
         {
-            await refreshGate.WaitAsync(cancellationToken);
-            try
+            // Exact files are immutable and retention owns its receive gate.
+            // Compare material signed state before and after selection instead
+            // of waiting behind unrelated network transfers in refreshGate.
             {
                 var group = Find(root.GroupKey);
                 if (group is null || group.Root != root)
@@ -112,7 +113,6 @@ internal sealed partial class WorldPeerService
                     return new(false, "LatestSaveChanged", "A newer save arrived while preparing. Try Host locally again.", null);
                 return new(true, "LatestSharedSaveReady", "The newest verified continuation is ready.", source, observation);
             }
-            finally { refreshGate.Release(); }
         }
         catch (Exception error) when (PeerFailure(error))
         {
@@ -148,11 +148,13 @@ internal sealed partial class WorldPeerService
                     Received = received?.VersionHash,
                     CompletedPeerSave = data.LoadProtected(SaveObservationName(root)),
                     Peers = state.Peers.OrderBy(peer => peer.DeviceId).ThenBy(peer => peer.PublicKey, StringComparer.Ordinal)
+                        // A repeated announcement counter alone changes no
+                        // save, grant, conflict or ancestry. All material
+                        // projected fields below remain part of this fence.
                         .Select(peer => new
                         {
                             peer.DeviceId,
                             peer.PublicKey,
-                            peer.Revision,
                             peer.HasConflict,
                             peer.Authorized,
                             Copies = peer.AvailableVersionHashes.Order(StringComparer.Ordinal).ToArray()

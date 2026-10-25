@@ -20,6 +20,18 @@ internal sealed partial class WorldPeerService
     private readonly Dictionary<string, int> liveTestPositions = new(StringComparer.Ordinal);
     private sealed record ReceiptDelivery(DateTimeOffset AttemptedUtc, bool Confirmed);
     private readonly Dictionary<(string Group, string Route, string Pin, Guid Receipt), ReceiptDelivery> receiptDeliveries = [];
+    // Optional synthetic-check observation of an actual receipt hash attempt.
+    // It receives no identity or path and never authorizes a copy or receipt.
+    internal Action? ReceiptPayloadHashingForChecks { get; set; }
+
+    private WorldPeerVerifiedCopy VerifyReceiptPayload(string vault, SharedWorldVersion version,
+        CancellationToken cancellationToken)
+    {
+        try { ReceiptPayloadHashingForChecks?.Invoke(); }
+        catch (Exception) { /* Observations cannot change payload verification. */ }
+        return WorldPeerVerifiedCopy.Open(data.RootPath,
+            SharedWorldService.SafeChild(vault, version.VersionHash), version, cancellationToken);
+    }
 
     private static string RetainedHistoryParent(LocalData data, Group group) => Path.Combine(
         data.RootPath, "received-shared-histories", group.Root.GroupKey);
@@ -273,16 +285,16 @@ internal sealed partial class WorldPeerService
                 SharedWorldReceiptTrust.Verify(receipt, publicKey));
     }
 
-    private async Task<bool> ReceiveAllowedAsync(Group group, CancellationToken cancellationToken)
+    private Task<bool> ReceiveAllowedAsync(Group group, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var current = Find(group.Root.GroupKey);
         using var key = current is null ? null : LocalKey(current);
         if (current is null || key is null || !current.ReceiveConsented ||
             Access(current, current.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()))?.Receive != true)
-            return false;
-        if (current.DeviceId == Guid.Empty) return true;
-        return (await friend.PeerMembershipsAsync(false, cancellationToken)).Any(item =>
-            item.Root == current.Root && item.DeviceId == current.DeviceId && item.ReceiveConsented);
+            return Task.FromResult(false);
+        return Task.FromResult(current.DeviceId == Guid.Empty ||
+            friend.HasRetainedWorldReceiveConsent(current.Root, current.DeviceId));
     }
 
     private async Task PullCatalogAsync(Group group, SharedWorldPeerRoute route,
@@ -489,14 +501,17 @@ internal sealed partial class WorldPeerService
         WorldPeerSaveDescriptor descriptor, string vault, CancellationToken cancellationToken)
     {
         if (!await ReceiveAllowedAsync(group, cancellationToken)) return;
-        var receipt = await ReadRetainedReceiptAsync(group, descriptor, vault, cancellationToken);
+        var receipt = await ReadRetainedReceiptMetadataAsync(group, descriptor, vault, cancellationToken);
         if (receipt is null || !ReceiptDeliveryDue(group, route, receipt)) return;
-        await DeliverReceiptAsync(group, route, receipt, JsonSerializer.SerializeToUtf8Bytes(receipt, Json), cancellationToken);
+        using var verified = VerifyReceiptPayload(vault, descriptor.Version, cancellationToken);
+        var current = await RetainedReceiptForVerifiedCopyAsync(group, descriptor, vault, verified, cancellationToken);
+        if (current is null || current != receipt) return;
+        await DeliverReceiptAsync(group, route, current, JsonSerializer.SerializeToUtf8Bytes(current, Json), cancellationToken);
     }
 
-    // A SeedKnown response may be retrying a lost SeedComplete reply. Return
-    // only the same persisted receipt after checking the complete retained copy.
-    private async Task<SharedWorldReceipt?> ReadRetainedReceiptAsync(Group group,
+    // Validate cheap protected metadata before deciding whether an outbound
+    // acknowledgement is due. This alone never authorizes returning a receipt.
+    private async Task<SharedWorldReceipt?> ReadRetainedReceiptMetadataAsync(Group group,
         WorldPeerSaveDescriptor descriptor, string vault, CancellationToken cancellationToken)
     {
         if (!await ReceiveAllowedAsync(group, cancellationToken)) return null;
@@ -514,11 +529,33 @@ internal sealed partial class WorldPeerService
         if (receipt is null || current is null || key is null || receipt.DeviceId != current.DeviceId ||
             receipt.VersionHash != descriptor.Version.VersionHash || !AuthorizedCopyReceipt(current, receipt) ||
             !AuthorizedDescriptor(current, descriptor)) return null;
+        return receipt;
+    }
+
+    // Both outbound retries and SeedKnown must hold this exact fully verified
+    // copy through the current permission/history checks and acknowledgement.
+    private async Task<SharedWorldReceipt?> RetainedReceiptForVerifiedCopyAsync(Group group,
+        WorldPeerSaveDescriptor descriptor, string vault, WorldPeerVerifiedCopy verified,
+        CancellationToken cancellationToken)
+    {
+        var destination = SharedWorldService.SafeChild(vault, descriptor.Version.VersionHash);
+        if (!verified.Covers(data.RootPath, destination, descriptor.Version))
+            throw new InvalidDataException("The receipt requires its exact currently verified copy.");
+        var receipt = await ReadRetainedReceiptMetadataAsync(group, descriptor, vault, cancellationToken);
+        if (receipt is null) return null;
+        var current = Find(group.Root.GroupKey);
+        if (current is null) return null;
         var records = new WorldAuthorityStore(data).Read(current.Root.ProfileId);
         var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(current.Root, descriptor.Version, records);
         WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
-        using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, destination, descriptor.Version, cancellationToken);
-        return await ReceiveAllowedAsync(current, cancellationToken) ? receipt : null;
+        if (!await ReceiveAllowedAsync(current, cancellationToken)) return null;
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (stateSync)
+        {
+            current = Find(group.Root.GroupKey);
+            return current is not null && current.ReceiveConsented && current.DeviceId == receipt.DeviceId &&
+                AuthorizedCopyReceipt(current, receipt) && AuthorizedDescriptor(current, descriptor) ? receipt : null;
+        }
     }
 
     private async Task DeliverReceiptAsync(Group group, SharedWorldPeerRoute route, SharedWorldReceipt receipt,
@@ -920,6 +957,14 @@ internal sealed class WorldPeerVerifiedCopy : IDisposable
 {
     private readonly List<FileStream> files = [];
     private readonly List<SafeFileHandle> directories = [];
+    private string? verifiedRoot;
+    private string? verifiedDirectory;
+    private string? verifiedHash;
+
+    internal bool Covers(string dataRoot, string destination, SharedWorldVersion version) =>
+        files.Count > 0 && verifiedHash == version.VersionHash &&
+        string.Equals(verifiedRoot, Path.GetFullPath(dataRoot), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(verifiedDirectory, Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase);
 
     internal static WorldPeerVerifiedCopy Open(string dataRoot, string destination,
         SharedWorldVersion version, CancellationToken cancellationToken,
@@ -981,6 +1026,9 @@ internal sealed class WorldPeerVerifiedCopy : IDisposable
                 WorldPeerPayloadHash.Report(progress, verified, total, ++fileCount, version.Files.Count);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            lease.verifiedRoot = Path.GetFullPath(dataRoot);
+            lease.verifiedDirectory = Path.GetFullPath(destination);
+            lease.verifiedHash = version.VersionHash;
             return lease;
         }
         catch (Win32Exception error)
@@ -993,6 +1041,7 @@ internal sealed class WorldPeerVerifiedCopy : IDisposable
 
     public void Dispose()
     {
+        verifiedHash = null;
         for (var index = files.Count - 1; index >= 0; index--) files[index].Dispose();
         files.Clear();
         for (var index = directories.Count - 1; index >= 0; index--) directories[index].Dispose();

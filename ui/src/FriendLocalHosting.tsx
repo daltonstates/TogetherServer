@@ -137,7 +137,7 @@ function hostingCheckResult(status: LocalHostingStatus): string {
   if (blocker === 'permission') return 'Check finished: this PC needs hosting access from the owner. The other checks have not run. Follow the permission steps below, then check again.'
   if (blocker) return 'Check finished: current hosting access could not be verified. The other checks have not run. Keep an approved Host reachable and check access again.'
   if (status.running) return 'Check finished: this server is already hosted on this PC. Open the local server to see its status.'
-  if (status.readyForManualStart) return 'Check finished: this PC is prepared. Choose Host locally when you want to start. A real Friend connection and game join still need separate testing.'
+  if (status.readyForManualStart) return 'Check finished: this PC is prepared. Choose Start hosting when you want to start. A real Friend connection and game join still need separate testing.'
   const next = status.steps.find(step => step.state !== 'Ready')
   return next ? `Check finished. Next: ${checkLabels[next.key]}. Follow the setup steps below, then choose Host locally when you are ready.` :
     'Check finished. Review the network confirmation, then choose Host locally when you are ready.'
@@ -567,7 +567,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const intent = startIntent.current
     if (mutation.current || disabled || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
       || !target.allowed || !target.readyForManualStart || target.running || !target.localProfileId
-      || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)) return
+      || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)
+      || localHostingAttention(target, acceptedTerms, serverFile)) return
     startIntent.current = null // consume before the request; no poll/error retry can repeat Start
     mutation.current = true
     const sequence = ++request.current
@@ -601,7 +602,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       window.clearTimeout(timeout)
       if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
     }
-  }, [base, scope, disabled, checksCurrent, onOpenHost, acceptStatus])
+  }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus])
   useEffect(() => {
     if (busy || checking || disabled || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
     if (localHostingAttention(status, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
@@ -614,10 +615,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setError(''); setActionMessage('')
     const attention = localHostingAttention(status, acceptedTerms, serverFile)
     if (attention && ['Permission', 'ChooseHistory'].includes(attention.kind)) return
+    if (status.readyForManualStart && attention) { startIntent.current = null; setOpen(true); return }
     // The dialog's confirmation authorizes this bounded preparation and Start.
     if (attention && !open) { setOpen(true); return }
     startIntent.current = { scope, until: Date.now() + 10 * 60 * 1000,
       requestId: activeHostingRequest(status)?.requestId ?? null }
+    if (status.readyForManualStart) { void startPrepared(status); return }
     const invitation = activeHostingRequest(status)
     if (invitation?.recipientState === 'Prepared' && !status.readyForManualStart) {
       if (!plannedOperation) setPlannedOperation({ requestId: invitation.requestId!, until: startIntent.current.until })
@@ -681,7 +684,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       const nextAction = waiting ? 'Open the permission steps below, resolve the access or sharing-history check, then retry.' :
         step.key === 'permission' ? step.state === 'Ready' ? 'Continue to the server app and save checks.' : 'Open the permission steps below and check current access with the owner.' :
         step.key === 'server' ? step.state === 'Ready' ? 'Review matching game versions and add-ons before hosting.' : 'Choose the installed server file or follow the server app setup steps below.' :
-        step.key === 'save' ? step.state === 'Ready' ? 'Choose Host locally when you are ready. The save is checked again before Start.' : 'Keep an approved source PC reachable, review the save steps below, then choose Host locally to prepare and verify the copy.' :
+        step.key === 'save' ? step.state === 'Ready' ? 'Choose Start hosting when you are ready. The save is checked again before Start.' : 'Keep an approved source PC reachable, review the save steps below, then choose Host locally to prepare and verify the copy.' :
         step.key === 'ports' ? step.state === 'Ready' ? 'Start repeats the local port checks.' : needsPortPreparation ? 'Prepare the hosting copy with Host locally so its game ports can be checked.' : 'Review the port steps below. Use normal server controls or choose a free port in game setup, then retry.' :
         'Open Connection help on this PC, then test with an approved Friend on the intended network. A game join is a separate check.'
       return { ...step, waiting: waiting || needsPreparation || needsPortPreparation, nextAction,
@@ -715,6 +718,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
+    && !(status?.readyForManualStart && attention)
   return <>
     {!permissionAllowed && !open && <div className={presentation === 'card' ? 'local-hosting-card' : 'local-hosting-next'}>
       <div className="local-hosting-next" role="status" aria-label="Hosting access" aria-busy={permissionChecking}>
@@ -740,9 +744,11 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :
         waitingForHost && plannedOperation && startIntent.current ? <span role="status">Waiting for the current Host to finish the save...</span> :
         <Button disabled={!canContinue} onClick={() => { setNetworkConfirmed(true); if (requestOffered) void respond(true); else host() }}><Icon name={busy ? 'loader' : 'play'} />
-          {busy ? hostingActions[pendingAction ?? 'checks'].label : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
+          {busy ? hostingActions[pendingAction ?? 'checks'].label : status?.readyForManualStart ? 'Start hosting' : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
       <div className="local-hosting-flow" aria-busy={busy}>
-        {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. The app will get the latest available save, check this PC and start when it is ready.</p>}
+        {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. {status?.readyForManualStart
+          ? 'Start checks this PC and the prepared save again before starting.'
+          : 'The app will get the latest available save, check this PC and start when it is ready.'}</p>}
         <>
           {busy || checking || waitingForHost ? <LocalHostingProgress key={`${scope}:${pendingAction ?? (waitingForHost ? 'waiting' : 'checks')}:${actionStartedAt}:${request.current}`}
             startedAt={actionStartedAt}
@@ -758,7 +764,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             <strong>{lastHostingAttempt.state === 'Failed' ? 'Last hosting attempt needs attention' : 'Last hosting step finished'}</strong>
             {lastHostingAttempt.phase && <p>Last step: {hostingProgressPhaseLabel(lastHostingAttempt.phase)}.</p>}
             <p>{lastHostingAttempt.message}</p>
-            {lastHostingAttempt.receivedBytes !== undefined && <p>{lastHostingAttempt.phase === 'PreparingCopy' ? 'Hosting copy bytes prepared' :
+            {lastHostingAttempt.receivedBytes !== undefined && (lastHostingAttempt.receivedBytes > 0 || (lastHostingAttempt.totalBytes ?? 0) > 0) && <p>{lastHostingAttempt.phase === 'PreparingCopy' ? 'Hosting copy bytes prepared' :
               lastHostingAttempt.phase === 'Receiving' ? 'Received save bytes' : 'Reported save bytes'}: {formatSharedBytes(lastHostingAttempt.receivedBytes)}
               {lastHostingAttempt.totalBytes ? ` of ${formatSharedBytes(lastHostingAttempt.totalBytes)}` : ' reported'}.</p>}
             {lastHostingAttempt.completedFiles !== undefined && lastHostingAttempt.totalFiles !== undefined && lastHostingAttempt.totalFiles > 0 && <p>

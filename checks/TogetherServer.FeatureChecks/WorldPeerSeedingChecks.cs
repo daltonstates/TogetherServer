@@ -208,12 +208,35 @@ internal static class WorldPeerSeedingChecks
 
         // An unchanged pointer is not a fresh verification claim after damage.
         sourceOnline = true;
-        File.WriteAllText(Path.Combine(cVault, first.VersionHash, SharedWorldService.PayloadDirectory, "world.dat"), "damaged");
+        var receiptHashAttempts = 0;
+        cService.ReceiptPayloadHashingForChecks = () => receiptHashAttempts++;
         var proof = cService.Challenge(root.GroupKey, bCredential.DeviceId, Public(bKey), cRoute.CertificateSha256);
         var seedBytes = JsonSerializer.SerializeToUtf8Bytes(new WorldPeerSeedRequest(new(first)), Json);
         var request = WorldPeerProtocol.Sign(proof, WorldPeerOperations.Seed, bKey, versionHash: first.VersionHash, payload: seedBytes);
+        var known = WorldPeerProtocol.DecodeEnvelope<WorldPeerSeedResponse>(await cService.ExchangeAsync(root.GroupKey,
+            request, seedBytes, default, cRoute.CertificateSha256), WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Seed));
+        Require(known is { Code: "SeedKnown", Receipt: not null } && known.Receipt.VersionHash == first.VersionHash &&
+            receiptHashAttempts == 1,
+            "SeedKnown did not reuse its exact held verified payload lease when returning the retained receipt");
+        var exactDirectory = Path.Combine(cVault, first.VersionHash);
+        using (var exact = WorldPeerVerifiedCopy.Open(c.RootPath, exactDirectory, first, default))
+        {
+            Require(exact.Covers(c.RootPath, exactDirectory, first) &&
+                !exact.Covers(Path.GetDirectoryName(c.RootPath)!, exactDirectory, first) &&
+                !exact.Covers(c.RootPath, Path.Combine(cVault, new string('A', 64)), first) &&
+                !exact.Covers(c.RootPath, exactDirectory, first with { VersionHash = new string('B', 64) }),
+                "a verified lease authorized another payload path or version");
+            exact.Dispose();
+            Require(!exact.Covers(c.RootPath, exactDirectory, first),
+                "a disposed payload lease still authorized a receipt");
+        }
+        File.WriteAllText(Path.Combine(cVault, first.VersionHash, SharedWorldService.PayloadDirectory, "world.dat"), "damaged");
+        proof = cService.Challenge(root.GroupKey, bCredential.DeviceId, Public(bKey), cRoute.CertificateSha256);
+        request = WorldPeerProtocol.Sign(proof, WorldPeerOperations.Seed, bKey, versionHash: first.VersionHash, payload: seedBytes);
         await Refuses(() => cService.ExchangeAsync(root.GroupKey, request, seedBytes, default, cRoute.CertificateSha256),
             "a damaged same-hash receiver reported SeedKnown without rechecking its bytes");
+        Require(receiptHashAttempts == 2,
+            "a repeated SeedKnown request skipped rehashing its subsequently damaged payload");
         File.WriteAllBytes(Path.Combine(cVault, first.VersionHash, SharedWorldService.PayloadDirectory, "world.dat"), bytes);
         var newerBytes = bytes.ToArray(); newerBytes[^1] ^= 0x4F;
         var newerOriginal = SharedWorldService.SignVersion(first with

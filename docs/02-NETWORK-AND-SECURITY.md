@@ -18,6 +18,15 @@ copies; remote execution/path/command arguments are never accepted. Each
 successor issues a distinct local credential for the proved source member.
 Local removals, deadlines and newly learned signed revocations fail closed.
 
+Prepared Start exchanges metadata only for its registered exact world, with a
+budget covering waits and network work. Per-world serialization preserves both
+cursor transactions and single-use challenge/exchange pairs without holding a
+metadata transaction through payload transfers. Current signed roles and exact
+pinned connection identity remain required. Protected receive consent is checked
+without waiting for unrelated saved connections. Repeated announcement counters
+alone do not change the final Start observation; material identities, roster,
+permissions, conflicts, copies, branches and sessions do.
+
 Canonical member receipts remain schema 1 with a nonempty enrolled member ID.
 Production peer receipts for the original owner use schema 3, the empty owner
 ID, a separate signing domain and the exact pinned owner/world root. Private
@@ -25,6 +34,9 @@ test schema 2 cannot be promoted into either production domain. A retained
 receipt is returned only for its exact fully reverified copy and current
 Receive permission/consent; receiving an acknowledgement does not require the
 receiver to enable forwarding. A lost acknowledgement reuses its receipt ID.
+An acknowledgement that is already confirmed or not due is not re-sent or
+rehashed. Every emitted acknowledgement still requires current verified bytes;
+an exact held file lease can supply that verification within one request.
 
 Peer contact codes bootstrap only an already pinned world and contain signed
 addresses/identities, never bearer credentials. App invitation codes and direct

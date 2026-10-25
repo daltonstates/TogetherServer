@@ -116,6 +116,28 @@ internal sealed partial class FriendLink
         }
     }
 
+    // Consent only: the caller still checks the current signed world roles.
+    // Do not hold the world mutation gate here; receipt -> mutation is also
+    // the withdrawal order, and this read never waits for a network/link gate.
+    internal bool HasRetainedWorldReceiveConsent(SharedWorldPeerRoot root, Guid deviceId)
+    {
+        if (!SharedWorldPeerTrust.ValidRoot(root) || !TryRetain()) return false;
+        try
+        {
+            lock (sharedReceiptSync)
+            {
+                var current = config;
+                return current is not null && !current.KnownRevoked &&
+                    (current.PeerWorldMemberDeviceId ?? current.DeviceId) == deviceId &&
+                    ReceiveConsentRoot(root.ProfileId) == root &&
+                    current.PendingSharedWorldGroups?.ContainsKey(root.ProfileId) != true &&
+                    current.SharedWorldConflicts?.Contains(root.ProfileId) != true &&
+                    HasSharedWorldReceiveConsent(root.ProfileId);
+            }
+        }
+        finally { ReleaseRetained(); }
+    }
+
     // Called without the service's mutation gate: every path that needs both
     // locks takes sharedReceiptSync first, then SharedWorldMutationGate.
     internal void RefreshWorldReceiveConsent(SharedWorldPeerRoot root, Guid deviceId)
@@ -155,6 +177,18 @@ internal sealed partial class FriendLink
 
 public sealed partial class FriendService
 {
+    internal bool HasRetainedWorldReceiveConsent(SharedWorldPeerRoot root, Guid deviceId)
+    {
+        if (!TryRetain()) return false;
+        try
+        {
+            (Guid Id, FriendLink Link)[] current;
+            lock (sync) current = disposed ? [] : [.. links];
+            return current.Any(item => item.Link.HasRetainedWorldReceiveConsent(root, deviceId));
+        }
+        finally { ReleaseRetained(); }
+    }
+
     internal void RefreshWorldReceiveConsent(SharedWorldPeerRoot root, Guid deviceId)
     {
         (Guid Id, FriendLink Link)[] current;

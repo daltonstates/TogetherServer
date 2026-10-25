@@ -207,6 +207,7 @@ export function createFixtureState(scenario = 'host-ready') {
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
     gettingStarted: { offered: false, intent: 'Choose', dismissed: false }, hostingRemedy: options.hostingRemedy ?? null,
     simpleHosting: options.simpleHosting ?? null, simpleHostingPrepared: false, simpleHostingStarted: false,
+    hostingStartPending: options.hostingStartPending === true,
     hostingProgress: options.hostingProgress ?? null, hostingProgressReads: 0, hostingProgressPending: false,
     directoryRemote: options.directoryRemote ?? null,
     ownerContinuations: options.ownerContinuations === true,
@@ -562,8 +563,9 @@ export function routeFixture(state, request) {
       return reply(simpleHostingStatus(state, id, boundary));
     }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting/start' && method === 'POST') {
-      if (!state.simpleHostingPrepared || Object.keys(body).sort().join(',') !== 'acceptSplitWarning,branchHash,localProfileId,requestId' ||
+      if (!simpleHostingStatus(state, id, boundary).readyForManualStart || Object.keys(body).sort().join(',') !== 'acceptSplitWarning,branchHash,localProfileId,requestId' ||
           body.branchHash !== 'A'.repeat(64) || body.localProfileId !== id || body.requestId !== null || body.acceptSplitWarning !== true) return null;
+      if (state.hostingStartPending) return { ...reply(result({ code: 'Starting', message: 'Synthetic Start result deliberately pending.' })), pending: true };
       state.simpleHostingStarted = true;
       const run = state.host.runs.find(item => item.profileId === id);
       Object.assign(run, { state: 'Starting', detail: 'Starting the synthetic local copy.', onlinePlayers: null,

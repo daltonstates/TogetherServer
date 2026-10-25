@@ -173,20 +173,23 @@ internal sealed partial class WorldPeerService
         var memberships = await friend.PeerMembershipsAsync(refreshFriends, cancellationToken);
         foreach (var membership in memberships)
         {
-            var old = Find(membership.Root.GroupKey);
-            if (old is not null && (old.Roster.Revision > membership.Roster.Revision ||
-                old.Roster.Revision == membership.Roster.Revision && old.Roster.Signature != membership.Roster.Signature))
-                continue;
-            var bootstrap = new SharedWorldPeerRoute(membership.HostEndpoint.TrimEnd('/'),
-                membership.HostFingerprint.ToUpperInvariant());
-            var memberKey = membership.DeviceId == Guid.Empty ? membership.Root.OwnerPublicKey :
-                membership.Roster.Members.SingleOrDefault(member => member.DeviceId == membership.DeviceId)?.PublicKey;
-            var autoShare = memberKey is not null && SharedWorldPeerTrust.AccessFromRoster(membership.Root, membership.Roster,
-                membership.DeviceId, memberKey) is { Receive: true, Reshare: true };
-            SaveGroup(new(membership.Root, membership.Roster, membership.DeviceId,
-                old?.Name ?? "Shared world", new WorldPeerReceiveConsentStore(data).Effective(membership.Root,
-                    membership.DeviceId, membership.ReceiveConsented), old?.SharingEnabled == true || autoShare,
-                SharedWorldPeerTrust.ValidRoute(bootstrap) ? bootstrap : old?.Bootstrap));
+            lock (stateSync)
+            {
+                var old = Find(membership.Root.GroupKey);
+                if (old is not null && (old.Roster.Revision > membership.Roster.Revision ||
+                    old.Roster.Revision == membership.Roster.Revision && old.Roster.Signature != membership.Roster.Signature))
+                    continue;
+                var bootstrap = new SharedWorldPeerRoute(membership.HostEndpoint.TrimEnd('/'),
+                    membership.HostFingerprint.ToUpperInvariant());
+                var memberKey = membership.DeviceId == Guid.Empty ? membership.Root.OwnerPublicKey :
+                    membership.Roster.Members.SingleOrDefault(member => member.DeviceId == membership.DeviceId)?.PublicKey;
+                var autoShare = memberKey is not null && SharedWorldPeerTrust.AccessFromRoster(membership.Root, membership.Roster,
+                    membership.DeviceId, memberKey) is { Receive: true, Reshare: true };
+                SaveGroup(new(membership.Root, membership.Roster, membership.DeviceId,
+                    old?.Name ?? "Shared world", new WorldPeerReceiveConsentStore(data).Effective(membership.Root,
+                        membership.DeviceId, membership.ReceiveConsented), old?.SharingEnabled == true || autoShare,
+                    SharedWorldPeerTrust.ValidRoute(bootstrap) ? bootstrap : old?.Bootstrap));
+            }
         }
         var snapshot = await manager.SnapshotAsync();
         foreach (var profile in snapshot.Settings.Profiles.Where(profile => profile.SeparateCopySourceProfileId is null &&
@@ -195,14 +198,20 @@ internal sealed partial class WorldPeerService
             var roster = await manager.PeerPublishedRosterAsync(profile.Id);
             if (!SharedWorldRosterTrust.Verify(roster)) continue;
             var root = new SharedWorldPeerRoot(roster!.OwnerPublicKey, profile.Id, roster.GroupId);
-            var old = Find(root.GroupKey);
-            var owner = LocalOwnerKey() == root.OwnerPublicKey;
-            if (!owner && old is null) continue;
-            var deviceId = owner ? Guid.Empty : old!.DeviceId;
-            SaveGroup(new(root, roster, deviceId,
-                profile.Name.Length <= 100 ? profile.Name : profile.Name[..100],
-                new WorldPeerReceiveConsentStore(data).Effective(root, deviceId, old?.ReceiveConsented ?? owner),
-                old?.SharingEnabled ?? snapshot.Settings.CompanionListeningEnabled, old?.Bootstrap));
+            lock (stateSync)
+            {
+                var old = Find(root.GroupKey);
+                if (old is not null && (old.Roster.Revision > roster.Revision ||
+                    old.Roster.Revision == roster.Revision && old.Roster.Signature != roster.Signature))
+                    continue;
+                var owner = LocalOwnerKey() == root.OwnerPublicKey;
+                if (!owner && old is null) continue;
+                var deviceId = owner ? Guid.Empty : old!.DeviceId;
+                SaveGroup(new(root, roster, deviceId,
+                    profile.Name.Length <= 100 ? profile.Name : profile.Name[..100],
+                    new WorldPeerReceiveConsentStore(data).Effective(root, deviceId, old?.ReceiveConsented ?? owner),
+                    old?.SharingEnabled ?? snapshot.Settings.CompanionListeningEnabled, old?.Bootstrap));
+            }
         }
     }
 

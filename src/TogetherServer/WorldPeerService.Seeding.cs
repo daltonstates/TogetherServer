@@ -101,9 +101,9 @@ internal sealed partial class WorldPeerService
             if (existing?.VersionHash == version.VersionHash || existing is not null &&
                 WorldPeerFileTransfer.KnownDescendant(vault, version, existing))
             {
-                using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, Path.Combine(vault, existing!.VersionHash), existing, cancellationToken);
+                using var verified = VerifyReceiptPayload(vault, existing!, cancellationToken);
                 return new("SeedKnown", version.VersionHash, Receipt: existing.VersionHash == version.VersionHash
-                    ? await ReadRetainedReceiptAsync(group, descriptor, vault, cancellationToken) : null);
+                    ? await RetainedReceiptForVerifiedCopyAsync(group, descriptor, vault, verified, cancellationToken) : null);
             }
             var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
             var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
@@ -120,9 +120,9 @@ internal sealed partial class WorldPeerService
                 {
                     if (ReadPeerPointer(retained)?.VersionHash == version.VersionHash)
                     {
-                        using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, Path.Combine(retained, version.VersionHash), version, cancellationToken);
+                        using var verified = VerifyReceiptPayload(retained, version, cancellationToken);
                         return new("SeedKnown", version.VersionHash,
-                            Receipt: await ReadRetainedReceiptAsync(group, descriptor, retained, cancellationToken));
+                            Receipt: await RetainedReceiptForVerifiedCopyAsync(group, descriptor, retained, verified, cancellationToken));
                     }
                     pending = await StageSeedHistoryAsync(group, descriptor, seed.Manifest, retained, anchor, cancellationToken);
                     return pending ?? await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken);

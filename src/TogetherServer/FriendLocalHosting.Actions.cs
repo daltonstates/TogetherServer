@@ -100,25 +100,6 @@ internal sealed partial class FriendLocalHostingService
             return Refused("LocalHostingPreparationRequired", "Repeat this PC's automatic hosting checks before starting.");
         if (status.Remedy is { Kind: "Connection" or "Ports" or "Review" })
             return Refused("LocalHostingActionRequired", status.Remedy.Message);
-        if (input.RequestId is null && HasLatestSource && access.Root is { } latestRoot)
-        {
-            progress.Report("LatestSave", "Checking that no newer completed save arrived before Start.");
-            var latest = await LatestSourceAsync(latestRoot, progress, cancellationToken);
-            if (!latest.Ok || latest.Source is null)
-            {
-                if (status.BranchHash is { } refusedBranch)
-                    await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refusedBranch, cancellationToken);
-                return Refused(latest.Code, latest.Message);
-            }
-            if (!friend.CurrentLocalHostingConnection(connection))
-                return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
-            latest.Source.Verify(data, latestRoot, cancellationToken, (bytes, total, files, count) =>
-                progress.Source(new("Verifying", "Repeating the protected source's file checks before Start.",
-                    bytes, total, files, count)));
-            var retained = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
-            if (retained?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
-                return Refused("LatestSaveChanged", "A newer completed save is available. Continue hosting to check and use it before starting.");
-        }
         if (input.RequestId is { } exactRequest)
         {
             if (status.HandoffRequest is not { RecipientState: "Completed" } exactHandoff || exactHandoff.RequestId != exactRequest ||
@@ -150,13 +131,32 @@ internal sealed partial class FriendLocalHostingService
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
         if (input.RequestId is null && HasLatestSource)
         {
+            // Discovery and full verification happen once, after the address
+            // update that can change the observed peer state. The final Host
+            // gate still consumes that exact observation and rechecks the
+            // working world; a second complete resolver pass adds no fence.
             progress.Report("LatestSave", "Confirming the latest verified progress immediately before Start.");
-            var latest = await LatestSourceAsync(root, progress, cancellationToken);
-            if (!latest.Ok || latest.Source is null) return Refused(latest.Code, latest.Message);
+            var latest = await LatestSourceAsync(root, progress, cancellationToken, preparedStart: true);
+            if (!latest.Ok || latest.Source is null)
+            {
+                if (status.BranchHash is { } refusedBranch)
+                    await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refusedBranch, cancellationToken);
+                return Refused(latest.Code, latest.Message);
+            }
+            if (!friend.CurrentLocalHostingConnection(connection))
+                return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
+            latest.Source.Verify(data, root, cancellationToken, (bytes, total, files, count) =>
+                progress.Source(new("Verifying", "Repeating the protected source's file checks before Start.",
+                    bytes, total, files, count)));
             var current = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
-            if (!friend.CurrentLocalHostingConnection(connection) ||
-                current?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
+            if (!friend.CurrentLocalHostingConnection(connection))
+                return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
+            if (current?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
+            {
+                if (status.BranchHash is { } changedBranch)
+                    await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, changedBranch, cancellationToken);
                 return Refused("LatestSaveChanged", "A newer save arrived. Continue hosting to check the latest copy before starting.");
+            }
             await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, cancellationToken);
         }
         cancellationToken.ThrowIfCancellationRequested();

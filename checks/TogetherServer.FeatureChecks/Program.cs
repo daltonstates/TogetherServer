@@ -81,7 +81,9 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Verified recovery head selection", () => WorldPeerRecoverySelectionChecks.RunAsync(root)),
     ("Recovery branch live-save integration", () => BranchLiveIntegrationChecks.RunAsync(root)),
     ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root)),
-    ("Completed save delivery to owner and online peers", () => WorldPeerCompletedSaveDistributionChecks.RunAsync(root))
+    ("Completed save delivery to owner and online peers", () => WorldPeerCompletedSaveDistributionChecks.RunAsync(root)),
+    ("Bounded prepared hosting discovery", () => WorldPeerHostingDiscoveryChecks.RunAsync(root)),
+    ("Completed backup destination integrity", () => { BackupCompletionIntegrityChecks.Run(root); return Task.CompletedTask; })
 };
 if (args.Any(name => !groups.Any(group => group.Name.Equals(name, StringComparison.Ordinal))))
     throw new ArgumentException("Choose an exact registered source-check group name, or omit names to run every group.");

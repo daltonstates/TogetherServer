@@ -8,7 +8,7 @@ import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
-import { simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
+import { assertPreparedHostingRequests, simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
 const sourceRoot = process.env.TOGETHERSERVER_UI_SOURCE_ROOT
@@ -617,7 +617,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 93, 'thirty-one shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
+  assert.equal(simple.plans.length, 99, 'thirty-three shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -1218,7 +1218,7 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 31);
+  assert.equal(simpleHostingCases.length, 33);
   assert.equal(simpleHostingVariants.length, 3);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
@@ -1231,11 +1231,20 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   assert.equal(routeFixture(state, { method: 'GET', path: base }).body.readyForManualStart, true);
   assert.doesNotThrow(() => localHosting.parseLocalHostingStatus(routeFixture(state, { method: 'GET', path: base }).body));
   const start = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true };
-  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: start }), null, 'Start requires this exact preparation');
+  assert.deepEqual(assertPreparedHostingRequests(state, 0), { startRequests: 0, prepareRequests: 0 });
+  assert.equal(state.simpleHostingPrepared, false, 'a ready status read does not perform preparation');
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: start }).body.ok, true,
+    'the exact already prepared identity can Start without another preparation request');
+  assert.deepEqual(assertPreparedHostingRequests(state, 1), { startRequests: 1, prepareRequests: 0 });
+  const invalid = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready' });
+  assert.equal(routeFixture(invalid, { method: 'POST', path: `${base}/start`, body: { ...start, branchHash: 'B'.repeat(64) } }), null);
+  assert.equal(invalid.simpleHostingStarted, false);
   const prepare = { allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null };
-  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/prepare`, body: prepare }).body.readyForManualStart, true);
-  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: { ...start, branchHash: 'B'.repeat(64) } }), null);
-  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: start }).body.ok, true);
+  const unprepared = createFixtureState({ id: 'friend-offline', simpleHosting: 'prepare' });
+  assert.equal(routeFixture(unprepared, { method: 'POST', path: `${base}/start`, body: start }), null,
+    'an unprepared fixture remains unable to Start');
+  assert.equal(routeFixture(unprepared, { method: 'POST', path: `${base}/prepare`, body: prepare }).body.readyForManualStart, true);
+  assert.equal(routeFixture(unprepared, { method: 'POST', path: `${base}/start`, body: start }).body.ok, true);
   assert.equal(state.simpleHostingStarted, true);
   assert.doesNotThrow(() => contracts.parseSnapshot(state.host));
   for (const stage of ['not-allowed', 'missing-server', 'connection', 'conflict']) {
@@ -1298,6 +1307,42 @@ test('simple hosting review stays bounded and uses only the current automatic ho
   await assert.rejects(assertSimpleHostingUi(continuationPage, continuation, { assertions: [] }, returnedOwner),
     /Owner continuation sharing must use its exact original policy/u,
     'reading active save status is valid, but editing the child policy remains rejected');
+});
+
+test('prepared-copy rendered journeys retain the entry label, exact Start footer, and no-prepare/replay evidence', () => {
+  const starting = simpleHostingCases.find(item => item.id === 'simple-hosting-starting');
+  assert.deepEqual(starting.steps, [{ button: 'Host locally' }, { button: 'Start hosting', within: 'dialog[open]' }]);
+  const journey = simpleHostingCases.find(item => item.readyStartJourney);
+  const timeout = simpleHostingCases.find(item => item.readyStartTimeout);
+  assert.equal(journey.fixture.simpleHosting, 'ready');
+  assert.deepEqual(journey.steps, [{ button: 'Host locally' }], 'the hosted assertion checks the read-only dialog before clicking Start');
+  assert.equal(timeout.fixture.simpleHosting, 'ready');
+  assert.equal(timeout.fixture.hostingStartPending, true);
+  assert.deepEqual(timeout.steps, [{ button: 'Host locally' }]);
+  assert.throws(() => assertPreparedHostingRequests({ requests: [{ method: 'POST', path: '/shared-world/hosting/prepare' }] }, 0),
+    /without preparation or replay/u);
+  assert.throws(() => assertPreparedHostingRequests({ requests: [
+    { method: 'POST', path: '/shared-world/hosting/prepare' }, { method: 'POST', path: '/shared-world/hosting/start' }
+  ] }, 1), /without preparation or replay/u, 'the previous prepare-then-Start loop fails the ready-copy assertion');
+  assert.throws(() => assertPreparedHostingRequests({ requests: [
+    { method: 'POST', path: '/shared-world/hosting/start' }, { method: 'POST', path: '/shared-world/hosting/start' }
+  ] }, 1), /without preparation or replay/u, 'a second Start is never accepted as timeout recovery');
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready', hostingStartPending: true });
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const before = JSON.stringify(state.host.runs);
+  const body = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true };
+  const pending = routeFixture(state, { method: 'POST', path: `${base}/start`, body });
+  assert.equal(pending.pending, true);
+  assert.equal(state.simpleHostingStarted, false);
+  assert.equal(JSON.stringify(state.host.runs), before, 'pending Start is not a synthetic running-server claim');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    assert.equal(localHosting.parseLocalHostingStatus(get(state, base)).readyForManualStart, true);
+    assert.equal(get(state, `${base}/access`).allowed, true);
+    routeFixture(state, { method: 'POST', path: '/api/local/mode/host' });
+    routeFixture(state, { method: 'POST', path: '/api/local/mode/friend' });
+  }
+  assert.deepEqual(assertPreparedHostingRequests(state, 1), { startRequests: 1, prepareRequests: 0 },
+    'read-only refreshes and synthetic page changes do not submit another hosting instruction');
 });
 
 test('hosting progress fixtures expose passive byte updates and indeterminate verification during one pending preparation', () => {

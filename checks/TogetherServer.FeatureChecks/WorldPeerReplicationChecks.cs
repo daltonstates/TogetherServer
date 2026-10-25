@@ -84,6 +84,8 @@ internal static class WorldPeerReplicationChecks
             new PairingService(dData), Client);
         using var eService = new WorldPeerService(eData, new HostManager(eData), eFriends,
             new PairingService(eData), Client);
+        var receiptHashAttempts = 0;
+        cService.ReceiptPayloadHashingForChecks = () => receiptHashAttempts++;
 
         handler.DropNextReceipt = true;
         await cService.SyncNowAsync(default);
@@ -99,48 +101,60 @@ internal static class WorldPeerReplicationChecks
         Require(!Receipts(bData, source).Any(item => item.DeviceId == cId),
             "the synthetic dropped receipt unexpectedly reached its serving peer");
         var droppedAttempts = handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt);
+        var beforeBackoffHashes = receiptHashAttempts;
         await cService.SyncNowAsync(default);
-        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == droppedAttempts,
-            "a failed receipt delivery ignored its retry backoff on the next sync");
+        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == droppedAttempts &&
+            receiptHashAttempts == beforeBackoffHashes,
+            "a receipt in retry backoff retransmitted or needlessly rehashed its unchanged payload");
         var retainedReceiptPath = Path.Combine(cVault, first.VersionHash, "receipt.json");
         var retainedReceiptBytes = File.ReadAllBytes(retainedReceiptPath);
         var retainedReceipt = SharedWorldReceiptTrust.Parse(retainedReceiptBytes)!;
         var beforeRetryChunks = handler.Requests.Count(item => item.Operation == WorldPeerOperations.Chunk);
         using (var resumed = RestartReceiver())
         {
+            var beforeDueHashes = receiptHashAttempts;
             await resumed.SyncNowAsync(default);
             Require(Receipts(bData, source).Single(item => item.DeviceId == cId).ReceiptId == retainedReceipt.ReceiptId &&
-                handler.Requests.Count(item => item.Operation == WorldPeerOperations.Chunk) == beforeRetryChunks,
+                handler.Requests.Count(item => item.Operation == WorldPeerOperations.Chunk) == beforeRetryChunks &&
+                receiptHashAttempts == beforeDueHashes + 1 && !resumed.Views().Single().SharingEnabled &&
+                !resumed.Views().Single().CanReshare,
                 "a restarted receiver did not acknowledge its already verified copy using the same signed receipt without redownloading");
             var acknowledged = handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt);
+            var acknowledgedHashes = receiptHashAttempts;
             await resumed.SyncNowAsync(default);
-            Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == acknowledged,
-                "an acknowledged unchanged catalog caused another receipt on every sync");
+            Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == acknowledged &&
+                receiptHashAttempts == acknowledgedHashes,
+                "an acknowledged unchanged catalog retransmitted or fully rehashed its payload again");
         }
         // A retry cannot turn a metadata pointer, forged receipt, or subsequently
         // damaged payload into a new copy acknowledgement.
         var beforeInvalid = handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt);
+        var beforeInvalidHashes = receiptHashAttempts;
         File.WriteAllBytes(retainedReceiptPath, JsonSerializer.SerializeToUtf8Bytes(retainedReceipt with { DeviceId = eId }, Json));
         using (var invalid = RestartReceiver()) await invalid.SyncNowAsync(default);
-        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == beforeInvalid,
+        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == beforeInvalid &&
+            receiptHashAttempts == beforeInvalidHashes,
             "a receipt for another local identity was replayed");
         File.Delete(retainedReceiptPath);
         using (var missing = RestartReceiver()) await missing.SyncNowAsync(default);
-        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == beforeInvalid && !File.Exists(retainedReceiptPath),
+        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == beforeInvalid &&
+            receiptHashAttempts == beforeInvalidHashes && !File.Exists(retainedReceiptPath),
             "an unchanged pointer fabricated a missing receipt");
         File.WriteAllBytes(retainedReceiptPath, retainedReceiptBytes);
         var retainedPayloadPath = Path.Combine(cVault, first.VersionHash, SharedWorldService.PayloadDirectory, "world.dat");
         var damaged = bytes.ToArray(); damaged[0] ^= 0xFF;
         File.WriteAllBytes(retainedPayloadPath, damaged);
         using (var corrupt = RestartReceiver()) await corrupt.SyncNowAsync(default);
-        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == beforeInvalid,
-            "an authentic old receipt acknowledged a now-corrupted retained payload");
+        Require(handler.Requests.Count(item => item.Operation == WorldPeerOperations.Receipt) == beforeInvalid &&
+            receiptHashAttempts == beforeInvalidHashes + 1,
+            "a due authentic old receipt failed to rehash/reject a now-corrupted retained payload");
         File.WriteAllBytes(retainedPayloadPath, bytes);
         var receipt = Receipts(bData, source).Single(item => item.DeviceId == cId && item.VersionHash == first.VersionHash);
         Require(SharedWorldReceiptTrust.Verify(receipt, Public(cKey)) && receipt.GroupId == source.GroupId &&
             receipt.ProfileId == source.ProfileId && receipt.RosterRevision == roster.Revision,
             "B did not persist C's exact authorized signed completion receipt");
-        WorldPeerService RestartReceiver() => new(cData, new HostManager(cData), cFriends, new PairingService(cData), Client);
+        WorldPeerService RestartReceiver() => new(cData, new HostManager(cData), cFriends, new PairingService(cData), Client)
+        { ReceiptPayloadHashingForChecks = () => receiptHashAttempts++ };
         var prepared = await cService.PrepareSoloRecoveryOfferAsync(source.ProfileId, null, default);
         Require(prepared.Ok && prepared.Offer is { } offer && SharedWorldElection.VerifyOffer(offer) &&
             offer.Version.VersionHash == first.VersionHash && offer.Proposal.ProposerDeviceId == cId &&

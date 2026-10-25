@@ -105,6 +105,13 @@ beside a check to open its part of the guide. The guide explains what to do on
 this PC and which changes need the original owner. A sharing-history or
 verification error needs review; it does not mean the owner turned sharing off.
 
+When the copy is already prepared, the button says **Start hosting**. It uses
+that copy and repeats current access, latest-save, file, server and port checks.
+It does not run preparation again. Checking for new signed save information is
+limited to this server; it does not wait for other saved Host connections or
+repeat their save transfers. A newly learned later or conflicting save still
+requires preparation or review before Start.
+
 The guide reports what a button is doing, then shows its result and the next
 step. If permission or sharing history is blocking preparation, later checks
 show **Not checked** until that prerequisite is verified.

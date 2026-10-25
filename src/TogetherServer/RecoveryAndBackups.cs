@@ -177,6 +177,12 @@ internal sealed partial class WorldBackupService
     private readonly TimeProvider clock;
     private readonly Func<string, long> availableSpace;
     private readonly object sync = new();
+    // Receives only this operation's fresh generated staging directory. No
+    // owner/companion input can supply a callback or a destination path.
+    internal Action<string>? BeforeCompletionVerificationForChecks { get; set; }
+    private const string CompletionIntegrityMessage =
+        "The copied backup did not pass its final integrity check. Existing backups and the live world were kept.";
+    private sealed class BackupCompletionIntegrityException() : IOException(CompletionIntegrityMessage) { }
 
     public WorldBackupService(LocalData data, TimeProvider clock, Func<string, long>? availableSpace = null,
         GameServerRegistry? games = null)
@@ -276,6 +282,20 @@ internal sealed partial class WorldBackupService
                     if (File.Exists(incompleteSetup)) File.Delete(incompleteSetup);
                     setupWarning = " The world backup completed, but configuration and add-on inventory could not be checkpointed.";
                 }
+                // CopyTree hashes the bytes it reads. Verify the actual staged
+                // destination and protected setup before declaring completion.
+                try
+                {
+                    BeforeCompletionVerificationForChecks?.Invoke(stage);
+                    VerifyTree(payload, copied.Files);
+                    VerifySetupFile(stage, setupSha, setupSha is not null);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or
+                    InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception or
+                    CryptographicException or OverflowException or JsonException or ArgumentException)
+                {
+                    throw new BackupCompletionIntegrityException();
+                }
                 var created = clock.GetUtcNow();
                 var manifest = new BackupManifest
                 {
@@ -324,14 +344,16 @@ internal sealed partial class WorldBackupService
             {
                 try { SafeDeleteDirectory(stage, profileRoot); }
                 catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException or InvalidOperationException) { }
-                try { RecordFailure(profile.Id, "BackupFailed", ex.Message); }
+                var code = ex is BackupCompletionIntegrityException ? "BackupCompletionIntegrityFailed" : "BackupFailed";
+                var failure = ex is BackupCompletionIntegrityException ? CompletionIntegrityMessage : ex.Message;
+                try { RecordFailure(profile.Id, code, failure); }
                 catch (Exception recordEx) when (recordEx is IOException or UnauthorizedAccessException or InvalidDataException) { }
                 var purpose = backupKind == BackupKinds.Rolling
                     ? "The server stopped, but its rolling backup failed: "
                     : backupKind == BackupKinds.PreRestore
                         ? "The required pre-restore snapshot failed: "
                         : "The manual backup failed: ";
-                return new(false, "BackupFailed", purpose + ex.Message);
+                return new(false, code, purpose + failure);
             }
         }
     }

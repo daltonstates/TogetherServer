@@ -545,6 +545,22 @@ internal sealed partial class WorldPeerService : IDisposable
         CancellationToken cancellationToken, byte[]? payload = null, int offset = 0,
         string? versionHash = null, int? fileIndex = null, long? chunkOffset = null)
     {
+        // A responder retains one challenge per requester/world. Do not let a
+        // foreground metadata handshake invalidate a background payload proof.
+        var wireGate = ExchangeGatesFor(group.Root).Wire;
+        await wireGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await SendPeerCoreAsync(group, route, operation, cancellationToken,
+                payload, offset, versionHash, fileIndex, chunkOffset);
+        }
+        finally { wireGate.Release(); }
+    }
+
+    private async Task<byte[]> SendPeerCoreAsync(Group group, SharedWorldPeerRoute route, string operation,
+        CancellationToken cancellationToken, byte[]? payload, int offset,
+        string? versionHash, int? fileIndex, long? chunkOffset)
+    {
         ObjectDisposedException.ThrowIf(peerDisposed, this);
         if (!SharedWorldPeerTrust.ValidRoute(route)) throw new InvalidDataException("The direct peer route is invalid.");
         group = Find(group.Root.GroupKey) ?? throw new InvalidDataException("The world membership changed.");
@@ -633,7 +649,27 @@ internal sealed partial class WorldPeerService : IDisposable
         return member is not null && Access(group, member.DeviceId, publicKey) is not null;
     }
 
-    private async Task SyncPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken)
+    private async Task SyncPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken,
+        bool includePayloads = true)
+    {
+        var metadataGate = ExchangeGatesFor(group.Root).Metadata;
+        await metadataGate.WaitAsync(cancellationToken);
+        try
+        {
+            ObjectDisposedException.ThrowIf(peerDisposed, this);
+            group = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed before metadata exchange.");
+            group = await ExchangePeerMetadataAsync(group, route, cancellationToken);
+        }
+        finally { metadataGate.Release(); }
+        // Payload work has its own received-vault gates. It must not hold the
+        // world's metadata transaction while a prepared Start checks new heads.
+        if (!includePayloads) return;
+        await PullCatalogAsync(group, route, cancellationToken);
+        await SeedPeerAsync(group, route, cancellationToken);
+    }
+
+    private async Task<Group> ExchangePeerMetadataAsync(Group group, SharedWorldPeerRoute route,
+        CancellationToken cancellationToken)
     {
         var cursor = ReadCursor(group, route);
         var localPage = Store(group).ReadPage(cursor.SentOffset);
@@ -682,8 +718,7 @@ internal sealed partial class WorldPeerService : IDisposable
         if (peer is not null) Store(group).RecordSync(peer.DeviceId, peer.PublicKey, true, response.Page.Total);
         if (authorityOffset < response.AuthorityTotal || response.Page.NextOffset < response.Page.Total)
             SetPeerWarning(group.Root.GroupKey, "Signed world information is catching up; existing histories remain available.");
-        await PullCatalogAsync(group, route, cancellationToken);
-        await SeedPeerAsync(group, route, cancellationToken);
+        return group;
     }
 
     private void SetPeerWarning(string groupKey, string? message)

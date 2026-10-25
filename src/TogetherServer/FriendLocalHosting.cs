@@ -23,13 +23,15 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     Func<Task>? synchronizeListener = null,
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>>? announceHosting = null,
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>>? latestSource = null,
-    Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestSourceProgress = null)
+    Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestSourceProgress = null,
+    Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestPreparedSourceProgress = null)
 {
     private bool HasLatestSource => latestSource is not null || latestSourceProgress is not null;
 
     private Task<WorldPeerLatestSourceResult> LatestSourceAsync(SharedWorldPeerRoot root,
-        LocalHostingProgressStore.Operation progress, CancellationToken cancellationToken) =>
-        latestSourceProgress is not null ? latestSourceProgress(root, cancellationToken, progress.Source) :
+        LocalHostingProgressStore.Operation progress, CancellationToken cancellationToken, bool preparedStart = false) =>
+        preparedStart && latestPreparedSourceProgress is not null ? latestPreparedSourceProgress(root, cancellationToken, progress.Source) :
+            latestSourceProgress is not null ? latestSourceProgress(root, cancellationToken, progress.Source) :
             latestSource!(root, cancellationToken);
     private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
         JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;
@@ -156,7 +158,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             branch.BranchHash, cancellationToken);
         var running = hosted?.Running == true;
         var saveReady = hosted is { Restored: true, ReviewRequired: false } && (hosted.ReadyForManualStart || running);
-        var ready = access.Allowed && access.Consented && !ambiguous && !running &&
+        var preparationReady = access.Allowed && access.Consented && !ambiguous && !running &&
             saveReady && ports.Available && serverFile is not null && !manualSetup &&
             hosted is { ReadyForManualStart: true };
         var endpointValid = HostIdentity.TryEndpoint(snapshot.Settings.CompanionEndpoint, out var endpoint);
@@ -168,19 +170,26 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             new LocalHostingStep("connection", "Unknown", !endpointValid || localOnly ?
                 "Hosting can be prepared for this PC. Configure this PC's Friend connection before inviting others; no incoming listener is enabled here." :
                 "This PC has an address configured. A real incoming connection and game join still need checking; preparation changes no network settings.");
+        // A retained copy can remain prepared while its current connection needs
+        // repair. Start refuses that remedy, so passive status must not promise
+        // Start readiness until it clears. Unknown connectivity stays distinct.
+        var connectionBlocksStart = preparationReady && connectionStep.State == "ActionRequired";
+        var ready = preparationReady && !connectionBlocksStart;
         var serverMessage = manualSetup ?
             "This save needs matching add-ons. Open game setup to install and enable them, then continue the checks." :
             serverFile is null ? "Install or select the matching dedicated server already on this PC. No command-line tool is required for an installed Valheim server." :
             existing is not null ? "The server file passed preparation. Start repeats its current checks." :
             "The matching server file is available on this PC. Start repeats its checks.";
         var code = ambiguous ? "HostingHistoryChoiceRequired" : !access.Allowed ? access.Code :
-            hosted?.ReviewRequired == true ? "LocalHostingReviewRequired" : ready ? "LocalHostingPrepared" :
+            hosted?.ReviewRequired == true ? "LocalHostingReviewRequired" :
+            connectionBlocksStart ? "LocalConnectionSetupRequired" : ready ? "LocalHostingPrepared" :
             running ? "LocalHostingRunning" : manualSetup ? "LocalServerSetupRequired" :
             !access.Consented ? "LocalConsentRequired" : !saveReady ? "LocalHostingPreparationRequired" :
             serverFile is null ? "InstalledServerRequired" : !ports.Available ? "LocalPortsRequired" : "LocalHostingPreparationRequired";
         var message = ambiguous ? "More than one local history is available. Choose a history in shared-save setup; every save is preserved." :
             !access.Allowed ? access.Message : hosted?.ReviewRequired == true ? hosted.Message :
             running ? "This shared save is already hosted on this PC. Its local world is preserved." :
+            connectionBlocksStart ? $"The verified hosting copy is prepared. {connectionStep.Message} Open Connection help before starting." :
             ready ? "This PC is prepared. Current save, game and port checks run again when you choose Host on this PC." :
             manualSetup ? serverMessage : "Choose Host locally to get the latest completed save and prepare a checked hosting copy on this PC.";
         var result = new LocalHostingStatus(ready || running, code, message, access.Allowed, access.Consented, game,
@@ -235,6 +244,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         async Task<LocalHostingStatus> Result(string code, string message, bool? ok = false)
         {
             var status = await Status();
+            if (ok is null && !status.Ok) return status;
             return status with
             {
                 Ok = ok ?? status.Ok,

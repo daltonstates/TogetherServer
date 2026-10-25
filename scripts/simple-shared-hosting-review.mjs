@@ -34,8 +34,11 @@ export const simpleHostingCases = [
     { button: 'Set up Connections from other PCs', within: 'dialog[open]' }] }),
   friend('save-conflict', 'conflict'),
   friend('ready-confirmation', 'ready'),
-  friend('starting', 'ready', { steps: [{ button: 'Host locally' }, { button: 'Host locally', within: 'dialog[open]' }],
+  friend('starting', 'ready', { steps: [{ button: 'Host locally' }, { button: 'Start hosting', within: 'dialog[open]' }],
     screen: { css: '.server-command-header', text: 'Starting' } }),
+  friend('ready-explicit-start', 'ready', { readyStartJourney: true, screen: { css: 'main.workspace-main' } }),
+  friend('ready-start-timeout', 'ready', { readyStartTimeout: true,
+    fixture: { simpleHosting: 'ready', hostingStartPending: true } }),
   friend('guide-permission-unknown', 'permission-unknown-after-entry'),
   friend('guide-permission-denied', 'permission-denied-after-entry'),
   friend('guide-ports', 'ports', { steps: [{ button: 'Host locally' },
@@ -97,6 +100,13 @@ export function simpleHostingStatus(state, profileId, boundary) {
 
 const checkNames = ['Permission to host', 'Server app and tools', 'Save file checks', 'Local game ports', 'Connections from other PCs'];
 const hostingWrites = state => state.requests.filter(item => item.method !== 'GET' && /shared-world\/hosting(?:\/|$)/u.test(item.path));
+
+export function assertPreparedHostingRequests(state, expectedStarts) {
+  const writes = hostingWrites(state);
+  if (writes.length !== expectedStarts || writes.some(item => item.method !== 'POST' || !item.path.endsWith('/hosting/start')))
+    throw new Error('A checked prepared copy must use only the expected explicit Start request without preparation or replay');
+  return { startRequests: writes.length, prepareRequests: 0 };
+}
 
 async function assertVisibleChecks(modal, record) {
   const checks = modal.getByRole('list', { name: 'Local hosting checks', exact: true });
@@ -284,9 +294,63 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
           await entryRegion.getByText('Asks Steam to open an installed game. Join the server from the game.', { exact: true }).count())
         throw new Error('Open game and Stop server must have equal dimensions without the intervening helper text');
     }
+  } else if (testCase.readyStartJourney || testCase.readyStartTimeout) {
+    const modal = page.getByRole('dialog', { name: 'Host locally', exact: true });
+    await assertVisibleChecks(modal, record);
+    const start = modal.getByRole('button', { name: 'Start hosting', exact: true });
+    await start.waitFor({ state: 'visible', timeout: 8000 });
+    if (!await start.isEnabled() || await modal.getByRole('button', { name: 'Retry and start', exact: true }).count())
+      throw new Error('A checked prepared copy needs the explicit enabled Start hosting action');
+    assertPreparedHostingRequests(state, 0);
+    const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
+      response.request().method() === 'GET', { timeout: 8000 });
+    await modal.getByRole('button', { name: 'Retry automatic checks', exact: true }).click();
+    await refreshed;
+    await page.waitForFunction(button => !button.disabled, await start.elementHandle(), { timeout: 8000 });
+    assertPreparedHostingRequests(state, 0);
+    record.assertions.push({ preparedOpeningReadOnly: true, preparedRefreshReadOnly: true });
+    if (testCase.readyStartTimeout) {
+      await page.clock.install();
+      await start.click();
+      await modal.getByRole('button', { name: 'Requesting Start...', exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+      assertPreparedHostingRequests(state, 1);
+      await page.clock.fastForward(120001);
+      const failure = modal.getByRole('alert');
+      await failure.waitFor({ state: 'visible', timeout: 8000 });
+      if (!/The Start result could not be checked in time/u.test(await failure.textContent() ?? ''))
+        throw new Error('The pending prepared-copy Start did not expose its timeout result');
+      await page.clock.fastForward(30001);
+      assertPreparedHostingRequests(state, 1);
+      const checkedAgain = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
+        response.request().method() === 'GET', { timeout: 8000 });
+      await modal.getByRole('button', { name: 'Retry automatic checks', exact: true }).click();
+      await checkedAgain;
+      await page.waitForFunction(button => !button.disabled, await start.elementHandle(), { timeout: 8000 });
+      assertPreparedHostingRequests(state, 1);
+      await modal.getByRole('button', { name: 'Close Host locally', exact: true }).click();
+      await modal.waitFor({ state: 'hidden', timeout: 8000 });
+      await page.getByRole('region', { name: 'Play', exact: true }).getByRole('button', { name: 'Host locally', exact: true }).click();
+      await start.waitFor({ state: 'visible', timeout: 8000 });
+      await page.waitForFunction(button => !button.disabled, await start.elementHandle(), { timeout: 8000 });
+      await page.clock.fastForward(30001);
+      assertPreparedHostingRequests(state, 1);
+      if (state.simpleHostingStarted) throw new Error('A timed-out synthetic Start must not claim a running server');
+      await page.clock.resume();
+      record.assertions.push({ preparedStartTimedOut: true, timeoutAndNavigationReplay: false,
+        ...assertPreparedHostingRequests(state, 1), evidence: 'Synthetic pending Start and browser clock only' });
+    } else {
+      const started = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting/start') &&
+        response.request().method() === 'POST', { timeout: 8000 });
+      await start.click();
+      const result = await (await started).json();
+      await modal.waitFor({ state: 'hidden', timeout: 8000 });
+      await page.locator('.server-command-header').getByText('Starting', { exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+      if (!result.ok || !state.simpleHostingStarted) throw new Error('The explicit prepared-copy Start did not reach the synthetic Starting state');
+      record.assertions.push({ preparedExplicitStart: true, ...assertPreparedHostingRequests(state, 1) });
+    }
   } else if (testCase.id.endsWith('-starting')) {
-    if (!state.simpleHostingStarted || writes.length !== 2 || !writes[0].path.endsWith('/prepare') || !writes[1].path.endsWith('/start'))
-      throw new Error('The single confirmation did not prepare then Start exactly once');
+    assertPreparedHostingRequests(state, 1);
+    if (!state.simpleHostingStarted) throw new Error('The explicit prepared-copy Start did not start exactly once');
   } else {
     const modal = page.getByRole('dialog', { name: 'Host locally', exact: true });
     const checked = await assertVisibleChecks(modal, record);
@@ -294,7 +358,13 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       throw new Error('The Friend flow must contain one network warning and no save-permission checkbox');
     if (await modal.locator('.local-hosting-advanced').count() || writes.length)
       throw new Error('Opening automatic checks must not expose branch setup or mutate hosting');
-    if (testCase.id.endsWith('-save-conflict') && await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+    const primaryName = simpleHostingStatus(state, state.friend.profiles[0]?.id, '').readyForManualStart ? 'Start hosting' : 'Host locally';
+    if (testCase.id.endsWith('-ready-confirmation')) {
+      if (!await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled() || primaryName !== 'Start hosting')
+        throw new Error('A ready confirmation must offer explicit Start without repeating preparation');
+      record.assertions.push({ readyConfirmation: true, ...assertPreparedHostingRequests(state, 0) });
+    }
+    if (testCase.id.endsWith('-save-conflict') && await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled())
       throw new Error('Divergent save histories must block Start');
     if (testCase.id.endsWith('-reopen-entry')) {
       state.simpleHosting = 'permission-review';
@@ -317,7 +387,7 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await modal.waitFor({ state: 'visible', timeout: 8000 });
       await assertVisibleChecks(modal, record);
       if (state.requests.filter(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')).length <= reads ||
-          await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+          await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled())
         throw new Error('Reopening a review failure must read current checks while keeping Start blocked');
       record.assertions.push({ hiddenUntilPermissionRestored: true, reopenedAfterReviewFailure: true, startRemainsBlocked: true });
     }
@@ -327,16 +397,16 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       const stale = modal.getByText('Showing the last results. Retry the checks before starting.', { exact: true });
       await stale.waitFor({ state: 'visible', timeout: 8000 });
       const retained = await assertVisibleChecks(modal, record);
-      if (retained.dateTime !== checked.dateTime || await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+      if (retained.dateTime !== checked.dateTime || await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled())
         throw new Error('A failed retry must retain previous results and check time while blocking Start');
       if (testCase.id.endsWith('-recovered-retry')) {
         state.simpleHostingReadFailure = false;
         await modal.getByRole('button', { name: 'Retry automatic checks', exact: true }).click();
         await page.waitForFunction(button => !button.disabled,
-          await modal.getByRole('button', { name: 'Host locally', exact: true }).elementHandle(), { timeout: 8000 });
+          await modal.getByRole('button', { name: primaryName, exact: true }).elementHandle(), { timeout: 8000 });
         await stale.waitFor({ state: 'hidden', timeout: 8000 });
         await assertVisibleChecks(modal, record);
-        if (!await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+        if (!await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled())
           throw new Error('A successful retry must restore the current-check confirmation');
       }
       record.assertions.push({ previousResultsRetainedOnFailure: true, recovered: testCase.id.endsWith('-recovered-retry') });
@@ -354,12 +424,12 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await guide.getByRole('heading', { name: title, exact: true }).waitFor({ state: 'visible', timeout: 8000 });
       if (await guide.locator('.local-hosting-guide-content').getAttribute('data-step') !== key)
         throw new Error('The hosting check did not open its corresponding setup guide');
-      if (key === 'permission' && await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+      if (key === 'permission' && await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled())
         throw new Error('The permission guide must not allow hosting through an unresolved or denied result');
       if (testCase.id.endsWith('-guide-save-preparation')) {
         if (await guide.getByText(/receives it if needed and prepares a separate local copy/u).count() !== 1 ||
             await modal.getByText(/interrupted transfer|stop the game server safely/iu).count() ||
-            !await modal.getByRole('button', { name: 'Host locally', exact: true }).isEnabled())
+            !await modal.getByRole('button', { name: primaryName, exact: true }).isEnabled())
           throw new Error('An unprepared hosting copy must explain preparation and retain explicit network confirmation without implying a failed transfer');
         record.assertions.push({ unpreparedCopyExplained: true, transferFailureImplied: false, networkConfirmationStillRequired: true });
       }
