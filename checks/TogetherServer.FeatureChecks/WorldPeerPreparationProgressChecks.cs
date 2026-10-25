@@ -216,6 +216,14 @@ internal static class WorldPeerPreparationProgressChecks
         // The observer exception must not enter VerifyStage's integrity-failure
         // repair path and truncate an otherwise valid partial payload file.
         WorldPeerFileTransfer.VerifyStage(root, payload, version, default, ThrowAfterFile);
+        using (var canceled = new CancellationTokenSource())
+        {
+            Expect<OperationCanceledException>(() => FriendLink.ReadReceivedLatest(copyRoot, canceled.Token,
+                (_, _, files, count) => { if (files == count) canceled.Cancel(); }),
+                "cancellation at the final file callback returned an accepted pointer");
+            Require(CopyFingerprints().OrderBy(item => item.Key).SequenceEqual(original.OrderBy(item => item.Key)),
+                "final-file cancellation changed the completed source");
+        }
         Require(CopyFingerprints().OrderBy(item => item.Key).SequenceEqual(original.OrderBy(item => item.Key)),
             "a final-file progress failure reset valid source bytes as though integrity failed");
         var latest = FriendLink.ReadReceivedLatest(copyRoot, default, ThrowAfterFile);

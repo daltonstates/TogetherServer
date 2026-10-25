@@ -80,7 +80,8 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Recovery source live capture ownership", () => BranchLiveSourceChecks.RunAsync(root)),
     ("Verified recovery head selection", () => WorldPeerRecoverySelectionChecks.RunAsync(root)),
     ("Recovery branch live-save integration", () => BranchLiveIntegrationChecks.RunAsync(root)),
-    ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root))
+    ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root)),
+    ("Completed save delivery to owner and online peers", () => WorldPeerCompletedSaveDistributionChecks.RunAsync(root))
 };
 if (args.Any(name => !groups.Any(group => group.Name.Equals(name, StringComparison.Ordinal))))
     throw new ArgumentException("Choose an exact registered source-check group name, or omit names to run every group.");

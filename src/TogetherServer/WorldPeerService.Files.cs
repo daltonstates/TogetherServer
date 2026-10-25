@@ -579,13 +579,18 @@ internal sealed partial class WorldPeerService
         var local = await LocalSavesAsync(group, cancellationToken);
         var branches = new List<SharedWorldPeerBranch>();
         var sessions = new List<SharedWorldPeerSession>();
+        var producedLanes = local.Where(item => item.ProducedHere)
+            .Select(item => SessionBranchHash(group, item.Descriptor)).ToHashSet(StringComparer.Ordinal);
         // A newly restored branch still holds its owner's signed base until
         // its first publication. Its locally signed hosting lane is already
         // valid metadata; the retained base remains received payload below.
+        // A received older copy of our own lane remains available payload, but
+        // must not duplicate the lane's current local publication in metadata.
         foreach (var item in local.Where(item => item.ProducedHere ||
             item.Descriptor.Branch is { } branch &&
             branch.Offer.Proposal.ProposerDeviceId == group.DeviceId &&
             branch.CandidatePublicKey == publicKey &&
+            !producedLanes.Contains(SessionBranchHash(group, item.Descriptor)) &&
             SharedWorldSeparateCopyStore.Verify(branch)))
         {
             var descriptor = item.Descriptor;

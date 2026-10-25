@@ -210,8 +210,41 @@ it('retains an interrupted latest-save attempt and its phase after refreshing pr
   fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
   await act(async () => {})
   expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(canceled)
+  expect(guide.getByRole('button', { name: '3. Save' })).toHaveAttribute('aria-current', 'step')
   expect(dialog.queryByText(/two different|different progress|history needs review/i)).not.toBeInTheDocument()
   expect(writes).toEqual([`${base}/hosting/prepare`])
+})
+
+it.each([
+  { code: 'InstalledServerRequired', step: '2. Server app', heading: 'Install or select the dedicated server', needsServerFile: true },
+  { code: 'LocalConnectionSetupRequired', step: '5. Connection', heading: 'Set up connections to this PC', needsServerFile: false }
+])('recommends the typed $code repair ahead of the last verification phase and unprepared save', async ({ code, step, heading, needsServerFile }) => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-24T12:00:00Z')
+  const began = new Date(Date.now()).toISOString()
+  const flight = await pendingPreparation(() => ({ phase: 'Verifying', state: 'Working', message: 'Checking the prepared files.',
+    startedUtc: began, updatedUtc: began, receivedBytes: 1024, totalBytes: 1024, completedFiles: 4, totalFiles: 4, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+  const dialog = within(screen.getByRole('dialog'))
+  const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
+  const focusedControl = guide.getByRole('button', { name: '3. Save' })
+  focusedControl.focus()
+  const failed: LocalHostingStatus = { ...initial, ok: false, code, message: `Review the ${needsServerFile ? 'server app' : 'connection'} setup before continuing.`,
+    needsServerFile, serverFile: needsServerFile ? null : initial.serverFile,
+    steps: initial.steps.map(check => check.key === 'save' ? { ...check, state: 'Unknown' } :
+      check.key === (needsServerFile ? 'server' : 'connection') ? { ...check, state: 'ActionRequired' } : check) }
+  await act(async () => { flight.finish(response(failed)) })
+  expect(guide.getByRole('button', { name: step })).toHaveAttribute('aria-current', 'step')
+  expect(guide.getByRole('heading', { name: heading })).toBeInTheDocument()
+  expect(focusedControl).toHaveFocus()
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('Last step: Verifying the save files.')
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(failed.message)
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await act(async () => {})
+  expect(guide.getByRole('button', { name: step })).toHaveAttribute('aria-current', 'step')
+  expect(guide.getByRole('heading', { name: heading })).toBeInTheDocument()
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(failed.message)
+  expect(flight.writes).toEqual([`${base}/hosting/prepare`])
+  expect(flight.open).not.toHaveBeenCalled()
 })
 
 it.each(['network', 'http', 'malformed'] as const)('retries %s permission failures with only a fresh access read', async failure => {

@@ -239,7 +239,6 @@ internal static class WorldPeerSeedingChecks
             "withdrawal before the final seeded chunk still promoted the new save");
         Require(!b.LoadSettings().CompanionListeningEnabled && a.LoadSettings().CompanionListeningEnabled,
             "automatic storage, owner catchup or forwarding changed the explicit incoming-listener choices");
-        await WorldPeerCompletedSaveDistributionChecks.RunAsync(parent);
     }
 
     private static async Task Refuses(Func<Task<byte[]>> action, string message)

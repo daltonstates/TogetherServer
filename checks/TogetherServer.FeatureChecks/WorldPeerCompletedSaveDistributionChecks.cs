@@ -144,11 +144,14 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         VerifyCopy(observerVault, final, finalBytes);
         var ownerReceipt = Receipts(b, root).Single(item => item.DeviceId == Guid.Empty && item.VersionHash == final.VersionHash);
         var observerReceipt = Receipts(b, root).Single(item => item.DeviceId == cCredential.DeviceId && item.VersionHash == final.VersionHash);
-        Require(SharedWorldReceiptTrust.VerifyPeerOwner(ownerReceipt, root) &&
-            !SharedWorldReceiptTrust.Verify(ownerReceipt, root.OwnerPublicKey) &&
-            SharedWorldReceiptTrust.Verify(observerReceipt, Public(observerKey)) &&
-            aHandler.DroppedReceiptId == ownerReceipt.ReceiptId && aHandler.SeedChunksAfterDroppedCompletion == 0,
-            "lost owner acknowledgement was not recovered as the same root-bound receipt without retransmitting seed chunks");
+        var ownerSignatureValid = SharedWorldReceiptTrust.VerifyPeerOwner(ownerReceipt, root);
+        var canonicalOwnerRejected = !SharedWorldReceiptTrust.Verify(ownerReceipt, root.OwnerPublicKey);
+        var observerSignatureValid = SharedWorldReceiptTrust.Verify(observerReceipt, Public(observerKey));
+        var sameReceiptRecovered = aHandler.DroppedReceiptId == ownerReceipt.ReceiptId;
+        var noSeedRetransmission = aHandler.SeedChunksAfterDroppedCompletion == 0;
+        Require(ownerSignatureValid && canonicalOwnerRejected && observerSignatureValid && sameReceiptRecovered && noSeedRetransmission,
+            $"Synthetic receipt retry checks: ownerSignatureValid={ownerSignatureValid}, canonicalOwnerRejected={canonicalOwnerRejected}, " +
+            $"observerSignatureValid={observerSignatureValid}, sameReceiptRecovered={sameReceiptRecovered}, noSeedRetransmission={noSeedRetransmission}.");
         Require(!Directory.Exists(SharedWorldBranchVault.Root(d, branch)) &&
             !Receipts(b, root).Any(item => item.DeviceId == dCredential.DeviceId),
             "an offline recipient gained a completed pointer or receipt");
@@ -185,6 +188,27 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         var changedResult = copies.PublishAfterStop(branch, local, changedBackup.Backup!.Id, backups);
         Require(changedResult is { Ok: true, Version: not null }, "synthetic next completed publication failed");
         var changed = changedResult.Version!;
+        var receivedOwnLane = FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(b, branch));
+        var duplicateOwnLanePresent = receivedOwnLane?.VersionHash == final.VersionHash &&
+            branch.Offer.Proposal.ProposerDeviceId == bCredential.DeviceId && branch.CandidatePublicKey == Public(sourceKey);
+        var currentHeader = SharedWorldPeerTrust.Sign(new(1, root, bCredential.DeviceId, Public(sourceKey), 1, null,
+            [], [], [new(branch.BranchHash, first.VersionHash, changed.VersionHash, changed.ParentHash, changed.Number)],
+            [], DateTimeOffset.UtcNow, "", ""), sourceKey);
+        var duplicateHeaderRejected = false;
+        try
+        {
+            _ = SharedWorldPeerTrust.Sign(currentHeader with
+            {
+                Branches = [.. currentHeader.Branches, new(branch.BranchHash, first.VersionHash,
+                    final.VersionHash, final.ParentHash, final.Number)],
+                AnnouncementHash = "",
+                Signature = ""
+            }, sourceKey);
+        }
+        catch (InvalidDataException) { duplicateHeaderRejected = true; }
+        Require(duplicateOwnLanePresent && SharedWorldPeerTrust.VerifySignature(currentHeader) && duplicateHeaderRejected,
+            $"Synthetic previous-projection diagnosis: receivedOwnLanePresent={duplicateOwnLanePresent}, " +
+            $"duplicateSignedHeaderRejected={duplicateHeaderRejected}.");
         var revokedRequests = cHandler.SeedRequests; var expiredRequests = dHandler.SeedRequests;
         var publishedFile = Path.Combine(copies.PublishedRoot(branch), changed.VersionHash, SharedWorldService.PayloadDirectory, "world.dat");
         File.Delete(publishedFile); // Disposable signed metadata alone cannot deliver bytes.
@@ -204,13 +228,26 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                 "the original owner could not withdraw receiving consent");
         };
         for (var pass = 0; pass < 6; pass++) await source.SyncNowAsync(default);
-        Require(withdrawn && FriendLink.ReadReceivedLatest(ownerVault)?.VersionHash == final.VersionHash &&
-            FriendLink.ReadReceivedLatest(observerVault)?.VersionHash == final.VersionHash &&
-            !Receipts(b, root).Any(item => item.VersionHash == changed.VersionHash) &&
-            cHandler.SeedRequests == revokedRequests && dHandler.SeedRequests == expiredRequests &&
-            SharedWorldPeerTrust.AccessFromRoster(root, current, cCredential.DeviceId, Public(observerKey)) is null &&
-            SharedWorldPeerTrust.AccessFromRoster(root, current, dCredential.DeviceId, Public(lateKey)) is null,
-            "owner consent, current revocation or exact expired access allowed a new completed copy/receipt");
+        var ownerHeadKept = FriendLink.ReadReceivedLatest(ownerVault)?.VersionHash == final.VersionHash;
+        var observerHeadKept = FriendLink.ReadReceivedLatest(observerVault)?.VersionHash == final.VersionHash;
+        var changedReceiptAbsent = !Receipts(b, root).Any(item => item.VersionHash == changed.VersionHash);
+        var revokedPeerNotSeeded = cHandler.SeedRequests == revokedRequests;
+        var expiredPeerNotSeeded = dHandler.SeedRequests == expiredRequests;
+        var revokedAccessDenied = SharedWorldPeerTrust.AccessFromRoster(root, current, cCredential.DeviceId, Public(observerKey)) is null;
+        var expiredAccessDenied = SharedWorldPeerTrust.AccessFromRoster(root, current, dCredential.DeviceId, Public(lateKey)) is null;
+        Require(withdrawn && ownerHeadKept && observerHeadKept && changedReceiptAbsent && revokedPeerNotSeeded &&
+            expiredPeerNotSeeded && revokedAccessDenied && expiredAccessDenied,
+            $"Synthetic current-access checks: consentWithdrawn={withdrawn}, ownerHeadKept={ownerHeadKept}, " +
+            $"observerHeadKept={observerHeadKept}, changedReceiptAbsent={changedReceiptAbsent}, revokedPeerNotSeeded={revokedPeerNotSeeded}, " +
+            $"expiredPeerNotSeeded={expiredPeerNotSeeded}, revokedAccessDenied={revokedAccessDenied}, expiredAccessDenied={expiredAccessDenied}.");
+        var announcements = bStore.ReadPage().Announcements;
+        var projected = announcements.Where(item => item.DeviceId == bCredential.DeviceId).MaxBy(item => item.Revision)!;
+        Require(projected.Branches.Count(item => item.BranchHash == branch.BranchHash) == 1 &&
+            projected.Branches.Any(item => item.BranchHash == branch.BranchHash && item.HeadVersionHash == changed.VersionHash) &&
+            announcements.Any(item => item.DeviceId == bCredential.DeviceId &&
+                item.Branches.Any(head => head.HeadVersionHash == final.VersionHash)) &&
+            FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(b, branch))?.VersionHash == final.VersionHash,
+            "deduplicating the current advertisement changed received own-lane copies or older signed journal claims");
         Require(bStore.Project().Sessions.Single(item => item.Session.SessionId == runId).Session == terminal,
             "a later backup rewrote an already closed session's final save");
     }
@@ -413,6 +450,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
     {
         internal bool DropFirstCompletedSeed { get; set; }
         internal Guid? DroppedReceiptId { get; private set; }
+        private string? droppedVersionHash;
         internal int SeedChunksAfterDroppedCompletion { get; private set; }
         internal int SeedRequests { get; private set; }
         internal Func<WorldPeerExchangeRequest, Task>? BeforeExchange { get; set; }
@@ -432,7 +470,10 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             if (exchange.Request.Operation == WorldPeerOperations.Seed)
             {
                 SeedRequests++;
-                if (DroppedReceiptId is not null && exchange.Request.FileIndex is not null) SeedChunksAfterDroppedCompletion++;
+                // Other catalog entries may legitimately be seeded afterward.
+                // Only another chunk for this exact completed save is a retry.
+                if (exchange.Request.VersionHash == droppedVersionHash && exchange.Request.FileIndex is not null)
+                    SeedChunksAfterDroppedCompletion++;
             }
             if (BeforeExchange is not null) await BeforeExchange(exchange);
             var result = await service.ExchangeAsync(root.GroupKey, exchange.Request, exchange.Payload, token, route.CertificateSha256);
@@ -441,6 +482,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                 { Code: "SeedComplete", Receipt: { } receipt })
             {
                 DropFirstCompletedSeed = false; DroppedReceiptId = receipt.ReceiptId;
+                droppedVersionHash = receipt.VersionHash;
                 throw new HttpRequestException("Synthetic completed-seed response was lost.");
             }
             return new(HttpStatusCode.OK) { Content = new ByteArrayContent(result) };

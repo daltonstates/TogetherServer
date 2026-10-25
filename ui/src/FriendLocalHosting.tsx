@@ -111,6 +111,26 @@ const hostingPhaseSteps: Record<string, CheckKey> = {
   ServerSetup: 'server', Ports: 'ports', Connection: 'connection'
 }
 
+function failedAttemptGuideStep(attempt: HostingAttempt): CheckKey | undefined {
+  const result = attempt.status
+  if (!result) return attempt.phase && Object.hasOwn(hostingPhaseSteps, attempt.phase) ? hostingPhaseSteps[attempt.phase] : undefined
+  if (!result.allowed || localHostingAccessBlocker(result)) return 'permission'
+  const codeSteps: Record<string, CheckKey> = {
+    HostingHistoryChoiceRequired: 'save', WorldHistoryReviewRequired: 'save', SharedSaveHistoryNeedsReview: 'save',
+    InstalledServerRequired: 'server', LocalServerSetupRequired: 'server', MinecraftTermsRequired: 'server',
+    LocalConnectionSetupRequired: 'connection', RecipientConnectionRequired: 'connection', PeerDiscoveryRequired: 'connection',
+    PortConflict: 'ports', PortInUse: 'ports', GamePortInUse: 'ports', LocalPortsRequired: 'ports'
+  }
+  if (Object.hasOwn(codeSteps, result.code)) return codeSteps[result.code]
+  const remedySteps: Record<HostingRemedyKind, CheckKey> = {
+    Permission: 'permission', Respond: 'save', ChooseHistory: 'save', Terms: 'server', ChooseServer: 'server',
+    GameSetup: 'server', Ports: 'ports', Connection: 'connection', Review: 'save', ConfirmCopy: 'save', GetSave: 'save'
+  }
+  if (result.remedy && result.remedy.kind !== 'Review') return remedySteps[result.remedy.kind]
+  return result.steps.find(step => step.state === 'ActionRequired')?.key ??
+    (result.remedy?.kind === 'Review' ? 'save' : result.steps.find(step => step.state !== 'Ready')?.key)
+}
+
 function hostingCheckResult(status: LocalHostingStatus): string {
   const blocker = localHostingAccessBlocker(status)
   if (blocker === 'history') return 'Check finished: sharing history needs review. The other checks have not run. Follow the review steps below, then check again.'
@@ -637,10 +657,16 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     steps: status.steps.map(step => ({ ...step, state: step.key === 'permission' && denied ? 'ActionRequired' as const : 'Unknown' as const,
       message: step.key === 'permission' ? permission.message : step.message }))
   } : null
+  const currentAccessBlocker = localHostingAccessBlocker(checkedGuidance)
+  const currentHistoryChoice = checkedGuidance && (['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'].includes(checkedGuidance.code)
+    || checkedGuidance.remedy?.kind === 'ChooseHistory')
+  const priorityStep: CheckKey | undefined = currentAccessBlocker ? 'permission' : currentHistoryChoice ? 'save' : undefined
   // A read-only refresh cannot erase the outcome of an explicit preparation.
   // Keep its exact repair steps until another preparation replaces that result.
-  const guidanceStatus = localHostingAccessBlocker(checkedGuidance) === null && !checkedGuidance?.running && !checkedGuidance?.readyForManualStart && lastHostingAttempt?.state === 'Failed'
+  const guidanceStatus = !priorityStep && !checkedGuidance?.running && !checkedGuidance?.readyForManualStart && lastHostingAttempt?.state === 'Failed'
     && lastHostingAttempt.status?.allowed ? lastHostingAttempt.status : checkedGuidance
+  const recommendedStep = priorityStep ?? (lastHostingAttempt?.state === 'Failed' &&
+    (!lastHostingAttempt.status || guidanceStatus === lastHostingAttempt.status) ? failedAttemptGuideStep(lastHostingAttempt) : undefined)
   const attention = (!status || !checksCurrent) && permission?.allowed === false
     ? { kind: denied ? 'Permission' as const : 'Review' as const,
       title: denied ? 'Ask the owner to allow hosting' : 'Check hosting on this PC', message: permission.message }
@@ -793,8 +819,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           </section>
           <LocalHostingGuide key={guideStep?.request ?? 0} status={guidanceStatus}
             selectedStep={guideStep?.key}
-            recommendedStep={lastHostingAttempt?.state === 'Failed' && !localHostingAccessBlocker(checkedGuidance)
-              && lastHostingAttempt.phase ? hostingPhaseSteps[lastHostingAttempt.phase] : undefined} busy={busy || checking || disabled}
+            recommendedStep={recommendedStep} busy={busy || checking || disabled}
             checking={checking} checksCurrent={checksCurrent && guidanceStatus === checkedGuidance}
             feedback={actionFeedback}
             onRetry={() => void refresh()} onChooseServer={status?.needsServerFile ? () => {

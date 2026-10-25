@@ -266,6 +266,7 @@ internal sealed partial class WorldPeerService
                 var buffer = new byte[512 * 1024];
                 foreach (var file in version.Files)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (!await RecoveryAllowedAsync(group, cancellationToken))
                         throw new InvalidDataException("Recovery permission or local save consent changed.");
                     var target = SharedWorldService.SafeChild(payload, file.Path);

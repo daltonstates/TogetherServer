@@ -2909,6 +2909,7 @@ internal sealed partial class FriendLink
     internal static SharedWorldVersion? ReadReceivedLatest(string root, CancellationToken cancellationToken = default,
         Action<long, long, int, int>? progress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var path = Path.Combine(root, "latest.json");
         if (!File.Exists(path)) return null;
         if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
@@ -2929,6 +2930,7 @@ internal sealed partial class FriendLink
             verified += file.Length;
             WorldPeerPayloadHash.Report(progress, verified, total, ++files, version.Files.Count);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         return version;
     }
 

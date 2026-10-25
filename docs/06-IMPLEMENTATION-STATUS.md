@@ -31,6 +31,10 @@ history; published versions have their own
   test receipt domains remain disjoint. Lost seed acknowledgements reuse the
   existing verified receipt. A terminal hosting session records its final
   published backup head and stays immutable after it is closed.
+- A newer local publication advertises its hosting history once even when an
+  older copy of that same history returns from a peer. That projection retains
+  the received copy, payload catalog and signed journal; it chooses no fork by
+  counter or timestamp. Terminal heads advance only through proved ancestry.
 - Signed original-world identity survives successor-local profile IDs and
   roster changes. Missing valid ancestry can be caught up; invalid signatures,
   changed ownership and divergent histories still require review.
@@ -90,8 +94,9 @@ history; published versions have their own
   transaction. Every signature, canonical hash, index, lookup and transition
   validates; the old connection floor is retained and the new floor matches
   the head. Original legacy revision and lookup bytes remain unchanged.
-  This is physical-laptop ancestry-import evidence. Its manual UI retry result,
-  save receipt, readiness, game join and saved restart remain unconfirmed.
+  This is physical-laptop ancestry-import evidence. The owner now sees the
+  hosting action and reached preparation. Save receipt, readiness, game join
+  and saved restart remain unconfirmed.
   The earlier
   [laptop handoff](development/laptop-sharing-history-handoff.txt) records the
   investigation's starting constraints, not a current success claim.
@@ -145,7 +150,7 @@ at 131 seconds because the request was aborted, then passes against the fix.
 All 1,499 UI tests in 109 files and production bundling pass. TypeScript,
 lint, locked restore and compilation pass. Local synthetic source-link cases
 remain skipped because this account lacks symlink capability. The full
-74-group source run and hosted Windows candidate acceptance are pending at
+75-group source run and hosted Windows candidate acceptance are pending at
 this source commit; no prerelease has been published from it yet.
 
 New file-only regressions interrupt a generated 315-file source at 75 files,
@@ -160,8 +165,17 @@ revocation, expiry, missing-payload and terminal-head ancestry negatives.
 The first local replication run failed an existing receive-only receipt retry:
 a shared receipt helper incorrectly required forwarding to be enabled. That
 extra predicate was removed while preserving current Receive/consent and
-signature checks. The full rerun must pass before delivery. Initial formatting
-findings in new checks were corrected. No application, game, listener, browser,
+signature checks. A later test incorrectly counted an older catalog entry's
+chunks as retransmission of the completed new save; the counter now scopes the
+exact version. Its next negative case exposed duplicate announcements when an
+older copy of this PC's own history returned after a newer local publication.
+The bounded projection fix retains the older copy and signed claims; the
+dedicated distribution group now passes positive and rejection cases. The full
+hosted rerun must pass before delivery. Initial formatting findings in new
+checks were corrected. The hosted candidate UI review passes all 93 hosting
+captures with no missing captures or layout findings; representative desktop,
+failed-refresh and narrow-window guide screenshots at 150 percent were inspected. No
+application, game, listener, browser,
 native dialog, installer or update fixture was launched on the laptop.
 Physical hosting, game join/change, safe Stop, exact completed-save receipts
 on the main Host and every eligible online updated peer, and restart remain
