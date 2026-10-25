@@ -96,60 +96,53 @@ history; published versions have their own
 
 ## Current delivery
 
-Candidate **0.3.3.11** addresses the captured legacy/schema-3 projection failure.
-Its new synthetic group covers 65 scenarios: 21 positive and 44 rejection cases,
-including exact signed parent and baseline proof, old-floor retention, pending
-and file-stage restart recovery, unchanged ordinary pending formats, damaged
-protected evidence, newer revocation, symmetric peer exchange and page-boundary
-parent cursors. The laptop's private signed records satisfy the same pure
-projection predicate without constructing a production store.
+[Preview 0.3.3.11](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.11)
+is published from application/check/build source
+`cbf67ee13edde8e314aabb0976606c7266a81e2d`. The original laptop failure is
+reproduced before the fix with generated identities and the exact friendly
+error. The captured private records also satisfy the new pure proof predicate;
+no production store was constructed for that comparison.
 
-Local validation passes all 73 source groups across the broad run and focused
-reruns, 1,483 UI tests in 109 files, compilation without warnings, TypeScript,
-lint and production bundling. The broad source run initially failed one old
-assertion expecting an empty numeric-cursor page at the legacy boundary; that
-assertion now requires the exact parent proof replay and passes on rerun.
-Formatting findings were confined to the new check file and were corrected.
-Synthetic source-link cases remain skipped because this account cannot create
-symlinks. No packaged app, game/console fixture, listener, browser, installer or
-update journey ran on the active laptop. Hosted candidate/functional checks
-and a manual physical-laptop retry remain pending before release delivery.
+The new group passes 65 scenarios: 21 positive and 44 rejection cases. These
+cover exact parent/baseline proof, retained legacy bytes and trust floors,
+pending/file-stage restart recovery, unchanged ordinary pending formats,
+damaged protected evidence, newer revocation, symmetric peer exchange and
+long-page parent cursors. An older numeric-cursor assertion now requires the
+signed boundary proof replay. Local formatting findings in the new check file
+were corrected before delivery.
 
-[Preview 0.3.3.10](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.10)
-is published from application source `c84973f2096f1b697e978e2badf54fc999a3a5de`.
-Both concurrent-import failures were reproduced before their fixes. The new
-anchored-page regression covers six rejection boundaries, and exact historical
-replays preserve the protected journal and newer revocation.
+All 73 source groups, 1,483 UI tests in 109 files, compilation, TypeScript,
+lint, formatting and production bundling pass. The local account's synthetic
+source-link cases are skipped for lack of symlink capability; hosted source
+checks exercise them without that skip.
 
-All 72 source/synthetic groups, 1,483 UI tests in 109 files, compilation,
-TypeScript, formatting, lint and production bundling pass. The
-[Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40143882850)
-passes all 15 functional jobs on the original attempt, including all 27 ordered
-Existing gates, 114 core checks, 11 shared-world journeys with no recovery
-scenarios skipped, and 46 companion checks. Hosted source-link cases ran;
-the local account's unsupported synthetic-link cases remain separately skipped.
+The [Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40216257190)
+has passing results for all 15 functional jobs. The Existing gate passes core
+114/0, Shared Worlds 11/0 with no recovery scenarios skipped, Companion 46/0,
+and 4,102-version signed-history catch-up. Six compatibility/update lanes,
+six installer cases and all three actual wizard choices pass. Two ordinary
+shared-hosting handoffs pass against the unchanged candidate.
 
-Pairing passes UX 3 outer/10 inner, loopback 11 and same-PC assigned-LAN 18
-stages. Signed sidebar clicks reach the hosting PC before and after Stop.
-Two automatic-sharing runs each pass nine stages with one Friend and one owner
-Start. Six legacy compatibility/update-handoff lanes, six installer smoke
-cases and three actual wizard choices pass. Access review passes 36 plans and
-164 PNGs with no failures, skips or layout findings; three images were inspected.
-Browser evidence retains 14 passed and three unexercised journeys, 148 layouts
-and zero browser/request errors.
+The first same-PC LAN lab passed 16 stages, then cleanup's fixture Start was
+rejected as `LatestSaveChanged`; its final receipt stage was not run. The
+changed observation field was not captured, so no more specific cause is
+claimed. The targeted retest uses the exact same candidate SHA-256 and passes
+UX 3/3, loopback 11/11 and LAN API 18/18 with zero skips and no remaining
+disposable processes. Both first-failure and retest artifacts remain separate.
 
-The raw Desktop job fails solely on the required QuietTime notification block:
-12 required native cases pass, one remains blocked and the development-startup
-case is inapplicable. All 14 window-control checks pass. The original package
-manifest retains incomplete acceptance flags, and the builds are unsigned.
-Full native acceptance remains incomplete.
+The overall workflow remains red because Windows QuietTime blocks required
+OS notification delivery/click/navigation. Twelve required native cases pass,
+one is blocked and the development-startup case is inapplicable. All 14
+window-control cases pass. The original packaging manifest retains
+`fullyAccepted=false` and `nativeNotificationVerified=false`; both builds
+are unsigned. Full native acceptance is incomplete.
 
-Anonymous downloads verified all four public assets, checksums, source/tag
-identity and unchanged prior releases; stable/latest remains 0.3.3. The owner's
-active desktop and 29 unrelated pending files remain preserved. Physical
-laptop diagnosis, adopted-copy preparation and game/network acceptance remain
-open as listed above. Exact hashes and run/artifact identities stay with the
-release and CI.
+Anonymous downloads verify all four published assets, adjacent checksums,
+versions and annotated tag/source identity. All 25 prior releases and their
+assets are preserved; stable/latest remains 0.3.3. The laptop's foreground,
+running app, original metadata and worlds were not repaired or reset by tools.
+The new version still needs an owner-controlled physical retry; permission,
+copy/receipt, readiness, game join and saved restart remain separate evidence.
 
 ## Repository maintenance
 
