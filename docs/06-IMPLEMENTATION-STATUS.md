@@ -72,9 +72,16 @@ history; published versions have their own
   remains owner-only on that laptop, outside Git; no worlds, logs or key files
   were copied. The other PC's actual executable is inaccessible through the
   available Windows remote read, so its version/hash remain unconfirmed.
-- The bounded projection fix still requires owner installation and a fresh
-  physical-laptop retry with existing data. Source/hosted passes do not establish
-  that retry, save receipt, readiness, game join or saved restart. The earlier
+- Post-publication inspection confirms the laptop's installed 0.3.3.11 process
+  matches the published EXE hash/source and uses the same production root.
+  A stable read-only capture at 14:10:55 EDT shows the affected journal advanced
+  from one to 11 revisions with one protected projection proof and no pending
+  transaction. Every signature, canonical hash, index, lookup and transition
+  validates; the old connection floor is retained and the new floor matches
+  the head. Original legacy revision and lookup bytes remain unchanged.
+  This is physical-laptop ancestry-import evidence. Its manual UI retry result,
+  save receipt, readiness, game join and saved restart remain unconfirmed.
+  The earlier
   [laptop handoff](development/laptop-sharing-history-handoff.txt) records the
   investigation's starting constraints, not a current success claim.
 - **Known adopted-copy preparation limit:** the permission prompt, consent
@@ -139,9 +146,10 @@ are unsigned. Full native acceptance is incomplete.
 
 Anonymous downloads verify all four published assets, adjacent checksums,
 versions and annotated tag/source identity. All 25 prior releases and their
-assets are preserved; stable/latest remains 0.3.3. The laptop's foreground,
-running app, original metadata and worlds were not repaired or reset by tools.
-The new version still needs an owner-controlled physical retry; permission,
+assets are preserved; stable/latest remains 0.3.3. Tools preserved the owner's
+foreground and running servers and performed no data reset or repair. The
+installed laptop version and completed ancestry import are independently
+verified; the manual UI result, permission,
 copy/receipt, readiness, game join and saved restart remain separate evidence.
 
 ## Repository maintenance
