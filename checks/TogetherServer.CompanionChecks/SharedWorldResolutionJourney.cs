@@ -186,8 +186,13 @@ internal static partial class SharedWorldJourney
                 {
                     var pulled = await PostAsync<object, ReceivedSharedWorldResult>(friend,
                         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+                    var deniedCurrentStage = pulled.Message.Contains(".partial-" + recoveryVersion.VersionHash,
+                        StringComparison.OrdinalIgnoreCase);
+                    var deniedOtherStage = !deniedCurrentStage &&
+                        System.Text.RegularExpressions.Regex.IsMatch(pulled.Message, @"\.partial-[0-9A-Fa-f]{64}");
                     Require(pulled.Ok,
-                        $"Friend did not pull signed save {number}: {pulled.Code} {pulled.Message}");
+                        $"Friend did not pull signed save {number}: code={BoundedPublicationDiagnostic(pulled.Code)}; " +
+                        $"failurePathMatchesCurrentStage={deniedCurrentStage}; failurePathMatchesOtherStage={deniedOtherStage}");
                 }
                 await Task.WhenAll(WaitVersionAsync(aLocal, profile.Id, number),
                     WaitVersionAsync(bLocal, profile.Id, number));

@@ -7575,8 +7575,12 @@ await Check("three disposable PCs compare exact save heads before majority takeo
                 Require((await separateManager.StartSeparateCopyAsync(restoredId,
                     separateFork.BranchHash)).Ok,
                     "a verified post-Stop warned save could not resume manually");
-                Require((await separateManager.StopAsync(restoredId)).Ok,
-                    "warned copy could not stop after a later manual Start");
+                var repeatedSeparateStop = await separateManager.StopAsync(restoredId);
+                var repeatedSeparateRun = repeatedSeparateStop.Snapshot.Runs.SingleOrDefault(run => run.ProfileId == restoredId);
+                Require(repeatedSeparateStop.Ok,
+                    $"warned copy could not stop after a later manual Start: code={repeatedSeparateStop.Code}; " +
+                    $"runPresent={repeatedSeparateRun is not null}; processPresent={repeatedSeparateRun?.ProcessId is not null}; " +
+                    $"state={repeatedSeparateRun?.State ?? "None"}");
                 new SharedWorldSeparateCopyStore(separatePc).MarkHostReturned(profile.Id);
                 Require((await separateManager.SeparateCopyHostStatusAsync(profile.Id,
                         separateFork.BranchHash)).ReadyForManualStart &&

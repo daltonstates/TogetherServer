@@ -1,0 +1,95 @@
+name: Retest immutable hosting candidate
+
+on:
+  push:
+    branches: ['review/candidate-retest-hosting-*']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  retest:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [CoreWarnedCopy, SharedResolution, Existing]
+    name: Retest ${{ matrix.suite }} unchanged candidate
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out bounded verification changes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Install pinned .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Install pinned Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+      - name: Retrieve original candidate and fixtures without rebuilding it
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-candidate
+          run-id: 40225799422
+          github-token: ${{ github.token }}
+          path: .
+      - name: Verify original bytes and unchanged product inputs
+        shell: pwsh
+        run: |
+          $source = '420c90963d6497f19735fca7eab585f4b9267a90'
+          git merge-base --is-ancestor $source HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate is not an ancestor.' }
+          $changes = @(git diff --name-only $source HEAD -- src ui installer global.json .node-version Directory.Build.props Directory.Build.targets)
+          if ($LASTEXITCODE -ne 0 -or $changes.Count) { throw 'Product inputs changed after the candidate.' }
+          $app = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $identity = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne '0429caa78177872c5783ca9d5d071896190c60a8d6d80b1fbb731c035390bbac' -or
+              $identity.source -cne $source -or $identity.runId -ne '40225799422' -or
+              $identity.sha256 -cne $hash -or (Get-Item $app).VersionInfo.ProductVersion -cne "0.3.3.12+$source") {
+            throw 'Original candidate identity differs.'
+          }
+      - name: Install locked test dependencies without scripts
+        working-directory: ui
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Compile only verification runners
+        shell: pwsh
+        run: |
+          dotnet restore TogetherServer.slnx --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked runner restore failed.' }
+          dotnet build checks/TogetherServer.Checks/TogetherServer.Checks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Core verification build failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Companion verification build failed.' }
+      - name: Run fixed targeted check on this dedicated hosted desktop
+        shell: pwsh
+        env:
+          RETEST_SUITE: ${{ matrix.suite }}
+        run: |
+          $evidence = New-Item -ItemType Directory -Path local-data/ci-evidence/candidate-retest -Force
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          # Explicit opt-in: only this isolated hosted runner may launch disposable processes.
+          if ($env:RETEST_SUITE -eq 'CoreWarnedCopy') {
+            dotnet checks/TogetherServer.Checks/bin/Release/net10.0-windows/TogetherServer.Checks.dll '--filter=three disposable PCs compare exact save heads before majority takeover' 2>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'core-warned-copy.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Exact core warned-copy replay failed.' }
+          } elseif ($env:RETEST_SUITE -eq 'SharedResolution') {
+            dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --shared-resolution-off --allow-interactive-tests 2>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'shared-resolution.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Exact packaged resolution replay failed.' }
+          } else {
+            ./scripts/verify-release.ps1 -AppPath $candidate -CandidateSourceRevision 420c90963d6497f19735fca7eab585f4b9267a90 -Suite Existing -AllowInteractiveTests 2>&1 |
+              Tee-Object -FilePath (Join-Path $evidence.FullName 'existing.log')
+          }
+      - name: Preserve both failed and passed replay evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-retest-${{ matrix.suite }}
+          path: local-data/ci-evidence/
+          if-no-files-found: warn
+          retention-days: 7
