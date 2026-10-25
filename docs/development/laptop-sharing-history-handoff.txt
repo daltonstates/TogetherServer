@@ -1,0 +1,389 @@
+TOGETHERSERVER - LAPTOP DIAGNOSIS HANDOFF
+Prepared 2026-10-24 local date / 2026-10-25 UTC
+
+HOW TO USE
+Copy this text file to the laptop. Run Codex under the SAME Windows account
+that runs TogetherServer. Paste this entire file into Codex, or attach it and
+paste the starter prompt below. No app-data folder, invite code, credential,
+private key, world or production log needs to be transferred with this file.
+
+==========================================================================
+STARTER PROMPT - READY TO PASTE
+==========================================================================
+
+Diagnose the persistent TogetherServer sharing-history failure on THIS LAPTOP.
+Read this entire handoff and the repository's AGENTS.md and required engineering
+documents before implementing a fix. Work toward a concrete diagnosis and fix;
+do not just provide another generic troubleshooting checklist.
+
+The laptop reaches the other PC but cannot remotely host that PC's world. The
+reported error is:
+  "The signed sharing history failed verification."
+  "The received revisions could not be joined to this PC's saved sharing history."
+The UI offers "Check hosting access again". The owner reports the same error
+after the 0.3.3.10 fix/retry discussion. Independently confirm the actual running
+EXE path/version/hash on both PCs where accessible; do not assume that either
+running process is the newly downloaded binary.
+
+Use this laptop's actual saved history to identify the exact failed operation,
+exception category and violated predicate. Two real code races were reproduced
+and fixed in 0.3.3.10, but they have NOT established this laptop's root cause.
+Earlier revoke/reinvite scenarios passed and did not reproduce its failure.
+
+Begin with non-mutating local inspection. Preserve original worlds, signed
+histories, trust floors, pending records, indexes, lookups, pairing state and
+keys. Do not reset app data, delete a connection, re-pair, regenerate a key,
+rebuild protected records or bypass signature/ancestry checks as a workaround.
+Keep credentials, keys, raw protected state, real identifiers and world data
+out of Git, chat, support exports and public CI. Compare sensitive values only
+locally and report allowlisted categories/booleans with synthetic aliases.
+
+Preserve the owner's foreground window and running servers. Do not launch or
+relaunch the app, attach a debugger, automate native/browser interactions,
+start/stop a game, run process fixtures, or run installer/update/full-release
+tests on an active desktop. Moving Codex to this laptop is not approval for
+focus-taking tests. Read-only inspection and code-only/fake-adapter checks can
+proceed. Interactive tests need an explicitly approved unattended session or
+hosted Windows CI. The owner can manually press Check hosting access again.
+
+Read the source cautions below before using LocalData: even a method called
+LoadProtected can mutate/quarantine data. Capture consistent evidence before
+trying a repair. Then produce a safe regression using synthetic identities,
+implement the bounded fix, validate it, and record passes/failures/skips and
+the remaining physical-PC limits honestly. Do not declare the laptop repaired
+just because synthetic/hosted tests pass. Preserve unrelated working changes.
+
+The original owner request included a new GitHub prerelease when the work is
+ready. Carry that forward only after identifying the actual laptop failure and
+validating the corresponding fix. Check the current release inventory first;
+0.3.3.11 is the next number after this handoff's release only if still unused.
+Do not replace existing tags/assets or change stable/latest as a side effect.
+
+==========================================================================
+1. CURRENT FACTS AND WHAT IS STILL UNKNOWN
+==========================================================================
+
+- Two Windows PCs are on the same network: original desktop/Host and laptop.
+- Original report: desktop could host the laptop's world; the reverse direction
+  failed while verifying sharing history. Start/Stop connectivity and signed
+  history/save-transfer authority are separate paths.
+- Both PCs were explicitly reported as 0.3.3.8 earlier in the investigation.
+  The owner had revoked the laptop during development, then probably used the
+  invite code again. They were not completely certain of that sequence.
+- Owner reported more than 2 GB free on the laptop's Windows drive. Check free
+  space on the ACTUAL data-root drive; do not repeat the same C: question or
+  treat the reserve as a confirmed cause.
+- 0.3.3.9 added verification-phase wording. The owner supplied the exact
+  "received revisions could not be joined" suffix above.
+- 0.3.3.10 repaired two concurrent-import schedules, and the owner now says
+  "Same error on the laptop". This is a failed owner-reported retry, not a
+  physical-laptop success. Actual installed/running .10 identity still needs
+  independent confirmation; no laptop-specific state/exception was captured
+  by the agent on the desktop.
+- Do not infer a ban, corrupt history, a missing parent, a race, a disk problem
+  or a clock issue from the broad phase suffix alone.
+
+Other original product requirements to preserve:
+- Sharing should feel seamless: hide internal "Shared world member" session
+  credentials from ordinary Friend PC lists. Keep their authorization intact.
+- One original-world sidebar entry, with its actual remote-host location/badge;
+  no leftover duplicate Host profile/world entry after remote hosting ends.
+- Useful operation/transfer progress instead of arbitrary button-text changes.
+- Original owner should be able to request remote Stop when current permission
+  and fresh exact-zero game occupancy allow it. Unknown occupancy is not zero.
+- Removing one server's access preserves other assignments. Revocation is not
+  a permanent ban; a fresh approved invitation can grant new access without
+  restoring a removed credential or implicitly reviving old scope.
+
+==========================================================================
+2. REPOSITORY AND EXACT RELEASE IDENTITY
+==========================================================================
+
+Repository: https://github.com/daltonstates/TogetherServer
+Latest release from this session:
+  https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.10
+Release ID: 423057223; published prerelease, not draft.
+Published UTC: 2026-10-25T00:14:36Z.
+Immutable tested application source:
+  c84973f2096f1b697e978e2badf54fc999a3a5de
+Annotated tag object:
+  af97c3786ce63c24acebbbd3fd7665b1bb861776
+Main after the documentation-only delivery commit:
+  479d41e1de0800fd57411ccc4cfdcb2f5e8fc7eb
+Application/UI/check/build source is identical between those two commits.
+Stable/latest was left at v0.3.3. All 24 prior releases were preserved.
+
+Portable asset: TogetherServer-win-x64.exe
+  Bytes: 66159739
+  SHA-256:
+  f7029544a2aeea158012f1af1a4edc7639f061ef212d86616eba62e27a2486d7
+  File version: 0.3.3.10
+  Product version:
+  0.3.3.10+c84973f2096f1b697e978e2badf54fc999a3a5de
+
+Installer asset: TogetherServer-Setup-win-x64.exe
+  Bytes: 60624411
+  SHA-256:
+  ed66ce3a9dc9a6cd2adc3c2ccccbd5652bf0f5acaa0ae1d01209d3687b6025ed
+  File/product version: 0.3.3.10
+The installed TogetherServer.exe should match the portable candidate bytes.
+Both assets are unsigned (NotSigned). Do not launch either just to read version
+resources or calculate its hash. All four public assets, adjacent checksums,
+versions, tag/source and prior-release inventory were anonymously verified.
+
+If the laptop has no source checkout, clone the public repository into a new
+working directory. If it already has one, inspect status and preserve changes;
+use a clean isolated worktree. Fetch current main, compare it with the commits
+above, and account for any newer work. Do not blindly reset an existing clone.
+Read README.md, docs/00-PRODUCT.md, docs/01-ARCHITECTURE.md,
+docs/02-NETWORK-AND-SECURITY.md, docs/03-LIFECYCLE.md,
+docs/04-IMPLEMENTATION-AND-ACCEPTANCE.md and current AGENTS.md.
+
+The desktop's G:\repo\TogetherServer had 29 unrelated pending connection-help/
+local-invite files. They were preserved and excluded from the release. Do not
+copy that dirty working tree or assume those unreleased features are in .10.
+The laptop does not need the desktop's private local-data evidence to begin.
+
+==========================================================================
+3. EXACT CODE PATH AND HIGH-VALUE INSPECTION POINTS
+==========================================================================
+
+At the tested source revision (line numbers may move):
+
+src/TogetherServer/FriendLink.SharedWorlds.cs
+- CatchUpRosterAsync starts around line 137.
+- verificationStep becomes SignedAncestry around line 299, after the received
+  page passed its basic profile/group/owner/signature checks.
+- The foreach loop calls chain.Contains, SupersededLegacySnapshot and Append.
+- Catch around lines 354-364 maps IOException, InvalidDataException,
+  JsonException and CryptographicException to RosterRejected plus the suffix.
+- The suffix is NOT a precise exception reason and can also cover local IO.
+- CachedLegacyRosterFloor / HasLegacyRosterBootstrap preserve legacy trust.
+
+src/TogetherServer/SharedWorldRosterChainStore.cs
+- Contains / HasLookup / LoadIndex / LoadRevision: protected lookup positions,
+  index membership, retained signed file and canonical roster hash.
+- Ready / RecoverPending / Migrate: pending transactions and storage integrity.
+  These are not guaranteed read-only operations.
+- ValidateNext: same world/owner, authorized exact parent, valid root, fork
+  handling and strict legacy-owner advancement.
+- SupersededLegacySnapshot around line 452: proves a redundant legacy snapshot
+  fits a retained strict legacy interval; does not excuse schema-3 gaps/forks.
+- Append around line 505: atomic known-revision check under mutation lock.
+- Reserve: requires 1 GiB free reserve plus requested bytes on the actual root
+  drive. Distinguish this IOException from a cryptographic parent failure.
+
+src/TogetherServer/SharedWorldGovernance.cs
+- SharedWorldRosterTrust.VerifySignature / VerifyRevision / Hash.
+- Do not relax first-acceptance/expiry checks. Ordinary owner-signed schema-3
+  revisions bypass member expiry appropriately; delegated revisions have a
+  separate owner-signed HostAcceptedUtc proof. Current roles remain separate
+  from replaying old accepted metadata.
+
+src/TogetherServer/WorldPeerService.Transport.cs
+- ImportChallengeRosters / ImportRosters / ChallengeRosters.
+- Background peer sync and a companion request share the same durable journal.
+src/TogetherServer/SharedWorldAuthority.cs: SharedWorldMutationGate root lock.
+src/TogetherServer/HostManager.SharedWorlds.cs: roster/current/history endpoints.
+src/TogetherServer/CompanionServer.cs: pinned authenticated roster page routes.
+src/TogetherServer/SharedWorlds.cs: original-owner roster publication and legacy
+  standalone snapshot -> schema-3 journal transition.
+
+Other relevant files:
+- FriendLink.LocalHosting.cs / FriendLink.WorldConsent.cs /
+  FriendLink.PeerMembership.cs: permission, original-world aliases and consent.
+- PairingService.ServerAccess.cs: internal-session visibility and scoped access.
+- ui/src/ServerDirectory.tsx: signed original-world grouping and actual routes.
+- docs/06-IMPLEMENTATION-STATUS.md and docs/guides/backups-and-sharing.md.
+
+==========================================================================
+4. LOCAL STATE - INSPECT SAFELY ON THE LAPTOP
+==========================================================================
+
+AppInstance.Resolve in src/TogetherServer/AppInstance.cs selects the root.
+Production default: %LOCALAPPDATA%\TogetherServer
+Production override: TOGETHERSERVER_DATA_DIR
+Staging default: %LOCALAPPDATA%\TogetherServer-Staging
+Staging override: TOGETHERSERVER_STAGING_DATA_DIR
+The exact DEVELOPMENT filename / --staging select a separate instance. Confirm
+which process, binary, Windows account and root the failed UI actually uses.
+Do not dump all environment variables or full process command lines: they may
+contain private values. Inspect only the specific app/instance fields needed.
+
+Windows protection uses DPAPI DataProtectionScope.CurrentUser. A protected blob
+copied to another PC/account generally cannot be decrypted there. Do not move
+the laptop's data/keys to the desktop or into Git for diagnosis.
+
+CRITICAL: LocalData is not a harmless read-only inspector.
+- Its constructor opens host.lock exclusively, performs recovery/schema work
+  and prunes logs.
+- LoadProtected can quarantine undecryptable/invalidly encoded state and return
+  null. LoadProtectedJson has additional quarantine/recovery behavior.
+- Chain Ready/Reads can recover pending entries or migrate old protected state.
+- Some signing-key helpers create keys if missing.
+Do not instantiate these helpers against the live production root merely to
+"look". Prefer bounded raw, non-mutating reads and same-user DPAPI decode into
+memory without key export. Review called code first. An existing example of
+avoiding LoadProtected's side effects is ReadLocalReceiptObservation in
+FriendLink.SharedWorlds.cs; it is an example, not a ready-made history inspector.
+
+Potential metadata names (actual IDs are private; use local synthetic aliases):
+- shared-roster-chain-<profile:N>.protected
+- shared-roster-pending-<profile:N>.protected
+- shared-roster-index-<profile:N>-<page:D12>.protected
+- shared-roster-lookup-<profile:N>-<rosterHash>.protected
+- shared-worlds\<profile:N>\roster-chain\<rosterHash>.json
+- shared-world-roster-<member:N>-<profile:N>.protected
+- friend.protected / saved-link configuration selected by FriendService
+- world-peer-memberships.protected and world-peer-cursor-*.protected
+- Existing owner/member signing-key presence (never export or regenerate).
+
+If a consistent private snapshot is needed, keep it in an owner-only location
+outside Git and on this laptop, preserve originals, and exclude worlds, payloads,
+raw logs and unnecessary secrets. An ignored folder is NOT a privacy boundary.
+Do not assume a file-by-file copy during background writes is consistent: a
+mixed pending/index/floor snapshot can invent a failure. Use an appropriately
+consistent metadata capture, or coordinate a safe owner-controlled quiescent
+capture without stopping a running game or forcing the app closed. Do not
+treat snapshot-induced damage as the production root cause.
+
+==========================================================================
+5. SUGGESTED DIAGNOSIS SEQUENCE AND SAFE OUTPUT
+==========================================================================
+
+1. Establish exact running EXE identity, current instance/root and same-user
+   context using static reads. Verify the other PC's version where accessible
+   without requesting credentials or changing its state.
+2. Preserve a consistent before-capture, then record the full UI message and
+   time of ONE owner-triggered Check hosting access again. A normal failed
+   check can still commit a verified prefix; distinguish those legitimate
+   before/after changes from diagnostic-tool mutations. Do not change pairing
+   or permissions while capturing it.
+3. Identify which operation in SignedAncestry throws, not just its broad phase.
+   If instrumentation is needed, make it narrow, local and allowlisted, without
+   echoing arbitrary exception messages, paths, request bodies or secret data
+   into UI/companion responses. Do not publish another generic diagnostic-only
+   preview before inspecting the laptop evidence available here.
+4. Compare the protected floor/index/lookup, retained revisions, exact trusted
+   connection floor/cache and current signed response using private in-memory
+   comparisons. Record pending recovery/migration before invoking mutating code.
+5. Distinguish a real missing/corrupt parent, fork, wrong root/owner, damaged
+   protected lookup/index/file, DPAPI issue, IO/ACL/reserve failure, stale binary,
+   instance mismatch, request/page race, or an untested legacy transition.
+   These are hypotheses to test, not established causes.
+6. Reproduce the ACTUAL observed predicate using generated identities and fake
+   HTTP/disposable protected data. Fix that bounded path, retaining negative
+   coverage and current revocation/expiry boundaries. A real state repair must
+   have a verified trust-preserving proof; never silently rebase/reset history.
+7. Have the owner retry on the laptop with existing data intact. Record the
+   result separately from source/CI tests. Permission success does not prove a
+   verified copy, receipt, readiness, game join or saved-world restart.
+
+Useful sanitized report fields:
+- Version/source/hash-match result; production vs staging; data-root drive/free
+  space; exact verification sub-operation; exception TYPE and fixed category.
+- Roster schema/epoch/revision, journal count/head count, page size/offset and
+  anchored vs root/review mode; group/owner/profile equality as booleans.
+- Signature-valid, exact parent-present, protected-lookup/index-consistent,
+  trusted-floor-retained, pending-present and pending/floor-match booleans.
+- Which check first fails; which evidence proves it; which remains unavailable.
+No real GUIDs, endpoints, invite codes, tokens, credential hashes, public/private
+key material, signatures, raw state, full private paths or world files in the
+handoff-back report or regression fixture. Keep necessary private evidence local.
+
+==========================================================================
+6. WHAT WAS ALREADY FIXED / TESTED - DO NOT ASSUME IT FIXED THIS PC
+==========================================================================
+
+0.3.3.9:
+- Hid internal peer-world session credentials from ordinary Friend PC views;
+  kept full stored credentials for actual authorization and chat membership.
+- Server-scoped access removal retains other assignments, settings and history.
+- Added the four verification-step suffixes; no trust predicate was relaxed.
+- Fixed signed directory first-frame duplicate admission and original-world
+  aliases for adopted permission/consent/cache reads.
+- Natural rejoin matrix: retained/deleted old device, same/new saved connection,
+  legacy/current Host journals; additional genuine retained peer-registry/self/
+  key/cursor cases and damaged-history negatives. These did NOT reproduce the
+  physical laptop failure. Do not conclude old revocation is its cause.
+
+0.3.3.10:
+A. Anchored legacy page race reproduced the EXACT friendly error:
+   local L1; HTTP request anchored at L1 returns [L2,L3,S4]; background approved
+   peer with a journal beginning at L3 commits L3 and its schema-3 child S4 while
+   HTTP is in flight. L2 is valid and strictly inside retained L1/L3 legacy
+   counters but was rejected because the safe superseded-snapshot proof was
+   previously used only on root fallback. The same proof now applies to an
+   anchored response. Siblings/equal counters/bad signatures/schema-3 gaps fail.
+B. Atomic replay race reproduced an exact-parent exception:
+   Contains(incoming)=false; another importer commits incoming then descendant;
+   Append(incoming) used to recognize only current heads, so it rejected the
+   already committed historical revision. Append now checks pin/world identity,
+   protected committed lookup/index, exact retained file/hash and signature
+   under the mutation lock before a no-op. No floor/head is rewound, missing
+   protected data is not rebuilt, and replay cannot resurrect revoked roles.
+Both regressions failed before their fixes and passed afterward. The owner
+still reports the error on the laptop, so investigate beyond those schedules.
+
+Relevant source groups in checks/TogetherServer.FeatureChecks/Program.cs:
+  "Legacy roster bootstrap races and trust floors"
+  "Concurrent signed roster imports"
+  "Revoked shared-world device rejoin"
+  "Adopted successor hosting identity and consent"
+Files: SharedRosterBootstrapChecks.cs, SharedRosterConcurrentImportChecks.cs,
+SharedRosterRejoinChecks.cs, AdoptedLocalHostingChecks.cs.
+
+Safe code-only entry point after reading it:
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-code-only.ps1
+This is not authorization for full release/process/native tests. It does not
+launch the app, game processes or listeners. Pinned tools at this source were
+.NET SDK 10.0.301 and Node 24.14.1; read current global.json/.node-version.
+
+0.3.3.10 verification:
+  https://github.com/daltonstates/TogetherServer/actions/runs/40143882850
+- 72 source/synthetic groups; 1,483 UI tests / 109 files; strict compilation,
+  TypeScript, lint, formatting and bundle passed.
+- All 15 functional jobs passed on their original attempt, including all 27
+  ordered Existing gates, Core 114/0, Shared Worlds 11/0 with zero recovery
+  scenarios skipped, Companion 46/0 and 4,102-version signed-history catch-up.
+- Pairing: UX 3 outer/10 inner, loopback 11, same-PC LAN API 18; actual signed
+  single-row/hosting-badge/click-route checks and exact disposable cleanup.
+- Two ordinary handoffs each passed 9 stages, with one Friend and one owner
+  Start, descendant version 2 -> 3 and no remaining disposable processes.
+- Six legacy compatibility/update-handoff lanes, 6 installer cases and all 3
+  actual wizard choices passed. Browser: 14 passed / 3 unexercised journeys.
+- Native Desktop job FAILED solely because required OS notification testing
+  remained BLOCKED by Windows QuietTime: 12 required cases passed, one blocked,
+  one development-startup case inapplicable. All 14 window-control cases passed.
+  Overall workflow is therefore red; do not falsely call full CI/native green.
+- Local source-link tests skipped for lack of symlink capability; hosted source
+  tests exercised them. Packaging's fullyAccepted/nativeNotificationVerified
+  flags remain false. Real laptop success, physical two-PC/game join/save and
+  restart acceptance were NOT established by those results.
+
+Separate known issue: already-adopted successor-copy PREPARATION can fail after
+permission succeeds. FriendLocalHosting.StatusForConnectionAsync has raw-local-ID
+branch/restore lookups; connected preparation can reach legacy Pull before the
+root-aware peer resolver, with ConfiguredReceiveRoot session credential vs
+ReceivedRoot source-member identity yielding ConnectionChanged; solo-recovery
+offer lookup also needs root identity review. It is documented as open. Do not
+confuse that later preparation issue with this current SignedAncestry failure.
+
+==========================================================================
+7. HANDOFF-BACK / COMPLETION EXPECTATIONS
+==========================================================================
+
+Return a concise diagnosis with:
+- Actual running binary/instance confirmation and whether .10 was really used.
+- Exact safe failure category and predicate, with sanitized structural evidence.
+- Whether original metadata stayed unchanged, and any capture limitations.
+- Minimal reviewed fix and synthetic regression, plus relevant negative cases.
+- Actual laptop retry outcome, separately from source/hosted results.
+- Remaining known limits, exact new commit/release identity if published, and
+  current numeric version checked against GitHub before publishing.
+
+Keep credentials, public/private peer identity details and real history private.
+Never trade the current trust floor or a real world's integrity for a passing
+test or a cleaner UI. No game terms/downloads, public firewall/router/DNS
+changes, spending, world overwrite/deletion or force-killing unrelated processes
+is authorized by this handoff.

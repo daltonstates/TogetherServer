@@ -11,6 +11,10 @@ Before changing behavior, read [AGENTS.md](../../AGENTS.md) and the core
 [product and engineering rules](../README.md#product-and-engineering-rules).
 Preserve unrelated changes, production data, and the owner's foreground app.
 
+The [laptop sharing-history handoff](laptop-sharing-history-handoff.txt) includes
+a ready-to-paste Codex prompt, the unresolved laptop failure, prior fixes and
+instructions for inspecting protected metadata without resetting it.
+
 ## Source layout
 
 | Path | Contents |

@@ -50,8 +50,12 @@ history; published versions have their own
   import schedules reproduce this failure in disposable source checks: an
   anchored response carrying an intermediate legacy snapshot after peer sync
   advanced, and an exact revision committed elsewhere between checking and
-  appending it. Both paths are repaired without resetting history. Physical
-  laptop retry remains unverified; revoke/reinvite alone did not reproduce it.
+  appending it. Both paths are repaired without resetting history. The owner
+  reports the same error on the laptop after the latest retry; its running
+  binary identity and exact failure have not been independently captured.
+  The physical laptop failure remains unresolved. Revoke/reinvite alone did
+  not reproduce it. Continue with the
+  [laptop diagnosis handoff](development/laptop-sharing-history-handoff.txt).
 - **Known adopted-copy preparation limit:** the permission prompt, consent
   alias and cached-version identity have focused source coverage, but preparing
   from an already adopted successor can still fail at the legacy received-copy
@@ -103,8 +107,8 @@ Full native acceptance remains incomplete.
 Anonymous downloads verified all four public assets, checksums, source/tag
 identity and unchanged prior releases; stable/latest remains 0.3.3. The owner's
 active desktop and 29 unrelated pending files remain preserved. Physical
-laptop retry, adopted-copy preparation and game/network acceptance remain open
-as listed above. Exact hashes and run/artifact identities stay with the
+laptop diagnosis, adopted-copy preparation and game/network acceptance remain
+open as listed above. Exact hashes and run/artifact identities stay with the
 release and CI.
 
 ## Repository maintenance
