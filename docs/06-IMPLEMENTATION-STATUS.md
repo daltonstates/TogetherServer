@@ -139,7 +139,7 @@ history; published versions have their own
 
 ## Current delivery
 
-Candidate 0.3.3.15 addresses a directory/publication lock-order inversion found
+Prerelease 0.3.3.15 addresses a directory/publication lock-order inversion found
 during the real 0.3.3.14 test. The installed laptop EXE matches that release's
 hash/source and uses the same production root, with 10.37 GiB free. Its initial
 check correctly reports `LocalStoppedProgressNeedsSharing`, current permission
@@ -169,7 +169,7 @@ and generated staging-directory access denial, before sharing authorization;
 one reported operation is stage promotion. Backup code is unchanged from
 0.3.3.14, and no external cause has been established. These failures remain
 recorded for independent hosted validation. One internal source-link case lacks
-local symlink capability. No 0.3.3.15 physical result or release exists yet.
+local symlink capability. No 0.3.3.15 physical success has been established.
 
 The [frozen 0.3.3.15 run](https://github.com/daltonstates/TogetherServer/actions/runs/40349982642)
 uses source `4179a1ab1b38c2a45bb407171fc40750640a62ea`. Fresh Windows checks
@@ -180,14 +180,35 @@ browser, rehearsal, all six compatibility/update lanes and packaging pass.
 All six installer checks and three wizard choices pass. Existing records 12
 successful gates, one Custom-driver gate failure (`CustomStopTimedOut`, 5/6
 checks), and 14 later gates NotRun, including the mandatory packaged core journey.
-Core source checks 114/114 do not substitute for that missing journey. A single
-dedicated hosted core verification against the unchanged EXE is being prepared.
+Core source checks 114/114 do not substitute for that missing journey. The
+[dedicated core verification](https://github.com/daltonstates/TogetherServer/actions/runs/40354145322)
+subsequently passes all 14 original core groups and the appended two-group
+rehearsal, in order, with one invocation and exit zero. Verification source
+`1d800d094e92276c2e3462fdb28236e5e46a8be4` changes no product/build inputs or
+dispatcher sources. All 35 candidate/fixture/proof files remain unchanged. No
+cleanup warning is observed; global process emptiness is not asserted. This
+supplies only the missing required core evidence, leaving the other failed and
+unrun gates unaccepted.
 Automatic hosting fails initial preparation before any Start; its separate
 diagnostic attempt fails too. Pairing UX 3/3 and loopback 11/11 pass; LAN records
 three passes, governance GET HTTP 409 failure and 14 stages NotRun. The response
 code was not retained, so its exact refusal predicate remains unavailable.
 Windows QuietTime again blocks required OS notification delivery/click proof.
 No failed lane is erased or accepted by the independent source/UI passes.
+
+The published [0.3.3.15 prerelease](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.15)
+is release ID `424461125`, published 2026-10-26 16:01:38 UTC. Annotated tag
+`76420a028d3197d60add50c9e7441be3183f9cc2` points to source `4179a1ab` above.
+Portable is 66,191,977 bytes, SHA-256
+`dfd981452639c7143f34fe24748bc3ae09195b4bd322b74ad2d1b31027483958`;
+installer is 60,654,227 bytes, SHA-256
+`b9a0be49b6ea6249ccea2e445070aa58ac2d92b0acc02a6b974fae635be42cc9`.
+All four public downloads/checksums, version resources and tag/source verify
+anonymously. Both EXEs remain unsigned. All 29 earlier releases/assets are
+preserved; inventory is 30 and stable/latest remains 0.3.3. The owner has been
+asked to update both PCs, retaining data/pairing/history, before the physical
+Share/Start/graceful-Stop/receipt/restart test. The laptop's stalled 0.3.3.14
+app remains running and minimized, with no game started by this attempt.
 
 Stable private observations before and after the stalled action contain 38
 metadata files. Signed journals, floors, indexes and lookups are byte-identical,
