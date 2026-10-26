@@ -150,7 +150,33 @@ A missing, newer or changed source requires explicit preparation and invalidates
 readiness. Ordinary recovery-source storage checks are unchanged. Start now
 uses measured inactivity within the original ten-minute intent limit and keeps
 an unconfirmed Start blocked until matching terminal evidence and fresh exact
-status arrive. Validation is in progress; no 0.3.3.16 binary has run on either PC.
+status arrive. Unconfirmed-result guidance consistently directs the owner to
+check that attempt rather than retrying it. No 0.3.3.16 binary has run on either PC.
+
+The generated regression uses ordinary preparation at version 3, a real
+synthetic Rolling backup and strict publication 4 with 315 files. The exact
+published 0.3.3.15 Start source and prepared resolver, with a temporary compatible
+helper signature, reproduce a new recovery cache and measured copying. The
+fixed case reaches only the refusing fake-driver boundary, with the immutable
+publication held, all 315 files verified and no recovery copy or managed run.
+Seventeen refusal variants retain current permission/expiry, consent, source,
+selection, setup and material-observation fences; separate cases cover caller
+cancellation, cancellation during hashing, released native handles and disposed
+proofs. Missing protected branch history retains its strict read exception;
+the local route maps that to a fixed rejection without rebuilding history.
+
+All 80 source groups pass in a shorter disposable workspace, with one internal
+symlink scenario skipped for local account capability. The initial default-path
+attempt failed before Start while creating a synthetic backup, reporting staging
+access denial; its exact I/O cause is not established. Strict solution compilation
+has zero warnings/errors. All 1,543 UI tests pass after two navigation tests await
+their existing asynchronous transitions without extending timeout budgets. The
+final guidance change passes 144 focused tests, typecheck, lint and bundle.
+All 58 pure renderer-plan checks and changed-code formatting pass. The whole-
+solution formatter retains findings in the unmodified
+`SimpleSharedHostingJourney.cs` fixture, so whole-solution formatting is not
+claimed. Hosted candidate validation is in progress; physical hosting and saved
+restart remain separate acceptance requirements.
 
 The real 0.3.3.15 laptop process independently matches the published EXE
 version/source/hash and uses the same account and production root. Authenticated

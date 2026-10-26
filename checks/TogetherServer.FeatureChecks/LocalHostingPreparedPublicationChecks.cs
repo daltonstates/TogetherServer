@@ -217,8 +217,11 @@ internal static partial class LocalHostingChecks
         {
             canceled.Cancel();
             var propagated = false;
-            try { _ = await peers.ResolveLatestPreparedStartSourceAsync(fixture.PublicationRoot,
-                prepared.LocalProfileId.Value, prepared.BranchHash, canceled.Token); }
+            try
+            {
+                _ = await peers.ResolveLatestPreparedStartSourceAsync(fixture.PublicationRoot,
+                prepared.LocalProfileId.Value, prepared.BranchHash, canceled.Token);
+            }
             catch (OperationCanceledException) when (canceled.IsCancellationRequested) { propagated = true; }
             Require(propagated, "prepared-source discovery swallowed caller cancellation");
         }
@@ -314,9 +317,15 @@ internal static partial class LocalHostingChecks
                 AccessExpiresUtc = fault == "expired" ? DateTimeOffset.UtcNow.AddMinutes(-1) : null,
                 Grants = fault == "grant" ? item.Grants with { EligibleHost = false } : item.Grants
             }).ToArray();
-            var draft = old with { Epoch = old.Epoch + 1, Revision = old.Revision + 1,
-                PreviousRosterHash = SharedWorldRosterTrust.Hash(old), Members = members,
-                OwnerLocalBaselineMembers = members, Signature = "" };
+            var draft = old with
+            {
+                Epoch = old.Epoch + 1,
+                Revision = old.Revision + 1,
+                PreviousRosterHash = SharedWorldRosterTrust.Hash(old),
+                Members = members,
+                OwnerLocalBaselineMembers = members,
+                Signature = ""
+            };
             var denied = draft with { Signature = Convert.ToBase64String(owner.SignData(SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
             var chain = new SharedWorldRosterChainStore(Data);
             if (!chain.HasState(ProfileId)) chain.Append(old, PublicationRoot.OwnerPublicKey);

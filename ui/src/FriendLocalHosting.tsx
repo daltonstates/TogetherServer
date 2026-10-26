@@ -962,9 +962,11 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             {lastHostingAttempt.completedFiles !== undefined && lastHostingAttempt.totalFiles !== undefined && lastHostingAttempt.totalFiles > 0 && <p>
               {lastHostingAttempt.completedFiles} of {lastHostingAttempt.totalFiles} {hostingProgressFilesLabel(lastHostingAttempt.phase ?? '')}.</p>}
             <small>Finished <time dateTime={new Date(lastHostingAttempt.finishedAt).toISOString()}>{checkedAgo(lastHostingAttempt.finishedAt, now)}</time>.</small>
-            {lastHostingAttempt.state === 'Failed' && <p>{lastHostingAttempt.action === 'shareStoppedProgress' || sharingRequired
-              ? 'Refreshing checks does not repeat sharing. Keep the server stopped and review the backup and setup if this result returns. Choose Share stopped progress only when you want to retry the explicit sharing check.'
-              : 'Refreshing checks does not retry this hosting attempt. Follow the setup steps below, then choose Host locally to try again.'}</p>}
+            {lastHostingAttempt.state === 'Failed' && <p>{startUnconfirmed
+              ? 'Wait for the matching result from this Start attempt. Choose Check Start result to read current checks, or Earlier Start server details to review the server. Checking does not retry Start.'
+              : lastHostingAttempt.action === 'shareStoppedProgress' || sharingRequired
+                ? 'Refreshing checks does not repeat sharing. Keep the server stopped and review the backup and setup if this result returns. Choose Share stopped progress only when you want to retry the explicit sharing check.'
+                : 'Refreshing checks does not retry this hosting attempt. Follow the setup steps below, then choose Host locally to try again.'}</p>}
           </section>}
           {(attention?.kind === 'ChooseServer' || status?.needsServerFile) && <div className="local-hosting-fix">
             {status?.game === 'Valheim' && <a href="steam://install/896660">Install Valheim Dedicated Server in Steam</a>}
