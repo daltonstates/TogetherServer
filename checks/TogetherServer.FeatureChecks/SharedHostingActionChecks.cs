@@ -20,6 +20,25 @@ internal static class SharedHostingActionChecks
             $"{{\"localProfileId\":\"{localId}\",\"branchHash\":null,\"requestId\":\"{requestId}\",\"acceptSplitWarning\":false}}"));
         Require(planned.RequestId == requestId && planned.BranchHash is null && !planned.AcceptSplitWarning,
             "the exact completed-move Start input did not decode");
+        var stopped = FriendLocalHostingService.ParseStoppedProgressShare(Encoding.UTF8.GetBytes(
+            $"{{\"localProfileId\":\"{localId}\",\"branchHash\":\"{hash}\"}}"));
+        Require(stopped.LocalProfileId == localId && stopped.BranchHash == hash,
+            "the exact stopped-save sharing input did not decode");
+        foreach (var input in new[]
+        {
+            "{}", "[]", "null",
+            $"{{\"localProfileId\":\"{Guid.Empty}\",\"branchHash\":\"{hash}\"}}",
+            $"{{\"localProfileId\":\"{localId}\",\"branchHash\":null}}",
+            $"{{\"localProfileId\":\"{localId}\",\"branchHash\":\"{hash}\",\"branchHash\":\"{hash}\"}}",
+            $"{{\"localProfileId\":\"{localId}\",\"branchHash\":\"{hash}\",\"path\":\"C:/other\"}}",
+            $"{{\"localProfileId\":\"{localId}\",\"branchHash\":\"{hash}\",\"start\":true}}"
+        })
+        {
+            var rejected = false;
+            try { FriendLocalHostingService.ParseStoppedProgressShare(Encoding.UTF8.GetBytes(input)); }
+            catch (InvalidDataException) { rejected = true; }
+            Require(rejected, "stopped-save sharing accepted caller-directed files, Start intent or ambiguous identity");
+        }
         foreach (var input in new[]
         {
             "{}", "[]", "null",
@@ -67,6 +86,12 @@ internal static class SharedHostingActionChecks
         Require(FriendLocalHostingService.WithRemedy(baseStatus).Remedy is null &&
             baseStatus.Steps.All(step => step.State == "Ready") && !baseStatus.Running && !baseStatus.ReadyForManualStart,
             "projecting checked evidence fabricated readiness or a managed game");
+        var stoppedStatus = baseStatus with { Code = FriendLocalHostingService.StoppedProgressCode };
+        Require(FriendLocalHostingService.WithRemedy(stoppedStatus).Remedy?.Kind == "ShareStoppedProgress" &&
+            FriendLocalHostingService.WithRemedy(stoppedStatus with { Allowed = false }).Remedy?.Kind != "ShareStoppedProgress" &&
+            FriendLocalHostingService.WithRemedy(stoppedStatus with { Consented = false }).Remedy?.Kind != "ShareStoppedProgress" &&
+            FriendLocalHostingService.WithRemedy(stoppedStatus with { Running = true }).Remedy?.Kind != "ShareStoppedProgress",
+            "stopped-save recovery fabricated current permission, consent or stopped-state authority");
         return Task.CompletedTask;
     }
 

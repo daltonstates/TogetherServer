@@ -26,8 +26,12 @@ function confirmedHostingDenial(permission: LocalHostingPermission | null): bool
   return permission?.allowed === false && ['HostingPermissionRequired', 'HostingPermissionDenied', 'EnrollmentDenied',
     'Revoked', 'AccessExpired', 'ApprovalPending', 'NotPaired'].includes(permission.code)
 }
-const remedyKinds = ['Permission', 'Respond', 'ChooseHistory', 'Terms', 'ChooseServer', 'GameSetup', 'Ports', 'Connection', 'Review', 'ConfirmCopy', 'GetSave'] as const
+const remedyKinds = ['Permission', 'Respond', 'ChooseHistory', 'Terms', 'ChooseServer', 'GameSetup', 'Ports', 'Connection', 'Review', 'ConfirmCopy', 'GetSave', 'ShareStoppedProgress'] as const
 type HostingRemedyKind = typeof remedyKinds[number]
+
+function needsStoppedProgressSharing(status: LocalHostingStatus | null): boolean {
+  return status?.code === 'LocalStoppedProgressNeedsSharing' || status?.remedy?.kind === 'ShareStoppedProgress'
+}
 
 const guidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const hashPattern = /^[0-9a-f]{64}$/i
@@ -84,6 +88,7 @@ const hostingActions = {
   accept: { label: 'Accepting move...', message: 'Accepting the hosting move and checking what this PC needs next.' },
   decline: { label: 'Declining move...', message: 'Declining this hosting move. Existing saves are kept.' },
   start: { label: 'Requesting Start...', message: 'Requesting Start for the checked local save. Wait for the result before trying again.' },
+  shareStoppedProgress: { label: 'Sharing stopped progress...', message: 'Checking and sharing the last stopped save. Existing backups are kept. This action does not start the server.' },
   browse: { label: 'Choosing server file...', message: 'Choose the installed dedicated server file in the file picker. Choosing a file does not start the server.' }
 } as const
 type HostingAction = keyof typeof hostingActions
@@ -92,6 +97,14 @@ function hostingRequestError(cause: unknown): string {
   if (cause instanceof ApiError && ['HostUnavailable', 'HostUnreachable', 'ConnectionClosed'].includes(cause.code))
     return 'The Host could not be reached. Keep TogetherServer open on both PCs, then retry the checks.'
   return 'The hosting request could not be checked. Keep TogetherServer open, then retry the checks before continuing.'
+}
+
+const stoppedSharingFailures: Record<string, string> = {
+  StoppedProgressProofRequired: 'The stopped save could not be matched to its latest completed backup. Existing worlds and backups were kept.',
+  StoppedProgressSetupChanged: 'The stopped server setup changed. Review the save and setup before sharing.',
+  StoppedProgressBusy: 'Keep this server stopped and finish other world operations before sharing its stopped save.',
+  StoppedProgressSharingChanged: 'Current sharing permission or the exact signed history needs review. Existing saves were kept.',
+  StoppedProgressPublicationFailed: 'The verified stopped backup remains local. Sharing was not confirmed; review and retry this explicit action.'
 }
 
 function checkFingerprint(status: LocalHostingStatus): string {
@@ -105,7 +118,8 @@ function checkFingerprint(status: LocalHostingStatus): string {
 
 type CheckAttempt = { title: string; summary: string; finishedAt: number }
 type HostingAttempt = { state: 'Completed' | 'Failed'; message: string; phase: string | null; finishedAt: number;
-  receivedBytes?: number; totalBytes?: number; completedFiles?: number; totalFiles?: number; status: LocalHostingStatus | null }
+  receivedBytes?: number; totalBytes?: number; completedFiles?: number; totalFiles?: number; status: LocalHostingStatus | null;
+  action?: 'start' | 'shareStoppedProgress' }
 const hostingPhaseSteps: Record<string, CheckKey> = {
   Permission: 'permission', PeerSync: 'save', LatestSave: 'save', Receiving: 'save', Verifying: 'save', Receipt: 'save', PreparingCopy: 'save',
   ServerSetup: 'server', Ports: 'ports', Connection: 'connection'
@@ -117,6 +131,7 @@ function failedAttemptGuideStep(attempt: HostingAttempt): CheckKey | undefined {
   if (!result.allowed || localHostingAccessBlocker(result)) return 'permission'
   const codeSteps: Record<string, CheckKey> = {
     HostingHistoryChoiceRequired: 'save', WorldHistoryReviewRequired: 'save', SharedSaveHistoryNeedsReview: 'save',
+    LocalStoppedProgressNeedsSharing: 'save',
     InstalledServerRequired: 'server', LocalServerSetupRequired: 'server', MinecraftTermsRequired: 'server',
     LocalConnectionSetupRequired: 'connection', RecipientConnectionRequired: 'connection', PeerDiscoveryRequired: 'connection',
     PortConflict: 'ports', PortInUse: 'ports', GamePortInUse: 'ports', LocalPortsRequired: 'ports'
@@ -124,7 +139,7 @@ function failedAttemptGuideStep(attempt: HostingAttempt): CheckKey | undefined {
   if (Object.hasOwn(codeSteps, result.code)) return codeSteps[result.code]
   const remedySteps: Record<HostingRemedyKind, CheckKey> = {
     Permission: 'permission', Respond: 'save', ChooseHistory: 'save', Terms: 'server', ChooseServer: 'server',
-    GameSetup: 'server', Ports: 'ports', Connection: 'connection', Review: 'save', ConfirmCopy: 'save', GetSave: 'save'
+    GameSetup: 'server', Ports: 'ports', Connection: 'connection', Review: 'save', ConfirmCopy: 'save', GetSave: 'save', ShareStoppedProgress: 'save'
   }
   if (result.remedy && result.remedy.kind !== 'Review') return remedySteps[result.remedy.kind]
   return result.steps.find(step => step.state === 'ActionRequired')?.key ??
@@ -137,6 +152,7 @@ function hostingCheckResult(status: LocalHostingStatus): string {
   if (blocker === 'permission') return 'Check finished: this PC needs hosting access from the owner. The other checks have not run. Follow the permission steps below, then check again.'
   if (blocker) return 'Check finished: current hosting access could not be verified. The other checks have not run. Keep an approved Host reachable and check access again.'
   if (status.running) return 'Check finished: this server is already hosted on this PC. Open the local server to see its status.'
+  if (needsStoppedProgressSharing(status)) return 'Check finished: the last stopped save still needs sharing. Choose Share stopped progress to check and share it. This does not start the server.'
   if (status.readyForManualStart) return 'Check finished: this PC is prepared. Choose Start hosting when you want to start. A real Friend connection and game join still need separate testing.'
   const next = status.steps.find(step => step.state !== 'Ready')
   return next ? `Check finished. Next: ${checkLabels[next.key]}. Follow the setup steps below, then choose Host locally when you are ready.` :
@@ -161,6 +177,11 @@ export function localHostingAttention(status: LocalHostingStatus | null, accepte
   if (!status.allowed) return confirmedHostingDenial(status)
     ? { kind: 'Permission', title: 'Ask the owner to allow hosting', message: status.message }
     : { kind: 'Review', title: 'Check hosting again', message: status.message }
+  if (!status.consented && status.remedy?.kind === 'ConfirmCopy') return status.remedy
+  if (!status.consented && needsStoppedProgressSharing(status)) return { kind: 'ConfirmCopy', title: 'Review current hosting-copy permission',
+    message: 'Current hosting-copy permission is not confirmed. Review this PC’s shared-save settings and retry the checks before sharing or starting.' }
+  if (needsStoppedProgressSharing(status)) return { kind: 'ShareStoppedProgress', title: 'Share the last stopped save before hosting',
+    message: 'The last stopped save is still local. Share stopped progress checks and shares that save within its existing history. Existing backups are kept. Starting is a separate action.' }
   if (status.needsServerFile && !selectedFile.trim())
     return { kind: 'ChooseServer', title: 'Install or find the game server', message: 'This PC needs the matching dedicated server. Choose its installed file or open game setup.' }
   if (['MinecraftJava', 'MinecraftBedrock'].includes(status.game ?? '') && !acceptedTerms && !status.readyForManualStart && !status.localProfileId)
@@ -217,9 +238,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
   const [lastCheckAttempt, setLastCheckAttempt] = useState<CheckAttempt | null>(null)
   const [lastHostingAttempt, setLastHostingAttempt] = useState<HostingAttempt | null>(null)
+  const [stoppedSharingStatus, setStoppedSharingStatus] = useState<LocalHostingStatus | null>(null)
+  const sharingTimeout = useRef<number | undefined>(undefined)
   const recordProgressResult = useCallback((result: HostingProgress) => {
-    if (result.state === 'Working') return
-    setLastHostingAttempt({ state: result.state, phase: result.phase, message: result.message,
+    const state = result.state
+    if (state === 'Working') return
+    setLastHostingAttempt(previous => previous?.action || previous?.status ? previous : { state, phase: result.phase, message: result.message,
       finishedAt: Date.parse(result.updatedUtc), receivedBytes: result.receivedBytes, totalBytes: result.totalBytes,
       completedFiles: result.completedFiles, totalFiles: result.totalFiles, status: null })
   }, [])
@@ -252,8 +276,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       summary: hostingCheckResult(next), finishedAt: Date.now()
     })
     if (!next.allowed || !next.consented || next.running || next.remedy &&
-      ['Connection', 'Ports', 'Review', 'ChooseHistory', 'ChooseServer', 'GameSetup', 'Terms', 'GetSave'].includes(next.remedy.kind) ||
+      ['Connection', 'Ports', 'Review', 'ChooseHistory', 'ChooseServer', 'GameSetup', 'Terms', 'GetSave', 'ShareStoppedProgress'].includes(next.remedy.kind) ||
       !preparedHere && currentStatus.current?.branchHash && currentStatus.current.branchHash !== next.branchHash) startIntent.current = null
+    if (needsStoppedProgressSharing(next)) {
+      setStoppedSharingStatus(next)
+      startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
+    }
     if (activeHostingRequest(currentStatus.current)?.requestId !== activeHostingRequest(next)?.requestId) {
       setAcceptedTerms(false); setPassword('')
       plannedAuthorization.current = null; setPlannedOperation(null); plannedAttempt.current = ''
@@ -265,7 +293,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setChecksCurrent(true); setLastCheckedAt(Date.now()); setNow(Date.now())
   }, [scope])
   const controller = useRef<AbortController | null>(null)
-  const invalidate = useCallback(() => { ++request.current; preparationWatch.current?.clear(); controller.current?.abort() }, [])
+  const invalidate = useCallback(() => { ++request.current; preparationWatch.current?.clear(); window.clearTimeout(sharingTimeout.current); controller.current?.abort() }, [])
 
   useEffect(() => {
     mutation.current = false
@@ -273,6 +301,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setPermission(null)
     setStatus(null); setOpen(false); setBusy(false); setPendingAction(null); setError(''); setAcceptedTerms(false)
     setChecksCurrent(false); setChecking(false); setLastCheckedAt(null); setLastCheckAttempt(null); setLastHostingAttempt(null); setGuideStep(null)
+    setStoppedSharingStatus(null)
     setServerFile(''); setPassword(''); setActionMessage('')
     setNetworkConfirmed(false)
     setPlannedOperation(null); plannedAttempt.current = ''
@@ -410,7 +439,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
   }
   const prepareStatus = useCallback(async (target: LocalHostingStatus, authorization: typeof plannedOperation) => {
-    if (mutation.current || disabled || !target.allowed) return
+    if (mutation.current || disabled || !target.allowed || stoppedSharingStatus || needsStoppedProgressSharing(target)) return
     const planned = activeHostingRequest(target)
     if (planned?.recipientState === 'Requested') return
     if (planned?.requestId && ['MinecraftJava', 'MinecraftBedrock'].includes(target.game ?? '') && !acceptedTerms) return
@@ -492,7 +521,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       clearWatch()
       if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
     }
-  }, [base, disabled, serverFile, password, acceptedTerms, acceptStatus])
+  }, [base, disabled, serverFile, password, acceptedTerms, acceptStatus, stoppedSharingStatus])
   const prepare = () => {
     const invitation = activeHostingRequest(status)
     if (!status?.allowed) return
@@ -536,6 +565,54 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     } catch (cause) { if (sequence === request.current && !abort.signal.aborted) setError(hostingRequestError(cause)) }
     finally { window.clearTimeout(timeout); if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) } }
   }
+  const shareStoppedProgress = async () => {
+    const target = currentStatus.current
+    if (mutation.current || disabled || checking || !checksCurrent || !permission?.allowed || !target?.allowed || !target.consented ||
+      target.running || localHostingAccessBlocker(target) || !target.localProfileId || !target.branchHash ||
+      !stoppedSharingStatus && !needsStoppedProgressSharing(target) ||
+      stoppedSharingStatus && (target.localProfileId !== stoppedSharingStatus.localProfileId || target.branchHash !== stoppedSharingStatus.branchHash) ||
+      ['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'].includes(target.code) || target.remedy?.kind === 'ChooseHistory') return
+    startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null); plannedAttempt.current = ''
+    mutation.current = true
+    const sequence = ++request.current
+    const abort = new AbortController()
+    controller.current = abort
+    let shared = false
+    setActionStartedAt(Date.now()); setBusy(true); setPendingAction('shareStoppedProgress'); setError(''); setActionMessage('')
+    setLastHostingAttempt(null); setChecksCurrent(false)
+    const failed = (message: string) => {
+      setError(message)
+      setLastHostingAttempt({ state: 'Failed', action: 'shareStoppedProgress', message, phase: null, finishedAt: Date.now(), status: shared ? null : stoppedSharingStatus ?? target })
+    }
+    const timeout = window.setTimeout(() => {
+      if (sequence !== request.current) return
+      abort.abort(); ++request.current; mutation.current = false; setBusy(false); setPendingAction(null); setChecksCurrent(false)
+      failed(shared ? 'Stopped progress was shared, but the current hosting checks did not finish within 2 minutes. Retry automatic checks before starting.' :
+        'Sharing stopped progress did not return a confirmed result within 2 minutes. Existing backups were kept. Retry automatic checks, then review the stopped save before choosing Share stopped progress again.')
+    }, 120000)
+    sharingTimeout.current = timeout
+    try {
+      const result = await changeJson(`${base}/hosting/share-stopped-progress`, 'POST', parseBasicResult,
+        { localProfileId: target.localProfileId, branchHash: target.branchHash }, abort.signal)
+      if (sequence !== request.current || abort.signal.aborted) return
+      if (!result.ok) { failed(result.message); return }
+      shared = true; setStoppedSharingStatus(null)
+      setLastHostingAttempt({ state: 'Completed', action: 'shareStoppedProgress', message: result.message, phase: null, finishedAt: Date.now(), status: null })
+      setActionMessage('Stopped progress is shared. Checking this PC again. Starting still needs a separate Start hosting click.')
+      const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
+      if (sequence !== request.current || abort.signal.aborted) return
+      acceptStatus(next, false, true)
+    } catch (cause) {
+      if (sequence === request.current && !abort.signal.aborted) failed(cause instanceof ApiError && Object.hasOwn(stoppedSharingFailures, cause.code)
+        ? stoppedSharingFailures[cause.code] : shared
+        ? 'Stopped progress was shared, but the current hosting checks could not be read. Retry automatic checks before starting.'
+        : 'Sharing stopped progress could not be confirmed. Existing backups were kept. Retry automatic checks, then review the stopped save before trying this action again.')
+    } finally {
+      window.clearTimeout(timeout)
+      if (sharingTimeout.current === timeout) sharingTimeout.current = undefined
+      if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
+    }
+  }
   useEffect(() => {
     if (!open || !plannedOperation || !status?.handoffRequest || mutation.current || disabled) return
     const invitation = status.handoffRequest
@@ -565,7 +642,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }, [plannedOperation])
   const startPrepared = useCallback(async (target: LocalHostingStatus) => {
     const intent = startIntent.current
-    if (mutation.current || disabled || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
+    if (mutation.current || disabled || stoppedSharingStatus || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
       || !target.allowed || !target.readyForManualStart || target.running || !target.localProfileId
       || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)
       || localHostingAttention(target, acceptedTerms, serverFile)) return
@@ -591,9 +668,16 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       if (result.ok) { setOpen(false); onOpenHost(localProfileId) }
       else {
         setOpen(true)
+        setLastHostingAttempt(previous => ({ ...previous, state: 'Failed', action: 'start', message: result.message,
+          phase: previous?.phase ?? null, finishedAt: Date.now(), status: null }))
         const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
-        if (sequence === request.current && !abort.signal.aborted) acceptStatus({ ...next, ok: false,
-          code: result.code, message: result.message, readyForManualStart: false, remedy: null })
+        if (sequence === request.current && !abort.signal.aborted) {
+          const failure = needsStoppedProgressSharing(next) ? next : { ...next, ok: false,
+            code: result.code, message: result.message, readyForManualStart: false, remedy: null }
+          acceptStatus(failure)
+          setLastHostingAttempt(previous => ({ ...previous, state: 'Failed', action: 'start', message: result.message,
+            phase: previous?.phase ?? null, finishedAt: Date.now(), status: failure }))
+        }
       }
     } catch (cause) {
       if (sequence === request.current && !abort.signal.aborted) { setError(hostingRequestError(cause)); setChecksCurrent(false) }
@@ -602,7 +686,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       window.clearTimeout(timeout)
       if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
     }
-  }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus])
+  }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus, stoppedSharingStatus])
   useEffect(() => {
     if (busy || checking || disabled || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
     if (localHostingAttention(status, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
@@ -614,7 +698,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     if (status.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setError(''); setActionMessage('')
     const attention = localHostingAttention(status, acceptedTerms, serverFile)
-    if (attention && ['Permission', 'ChooseHistory'].includes(attention.kind)) return
+    if (stoppedSharingStatus || attention && ['Permission', 'ChooseHistory', 'ShareStoppedProgress'].includes(attention.kind)) return
     if (status.readyForManualStart && attention) { startIntent.current = null; setOpen(true); return }
     // The dialog's confirmation authorizes this bounded preparation and Start.
     if (attention && !open) { setOpen(true); return }
@@ -664,16 +748,24 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const currentHistoryChoice = checkedGuidance && (['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'].includes(checkedGuidance.code)
     || checkedGuidance.remedy?.kind === 'ChooseHistory')
   const priorityStep: CheckKey | undefined = currentAccessBlocker ? 'permission' : currentHistoryChoice ? 'save' : undefined
+  const sharingRequired = status?.allowed && status.consented && permissionAllowed && !status.running && !priorityStep
+    && !!(stoppedSharingStatus || needsStoppedProgressSharing(status))
+  const sharingConsentChanged = !!stoppedSharingStatus && status?.consented === false
+  const sharingIdentityChanged = sharingRequired && stoppedSharingStatus &&
+    (stoppedSharingStatus.localProfileId !== status?.localProfileId || stoppedSharingStatus.branchHash !== status?.branchHash)
+  const sharingIdentityMessage = 'This PC’s selected hosting copy changed after the stopped-save result. Retry automatic checks and review the selected copy before sharing. No sharing action was requested for the changed copy.'
   // A read-only refresh cannot erase the outcome of an explicit preparation.
   // Keep its exact repair steps until another preparation replaces that result.
-  const guidanceStatus = !priorityStep && !checkedGuidance?.running && !checkedGuidance?.readyForManualStart && lastHostingAttempt?.state === 'Failed'
-    && lastHostingAttempt.status?.allowed ? lastHostingAttempt.status : checkedGuidance
+  const guidanceStatus = sharingConsentChanged ? checkedGuidance : sharingRequired ? stoppedSharingStatus ?? checkedGuidance :
+    !priorityStep && !checkedGuidance?.running && !checkedGuidance?.readyForManualStart && lastHostingAttempt?.state === 'Failed'
+      && lastHostingAttempt.status?.allowed ? lastHostingAttempt.status : checkedGuidance
   const recommendedStep = priorityStep ?? (lastHostingAttempt?.state === 'Failed' &&
     (!lastHostingAttempt.status || guidanceStatus === lastHostingAttempt.status) ? failedAttemptGuideStep(lastHostingAttempt) : undefined)
   const attention = (!status || !checksCurrent) && permission?.allowed === false
     ? { kind: denied ? 'Permission' as const : 'Review' as const,
       title: denied ? 'Ask the owner to allow hosting' : 'Check hosting on this PC', message: permission.message }
-    : localHostingAttention(status, acceptedTerms, serverFile)
+    : sharingIdentityChanged ? { kind: 'Review' as const, title: 'Recheck the selected hosting copy', message: sharingIdentityMessage }
+      : localHostingAttention(sharingRequired ? stoppedSharingStatus ?? status : status, acceptedTerms, serverFile)
   const historyChoice = attention?.kind === 'ChooseHistory'
   const accessBlocker = localHostingAccessBlocker(checkedGuidance)
   const displayedChecks = ((checkedGuidance ?? status)?.steps ?? stepKeys.map(key => ({ key, state: 'Unknown' as const,
@@ -684,7 +776,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       const nextAction = waiting ? 'Open the permission steps below, resolve the access or sharing-history check, then retry.' :
         step.key === 'permission' ? step.state === 'Ready' ? 'Continue to the server app and save checks.' : 'Open the permission steps below and check current access with the owner.' :
         step.key === 'server' ? step.state === 'Ready' ? 'Review matching game versions and add-ons before hosting.' : 'Choose the installed server file or follow the server app setup steps below.' :
-        step.key === 'save' ? step.state === 'Ready' ? 'Choose Start hosting when you are ready. The save is checked again before Start.' : 'Keep an approved source PC reachable, review the save steps below, then choose Host locally to prepare and verify the copy.' :
+        step.key === 'save' ? sharingRequired ? 'Keep this server stopped. Review the stopped save, then choose Share stopped progress. Starting remains a separate action.' : step.state === 'Ready' ? 'Choose Start hosting when you are ready. The save is checked again before Start.' : 'Keep an approved source PC reachable, review the save steps below, then choose Host locally to prepare and verify the copy.' :
         step.key === 'ports' ? step.state === 'Ready' ? 'Start repeats the local port checks.' : needsPortPreparation ? 'Prepare the hosting copy with Host locally so its game ports can be checked.' : 'Review the port steps below. Use normal server controls or choose a free port in game setup, then retry.' :
         'Open Connection help on this PC, then test with an approved Friend on the intended network. A game join is a separate check.'
       return { ...step, waiting: waiting || needsPreparation || needsPortPreparation, nextAction,
@@ -692,11 +784,16 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         ? 'Waiting for sharing history review. This check has not run in this attempt.'
         : 'Waiting for hosting access to be verified. This check has not run in this attempt.' } : needsPreparation ? {
           message: 'The hosting copy has not been prepared. Receiving and file verification run after you choose Host locally.'
-        } : needsPortPreparation ? { message: 'The local port check is waiting for this PC’s hosting copy and game setup.' } : {}) }
+        } : needsPortPreparation ? { message: 'The local port check is waiting for this PC’s hosting copy and game setup.' } :
+          sharingRequired && step.key === 'save' ? { state: 'ActionRequired' as const, message: stoppedSharingStatus?.message ?? status?.message ?? step.message } : {}) }
     })
   const actionFeedback = busy && pendingAction ? hostingActions[pendingAction].message : checking
-    ? 'Updating the hosting checks. Wait for the current result before starting.' : actionMessage
+    ? 'Updating the hosting checks. Wait for the current result before starting.' : sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus
+      ? hostingCheckResult(guidanceStatus) : actionMessage
   const pause = () => {
+    if (pendingAction === 'shareStoppedProgress') setLastHostingAttempt(previous => previous?.action === 'shareStoppedProgress' && previous.state === 'Completed' ? previous : { state: 'Failed', action: 'shareStoppedProgress', phase: null,
+      message: 'Sharing stopped progress was paused before its result was confirmed. Retry automatic checks and review the stopped save before trying again. Existing backups were kept.',
+      finishedAt: Date.now(), status: stoppedSharingStatus })
     startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
     setNetworkConfirmed(false)
     invalidate(); mutation.current = false; setBusy(false); setPendingAction(null); setChecking(false); setOpen(false)
@@ -718,7 +815,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
-    && !(status?.readyForManualStart && attention)
+    && !(status?.readyForManualStart && attention) && !sharingRequired && !(stoppedSharingStatus && !sharingRequired)
+  const canShareStoppedProgress = sharingRequired && permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled
+    && !sharingIdentityChanged && !!status?.consented && !!status.localProfileId && !!status.branchHash
   return <>
     {!permissionAllowed && !open && <div className={presentation === 'card' ? 'local-hosting-card' : 'local-hosting-next'}>
       <div className="local-hosting-next" role="status" aria-label="Hosting access" aria-busy={permissionChecking}>
@@ -742,11 +841,14 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     {open && <SettingsDialog title="Host locally" description={worldName} busy={busy}
       onClose={pause} footer={status?.running && status.localProfileId ?
         <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :
+        sharingRequired ? <Button disabled={!canShareStoppedProgress} onClick={() => void shareStoppedProgress()}><Icon name={busy ? 'loader' : 'archive'} />
+          {busy ? hostingActions[pendingAction ?? 'checks'].label : 'Share stopped progress'}</Button> :
         waitingForHost && plannedOperation && startIntent.current ? <span role="status">Waiting for the current Host to finish the save...</span> :
         <Button disabled={!canContinue} onClick={() => { setNetworkConfirmed(true); if (requestOffered) void respond(true); else host() }}><Icon name={busy ? 'loader' : 'play'} />
           {busy ? hostingActions[pendingAction ?? 'checks'].label : status?.readyForManualStart ? 'Start hosting' : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
       <div className="local-hosting-flow" aria-busy={busy}>
-        {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. {status?.readyForManualStart
+        {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. {sharingRequired
+          ? 'Share stopped progress keeps hosting stopped. Start hosting remains a separate choice after sharing and current checks finish.' : status?.readyForManualStart
           ? 'Start checks this PC and the prepared save again before starting.'
           : 'The app will get the latest available save, check this PC and start when it is ready.'}</p>}
         <>
@@ -760,6 +862,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
               hostingActions[pendingAction ?? 'checks'].message} /> :
             status?.running ? <p>This server is already hosted on this PC.</p> : attention &&
             <section className="local-hosting-next" aria-label="Next hosting step"><h3>{attention.title}</h3><p>{attention.message}</p></section>}
+          {busy && pendingAction === 'shareStoppedProgress' && <Button className="secondary" onClick={pause}>Pause sharing</Button>}
           {lastHostingAttempt && !busy && <section className="local-hosting-attempt-result" role="status" aria-label="Last hosting attempt">
             <strong>{lastHostingAttempt.state === 'Failed' ? 'Last hosting attempt needs attention' : 'Last hosting step finished'}</strong>
             {lastHostingAttempt.phase && <p>Last step: {hostingProgressPhaseLabel(lastHostingAttempt.phase)}.</p>}
@@ -770,7 +873,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             {lastHostingAttempt.completedFiles !== undefined && lastHostingAttempt.totalFiles !== undefined && lastHostingAttempt.totalFiles > 0 && <p>
               {lastHostingAttempt.completedFiles} of {lastHostingAttempt.totalFiles} {hostingProgressFilesLabel(lastHostingAttempt.phase ?? '')}.</p>}
             <small>Finished <time dateTime={new Date(lastHostingAttempt.finishedAt).toISOString()}>{checkedAgo(lastHostingAttempt.finishedAt, now)}</time>.</small>
-            {lastHostingAttempt.state === 'Failed' && <p>Refreshing checks does not retry this hosting attempt. Follow the setup steps below, then choose Host locally to try again.</p>}
+            {lastHostingAttempt.state === 'Failed' && <p>{lastHostingAttempt.action === 'shareStoppedProgress' || sharingRequired
+              ? 'Refreshing checks does not repeat sharing. Keep the server stopped and review the backup and setup if this result returns. Choose Share stopped progress only when you want to retry the explicit sharing check.'
+              : 'Refreshing checks does not retry this hosting attempt. Follow the setup steps below, then choose Host locally to try again.'}</p>}
           </section>}
           {(attention?.kind === 'ChooseServer' || status?.needsServerFile) && <div className="local-hosting-fix">
             {status?.game === 'Valheim' && <a href="steam://install/896660">Install Valheim Dedicated Server in Steam</a>}
@@ -805,7 +910,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             <section className="local-hosting-check-result" role="status" aria-label="Last check result" aria-live="polite" aria-atomic="true">
               <strong>{checking ? 'Checking this PC…' : lastCheckAttempt?.title ?? 'Checks have not finished'}</strong>
               <p>{checking ? 'Reading current hosting access and setup. Wait for the result before starting.' :
-                lastCheckAttempt?.summary ?? 'Keep TogetherServer open on both PCs, then retry the checks.'}</p>
+                sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus ? hostingCheckResult(guidanceStatus) :
+                  lastCheckAttempt?.summary ?? 'Keep TogetherServer open on both PCs, then retry the checks.'}</p>
               {lastCheckAttempt && <small>Last attempt finished <time dateTime={new Date(lastCheckAttempt.finishedAt).toISOString()}>{checkedAgo(lastCheckAttempt.finishedAt, now)}</time></small>}
             </section>
             {!checksCurrent && status && <p className="local-hosting-stale" role="status">{checking

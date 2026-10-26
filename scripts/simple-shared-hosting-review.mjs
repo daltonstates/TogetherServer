@@ -55,6 +55,11 @@ export const simpleHostingCases = [
   ...['Running', 'Stopped'].map(session => ({ id: `simple-hosting-directory-remote-${session.toLowerCase()}`,
     scenario: 'host-offline', workspace: 'Host', fixture: { directoryRemote: session },
     steps: [], screen: { role: 'region', name: 'Servers' } })),
+  friend('stopped-progress-required', 'stopped-progress', { stoppedProgressJourney: 'required' }),
+  friend('stopped-progress-shared', 'stopped-progress', { stoppedProgressJourney: 'shared',
+    fixture: { simpleHosting: 'stopped-progress', stoppedProgressShare: 'success' } }),
+  friend('stopped-progress-refused', 'stopped-progress', { stoppedProgressJourney: 'refused',
+    fixture: { simpleHosting: 'stopped-progress', stoppedProgressShare: 'proof-refusal' } }),
 ];
 export const simpleHostingVariants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100 },
@@ -69,6 +74,11 @@ const permissionMessages = {
   RosterUnavailable: 'This synthetic PC could not check the Host\'s sharing permission. Keep the Host reachable and check again.',
   RosterRollback: 'This synthetic PC\'s saved sharing history needs review. Keep both apps open and check hosting access again.'
 };
+export const stoppedProgressMessages = Object.freeze({
+  required: "This PC's last stopped progress has not been shared. Choose Share stopped progress to verify and share it. Existing worlds and backups are kept.",
+  shared: 'This stopped save is now shared within its signed history. Recheck hosting, then choose Start hosting when this PC is ready.',
+  proofRequired: 'The stopped save could not be matched to its latest completed backup. Existing worlds and backups were kept.'
+});
 export function simpleHostingPermission(state, boundary) {
   // An already-open guide can learn that access changed after its positive
   // entry lookup. Initial denied and unknown lookups remain fail-closed.
@@ -79,22 +89,24 @@ export function simpleHostingPermission(state, boundary) {
 
 export function simpleHostingStatus(state, profileId, boundary) {
   const stage = state.simpleHosting?.replace(/-after-entry$/u, '');
-  const prepared = state.simpleHostingPrepared || stage === 'ready';
+  const stopped = stage === 'stopped-progress' && !state.stoppedProgressShared && !state.stoppedProgressShareRefused;
+  const prepared = state.simpleHostingPrepared || stage === 'ready' || stage === 'stopped-progress';
   const allowed = !permissionCodes[stage];
   const missing = stage === 'missing-server';
   const connection = stage === 'connection';
   const conflict = stage === 'conflict';
   const ports = stage === 'ports';
-  return { ok: allowed && prepared && !missing && !connection && !conflict && !ports,
+  return { ok: allowed && prepared && !missing && !connection && !conflict && !ports && !stopped,
     code: permissionCodes[stage] ?? (missing ? 'InstalledServerRequired' : connection ? 'LocalConnectionSetupRequired' : ports ? 'PortConflict' :
-      conflict ? 'HostingHistoryChoiceRequired' : prepared ? 'LocalHostingPrepared' : 'LocalHostingPreparationRequired'),
-    message: boundary, allowed, consented: prepared || stage === 'prepare', game: 'Valheim', name: 'Weekend Valheim', needsServerFile: missing,
+      conflict ? 'HostingHistoryChoiceRequired' : stopped ? 'LocalStoppedProgressNeedsSharing' : prepared ? 'LocalHostingPrepared' : 'LocalHostingPreparationRequired'),
+    message: stopped ? stoppedProgressMessages.required : boundary, allowed, consented: prepared || stage === 'prepare', game: 'Valheim', name: 'Weekend Valheim', needsServerFile: missing,
     needsPassword: false, serverFile: missing ? null : 'C:\\TogetherServer-Synthetic\\valheim_server.exe',
     gameVersion: 'Synthetic', gamePort: 2456, controlPort: 5131, localProfileId: prepared ? profileId : null,
-    branchHash: prepared ? 'A'.repeat(64) : null, readyForManualStart: allowed && prepared && !connection && !missing && !conflict && !ports,
+    branchHash: prepared ? 'A'.repeat(64) : null, readyForManualStart: allowed && prepared && !connection && !missing && !conflict && !ports && !stopped,
+    ...(stopped ? { remedy: { kind: 'ShareStoppedProgress', title: 'Share stopped progress', message: stoppedProgressMessages.required } } : {}),
     running: false, steps: ['permission', 'server', 'save', 'ports', 'connection'].map(key => ({ key,
       state: key === 'permission' && ['permission-unknown', 'permission-review'].includes(stage) ? 'Unknown' :
-        key === 'permission' && !allowed || key === 'server' && missing || key === 'ports' && ports || key === 'connection' && connection ? 'ActionRequired' :
+        key === 'permission' && !allowed || key === 'server' && missing || key === 'ports' && ports || key === 'connection' && connection || key === 'save' && stopped ? 'ActionRequired' :
         key === 'save' && !prepared ? 'Unknown' : 'Ready', message: boundary })) };
 }
 
@@ -108,20 +120,33 @@ export function assertPreparedHostingRequests(state, expectedStarts) {
   return { startRequests: writes.length, prepareRequests: 0 };
 }
 
+export function assertStoppedProgressRequests(state, expectedShares) {
+  const writes = hostingWrites(state);
+  const bodies = state.stoppedProgressShareBodies ?? [];
+  const localProfileId = state.friend.profiles[0]?.id;
+  if (writes.length !== expectedShares || writes.some(item => item.method !== 'POST' || item.path !== `/api/local/friend/${localProfileId}/shared-world/hosting/share-stopped-progress`) ||
+    bodies.length !== expectedShares || bodies.some(body => Object.keys(body).sort().join(',') !== 'branchHash,localProfileId' ||
+      body.localProfileId !== localProfileId || body.branchHash !== 'A'.repeat(64)) || state.simpleHostingPrepared || state.simpleHostingStarted)
+    throw new Error('Stopped progress must use only the expected explicit sharing request and exact copy identity without preparation, Start or replay');
+  return { shareRequests: writes.length, startRequests: 0, prepareRequests: 0,
+    ...(expectedShares ? { shareBody: bodies[0] } : {}) };
+}
+
 // Clock advancement dispatches the automatic read; it does not await its
 // response or React's loading/result paint. Finish both before scroll capture.
-export async function advancePreparedHostingCheck(page, modal, ticks) {
+export async function advancePreparedHostingCheck(page, modal, ticks, buttonName = 'Start hosting') {
   const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
     response.request().method() === 'GET', { timeout: 8000 });
   await page.clock.fastForward(ticks);
   const response = await refreshed;
   if (!response.ok()) throw new Error('The final automatic hosting check did not succeed');
   await response.finished();
-  const start = modal.getByRole('button', { name: 'Start hosting', exact: true });
+  const start = modal.getByRole('button', { name: buttonName, exact: true });
   await page.waitForFunction(button => button.isConnected && !button.disabled, await start.elementHandle(), { timeout: 8000 });
   await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
   if (await modal.getByRole('region', { name: 'Hosting progress', exact: true }).count())
     throw new Error('The final automatic hosting check is still changing the captured dialog');
+  return response;
 }
 
 async function assertVisibleChecks(modal, record) {
@@ -309,6 +334,57 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       if (!open || !stop || Math.abs(open.width - stop.width) > 1 || Math.abs(open.height - stop.height) > 1 ||
           await entryRegion.getByText('Asks Steam to open an installed game. Join the server from the game.', { exact: true }).count())
         throw new Error('Open game and Stop server must have equal dimensions without the intervening helper text');
+    }
+  } else if (testCase.stoppedProgressJourney) {
+    const modal = page.getByRole('dialog', { name: 'Host locally', exact: true });
+    await assertVisibleChecks(modal, record);
+    const share = modal.getByRole('button', { name: 'Share stopped progress', exact: true });
+    await share.waitFor({ state: 'visible', timeout: 8000 });
+    const guide = modal.getByRole('region', { name: 'Local hosting setup guide', exact: true });
+    await guide.getByRole('heading', { name: 'Share this PC\'s stopped progress', exact: true }).waitFor({ state: 'visible', timeout: 8000 });
+    if (await share.count() !== 1 || !await share.isEnabled() ||
+        await modal.getByRole('button', { name: 'Start hosting', exact: true }).count() ||
+        !await guide.getByText(/If the save or setup cannot be verified, keep every copy/u).isVisible() ||
+        !await guide.getByText(/Sharing does not confirm another PC received the save/u).isVisible())
+      throw new Error('Stopped progress needs one explicit sharing footer and accurate review guidance before any Start');
+    assertStoppedProgressRequests(state, 0);
+    record.assertions.push({ stoppedProgressBlockerVisible: true, stoppedProgressGuideVisible: true,
+      openingReadOnly: true, ...assertStoppedProgressRequests(state, 0) });
+    if (testCase.stoppedProgressJourney !== 'required') {
+      const refused = testCase.stoppedProgressJourney === 'refused';
+      if (refused) await page.clock.install();
+      const shared = page.waitForResponse(response => response.url().endsWith('/hosting/share-stopped-progress') &&
+        response.request().method() === 'POST', { timeout: 8000 });
+      await share.click();
+      const result = await (await shared).json();
+      const attempt = modal.getByRole('status', { name: 'Last hosting attempt', exact: true });
+      await attempt.waitFor({ state: 'visible', timeout: 8000 });
+      if (refused) {
+        if (result.ok !== false || result.code !== 'StoppedProgressProofRequired' || result.message !== stoppedProgressMessages.proofRequired)
+          throw new Error('The explicit proof refusal must retain its fixed production result contract');
+        const refreshed = await advancePreparedHostingCheck(page, modal, 10001, 'Share stopped progress');
+        const current = await refreshed.json();
+        if (!current.readyForManualStart || current.code !== 'LocalHostingPrepared' ||
+            !await attempt.getByText(stoppedProgressMessages.proofRequired, { exact: true }).isVisible() ||
+            await modal.getByRole('button', { name: 'Start hosting', exact: true }).count() ||
+            !await guide.getByRole('heading', { name: 'Share this PC\'s stopped progress', exact: true }).isVisible() ||
+            !/last stopped save still needs sharing/u.test(await modal.getByRole('status', { name: 'Last check result', exact: true }).textContent() ?? ''))
+          throw new Error('An automatic generic Prepared read must not erase the proof refusal or replay sharing, preparation or Start');
+        await page.clock.resume();
+        record.assertions.push({ stoppedProgressProofRefusalRetained: true, automaticGenericPreparedPoll: true,
+          automaticReplay: false, ...assertStoppedProgressRequests(state, 1) });
+      } else {
+        const start = modal.getByRole('button', { name: 'Start hosting', exact: true });
+        await start.waitFor({ state: 'visible', timeout: 8000 });
+        await page.waitForFunction(button => button.isConnected && !button.disabled, await start.elementHandle(), { timeout: 8000 });
+        const shareIndex = state.requests.findIndex(item => item.method === 'POST' && item.path.endsWith('/hosting/share-stopped-progress'));
+        if (result.ok !== true || result.code !== 'StoppedProgressShared' || result.message !== stoppedProgressMessages.shared ||
+            !state.stoppedProgressShared || !state.requests.slice(shareIndex + 1).some(item => item.method === 'GET' && item.path.endsWith('/hosting')) ||
+            !await modal.isVisible() || await share.count())
+          throw new Error('Successful sharing needs a fresh read and a separate visible Start action while the server stays stopped');
+        record.assertions.push({ stoppedProgressShared: true, freshHostingReadAfterShare: true, separateManualStartRequired: true,
+          ...assertStoppedProgressRequests(state, 1) });
+      }
     }
   } else if (testCase.readyStartJourney || testCase.readyStartTimeout) {
     const modal = page.getByRole('dialog', { name: 'Host locally', exact: true });

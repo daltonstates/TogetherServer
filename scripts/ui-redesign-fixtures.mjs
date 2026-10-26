@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import * as worldReview from './ui-polish-world-review.mjs';
 import * as accessReview from './ui-polish-access-review.mjs';
-import { simpleHostingPermission, simpleHostingStatus } from './simple-shared-hosting-review.mjs';
+import { simpleHostingPermission, simpleHostingStatus, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
 
 const contract = JSON.parse(readFileSync(new URL('../contracts/host-snapshot.v1.json', import.meta.url), 'utf8'));
 export const fixtureNow = '2026-10-10T16:00:00Z';
@@ -15,6 +15,13 @@ export const fixtureIds = Object.freeze({
   session: '99999999-9999-4999-8999-999999999999'
 });
 const ids = fixtureIds;
+
+export function expectedFixtureRequestAbort(state, request) {
+  return state.simpleHosting === 'ready' && state.hostingStartPending === true && state.hostingStartPendingRequest === true &&
+    request.method === 'GET' && request.error === 'net::ERR_ABORTED' &&
+    request.path === `/api/local/friend/${ids.primary}/shared-world/hosting/progress`;
+}
+
 const root = 'C:\\TogetherServer-Synthetic';
 const endpoint = 'https://192.0.2.10:5131';
 const hash = 'A'.repeat(64);
@@ -207,6 +214,8 @@ export function createFixtureState(scenario = 'host-ready') {
     notifications: { quietMode: false, allowedEvents: ['Lifecycle', 'Backup', 'Access', 'Update'], servers: [], systemState: 'AcceptsNotifications', systemAllowsNotifications: true },
     gettingStarted: { offered: false, intent: 'Choose', dismissed: false }, hostingRemedy: options.hostingRemedy ?? null,
     simpleHosting: options.simpleHosting ?? null, simpleHostingPrepared: false, simpleHostingStarted: false,
+    stoppedProgressShare: options.stoppedProgressShare ?? 'success', stoppedProgressShared: false,
+    stoppedProgressShareRefused: false, stoppedProgressShareBodies: [],
     hostingStartPending: options.hostingStartPending === true,
     hostingProgress: options.hostingProgress ?? null, hostingProgressReads: 0, hostingProgressPending: false,
     directoryRemote: options.directoryRemote ?? null,
@@ -551,7 +560,22 @@ export function routeFixture(state, request) {
       if (state.simpleHostingReadFailure) return unavailable('Hosting automatic checks');
       return reply(simpleHostingStatus(state, id, boundary));
     }
+    if (state.simpleHosting === 'stopped-progress' && !host && suffix === 'shared-world/hosting/share-stopped-progress' && method === 'POST') {
+      const current = simpleHostingStatus(state, id, boundary);
+      if (id !== ids.primary || url.search || !current.allowed || !current.consented || current.running ||
+          Object.keys(body).sort().join(',') !== 'branchHash,localProfileId' ||
+          body.localProfileId !== current.localProfileId || body.branchHash !== current.branchHash ||
+          !['success', 'proof-refusal'].includes(state.stoppedProgressShare)) return null;
+      state.stoppedProgressShareBodies.push(clone(body));
+      if (state.stoppedProgressShare === 'proof-refusal') {
+        state.stoppedProgressShareRefused = true;
+        return reply(result({ ok: false, code: 'StoppedProgressProofRequired', message: stoppedProgressMessages.proofRequired }));
+      }
+      state.stoppedProgressShared = true;
+      return reply(result({ code: 'StoppedProgressShared', message: stoppedProgressMessages.shared }));
+    }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting/prepare' && method === 'POST') {
+      if (state.simpleHosting === 'stopped-progress') return null;
       if (Object.keys(body).sort().join(',') !== 'acceptSplitWarning,allowReceiving,gamePassword,requirePeerConnection,serverFile' ||
           body.allowReceiving !== true || body.acceptSplitWarning !== true || body.requirePeerConnection !== true ||
           body.serverFile !== null || body.gamePassword !== null) return null;
@@ -564,6 +588,7 @@ export function routeFixture(state, request) {
       return reply(simpleHostingStatus(state, id, boundary));
     }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting/start' && method === 'POST') {
+      if (state.simpleHosting === 'stopped-progress' && !state.stoppedProgressShared) return null;
       if (!simpleHostingStatus(state, id, boundary).readyForManualStart || Object.keys(body).sort().join(',') !== 'acceptSplitWarning,branchHash,localProfileId,requestId' ||
           body.branchHash !== 'A'.repeat(64) || body.localProfileId !== id || body.requestId !== null || body.acceptSplitWarning !== true) return null;
       if (state.hostingStartPending) {

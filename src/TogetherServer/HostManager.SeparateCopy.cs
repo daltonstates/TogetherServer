@@ -30,7 +30,7 @@ public sealed partial class HostManager
     // Called only after the lifecycle gate proved exact graceful exit and
     // completed its rolling backup. It never scans a running world.
     internal SharedWorldResult PublishSeparateCopyAfterStopUnderGate(ServerProfile profile,
-        Guid backupId)
+        Guid backupId, CancellationToken cancellationToken = default, Action? requireCurrentSource = null)
     {
         try
         {
@@ -41,7 +41,8 @@ public sealed partial class HostManager
             if (branch is null)
                 return new(false, "RecoverySnapshotPublishFailed",
                     "The completed backup remains local; the recovery branch identity needs review.");
-            return new SharedWorldSeparateCopyStore(data).PublishAfterStop(branch, profile, backupId, backups);
+            return new SharedWorldSeparateCopyStore(data).PublishAfterStop(branch, profile, backupId, backups,
+                cancellationToken, requireCurrentSource);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
             CryptographicException or UnauthorizedAccessException or ArgumentException)

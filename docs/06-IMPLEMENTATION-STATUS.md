@@ -139,95 +139,121 @@ history; published versions have their own
 
 ## Current delivery
 
-Candidate 0.3.3.13 addresses the prepared-copy Start loop. A freshly checked
-prepared copy now offers **Start hosting**, sends one exact guarded Start and
-does not repeat Prepare. Typed blockers and timeout/navigation replay guards
-remain enforced. Start resolves the latest save once after address registration;
-its ten-second metadata budget covers its own world's waits and network work.
-It does not refresh every saved Host or repeat payload exchange. The immutable
-source, actual working world, current permission/consent, ancestry and final
-in-gate observation remain verified. Repeated announcement counters alone do
-not invalidate an otherwise identical material save observation.
+Candidate 0.3.3.14 adds an explicit **Share stopped progress** action for a
+retained local session whose completed Stop has not been published. Its save
+check is actionable and cannot claim Start readiness. Refresh keeps the failure
+and repair guidance visible. Sharing accepts the exact selected local profile
+and signed branch, carries no Start intent, and requires a separate Start click
+after successful publication and fresh checks. Current permission, consent,
+history and running-state changes take priority over retained guidance.
 
-Per-world metadata and challenge/exchange serialization preserve cursor and
-single-use challenge rules without holding metadata through payload work.
-Address registration advances only an already registered exact world's verified
-local roster and effective consent. Membership refresh merges current values
-atomically. Consent reads preserve retained connection identity and withdrawal
-without waiting for unrelated network-held connection gates. A confirmed or
-not-yet-due acknowledgement does not rehash a save; emitted receipts still
-require current verified payloads, with exact held-lease reuse within a request.
+Recovery preserves the old backup and every world/history record. It requires
+an unambiguous latest typed graceful-stop/Completed archive, definitive absence
+of that process, no active or uncertain overlapping writer or pending world
+operation, the latest Rolling record by append order, and exact whole-world and
+decoded full setup equality with its completion metadata. A changed old payload
+remains rejected. A new candidate must match the expected files/setup before
+completion/cataloguing and then pass ordinary current-authority, key, consent,
+fork, orphan and signed-parent publication checks. It skips retention and keeps
+failure history. Fresh recapture metadata binds the original backup and stopped
+operation for retry; new real Stop archives bind their completed backup ID.
+Legacy time intervals are corroborating local metadata, not signed exit proof.
 
-Backups now verify the copied destination and protected setup before creating
-completion metadata, promotion or catalog membership. Changed candidates return
-`BackupCompletionIntegrityFailed`; prior backups and live worlds stay intact.
-The generated regression covers the observed 43-to-47-byte configuration
-mismatch, equal-size tampering, protected-setup changes and missing setup.
+The physical laptop is now independently confirmed as the published installed
+0.3.3.13, source `1448f87d8acf156af883e96ea6c2ad2fda662d54`, SHA-256
+`831e0206801d5f326e54b403391512fdca26d4810c9cd607f22cc197f66ded79`, same Windows
+session and production default root. The owner reports both PCs updated and
+main world stopped; actual remote EXE path/hash remain inaccessible. No app-data
+reset, re-pairing, key replacement, trust-floor reset or world overwrite was used.
+An automatic guarded replacement/relaunch was rejected before execution by
+approval review; the owner performed the update manually.
 
-The owner explicitly approved an unattended laptop session limited to this
-world, with the main Host stopped. The laptop is independently confirmed as the
-published 0.3.3.12 installed EXE, hash
-`0429caa78177872c5783ca9d5d071896190c60a8d6d80b1fbb731c035390bbac`, production
-default root. The connected main Host reports 0.3.3.12 and compatible protocol;
-its actual running EXE path/hash is not remotely available. No app-data reset,
-re-pairing, key replacement, trust-floor reset or original-world overwrite was
-used. Read-only evidence stays owner-only on this laptop, outside Git.
+The prior installed 0.3.3.12 test hashed all 315 received files (119,452,903
+bytes) in 1.647 seconds. Its UI hit the absolute 120-second Start deadline.
+The actual guarded backend Start succeeded after 196.3 seconds, reached real
+Valheim Ready with fresh trusted zero occupancy, and stopped gracefully in 6.5
+seconds with the exact process gone. Its rolling backup was catalogued complete
+but publication rejected it: pure verification found `ReadAndVerifyManifest ->
+VerifyTree`, `InvalidDataException`, exactly one reviewed text file whose
+47 bytes/hash differed from the manifest's 43. Paths and count matched.
+Its writer/replacement mechanism is unestablished. The failed backup is kept;
+a separate normal offline manual checkpoint verified every payload/setup hash.
 
-The actual 315-file, 119,452,903-byte received copy passed every file hash in
-1.647 seconds. An observed UI Start ended at its exact 120-second deadline.
-One guarded Start against the installed app then succeeded in 196.3 seconds:
-first peer sync/verification at 84.8 seconds, address phase at 90.9, second peer
-sync at 124.1, final verification at 184.3 and Start at 193.3. The real server
-reached Ready with a fresh trusted zero count. Graceful Stop completed in 6.5
-seconds; the exact managed process exited and no Valheim server remained.
-Native automation read the dialog but clicks failed with `coordinate input
-geometry is unavailable`; fixed same-origin app endpoints exercised the actual
-installed backend instead. No fixture, installer or full-release suite ran on
-the laptop.
+The real 0.3.3.13 UI check completed in 3.32 seconds with the same prepared
+profile/branch, **Start hosting**, no fabricated zero-byte row and no timeout.
+The explicit UI Start at 23:02:20 UTC failed after 23.58 seconds in Verifying,
+before any game process. All 315 protected-source file checks completed. A
+non-mutating deterministic replay identifies the local-continuation predicate:
+the started working copy has five file differences from shared base version 3,
+while no published continuation exists. Pure replay of `VerifiedSuccessorCopy`
+returns false at its exact file-inventory predicate: five working-only paths
+and five base-only paths, with 315 files in each. Its caller would throw
+`InvalidDataException`; this is deterministic predicate replay, not an attached
+runtime stack. Passive status then returned Prepared
+and the progress store used its generic interrupted fallback, hiding the cause.
 
-That Stop completed a rolling backup but sharing refused it. A reviewed pure
-read-only verifier identified `ReadAndVerifyManifest -> VerifyTree`,
-`InvalidDataException`, ordered entry mismatch: exactly one reviewed text
-configuration was 47 bytes instead of its manifest's 43 and had a different
-hash. All 315 paths/counts matched. The source working configuration and captured
-setup remained 43 bytes. The failed backup remains preserved; its writer or
-replacement mechanism is unestablished. A separate normal offline checkpoint
-completed and independently verified all payload/setup hashes. It did not
-rewrite the failed backup or any signed record. Neither a signed newer save
-nor delivery to the main Host is proved by those facts.
+Private read-only comparison shows all 315 working files exactly match both
+the last Rolling completion manifest and the healthy manual manifest; one old
+Rolling payload entry fails its manifest. The full DPAPI-decoded setup snapshots
+match. Exactly one matching summary-version-1 archive has typed GracefulStop,
+Completed backup and Ready observed, a matching game/world, ordered Stop/backup/
+archive interval and a definitively absent prior process. That legacy archive
+has no exact backup-ID field. Evidence is owner-only outside Git; diagnostics
+instantiate no LocalData, recovery or key helper against production. Metadata
+captures use repeated bytes/timestamps rather than an atomic app lock. No
+0.3.3.14 binary has been tested physically yet, and no new signed save or exact
+owner/online-peer delivery receipt has been proved.
 
-Current validation: four focused source groups pass, including guided hosting,
-replication, completed-save delivery and bounded discovery; the two new
-integrity/discovery groups pass with the material-observation cases. All 1,509
-UI tests in 109 files pass with two workers. TypeScript, production bundle and
-lint pass; compilation reports zero warnings/errors. The full 77-group source
-run passes. Hosted candidate review and actual fixed-binary retry remain pending.
-Local source-link cases are skipped for this account's missing symlink
-capability. Real client join, recognizable saved change, exact new receipts on
-every eligible online updated PC, and saved restart remain unverified.
+Current 0.3.3.14 validation passes all 78 source/synthetic groups and all 1,528
+UI tests in 109 files. The final recompiled hosting/recovery groups pass;
+unreadable publication metadata cannot project a prepared result. The 181
+focused UI checks and 57 pure fixture checks pass. The render inventory retains
+all previous 99 captures and adds nine stopped-progress captures, totaling 108;
+actual hosted capture remains pending. Strict solution compilation has zero
+warnings/errors; formatting, TypeScript, lint, production bundle and desktop
+diagnostic isolation pass. One internal source-link scenario is skipped for
+this local account's missing symlink capability. The positive fake-peer late
+publication check passes: source, owner and observer select child 4 by ancestry;
+exact owner/member receipts and payloads verify while the closed terminal and
+original world/default pointer remain unchanged. Hosted acceptance is pending.
+The source regression uses generated identities and disposable files.
+No fixture, installer or full-release suite runs on this laptop. Real client
+join, recognizable saved change, new-save receipts and saved restart remain
+separate physical acceptance.
 
-No 0.3.3.13 tag or prerelease exists yet; both were checked unused. The published
-[0.3.3.12 preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.12)
-uses source `420c90963d6497f19735fca7eab585f4b9267a90`, tag object
-`b008e574e6f6662b40a6615f2677313eb730a57e`, release ID `423645454`, published
-2026-10-25 20:32:59 UTC. Its portable is 66,171,750 bytes with the hash above;
-installer is 60,633,064 bytes, SHA-256
-`78d05d7df9b2b0095b3fde5ef141c622e67fe3494cc632d8290a576446ede3c2`.
-All four assets/checksums, version resources and exact tag/source were verified
-anonymously. Both EXEs are unsigned. The inventory contains 27 releases;
-all prior records/assets were preserved and stable/latest remains 0.3.3.
+The published [0.3.3.13 prerelease](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.13)
+is release ID `423712444`, published 2026-10-25 22:57:55 UTC, annotated tag
+`517e3dfac428fefbd4bc8301984e7852b2c05a22` pointing to the source above. Its
+portable is 66,177,213 bytes with the hash above. Installer is 60,636,705 bytes,
+SHA-256 `931e005cd546389f595266713134f499f4ad1a33dfd9db50d511a701e2139290`.
+All four public assets/checksums, version resources and tag/source were verified
+anonymously; installer version resource strings contain padding. Both EXEs are
+unsigned. All 27 prior releases/assets were preserved; inventory is 28 and
+stable/latest remains 0.3.3. Version/tag 0.3.3.14 were checked unused.
 
-The [0.3.3.12 candidate run](https://github.com/daltonstates/TogetherServer/actions/runs/40225799422)
-passed 75 source groups, 1,501 UI tests, 93 hosting captures, pairing, automatic
-sharing, compatibility and packaging. Two Existing attempts failed separately
-on a receiving-stage access denial and warned-copy Stop; their causes remain
-unestablished. The [unchanged-candidate replay](https://github.com/daltonstates/TogetherServer/actions/runs/40229076009)
-passed both isolated cases and all 27 Existing gates, including core 114/0,
-Shared Worlds 11/0, Companion 46/0 and 4,102-version history catch-up. Later
-passes do not erase those failures. Native notification acceptance remains
-blocked by Windows QuietTime: twelve required cases pass and one is blocked;
-all fourteen separate window controls pass. Full native acceptance remains
-incomplete; packaging flags remain false.
+The [0.3.3.13 candidate run](https://github.com/daltonstates/TogetherServer/actions/runs/40240756633)
+passed all 27 Existing gates, core checks 114/0, core remote journey 14 groups,
+Shared Worlds 11/0 with zero recovery scenarios skipped, Companion 46/0 and the
+4,102-version history catch-up. It passed 77 source groups, 1,509 UI tests in
+109 files, strict compilation, formatting, TypeScript, lint, bundle, two ordinary
+nine-stage handoffs, six compatibility/update lanes, six installer cases and
+all three actual wizard choices. Browser has 14 passes and three unexercised
+boundaries. Local source-link cases were skipped for account capability; hosted
+source checks exercised them. Full native acceptance is blocked by QuietTime:
+12 required passes, one notification block, one development-startup skip; all
+14 separate window-control cases pass. Packaging acceptance flags remain false.
+
+That original run also failed pairing preparation expectations and three
+hosting timeout captures. The [unchanged-candidate retest](https://github.com/daltonstates/TogetherServer/actions/runs/40242713141)
+uses separate verification source `03c51f5666e2dc3d5f73b6440d126d5881638ae0`.
+It passed 30 pairing stages, failed one later LAN lost-response cleanup Start
+with LatestSaveChanged and left one receipt stage NotRun. All exact cleanup
+reports show zero remaining disposable processes. Its 99 hosting attempts
+include 12 captures, 84 intentional-error captures and three failures: two
+aborted passive progress reads and one changing scroll capture. Start-count,
+no-Prepare and no-replay assertions passed. Those failed runs remain evidence;
+harness correction and new-candidate verification continue. Capture completion
+alone is not a claim that every screenshot was visually reviewed.
 
 ## Repository maintenance
 

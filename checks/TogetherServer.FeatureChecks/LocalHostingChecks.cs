@@ -69,6 +69,13 @@ internal static class LocalHostingChecks
             $"ports={prepared.GamePort}/{prepared.ControlPort}/{fixture.ControlPort}, " +
             $"steps={string.Join(',', prepared.Steps.Select(step => step.Key + ':' + step.State))}; {prepared.Message}");
         var passive = await fixture.Service.StatusAsync(fixture.ProfileId);
+        var backupsBeforeInvalidShare = fixture.Data.LoadBackupCatalog().Records.Count;
+        var invalidShare = await fixture.Service.ShareStoppedProgressAsync(fixture.ProfileId,
+            new(Guid.NewGuid(), prepared.BranchHash!), CancellationToken.None);
+        Require(!invalidShare.Ok && invalidShare.Code == "StoppedProgressSharingChanged" &&
+            fixture.Data.LoadBackupCatalog().Records.Count == backupsBeforeInvalidShare &&
+            fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0,
+            "a stopped-save sharing request crossed its exact local identity or started a process");
         var stamp = new string('D', 64);
         fixture.Manager.SharedHostingObservation = _ => stamp;
         await fixture.Manager.RecordHostingObservationAsync(prepared.LocalProfileId!.Value,

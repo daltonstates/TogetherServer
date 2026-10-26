@@ -67,7 +67,8 @@ public sealed record ManagedRunArchive(Guid ProfileId, Guid OperationId, string 
     long? DurationSeconds = null, ServerSessionEndReason EndReason = ServerSessionEndReason.Unavailable,
     ServerSessionOutcome Outcome = ServerSessionOutcome.Unavailable,
     int? LastTrustedOnlinePlayers = null, int? MaximumTrustedOnlinePlayers = null,
-    ServerSessionBackupResult BackupResult = ServerSessionBackupResult.Unavailable);
+    ServerSessionBackupResult BackupResult = ServerSessionBackupResult.Unavailable,
+    Guid? CompletedBackupId = null);
 
 public sealed record RecentServerSession(Guid ProfileId, Guid OperationId, string GameKind,
     DateTimeOffset? StartedUtc, DateTimeOffset? EndedUtc, long? DurationSeconds,
@@ -96,6 +97,10 @@ public sealed class WorldBackupRecord
     public long SizeBytes { get; set; }
     public int FileCount { get; set; }
     public bool SetupIncluded { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? RecapturedFromBackupId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? StoppedOperationId { get; set; }
     // Owner bookmarks live only in the catalog. They never change the completed
     // manifest, payload hashes, protected setup, or signed sharing lineage.
     public string Label { get; set; } = "";
@@ -164,9 +169,16 @@ internal sealed class BackupManifest
     public DateTimeOffset CreatedUtc { get; set; }
     public List<BackupManifestFile> Files { get; set; } = [];
     public string? SetupSha256 { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? RecapturedFromBackupId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? StoppedOperationId { get; set; }
 }
 
 internal sealed record BackupManifestFile(string Path, long Length, string Sha256);
+internal sealed record StoppedSaveBackupProof(WorldBackupRecord Backup, BackupManifest Manifest,
+    ServerSetupSnapshot Setup, WorldBackupRecord OriginalBackup, BackupManifest OriginalManifest,
+    ServerSetupSnapshot OriginalSetup, string CompletionIdentity, string OriginalCompletionIdentity);
 
 internal sealed partial class WorldBackupService
 {
@@ -210,6 +222,314 @@ internal sealed partial class WorldBackupService
             return data.LoadBackupCatalog().Records.Where(item => item.ProfileId == profile.Id &&
                 item.Kind == profile.Kind && item.WorldId == profile.WorldId &&
                 item.BackupKind == BackupKinds.Rolling).ToArray();
+    }
+
+    internal bool HasPendingRestore => data.LoadState(RestoreTransactionsFile, new List<WorldRestoreTransaction>()).Count != 0;
+
+    // Metadata and protected setup are evidence for an explicit owner recapture,
+    // not permission to consume the old payload. Never fall back to an older
+    // rolling record when the latest one cannot be proved.
+    internal StoppedSaveBackupProof ReadStoppedSaveProof(ServerProfile profile)
+    {
+        lock (sync)
+        {
+            var catalog = data.LoadBackupCatalog();
+            if (catalog.Records is null || catalog.Failures is null || catalog.Records.Any(item => item is null) ||
+                catalog.Records.Select(item => item.Id).Distinct().Count() != catalog.Records.Count)
+                throw new InvalidDataException("The stopped backup catalog is invalid.");
+            var latest = catalog.Records.LastOrDefault(item => item.ProfileId == profile.Id && item.BackupKind == BackupKinds.Rolling) ??
+                throw new InvalidDataException("The latest stopped backup is unavailable.");
+            var selected = ReadStoppedSaveMetadata(profile, latest);
+            if (latest.RecapturedFromBackupId is not { } originalId)
+                return new(latest, selected.Manifest, selected.Setup, latest, selected.Manifest, selected.Setup,
+                    selected.Identity, selected.Identity);
+            var original = catalog.Records.SingleOrDefault(item => item.Id == originalId) ??
+                throw new InvalidDataException("The original stopped backup is unavailable.");
+            if (original.RecapturedFromBackupId is not null || original.StoppedOperationId is not null ||
+                catalog.Records.IndexOf(original) >= catalog.Records.IndexOf(latest))
+                throw new InvalidDataException("Stopped backup provenance is recursive or out of order.");
+            var anchor = ReadStoppedSaveMetadata(profile, original);
+            if (!selected.Manifest.Files.SequenceEqual(anchor.Manifest.Files) || !SameStoppedSetup(selected.Setup, anchor.Setup))
+                throw new InvalidDataException("The recaptured stopped backup changed its original proof.");
+            return new(latest, selected.Manifest, selected.Setup, original, anchor.Manifest, anchor.Setup,
+                selected.Identity, anchor.Identity);
+        }
+    }
+
+    private (BackupManifest Manifest, ServerSetupSnapshot Setup, string Identity) ReadStoppedSaveMetadata(
+        ServerProfile profile, WorldBackupRecord record)
+    {
+        if (record.Id == Guid.Empty || record.ProfileId != profile.Id || record.Kind != profile.Kind ||
+            record.WorldId != profile.WorldId || record.BackupKind != BackupKinds.Rolling || !record.SetupIncluded ||
+            record.CreatedUtc == default || record.FileCount is < 1 or > SharedWorldService.MaximumFiles ||
+            record.SizeBytes is < 0 or > SharedWorldService.MaximumSharedWorldBytes ||
+            (record.RecapturedFromBackupId is null) != (record.StoppedOperationId is null) ||
+            record.RecapturedFromBackupId is { } origin && (origin == Guid.Empty || origin == record.Id) ||
+            record.StoppedOperationId == Guid.Empty)
+            throw new InvalidDataException("The stopped backup catalog binding is invalid.");
+        var directory = BackupDirectory(profile.Id, record.Id);
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, directory);
+        var marker = Path.Combine(directory, "complete.json");
+        if (!File.Exists(marker) || (File.GetAttributes(marker) & FileAttributes.ReparsePoint) != 0 ||
+            new FileInfo(marker).Length is < 1 or > SharedWorldService.MaximumManifestBytes)
+            throw new InvalidDataException("The stopped backup completion proof is unavailable.");
+        using var markerInput = new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (markerInput.Length is < 1 or > SharedWorldService.MaximumManifestBytes ||
+            (File.GetAttributes(markerInput.SafeFileHandle) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("The stopped backup completion proof is unavailable.");
+        var bytes = new byte[checked((int)markerInput.Length)];
+        markerInput.ReadExactly(bytes);
+        using (var document = JsonDocument.Parse(bytes)) RequireUniqueStoppedProperties(document.RootElement);
+        var manifest = JsonSerializer.Deserialize<BackupManifest>(bytes,
+            new JsonSerializerOptions(Json) { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow });
+        if (manifest is null || manifest.BackupId != record.Id || manifest.ProfileId != record.ProfileId ||
+            manifest.Kind != record.Kind || manifest.WorldId != record.WorldId || manifest.BackupKind != record.BackupKind ||
+            manifest.CreatedUtc != record.CreatedUtc || manifest.RecapturedFromBackupId != record.RecapturedFromBackupId ||
+            manifest.StoppedOperationId != record.StoppedOperationId || manifest.Files is null ||
+            manifest.Files.Count != record.FileCount || manifest.Files.Any(item => item is null ||
+                item.Path is not { Length: > 0 and <= 4096 } || item.Length < 0 ||
+                !SharedWorldPeerTrust.ValidHash(item.Sha256)) ||
+            manifest.Files.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != record.FileCount ||
+            !manifest.Files.SequenceEqual(manifest.Files.OrderBy(item => item.Path, StringComparer.Ordinal)) ||
+            manifest.Files.Aggregate(0L, (total, item) => checked(total + item.Length)) != record.SizeBytes ||
+            !SharedWorldPeerTrust.ValidHash(manifest.SetupSha256))
+            throw new InvalidDataException("The stopped backup completion proof does not match its catalog.");
+        foreach (var file in manifest.Files) _ = SharedWorldService.SafeChild(Path.Combine(directory, "payload"), file.Path);
+        var setupPath = Path.Combine(directory, "setup.protected");
+        using var setupInput = new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (setupInput.Length is < 1 or > 3 * 1024 * 1024 + 512 ||
+            (File.GetAttributes(setupInput.SafeFileHandle) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("The stopped setup checkpoint is unavailable.");
+        var setupBytes = new byte[checked((int)setupInput.Length)];
+        setupInput.ReadExactly(setupBytes);
+        if (!Convert.ToHexString(SHA256.HashData(setupBytes)).Equals(manifest.SetupSha256, StringComparison.OrdinalIgnoreCase))
+            throw new CryptographicException("The stopped setup checkpoint hash changed.");
+        ServerSetupSnapshot setup;
+        try
+        {
+            setup = ServerSetupSnapshots.Read(profile, setupBytes);
+            _ = SharedWorldPortableSetupReader.Capture(setup);
+        }
+        catch (NullReferenceException error)
+        {
+            // Legacy setup readers assume their collection entries are not
+            // null. A malformed protected checkpoint must remain a refusal.
+            throw new InvalidDataException("The stopped setup checkpoint is invalid.", error);
+        }
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(record, Json));
+        hash.AppendData(bytes);
+        return (manifest, setup, Convert.ToHexString(hash.GetHashAndReset()));
+    }
+
+    private static void RequireUniqueStoppedProperties(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name)) throw new InvalidDataException("Duplicate stopped backup metadata is invalid.");
+                RequireUniqueStoppedProperties(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+            foreach (var value in element.EnumerateArray()) RequireUniqueStoppedProperties(value);
+    }
+
+    private static bool SameStoppedSetup(ServerSetupSnapshot left, ServerSetupSnapshot right) =>
+        JsonSerializer.Serialize(left) == JsonSerializer.Serialize(right);
+
+    private void RequireStoppedSetup(ServerProfile profile, StoppedSaveBackupProof proof)
+    {
+        var setup = ServerSetupSnapshots.Read(profile, ServerSetupSnapshots.Capture(profile, data));
+        if (!SameStoppedSetup(setup, proof.OriginalSetup) ||
+            JsonSerializer.Serialize(SharedWorldPortableSetupReader.Capture(setup)) !=
+            JsonSerializer.Serialize(SharedWorldPortableSetupReader.Capture(proof.OriginalSetup)))
+            throw new InvalidDataException("The stopped server setup changed.");
+    }
+
+    internal void VerifyStoppedSaveLayoutAndSetup(ServerProfile profile, string saveDirectory, StoppedSaveBackupProof proof,
+        CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = ReadStoppedSaveProof(profile);
+            if (current.Backup.Id != proof.Backup.Id || current.CompletionIdentity != proof.CompletionIdentity ||
+                current.OriginalBackup.Id != proof.OriginalBackup.Id || current.OriginalCompletionIdentity != proof.OriginalCompletionIdentity)
+                throw new InvalidDataException("The latest stopped backup proof changed.");
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, saveDirectory);
+            var found = new List<(string Path, long Length)>();
+            var pending = new Queue<string>(); pending.Enqueue(saveDirectory);
+            while (pending.Count != 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var directory = new DirectoryInfo(pending.Dequeue());
+                if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException();
+                foreach (var child in directory.EnumerateDirectories())
+                {
+                    if ((child.Attributes & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException();
+                    pending.Enqueue(child.FullName);
+                }
+                foreach (var file in directory.EnumerateFiles())
+                {
+                    if ((file.Attributes & FileAttributes.ReparsePoint) != 0 || found.Count >= SharedWorldService.MaximumFiles)
+                        throw new InvalidDataException();
+                    found.Add((Path.GetRelativePath(saveDirectory, file.FullName).Replace('\\', '/'), file.Length));
+                }
+            }
+            if (!found.OrderBy(item => item.Path, StringComparer.Ordinal).SequenceEqual(
+                proof.OriginalManifest.Files.Select(item => (item.Path, item.Length)))) throw new InvalidDataException();
+            RequireStoppedSetup(profile, proof);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    internal void VerifyStoppedSaveSource(ServerProfile profile, string saveDirectory, StoppedSaveBackupProof proof,
+        CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = ReadStoppedSaveProof(profile);
+            if (current.Backup.Id != proof.Backup.Id || current.CompletionIdentity != proof.CompletionIdentity ||
+                current.OriginalBackup.Id != proof.OriginalBackup.Id || current.OriginalCompletionIdentity != proof.OriginalCompletionIdentity)
+                throw new InvalidDataException("The latest stopped backup proof changed.");
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, saveDirectory);
+            VerifyTree(SafeWorldRoot(saveDirectory), proof.OriginalManifest.Files, cancellationToken);
+            RequireStoppedSetup(profile, proof);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    // Hold the proved files against writes/deletion for the bounded recapture
+    // and publication. Full enumeration still rejects added or missing paths.
+    internal IDisposable PinStoppedSaveSource(ServerProfile profile, string saveDirectory, StoppedSaveBackupProof proof,
+        CancellationToken cancellationToken)
+    {
+        var held = new StoppedSaveFiles();
+        try
+        {
+            VerifyStoppedSaveSource(profile, saveDirectory, proof, cancellationToken);
+            foreach (var file in proof.OriginalManifest.Files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var path = SharedWorldService.SafeChild(saveDirectory, file.Path);
+                held.Files.Add(new(path, FileMode.Open, FileAccess.Read, FileShare.Read));
+            }
+            VerifyStoppedSaveSource(profile, saveDirectory, proof, cancellationToken);
+            return held;
+        }
+        catch { held.Dispose(); throw; }
+    }
+
+    private sealed class StoppedSaveFiles : IDisposable
+    {
+        internal readonly List<FileStream> Files = [];
+        public void Dispose() { foreach (var file in Files) file.Dispose(); }
+    }
+
+    internal bool StoppedSavePayloadVerified(ServerProfile profile, StoppedSaveBackupProof proof, CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            try
+            {
+                _ = ReadAndVerifyManifest(proof.Backup, BackupDirectory(profile.Id, proof.Backup.Id), cancellationToken);
+                return true;
+            }
+            catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error)) { return false; }
+        }
+    }
+
+    internal WorldBackupResult RecaptureStoppedSave(ServerProfile profile, string saveDirectory, StoppedSaveBackupProof proof,
+        Guid stoppedOperationId, Action requireCurrentSource, CancellationToken cancellationToken)
+    {
+        lock (sync)
+        {
+            var id = Guid.NewGuid();
+            var profileRoot = ProfileRoot(profile.Id);
+            var stage = Path.Combine(profileRoot, id.ToString("N") + ".staging");
+            try
+            {
+                if (stoppedOperationId == Guid.Empty) throw new InvalidDataException("The stopped session proof is unavailable.");
+                VerifyStoppedSaveSource(profile, saveDirectory, proof, cancellationToken);
+                requireCurrentSource();
+                Directory.CreateDirectory(profileRoot);
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, profileRoot);
+                EnsureFreeSpace(profileRoot, proof.OriginalBackup.SizeBytes, profile.Backups.MinimumFreeSpaceMb);
+                Directory.CreateDirectory(stage);
+                var payload = Path.Combine(stage, "payload");
+                Directory.CreateDirectory(payload);
+                var copied = CopyTree(saveDirectory, payload, cancellationToken);
+                var setupBytes = ServerSetupSnapshots.Capture(profile, data);
+                if (!SameStoppedSetup(ServerSetupSnapshots.Read(profile, setupBytes), proof.OriginalSetup))
+                    throw new InvalidDataException("The stopped server setup changed.");
+                File.WriteAllBytes(Path.Combine(stage, "setup.protected"), setupBytes);
+                var setupSha = Convert.ToHexString(SHA256.HashData(setupBytes));
+                BeforeCompletionVerificationForChecks?.Invoke(stage);
+                VerifyTree(payload, proof.OriginalManifest.Files, cancellationToken);
+                VerifySetupFile(stage, setupSha, true);
+                if (!copied.Files.SequenceEqual(proof.OriginalManifest.Files))
+                    throw new InvalidDataException("The copied stopped save changed.");
+                VerifyStoppedSaveSource(profile, saveDirectory, proof, cancellationToken);
+                requireCurrentSource();
+                cancellationToken.ThrowIfCancellationRequested();
+                var created = clock.GetUtcNow();
+                var manifest = new BackupManifest
+                {
+                    BackupId = id,
+                    ProfileId = profile.Id,
+                    Kind = profile.Kind,
+                    WorldId = profile.WorldId,
+                    BackupKind = BackupKinds.Rolling,
+                    CreatedUtc = created,
+                    Files = copied.Files,
+                    SetupSha256 = setupSha,
+                    RecapturedFromBackupId = proof.OriginalBackup.Id,
+                    StoppedOperationId = stoppedOperationId
+                };
+                File.WriteAllText(Path.Combine(stage, "complete.json"), JsonSerializer.Serialize(manifest, Json));
+                cancellationToken.ThrowIfCancellationRequested();
+                Directory.Move(stage, BackupDirectory(profile.Id, id));
+                var record = new WorldBackupRecord
+                {
+                    Id = id,
+                    ProfileId = profile.Id,
+                    Kind = profile.Kind,
+                    WorldId = profile.WorldId,
+                    BackupKind = BackupKinds.Rolling,
+                    CreatedUtc = created,
+                    SizeBytes = copied.SizeBytes,
+                    FileCount = copied.Files.Count,
+                    SetupIncluded = true,
+                    RecapturedFromBackupId = proof.OriginalBackup.Id,
+                    StoppedOperationId = stoppedOperationId
+                };
+                VerifyStoppedSaveSource(profile, saveDirectory, proof, cancellationToken);
+                requireCurrentSource();
+                cancellationToken.ThrowIfCancellationRequested();
+                var catalog = data.LoadBackupCatalog();
+                catalog.Records.Add(record);
+                // Explicit recovery preserves every earlier record, payload,
+                // completion proof and failure. Normal retention never runs.
+                data.SaveBackupCatalog(catalog);
+                return new(true, "StoppedSaveRecaptured", "A fresh stopped-save backup was verified. Every earlier backup was kept.", record);
+            }
+            catch (OperationCanceledException)
+            {
+                try { SafeDeleteDirectory(stage, profileRoot); }
+                catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException or InvalidOperationException) { }
+                throw;
+            }
+            catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
+            {
+                try { SafeDeleteDirectory(stage, profileRoot); }
+                catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException or InvalidOperationException) { }
+                return new(false, "StoppedProgressProofRequired", "The stopped save could not be matched to its latest completed backup. Existing worlds and backups were kept.");
+            }
+        }
     }
 
     public WorldBackupStatus Status(Guid profileId) => Statuses([profileId])[profileId];
@@ -391,30 +711,44 @@ internal sealed partial class WorldBackupService
         }
     }
 
-    internal (BackupManifest Manifest, string PayloadRoot) ReadVerifiedTransfer(ServerProfile profile, Guid backupId)
+    internal (BackupManifest Manifest, string PayloadRoot) ReadVerifiedTransfer(ServerProfile profile, Guid backupId,
+        CancellationToken cancellationToken = default)
     {
         lock (sync)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var record = data.LoadBackupCatalog().Records.SingleOrDefault(item =>
                 item.Id == backupId && item.ProfileId == profile.Id && item.Kind == profile.Kind &&
                 item.WorldId == profile.WorldId && item.BackupKind == BackupKinds.Rolling);
             if (record is null) throw new InvalidDataException("A completed rolling backup was not found.");
             var directory = BackupDirectory(profile.Id, backupId);
-            return (ReadAndVerifyManifest(record, directory), Path.Combine(directory, "payload"));
+            return (ReadAndVerifyManifest(record, directory, cancellationToken), Path.Combine(directory, "payload"));
         }
     }
 
-    public ServerSetupSnapshot? ReadSetup(ServerProfile profile, Guid backupId)
+    public ServerSetupSnapshot? ReadSetup(ServerProfile profile, Guid backupId, CancellationToken cancellationToken = default)
     {
         lock (sync)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var record = data.LoadBackupCatalog().Records.SingleOrDefault(item =>
                 item.Id == backupId && item.ProfileId == profile.Id);
             if (record is null || !record.SetupIncluded) return null;
             var directory = BackupDirectory(profile.Id, backupId);
-            var manifest = ReadAndVerifyManifest(record, directory);
+            var manifest = ReadAndVerifyManifest(record, directory, cancellationToken);
             if (manifest.SetupSha256 is null) return null;
-            return ServerSetupSnapshots.Read(profile, File.ReadAllBytes(Path.Combine(directory, "setup.protected")));
+            // Decode exactly the bytes whose hash was checked, rather than
+            // reopening the checkpoint after a separate verification pass.
+            using var input = new FileStream(Path.Combine(directory, "setup.protected"), FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (input.Length is < 1 or > 3 * 1024 * 1024 + 512 ||
+                (File.GetAttributes(input.SafeFileHandle) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("The protected setup checkpoint is missing or linked.");
+            var bytes = new byte[checked((int)input.Length)];
+            input.ReadExactly(bytes);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Convert.ToHexString(SHA256.HashData(bytes)).Equals(manifest.SetupSha256, StringComparison.OrdinalIgnoreCase))
+                throw new CryptographicException("The setup checkpoint hash changed.");
+            return ServerSetupSnapshots.Read(profile, bytes);
         }
     }
 
@@ -747,8 +1081,9 @@ internal sealed partial class WorldBackupService
         data.SaveBackupCatalog(catalog);
     }
 
-    private BackupManifest ReadAndVerifyManifest(WorldBackupRecord record, string directory)
+    private BackupManifest ReadAndVerifyManifest(WorldBackupRecord record, string directory, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!Contains(data.BackupsRoot, directory) || !Directory.Exists(directory))
             throw new InvalidDataException("The completed backup directory is missing.");
         var marker = Path.Combine(directory, "complete.json");
@@ -761,10 +1096,12 @@ internal sealed partial class WorldBackupService
             !string.Equals(manifest.WorldId, record.WorldId, StringComparison.Ordinal) ||
             !string.Equals(manifest.BackupKind, record.BackupKind, StringComparison.Ordinal) ||
             manifest.CreatedUtc != record.CreatedUtc || manifest.Files.Count != record.FileCount ||
+            manifest.RecapturedFromBackupId != record.RecapturedFromBackupId || manifest.StoppedOperationId != record.StoppedOperationId ||
             manifest.Files.Aggregate(0L, (total, file) => checked(total + file.Length)) != record.SizeBytes)
             throw new InvalidDataException("The backup completion marker is missing or does not match its catalog record.");
-        VerifyTree(Path.Combine(directory, "payload"), manifest.Files);
+        VerifyTree(Path.Combine(directory, "payload"), manifest.Files, cancellationToken);
         VerifySetupFile(directory, manifest.SetupSha256, record.SetupIncluded);
+        cancellationToken.ThrowIfCancellationRequested();
         return manifest;
     }
 
@@ -800,7 +1137,8 @@ internal sealed partial class WorldBackupService
             throw new CryptographicException("The setup checkpoint hash changed.");
     }
 
-    private static (long SizeBytes, List<BackupManifestFile> Files) CopyTree(string source, string destination)
+    private static (long SizeBytes, List<BackupManifestFile> Files) CopyTree(string source, string destination,
+        CancellationToken cancellationToken = default)
     {
         var files = new List<BackupManifestFile>();
         var total = 0L;
@@ -808,6 +1146,7 @@ internal sealed partial class WorldBackupService
         queue.Enqueue((source, destination, ""));
         while (queue.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var current = queue.Dequeue();
             var sourceInfo = new DirectoryInfo(current.Source);
             if ((sourceInfo.Attributes & FileAttributes.ReparsePoint) != 0)
@@ -835,6 +1174,7 @@ internal sealed partial class WorldBackupService
                 int read;
                 while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     output.Write(buffer, 0, read);
                     hash.AppendData(buffer, 0, read);
                     total = checked(total + read);
@@ -876,11 +1216,11 @@ internal sealed partial class WorldBackupService
         return (size, count);
     }
 
-    private static void VerifyTree(string root, IReadOnlyList<BackupManifestFile> expected)
+    private static void VerifyTree(string root, IReadOnlyList<BackupManifestFile> expected, CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(root)) throw new InvalidDataException("Backup payload is missing.");
         var actual = new List<BackupManifestFile>();
-        var measured = CopyTreeToHashes(root);
+        var measured = CopyTreeToHashes(root, cancellationToken);
         actual.AddRange(measured);
         if (actual.Count != expected.Count) throw new InvalidDataException("Backup file count changed.");
         for (var index = 0; index < expected.Count; index++)
@@ -890,13 +1230,14 @@ internal sealed partial class WorldBackupService
         }
     }
 
-    private static List<BackupManifestFile> CopyTreeToHashes(string root)
+    private static List<BackupManifestFile> CopyTreeToHashes(string root, CancellationToken cancellationToken = default)
     {
         var result = new List<BackupManifestFile>();
         var queue = new Queue<(DirectoryInfo Directory, string Relative)>();
         queue.Enqueue((new DirectoryInfo(root), ""));
         while (queue.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var current = queue.Dequeue();
             if ((current.Directory.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("Backup payload contains a link or reparse point.");
@@ -912,7 +1253,8 @@ internal sealed partial class WorldBackupService
                     throw new InvalidDataException("Backup payload contains a link or reparse point.");
                 using var stream = file.OpenRead();
                 result.Add(new(Path.Combine(current.Relative, file.Name).Replace('\\', '/'), file.Length,
-                    Convert.ToHexString(SHA256.HashData(stream))));
+                    cancellationToken.CanBeCanceled ? WorldPeerPayloadHash.Hash(stream, cancellationToken) :
+                        Convert.ToHexString(SHA256.HashData(stream))));
             }
         }
         return result.OrderBy(item => item.Path, StringComparer.Ordinal).ToList();

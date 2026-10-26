@@ -529,18 +529,26 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
     }
 
     internal SharedWorldResult PublishAfterStop(WorldSeparateCopyBranch branch,
-        ServerProfile profile, Guid backupId, WorldBackupService backups)
+        ServerProfile profile, Guid backupId, WorldBackupService backups,
+        CancellationToken cancellationToken = default, Action? requireCurrentSource = null)
     {
         lock (sync)
         {
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 RequirePublicationBranch(branch, profile);
-                var source = new PostStopBackupCaptureAdapter(backups).ReadVerified(profile, backupId);
+                var source = new PostStopBackupCaptureAdapter(backups).ReadVerified(profile, backupId, cancellationToken);
                 if (source.Setup is null || source.Kind != SharedWorldCaptureKinds.PostStopBackup)
                     throw new InvalidDataException("The completed recovery backup lacks a reviewed setup checkpoint.");
-                return PublishVerifiedPayload(branch, profile, source, 4, () => RequirePublicationBranch(branch, profile),
-                    nativeCopy: false, CancellationToken.None);
+                void VerifySource()
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    RequirePublicationBranch(branch, profile);
+                    requireCurrentSource?.Invoke();
+                }
+                return PublishVerifiedPayload(branch, profile, source, 4, VerifySource,
+                    nativeCopy: false, cancellationToken);
             }
             catch (Exception ex) when (SharedWorldBranchLiveSource.ExpectedFailure(ex))
             {
@@ -719,12 +727,31 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
     {
         if (!nativeCopy)
         {
-            SharedWorldService.VerifyFile(source, expected);
+            token.ThrowIfCancellationRequested();
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, source);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, SharedWorldService.ChunkBytes, FileOptions.WriteThrough))
-                input.CopyTo(output);
-            SharedWorldService.VerifyFile(target, expected);
+            using (var copiedHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+            {
+                if (input.Length != expected.Length) throw new InvalidDataException("The completed backup file length changed.");
+                var plainBuffer = new byte[64 * 1024];
+                long plainCopied = 0;
+                int plainCount;
+                while ((plainCount = input.Read(plainBuffer)) > 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                    plainCopied = checked(plainCopied + plainCount);
+                    if (plainCopied > expected.Length) throw new InvalidDataException("The completed backup file grew during copying.");
+                    copiedHash.AppendData(plainBuffer, 0, plainCount);
+                    output.Write(plainBuffer, 0, plainCount);
+                }
+                if (plainCopied != expected.Length || !Convert.ToHexString(copiedHash.GetHashAndReset()).Equals(expected.Sha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("The copied backup bytes do not match the completed manifest.");
+                token.ThrowIfCancellationRequested();
+                output.Flush(true);
+            }
+            VerifyPublicationFile(target, expected, token);
             return;
         }
         using var sourceParent = new SharedWorldBranchLiveSource.DirectoryPins(data, Path.GetDirectoryName(source)!);
@@ -745,6 +772,25 @@ internal sealed class SharedWorldSeparateCopyStore(LocalData data)
             throw new InvalidDataException("The held sealed source does not match its protected hash.");
         outputFile.Flush(true);
         File.SetAttributes(outputFile.SafeFileHandle, File.GetAttributes(outputFile.SafeFileHandle) | FileAttributes.ReadOnly);
+    }
+
+    private void VerifyPublicationFile(string path, SharedWorldFile expected, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (input.Length != expected.Length) throw new InvalidDataException("The copied backup file length changed.");
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[64 * 1024];
+        int count;
+        while ((count = input.Read(buffer)) > 0)
+        {
+            token.ThrowIfCancellationRequested();
+            hash.AppendData(buffer, 0, count);
+        }
+        token.ThrowIfCancellationRequested();
+        if (!Convert.ToHexString(hash.GetHashAndReset()).Equals(expected.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The copied backup hash changed.");
     }
 
     private void VerifyNativePayload(string payload, IReadOnlyList<SharedWorldFile> files, CancellationToken token)

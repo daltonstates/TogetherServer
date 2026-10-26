@@ -18,7 +18,7 @@ const { fileURLToPath } = await import('node:url');
 const { createServer } = await import('node:http');
 const { createRequire } = await import('node:module');
 const { createHash } = await import('node:crypto');
-const { createFixtureState, routeFixture, fixtureNow, fixtureIds } = await import('./ui-redesign-fixtures.mjs');
+const { createFixtureState, routeFixture, expectedFixtureRequestAbort, fixtureNow, fixtureIds } = await import('./ui-redesign-fixtures.mjs');
 const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.mjs');
 const { extraCases: accessReviewCases, serverAccessCaseIds, assertServerAccessUi } = await import('./ui-polish-access-review.mjs');
 const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
@@ -1150,77 +1150,97 @@ async function captureFileDiffEvidence(page, record, output, frame) {
   }
 }
 
+function scrollCapturePanes() {
+  const elements = [...document.querySelectorAll('.workspace-scroll, .workspace-scroll *, .context-content, .context-content *, dialog[open], dialog[open] *')];
+  const topDialog = [...document.querySelectorAll('dialog[open]')].at(-1);
+  return elements.flatMap((el, index) => {
+    if (topDialog ? el !== topDialog && !topDialog.contains(el) : !el.closest('.workspace-scroll,.context-content')) return [];
+    if (el.matches('textarea,input') || el.closest('[hidden],[inert]')) return [];
+    const bounds = el.getBoundingClientRect(), style = getComputedStyle(el);
+    if (bounds.width < 1 || bounds.height < 40 || style.visibility === 'hidden' ||
+        !/auto|scroll/.test(style.overflowY) || el.scrollHeight <= el.clientHeight + 10) return [];
+    for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (ancestor.tagName === 'DETAILS' && !ancestor.open) {
+        const summary = [...ancestor.children].find(child => child.tagName === 'SUMMARY');
+        if (!summary?.contains(el)) return [];
+      }
+    }
+    return [{ element: el, index }];
+  });
+}
+
 async function captureScrollEvidence(page, record, output) {
   if (record.id.startsWith('tooltip-') || record.id.startsWith('dialog-selected-server-picker')) return;
   record.horizontalScrollEvidence = [];
   await captureFileDiffEvidence(page, record, output, 'viewport');
-  const panes = page.locator('.workspace-scroll, .workspace-scroll *, .context-content, .context-content *, dialog[open], dialog[open] *');
-  const indices = await panes.evaluateAll(elements => {
-    const topDialog = [...document.querySelectorAll('dialog[open]')].at(-1);
-    return elements.flatMap((el, index) => {
-      if (topDialog ? el !== topDialog && !topDialog.contains(el) : !el.closest('.workspace-scroll,.context-content')) return [];
-      if (el.matches('textarea,input') || el.closest('[hidden],[inert]')) return [];
-      const bounds = el.getBoundingClientRect(), style = getComputedStyle(el);
-      if (bounds.width < 1 || bounds.height < 40 || style.visibility === 'hidden' ||
-          !/auto|scroll/.test(style.overflowY) || el.scrollHeight <= el.clientHeight + 10) return [];
-      for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
-        if (ancestor.tagName === 'DETAILS' && !ancestor.open) {
-          const summary = [...ancestor.children].find(child => child.tagName === 'SUMMARY');
-          if (!summary?.contains(el)) return [];
-        }
-      }
-      return [index];
-    });
-  });
+  // Pin the eligible DOM elements in the same browser evaluation that finds
+  // them. A passive check may insert siblings; nth(index) would then capture a
+  // different node and restore the wrong ancestor chain partway down a pane.
+  const pinnedPanes = await page.evaluateHandle(scrollCapturePanes);
+  const candidates = await pinnedPanes.getProperties();
   record.scrollEvidence = [];
-  for (const index of indices) {
-    const pane = panes.nth(index);
-    if (!await pane.isVisible()) continue;
-    const geometry = await pane.evaluate(el => ({ top: el.scrollTop, height: el.clientHeight, contentHeight: el.scrollHeight,
-      name: el.getAttribute('aria-label') || el.className }));
-    if (geometry.contentHeight <= geometry.height + 10) continue;
-    const offsets = scrollCaptureOffsets(geometry.height, geometry.contentHeight);
-    // Reveal nested readers such as .host-sharing-pane before recording their
-    // offsets, then restore the surrounding workspace/dialog reading position.
-    const ancestorScroll = await pane.evaluate(el => {
-      const positions = [];
-      for (let parent = el.parentElement; parent; parent = parent.parentElement)
-        positions.push({ top: parent.scrollTop, left: parent.scrollLeft });
-      return positions;
-    });
-    await pane.scrollIntoViewIfNeeded();
-    const evidence = { ...geometry, paneIndex: index, plannedOffsets: offsets, capturedOffsets: [], coveredRanges: [] };
-    record.scrollEvidence.push(evidence);
-    try {
-      for (let segment = 0; segment < offsets.length; segment++) {
-        await pane.evaluate((el, value) => { el.scrollTop = value; }, offsets[segment]);
-        await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
-        // Use actual browser scroll offsets and the viewport intersection, so
-        // rounding or a clipped pane cannot turn missing pixels into a pass.
-        const range = await pane.evaluate(scrollCaptureVisibleRange);
-        const position = segment === 0 ? 'top' : segment === offsets.length - 1 ? 'bottom'
-          : offsets.length === 3 ? 'middle' : `segment-${String(segment + 1).padStart(2, '0')}-of-${String(offsets.length).padStart(2, '0')}`;
-        const filename = `${record.id}--pane-${index}-${position}.png`;
-        await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
-        record.screenshots.push({ file: filename, kind: 'scroll-pane', pane: geometry.name, position, ...range });
-        evidence.capturedOffsets.push(range.scrollTop);
-        evidence.coveredRanges.push({ file: filename, ...range });
-        await captureFileDiffEvidence(page, record, output, `pane-${index}-${position}`);
-      }
-      evidence.coverage = scrollCaptureCoverage(geometry.contentHeight, evidence.coveredRanges);
-      if (!evidence.coverage.complete) {
-        record.layoutFindings.push({ kind: 'scroll-capture-incomplete', pane: geometry.name, ...evidence.coverage });
-        throw new Error(`Scrollable pane ${geometry.name} has unpictured content: ${JSON.stringify(evidence.coverage.gaps)}`);
-      }
-    } finally {
-      await pane.evaluate((el, top) => { el.scrollTop = top; }, geometry.top);
-      await pane.evaluate((el, positions) => {
-        let index = 0;
-        for (let parent = el.parentElement; parent; parent = parent.parentElement) {
-          parent.scrollTop = positions[index].top; parent.scrollLeft = positions[index].left; index++;
+  try {
+    for (const [key, candidate] of candidates) {
+      if (!/^[0-9]+$/u.test(key)) continue;
+      const indexHandle = await candidate.getProperty('index');
+      const index = await indexHandle.jsonValue();
+      await indexHandle.dispose();
+      const element = await candidate.getProperty('element');
+      const pane = element.asElement();
+      try {
+        if (!pane || !await pane.isVisible()) throw new Error('A discovered scroll pane disappeared before capture.');
+        const geometry = await pane.evaluate(el => ({ top: el.scrollTop, height: el.clientHeight, contentHeight: el.scrollHeight,
+          name: el.getAttribute('aria-label') || el.className }));
+        if (geometry.contentHeight <= geometry.height + 10) throw new Error('A discovered scroll pane changed before capture.');
+        const offsets = scrollCaptureOffsets(geometry.height, geometry.contentHeight);
+        // Reveal nested readers such as .host-sharing-pane before recording their
+        // offsets, then restore the surrounding workspace/dialog reading position.
+        const ancestorScroll = await pane.evaluate(el => {
+          const positions = [];
+          for (let parent = el.parentElement; parent; parent = parent.parentElement)
+            positions.push({ top: parent.scrollTop, left: parent.scrollLeft });
+          return positions;
+        });
+        await pane.scrollIntoViewIfNeeded();
+        const evidence = { ...geometry, paneIndex: index, plannedOffsets: offsets, capturedOffsets: [], coveredRanges: [] };
+        record.scrollEvidence.push(evidence);
+        try {
+          for (let segment = 0; segment < offsets.length; segment++) {
+            await pane.evaluate((el, value) => { el.scrollTop = value; }, offsets[segment]);
+            await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+            // Use actual browser scroll offsets and the viewport intersection, so
+            // rounding or a clipped pane cannot turn missing pixels into a pass.
+            const range = await pane.evaluate(scrollCaptureVisibleRange);
+            const position = segment === 0 ? 'top' : segment === offsets.length - 1 ? 'bottom'
+              : offsets.length === 3 ? 'middle' : `segment-${String(segment + 1).padStart(2, '0')}-of-${String(offsets.length).padStart(2, '0')}`;
+            const filename = `${record.id}--pane-${index}-${position}.png`;
+            await page.screenshot({ path: resolve(output, filename), animations: 'disabled' });
+            record.screenshots.push({ file: filename, kind: 'scroll-pane', pane: geometry.name, position, ...range });
+            evidence.capturedOffsets.push(range.scrollTop);
+            evidence.coveredRanges.push({ file: filename, ...range });
+            await captureFileDiffEvidence(page, record, output, `pane-${index}-${position}`);
+          }
+          evidence.coverage = scrollCaptureCoverage(geometry.contentHeight, evidence.coveredRanges);
+          if (!evidence.coverage.complete) {
+            record.layoutFindings.push({ kind: 'scroll-capture-incomplete', pane: geometry.name, ...evidence.coverage });
+            throw new Error(`Scrollable pane ${geometry.name} has unpictured content: ${JSON.stringify(evidence.coverage.gaps)}`);
+          }
+        } finally {
+          await pane.evaluate((el, top) => { el.scrollTop = top; }, geometry.top);
+          await pane.evaluate((el, positions) => {
+            let index = 0;
+            for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+              if (!positions[index]) throw new Error('Scroll pane ancestors changed during capture.');
+              parent.scrollTop = positions[index].top; parent.scrollLeft = positions[index].left; index++;
+            }
+            if (index !== positions.length) throw new Error('Scroll pane ancestors changed during capture.');
+          }, ancestorScroll);
         }
-      }, ancestorScroll);
+      } finally { await element.dispose(); }
     }
+  } finally {
+    for (const candidate of candidates.values()) await candidate.dispose();
+    await pinnedPanes.dispose();
   }
   for (const evidence of record.horizontalScrollEvidence) {
     evidence.coverage = scrollCaptureReaderCoverage(evidence.contentWidth, evidence.contentHeight, evidence.views);
@@ -1349,7 +1369,16 @@ try {
       });
       page.on('requestfailed', request => {
         if (deliberatelyPendingURLs.has(request.url())) return;
-        record.failedRequests.push({ url: request.url(), error: request.failure()?.errorText });
+        const failedUrl = new URL(request.url());
+        const failure = { method: request.method(), path: `${failedUrl.pathname}${failedUrl.search}`, error: request.failure()?.errorText };
+        // The clock-driven abort can precede route interception. Recognize
+        // only the exact passive GET belonging to the validated pending Start.
+        if (expectedFixtureRequestAbort(state, failure)) {
+          record.deliberateFailures.push({ kind: 'intentional-passive-progress-abort', ...failure,
+            evidence: 'Synthetic pending Start: the UI canceled its passive progress read during the bounded timeout; no mutation was replayed.' });
+          return;
+        }
+        record.failedRequests.push({ url: request.url(), error: failure.error });
       });
       page.on('response', response => {
         if (response.status() >= 400 && !deliberatelyFailedURLs.has(response.url())) record.httpFailures.push({ url: response.url(), status: response.status() });

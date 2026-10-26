@@ -178,6 +178,15 @@ function saveHelp(status: LocalHostingStatus, props: LocalHostingGuideProps): He
       'After the owner resolves which history to continue, return here and recheck the save. The guide cannot merge worlds or pick the newest by date.'
     ], actions: [review, retry]
   }
+  if (status.consented && (status.code === 'LocalStoppedProgressNeedsSharing' || status.remedy?.kind === 'ShareStoppedProgress')) return {
+    title: 'Share this PC\'s stopped progress', instructions: [
+      status.message,
+      'Keep this server stopped. Choose Share stopped progress in this dialog to verify the stopped save and share it within its existing history. Existing worlds and backups are kept.',
+      'If the save or setup cannot be verified, keep every copy and review the completed backup and setup before trying again.',
+      'After sharing succeeds, wait for current hosting checks. Choose Start hosting separately when this PC is ready.'
+    ], note: 'Rechecking does not repeat sharing or Start. Sharing does not confirm another PC received the save or that the game is ready.',
+    actions: [review, retry]
+  }
   if (status.code === 'SharedSaveHistoryNeedsReview') return {
     title: 'Review the available shared save', instructions: [
       status.message,

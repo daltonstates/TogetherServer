@@ -26,6 +26,22 @@ match their captured hashes. A completion mismatch cannot be catalogued or
 published. It returns a fixed integrity result and preserves the live world and
 earlier backups; signature and ancestry checks remain separate publication gates.
 
+An explicit local stopped-progress sharing action can retry a separate-copy
+session's last post-Stop publication. Passive status reports an unpublished
+completed Stop as a save blocker instead of promising Start readiness. Recovery
+requires definite absence of its archived process, no active or uncertain
+overlapping writer, an unambiguous latest graceful-stop/Completed archive and
+the latest Rolling record in catalog append order. New Stop archives bind the
+completed backup ID directly; a legacy archive's bounded interval is local
+corroboration, not signed exit proof. The whole current save and decoded full
+setup must match that exact completion metadata. A changed old payload stays
+rejected and preserved. Only a new copy checked against the expected files/setup
+before completion may be published through the ordinary signed ancestry gates.
+Recapture records reference the original backup and stopped operation so a
+publication interruption can be retried without rebuilding old records. This
+action runs no retention, clears no failure history, changes no world, and
+carries no Start intent.
+
 Manual solo world recovery has no Host-loss timer, quorum, second-PC observation
 or save-age limit. A responding companion with an inaccessible game does not
 prevent an eligible receiver from recovering a separate verified history.

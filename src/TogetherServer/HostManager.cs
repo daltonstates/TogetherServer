@@ -2031,7 +2031,8 @@ public sealed partial class HostManager
                 }
             }
             ArchiveCompletedRun(run, ServerSessionEndReason.GracefulStop,
-                ServerSessionOutcome.GracefulStop, backupResult, false, endedUtc: endedUtc);
+                ServerSessionOutcome.GracefulStop, backupResult, false, endedUtc: endedUtc,
+                completedBackupId: backup is { Ok: true, Backup: { } completedBackup } ? completedBackup.Id : null);
             Activity("Lifecycle", "Stopped", $"{profile?.Name ?? "Server"} stopped gracefully.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             if (backup is { Ok: false })
@@ -2931,7 +2932,8 @@ public sealed partial class HostManager
 
     private void ArchiveCompletedRun(ManagedRun run, ServerSessionEndReason endReason,
         ServerSessionOutcome outcome, ServerSessionBackupResult backupResult,
-        bool preserveRecoveryState, bool recoveryScheduled = false, DateTimeOffset? endedUtc = null)
+        bool preserveRecoveryState, bool recoveryScheduled = false, DateTimeOffset? endedUtc = null,
+        Guid? completedBackupId = null)
     {
         var now = clock.GetUtcNow();
         var knownEnd = endedUtc ?? now;
@@ -2946,7 +2948,7 @@ public sealed partial class HostManager
                 run.ProcessId, run.StartTimeUtcTicks, run.WasReady, endReason.ToString(), now,
                 recoveryScheduled, CurrentSessionSummaryVersion, startedUtc, knownEnd, durationSeconds,
                 endReason, outcome, run.LastTrustedOnlinePlayers,
-                run.MaximumTrustedOnlinePlayers, backupResult));
+                run.MaximumTrustedOnlinePlayers, backupResult, completedBackupId));
         }
         var cutoff = now.AddDays(-30);
         archive = archive.Where(item => item.ArchivedUtc >= cutoff)

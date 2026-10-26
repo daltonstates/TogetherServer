@@ -21,6 +21,8 @@ internal sealed partial class FriendLocalHostingService
                 new("ChooseHistory", "Different progress needs review", "Two sessions have different progress. Every save is protected. Review the copies before hosting again."),
             { Code: "SharedSaveHistoryNeedsReview" } =>
                 new("Review", "Review the completed shared save", "A complete latest save could not be verified. Keep approved PCs reachable, review shared-save status, and retry preparation after the problem is resolved."),
+            { Code: StoppedProgressCode, Allowed: true, Consented: true, Running: false } =>
+                new("ShareStoppedProgress", "Share this PC's stopped progress", StoppedProgressMessage),
             {
                 Code: "LocalHostingReviewRequired" or "SharingReviewRequired" or "HandoffReviewRequired" or
                 "RosterRollback" or "RosterRejected" or "SigningIdentityChanged" or "HostingIdentityRequired"
@@ -95,6 +97,8 @@ internal sealed partial class FriendLocalHostingService
         progress.Report("Verifying", "Repeating the prepared save, server and port checks.");
         var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken,
             checkedAccess: access));
+        if (status.Code == StoppedProgressCode)
+            return Refused(StoppedProgressCode, StoppedProgressMessage);
         if (!status.ReadyForManualStart || status.Running || status.LocalProfileId != input.LocalProfileId ||
             !friend.CurrentLocalHostingConnection(connection))
             return Refused("LocalHostingPreparationRequired", "Repeat this PC's automatic hosting checks before starting.");

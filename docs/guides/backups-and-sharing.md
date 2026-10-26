@@ -112,6 +112,17 @@ limited to this server; it does not wait for other saved Host connections or
 repeat their save transfers. A newly learned later or conflicting save still
 requires preparation or review before Start.
 
+If this PC's previous stopped progress has not been shared, the save check says
+so and offers **Share stopped progress**. Keep the server stopped. This explicit
+action checks the recorded Stop, every current save file and the complete setup
+against that Stop's completion metadata. It can create a new verified copy when
+the older backup payload changed; the old backup and the working world stay
+intact. If the evidence does not match, keep every copy and review the stopped
+backup and setup. The app does not pick an older save or reset sharing history.
+After sharing succeeds, wait for fresh checks and choose **Start hosting**
+separately. Sharing completion does not prove another PC received the save;
+that requires its acknowledgement.
+
 The guide reports what a button is doing, then shows its result and the next
 step. If permission or sharing history is blocking preparation, later checks
 show **Not checked** until that prerequisite is verified.

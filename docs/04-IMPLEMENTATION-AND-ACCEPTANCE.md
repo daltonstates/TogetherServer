@@ -125,6 +125,23 @@ Terraria source checks cover copy-once `.wld` import with the original unchanged
 
 The Host move kit must export a completed hash-verified backup without credentials or game binaries, verify all hashes again when selected on another PC, reject tampering, and leave source and existing destination worlds untouched. The owner installs the game server and copies the payload into a fresh offline save location, then pairs Friend PCs again. A real destination-PC join and saved restart remain external acceptance.
 
+## Stopped progress after failed publication
+
+The stopped-progress publication regression must reproduce a completed Stop
+whose backup payload differs from its completion manifest while the entire
+offline working world and decoded setup still match that manifest. The old
+payload must remain rejected. An explicit local action may publish only a new
+verified copy with unchanged original backup/world/protected records and strict
+signed parent/current-role checks. Cover stale or ambiguous archives, wrong
+backup/run binding, active or uncertain writers, pending restoration/handoff,
+extra/missing/equal-size changes, setup/key/consent/grant/fork changes, copy-time
+changes and cancellation before completion/pointer promotion. A failed
+publication must retain direct original-stop provenance for retry. UI checks
+must preserve the typed blocker across generic refreshes, bind the exact
+current profile/branch, prioritize current consent/permission/history, and
+require a separate explicit Start after sharing. These remain source/synthetic
+checks; physical receipt, Ready, game join and saved restart are separate.
+
 ## Paired-PC planned hosting moves
 
 Verify selected paired-PC requests, recipient Accept/Decline, guided game

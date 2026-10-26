@@ -940,6 +940,73 @@ internal static partial class CoreRemoteJourney
                             preparedBranch.Offer.Roster.OwnerPublicKey == signedRoster.OwnerPublicKey &&
                             SharedWorldSeparateCopyStore.VerifyReceivedBranch(published, preparedBranch, sourceVersion)),
                         "CleanupFaultSourceVersionUnverified");
+                    Guid? cleanupProfileId = null;
+                    string? cleanupBranchHash = null;
+                    if (lanAddress is not null)
+                    {
+                        // This stage follows another candidate Stop and a signed
+                        // membership change. Observe that exact final save before
+                        // preparing the owner's fresh continuation; a correct
+                        // LatestSaveChanged refusal must not be treated as a
+                        // failed cleanup mechanism or retried as a Start action.
+                        var received = Path.Combine(hostData, "received-shared-branches", groupKey!, prepared!.BranchHash!);
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            await SyncPeersAsync(first);
+                            await SyncPeersAsync(owner);
+                            var current = (await PairingLabGetAsync<WorldPeerGroupView[]>(owner, "/api/local/world-peers"))
+                                .Single(item => item.GroupKey == groupKey);
+                            return FriendLink.ReadReceivedLatest(received)?.VersionHash == sourceVersion.VersionHash &&
+                                current.State.Branches.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                    item.Branch.BranchHash == prepared.BranchHash && item.Branch.HeadVersionHash == sourceVersion.VersionHash) &&
+                                current.State.Sessions.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                    item.Session.SessionId == candidateSessionId && item.Session.State == "Stopped" &&
+                                    item.Session.HeadVersionHash == sourceVersion.VersionHash);
+                        }, "CleanupFaultFinalSaveNotConverged", TimeSpan.FromSeconds(90));
+                        LabRequire(SharedWorldSeparateCopyStore.VerifyReceivedBranch(received, preparedBranch!, sourceVersion),
+                            "CleanupFaultFinalReceivedProofRejected");
+
+                        var recovery = $"/api/local/world-peers/{groupKey}/owner-recovery";
+                        var declared = await PostAsync<object, WorldSeparateCopyResult>(owner, recovery,
+                            new { sourceBranchHash = prepared.BranchHash, acceptSplitWarning = true });
+                        var branch = declared.Branch;
+                        LabRequire(declared.Ok && branch is not null && SharedWorldSeparateCopyStore.Verify(branch) &&
+                            branch.Offer.Version.VersionHash == sourceVersion.VersionHash &&
+                            branch.Offer.Roster.OwnerPublicKey == signedRoster.OwnerPublicKey &&
+                            branch.Offer.Roster.GroupId == signedRoster.GroupId &&
+                            branch.Offer.Proposal.ProfileId == profile.Id && branch.Offer.Proposal.ProposerDeviceId == Guid.Empty &&
+                            branch.CandidatePublicKey == signedRoster.OwnerPublicKey && branch.SourceBranch?.BranchHash == prepared.BranchHash,
+                            "CleanupFaultOwnerPreparationSourceMismatch");
+                        cleanupBranchHash = branch.BranchHash;
+                        cleanupProfileId = SharedWorldBranchLiveSource.LocalProfileId(branch.BranchHash);
+                        var setup = new TakeoverLocalSetup(Path.GetFullPath(fixturePath), sourceVersion.PortableSetup.GameVersion,
+                            sourceVersion.PortableSetup.AddOns ?? [], true, before.Settings.CompanionPort, profile.GamePort);
+                        var restored = await PostAsync<SeparateCopyHostRestoreRequest, SuccessorRestoreResult>(owner, recovery + "/restore",
+                            new(branch.BranchHash, setup, profile.Name, profile.ServerName));
+                        LabRequire(restored.Ok && restored.ProfileId == cleanupProfileId && restored.VersionHash == sourceVersion.VersionHash,
+                            "CleanupFaultOwnerRestoreRejected");
+                        var finished = await PostAsync<SeparateCopyHostFinishRequest, SuccessorRestoreResult>(owner, recovery + "/finish",
+                            new(branch.BranchHash, setup));
+                        LabRequire(finished.Ok && finished.ProfileId == cleanupProfileId && finished.VersionHash == sourceVersion.VersionHash,
+                            "CleanupFaultOwnerFinishRejected");
+                        // Publish only normal signed inventory for this prepared
+                        // owner lane before the one ordinary guarded Start. The
+                        // product still resolves latest, records its observation
+                        // and repeats the final in-gate fence for that Start.
+                        await PairingLabWaitAsync(async () =>
+                        {
+                            await SyncPeersAsync(owner);
+                            var current = (await PairingLabGetAsync<WorldPeerGroupView[]>(owner, "/api/local/world-peers"))
+                                .Single(item => item.GroupKey == groupKey);
+                            return current.State.Branches.Any(item => item.DeviceId == Guid.Empty &&
+                                item.PublicKey == signedRoster.OwnerPublicKey && item.Authorized && !item.HasConflict &&
+                                item.Branch.BranchHash == branch.BranchHash && item.Branch.BaseVersionHash == sourceVersion.VersionHash &&
+                                item.Branch.HeadVersionHash == sourceVersion.VersionHash);
+                        }, "CleanupFaultOwnerPreparationNotAnnounced", TimeSpan.FromSeconds(90));
+                        var ready = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
+                        LabRequire(ready.Runs.All(item => item.ProcessId is null && item.RunOperationId is null),
+                            "CleanupFaultPreparationStartedGame");
+                    }
                     var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
                     // Record only the bounded fixed result code, never a response
                     // message, saved identity, credential or world path.
@@ -953,6 +1020,8 @@ internal static partial class CoreRemoteJourney
                     var startedProfile = started.Snapshot.Settings.Profiles.Single(item => item.Id == launched[0].ProfileId);
                     LabRequire(startedProfile.Kind == GameKinds.Fixture && startedProfile.WorldId == sourceVersion.WorldId &&
                         AppInstance.ContainsPath(hostData, startedProfile.WorldDirectory) &&
+                        (cleanupProfileId is null || startedProfile.Id == cleanupProfileId &&
+                            startedProfile.SeparateCopyBranchHash == cleanupBranchHash) &&
                         (startedProfile.Id == profile.Id || startedProfile.SeparateCopySourceProfileId == profile.Id &&
                             startedProfile.SeparateCopyBranchHash is { } hash && SharedWorldPeerTrust.ValidHash(hash) &&
                             startedProfile.Id == SharedWorldBranchLiveSource.LocalProfileId(hash)), "CleanupFaultStartedProfileMismatch");

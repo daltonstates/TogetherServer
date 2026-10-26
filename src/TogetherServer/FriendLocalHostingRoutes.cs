@@ -107,6 +107,27 @@ internal static class FriendLocalHostingRoutes
             { return Results.BadRequest(new LocalHostingActionResult(false, "LocalHostingRequestRejected", "Repeat the automatic checks for the exact local save before starting.")); }
             finally { modeGate.Release(); }
         });
+        app.MapPost(route + "/share-stopped-progress", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Fixed(context)) return Results.StatusCode(403);
+            await modeGate.WaitAsync(context.RequestAborted);
+            try
+            {
+                if (!friendMode()) return Results.Conflict(new LocalHostingActionResult(false, "HostMode", "Open Join to share this PC's stopped progress."));
+                if (unavailable()) return Results.Conflict(new LocalHostingActionResult(false, "AppBusy", "Wait for the current app operation."));
+                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                    context.Request.ContentLength, 1024, context.RequestAborted);
+                var input = FriendLocalHostingService.ParseStoppedProgressShare(bytes ?? []);
+                return Results.Json(await service.ShareStoppedProgressAsync(profileId, input, context.RequestAborted));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+            {
+                return Results.BadRequest(new LocalHostingActionResult(false, "StoppedProgressRequestRejected",
+                    "Use Share stopped progress for the exact stopped local save. Existing worlds and backups were kept."));
+            }
+            finally { modeGate.Release(); }
+        });
         app.MapPut("/api/local/profiles/{localProfileId:guid}/shared-world/hosting", async (HttpContext context, Guid localProfileId) =>
         {
             if (!Fixed(context)) return Results.StatusCode(403);

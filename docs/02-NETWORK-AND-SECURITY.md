@@ -68,6 +68,16 @@ The owner may use direct public-IP access, an owner-installed private mesh, or a
 - Factorio RCON uses a random per-profile Windows-protected password and a fixed local client for player count and `/quit`. No local browser or Friend contract accepts RCON text or the password. Because the game may listen beyond loopback, the configured RCON port must remain unforwarded and separate from the UDP game port.
 - Update handoff requires a bounded hash-manifested local-state recovery checkpoint and revalidates it in the replacement helper. This does not weaken the existing payload SHA-256 or optional same-publisher Authenticode checks. Digest-only and development builds remain visibly distinct from a verified Windows publisher.
 
+Stopped-progress sharing is a fixed loopback-owner action over the currently
+selected signed world, local profile and branch. It accepts no path, backup
+selection, command, new grant or Start instruction. Current pinned identity,
+receive consent, Receive/EligibleHost roles, keys and expiry remain mandatory.
+The copied candidate and the final publication recheck current authority,
+consent, setup and exact stopped-source evidence. A damaged backup is not
+accepted or rebuilt; a separately verified new snapshot keeps the original
+backup and every signed floor/history. Passive checks and peer requests cannot
+invoke this action.
+
 ## Chat access and data
 
 Chat sync uses the deliberately enabled Host HTTPS listener with the same pinned TLS identity, per-device credential, device rate limit, and assigned-server check as status. A separate owner-controlled room exclusion list permits removing a PC from one assigned server's chat while keeping its status and lifecycle permissions intact. Every sync rechecks current device access and room membership before returning content. A removed or expired device receives no new messages; a copied message cannot be recalled. A Friend can return only Host-signed accepted entries, and a new draft is attributed to the currently authenticated device rather than an identity supplied by the request. The Host never treats a chat message as a script, command, game count, saved-world version, or recovery decision. The public chat body is capped at 768 KiB, with at most 200 accepted entries, 20 drafts, and 500 characters per message. Protected local chat is deliberately excluded from support exports, activity messages, and raw logs. Direct exchange between Friend PCs while the Host is offline has no route in this design; a separate peer listener and its own reachability and authorization model would be required.

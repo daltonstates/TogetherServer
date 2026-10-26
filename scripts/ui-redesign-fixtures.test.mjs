@@ -5,10 +5,10 @@ import { createRequire, registerHooks, stripTypeScriptTypes } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { createFixtureState, routeFixture, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
+import { createFixtureState, routeFixture, expectedFixtureRequestAbort, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
-import { advancePreparedHostingCheck, assertPreparedHostingRequests, simpleHostingCases, simpleHostingVariants } from './simple-shared-hosting-review.mjs';
+import { advancePreparedHostingCheck, assertPreparedHostingRequests, assertStoppedProgressRequests, simpleHostingCases, simpleHostingVariants, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
 import { uiReviewBuild } from './ui-review-provenance.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
@@ -74,7 +74,7 @@ const files = pureDecoders('ServerFilesPanel.tsx', ['entry', 'field', 'flag', 'p
   { ContractError: contracts.ContractError });
 const addons = pureDecoders('ServerAddOnsPanel.tsx', ['object', 'string', 'boolean', 'parseAddOns'], { ContractError: contracts.ContractError });
 const readiness = pureDecoders('SharedWorldReadinessPanel.tsx', ['parseRestoreStatus'], { normalizedDirectIpHttpsEndpoint });
-const localHosting = pureDecoders('FriendLocalHosting.tsx', ['boundedText', 'parseLocalHostingStatus'], {
+const localHosting = pureDecoders('FriendLocalHosting.tsx', ['remedyKinds', 'boundedText', 'parseLocalHostingStatus'], {
   stepKeys: ['permission', 'server', 'save', 'ports', 'connection'],
   guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   hashPattern: /^[0-9a-f]{64}$/i, parsePlannedHandoffStatus
@@ -536,6 +536,58 @@ test('scroll screenshot segments cover short, long and narrow panes on both axes
   assert.equal(readerCoverageFor(800, 400, []).complete, false, 'an offscreen reader without captures fails explicitly');
 });
 
+test('scroll capture pins the discovered pane across sibling insertions and still rejects a missing pane', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const names = ['scrollCapturePanes', 'captureScrollEvidence', 'scrollCaptureOffsets', 'scrollCaptureCoverage'];
+  const helpers = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
+  assert.equal(helpers.length, names.length);
+  const parent = { tagName: 'DIALOG', scrollTop: 13, scrollLeft: 7, parentElement: null,
+    clientHeight: 800, scrollHeight: 800, matches: () => false, closest: () => null,
+    getBoundingClientRect: () => ({ width: 300, height: 800 }) };
+  let scrollTop = 0, visible = true, disposed = 0;
+  const pane = { tagName: 'DIV', parentElement: parent, className: 'settings-dialog-body', clientHeight: 634, scrollHeight: 6261,
+    matches: () => false, closest: () => null, getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 300, height: 634 }),
+    get scrollTop() { return scrollTop; }, set scrollTop(value) { scrollTop = Math.min(5627, Math.max(0, value)); } };
+  parent.contains = element => element === pane;
+  const catalog = [parent, pane];
+  const { captureScrollEvidence, scrollCaptureOffsets: offsetsFor } = runInNewContext(
+    helpers.map(node => node.getText(ast)).join('\n') + '\n;({captureScrollEvidence,scrollCaptureOffsets})', {
+      document: { querySelectorAll: selector => selector === 'dialog[open]' ? [parent] : catalog },
+      getComputedStyle: () => ({ visibility: 'visible', overflowY: 'auto' }),
+      captureFileDiffEvidence: async () => {}, scrollCaptureVisibleRange: function scrollCaptureVisibleRange() {}, resolve
+    });
+  const elementHandle = { isVisible: async () => visible, scrollIntoViewIfNeeded: async () => {},
+    evaluate: async (fn, argument) => fn.name === 'scrollCaptureVisibleRange'
+      ? { scrollTop, start: scrollTop, end: scrollTop + pane.clientHeight, visibleHeight: pane.clientHeight }
+      : fn(pane, argument) };
+  const handle = value => ({
+    getProperties: async () => new Map(Object.entries(value).map(([key, item]) => [key, handle(item)])),
+    getProperty: async key => handle(value[key]), jsonValue: async () => value,
+    asElement: () => value === pane ? elementHandle : null,
+    dispose: async () => { if (value === pane) disposed++; }
+  });
+  let shots = 0;
+  const page = {
+    locator: () => { throw new Error('A shifting indexed locator must not select the scroll pane.'); },
+    evaluateHandle: async fn => handle(fn()), evaluate: async () => {},
+    screenshot: async () => { shots++; catalog.unshift({ ...parent }); }
+  };
+  const record = { id: 'simple-hosting-ready-start-timeout--lightnarrow150', screenshots: [], layoutFindings: [] };
+  await captureScrollEvidence(page, record, '/synthetic-only');
+  assert.equal(shots, offsetsFor(634, 6261).length);
+  assert.ok(catalog.indexOf(pane) > 1, 'background sibling insertions changed the old locator index during capture');
+  assert.deepEqual([...record.scrollEvidence[0].capturedOffsets], [...offsetsFor(634, 6261)]);
+  assert.equal(record.scrollEvidence[0].coverage.complete, true);
+  assert.equal(record.scrollEvidence[0].coverage.coveredThrough, 6261);
+  assert.equal(scrollTop, 0); assert.equal(parent.scrollTop, 13); assert.equal(parent.scrollLeft, 7);
+  assert.equal(disposed, 1);
+  visible = false;
+  await assert.rejects(captureScrollEvidence(page, { ...record, screenshots: [] }, '/synthetic-only'), /disappeared before capture/u,
+    'a genuinely missing pane remains a failed capture instead of a skipped surface');
+});
+
 test('draft revision storage never crosses fixture states', () => {
   const state = createFixtureState();
   const identity = { purpose: 'settings', profileId: fixtureIds.primary, key: 'settings:properties' };
@@ -665,7 +717,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
   assert.ok(focused.plans.every(plan => plan.testCase.id.startsWith('move-hosting-')));
   const simple = runInNewContext(source.slice(start, end) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory})',
     { manifest: {}, worldReviewCases, accessReviewCases, simpleHostingCases, simpleHostingVariants, args: ['--simple-shared-hosting-only'] });
-  assert.equal(simple.plans.length, 99, 'thirty-three shared-hosting surfaces cover desktop, narrow and enlarged narrow text');
+  assert.equal(simple.plans.length, 108, 'all thirty-three existing surfaces plus three stopped-progress journeys cover desktop, narrow and enlarged narrow text');
   assert.equal(simple.inventory.length, simple.plans.length);
   assert.ok(simple.plans.every(plan => plan.testCase.id.startsWith('simple-hosting-')));
   for (const item of hostPcSections) {
@@ -1266,7 +1318,7 @@ test('focused permission fixtures retain explicit partial grants and zero assign
 
 test('simple hosting review stays bounded and uses only the current automatic hosting contract', async () => {
   const { simpleHostingCases, simpleHostingVariants, simpleHostingStatus, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
-  assert.equal(simpleHostingCases.length, 33);
+  assert.equal(simpleHostingCases.length, 36);
   assert.equal(simpleHostingVariants.length, 3);
   assert.ok(simpleHostingCases.every(item => item.id.startsWith('simple-hosting-')));
   assert.ok(simpleHostingVariants.some(item => item.viewport.width === 390));
@@ -1357,6 +1409,96 @@ test('simple hosting review stays bounded and uses only the current automatic ho
     'reading active save status is valid, but editing the child policy remains rejected');
 });
 
+test('stopped-progress coverage adds three journeys while retaining every previous hosting case and variant', () => {
+  const original = ['owner-off', 'owner-on', 'owner-continuation', 'not-allowed', 'not-allowed-card', 'permission-unknown-entry',
+    'permission-unknown-card', 'permission-review-entry', 'permission-review-card', 'entry', 'card-entry', 'missing-install-entry',
+    'play-ready', 'network-warning', 'guide-save-preparation', 'missing-install', 'missing-connection', 'save-conflict',
+    'ready-confirmation', 'starting', 'ready-explicit-start', 'ready-start-timeout', 'guide-permission-unknown',
+    'guide-permission-denied', 'guide-ports', 'reopen-entry', 'stale-retry', 'recovered-retry', 'directory-removed',
+    'progress-receiving', 'progress-verifying', 'directory-remote-running', 'directory-remote-stopped'].map(id => `simple-hosting-${id}`);
+  assert.deepEqual(simpleHostingCases.slice(0, 33).map(item => item.id), original);
+  const added = simpleHostingCases.slice(33);
+  assert.deepEqual(added.map(item => item.id), ['simple-hosting-stopped-progress-required', 'simple-hosting-stopped-progress-shared', 'simple-hosting-stopped-progress-refused']);
+  assert.deepEqual(added.map(item => item.stoppedProgressJourney), ['required', 'shared', 'refused']);
+  assert.ok(added.every(item => item.fixture.simpleHosting === 'stopped-progress' &&
+    JSON.stringify(item.steps) === JSON.stringify([{ button: 'Host locally' }])));
+  assert.equal(new Set(simpleHostingCases.map(item => item.id)).size, 36);
+  assert.deepEqual(simpleHostingVariants.map(item => item.id), ['darkdesktop', 'lightnarrow', 'lightnarrow150']);
+  assert.equal(simpleHostingCases.length * simpleHostingVariants.length, 108);
+});
+
+test('stopped-progress fixtures use exact production status and BasicResult contracts without preparation, Start or invented success', () => {
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const body = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64) };
+  const service = readFileSync(new URL('../src/TogetherServer/FriendLocalHosting.StoppedProgress.cs', import.meta.url), 'utf8');
+  const manager = readFileSync(new URL('../src/TogetherServer/HostManager.StoppedSavePublication.cs', import.meta.url), 'utf8');
+  assert.ok(service.includes(stoppedProgressMessages.required));
+  assert.ok(manager.includes(stoppedProgressMessages.shared));
+  assert.ok(manager.includes(stoppedProgressMessages.proofRequired));
+  for (const outcome of ['success', 'proof-refusal']) {
+    const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'stopped-progress', stoppedProgressShare: outcome });
+    const beforeHost = JSON.stringify(state.host);
+    const initial = localHosting.parseLocalHostingStatus(routeFixture(state, { method: 'GET', path: base }).body);
+    assert.equal(initial.code, 'LocalStoppedProgressNeedsSharing');
+    assert.equal(initial.remedy.kind, 'ShareStoppedProgress');
+    assert.equal(initial.message, stoppedProgressMessages.required);
+    assert.equal(initial.readyForManualStart, false);
+    assert.equal(initial.steps.find(item => item.key === 'save').state, 'ActionRequired');
+    assert.deepEqual(assertStoppedProgressRequests(state, 0), { shareRequests: 0, startRequests: 0, prepareRequests: 0 });
+    const wire = routeFixture(state, { method: 'POST', path: `${base}/share-stopped-progress`, body }).body;
+    assert.deepEqual(Object.keys(wire).sort(), ['code', 'message', 'ok']);
+    const result = contracts.parseBasicResult(wire);
+    const expected = outcome === 'success'
+      ? { ok: true, code: 'StoppedProgressShared', message: stoppedProgressMessages.shared }
+      : { ok: false, code: 'StoppedProgressProofRequired', message: stoppedProgressMessages.proofRequired };
+    assert.deepEqual(result, { ...expected, portConflicts: undefined, operationId: undefined, operationState: undefined });
+    const checked = localHosting.parseLocalHostingStatus(get(state, base));
+    assert.equal(checked.readyForManualStart, true, 'success needs a fresh ready read; refusal deliberately exercises a later generic Prepared read');
+    assert.equal(checked.code, 'LocalHostingPrepared');
+    assert.equal(state.stoppedProgressShared, outcome === 'success');
+    assert.equal(state.stoppedProgressShareRefused, outcome === 'proof-refusal');
+    assert.deepEqual(assertStoppedProgressRequests(state, 1), { shareRequests: 1, startRequests: 0, prepareRequests: 0, shareBody: body });
+    assert.equal(JSON.stringify(state.host), beforeHost, 'sharing does not invent a running server or mutate the synthetic world/settings');
+  }
+});
+
+test('stopped-progress fixture rejects unknown actions, extra fields, wrong identities and Start before confirmed sharing', () => {
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const body = { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64) };
+  for (const request of [
+    { method: 'GET', path: `${base}/share-stopped-progress` },
+    { method: 'POST', path: `${base}/share-stopped-progress?unexpected=1`, body },
+    { method: 'POST', path: `${base}/share-stopped-progress`, body: { ...body, acceptSplitWarning: true } },
+    { method: 'POST', path: `${base}/share-stopped-progress`, body: { ...body, branchHash: 'B'.repeat(64) } },
+    { method: 'POST', path: `${base}/share-stopped-progress`, body: { ...body, localProfileId: fixtureIds.secondary } },
+    { method: 'POST', path: `${base}/share-stopped-progress`, body: { localProfileId: fixtureIds.primary } },
+    { method: 'POST', path: `/api/local/friend/${fixtureIds.secondary}/shared-world/hosting/share-stopped-progress`,
+      body: { ...body, localProfileId: fixtureIds.secondary } },
+    { method: 'POST', path: `${base}/share-stopped-progress-again`, body },
+    { method: 'POST', path: `${base}/prepare`, body: {} },
+    { method: 'POST', path: `${base}/start`, body: { ...body, requestId: null, acceptSplitWarning: true } }
+  ]) {
+    const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'stopped-progress' });
+    assert.equal(routeFixture(state, request), null, `${request.method} ${request.path} remains an unhandled failure`);
+    assert.equal(state.stoppedProgressShared, false);
+    assert.equal(state.stoppedProgressShareRefused, false);
+    assert.deepEqual(state.stoppedProgressShareBodies, []);
+    assert.equal(state.simpleHostingStarted, false);
+  }
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'stopped-progress', stoppedProgressShare: 'proof-refusal' });
+  routeFixture(state, { method: 'POST', path: `${base}/share-stopped-progress`, body });
+  get(state, base); // Deliberately generic read must not make an unshared copy startable in the synthetic backend.
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: { ...body, requestId: null, acceptSplitWarning: true } }), null);
+  assert.throws(() => assertStoppedProgressRequests(state, 1), /without preparation, Start or replay/u);
+  assert.throws(() => assertStoppedProgressRequests({ ...state, requests: [] }, 0), /without preparation, Start or replay/u,
+    'recorded sharing bodies cannot disappear from the request inventory');
+  const unconfigured = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready' });
+  assert.equal(routeFixture(unconfigured, { method: 'POST', path: `${base}/share-stopped-progress`, body }), null);
+  const unknownOutcome = createFixtureState({ id: 'friend-offline', simpleHosting: 'stopped-progress', stoppedProgressShare: 'invented-success' });
+  assert.equal(routeFixture(unknownOutcome, { method: 'POST', path: `${base}/share-stopped-progress`, body }), null);
+  assert.equal(unknownOutcome.stoppedProgressShared, false);
+});
+
 test('prepared-copy rendered journeys retain the entry label, exact Start footer, and no-prepare/replay evidence', () => {
   const starting = simpleHostingCases.find(item => item.id === 'simple-hosting-starting');
   assert.deepEqual(starting.steps, [{ button: 'Host locally' }, { button: 'Start hosting', within: 'dialog[open]' }]);
@@ -1396,16 +1538,40 @@ test('prepared-copy rendered journeys retain the entry label, exact Start footer
     'read-only refreshes and synthetic page changes do not submit another hosting instruction');
 });
 
+test('only the exact passive progress abort after a validated pending Start is an intentional fixture outcome', () => {
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'ready', hostingStartPending: true });
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  const aborted = { method: 'GET', path: `${base}/progress`, error: 'net::ERR_ABORTED' };
+  assert.equal(expectedFixtureRequestAbort(state, aborted), false, 'an abort before Start remains a failure');
+  assert.equal(routeFixture(state, { method: 'POST', path: `${base}/start`, body: {} }), null);
+  assert.equal(expectedFixtureRequestAbort(state, aborted), false, 'an invalid Start body cannot authorize an expected abort');
+  routeFixture(state, { method: 'POST', path: `${base}/start`,
+    body: { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true } });
+  assert.equal(state.requests.some(item => item.path.endsWith('/progress')), false,
+    'the observed browser race aborts before the passive route handler runs');
+  assert.equal(expectedFixtureRequestAbort(state, aborted), true);
+  for (const changed of [
+    { method: 'POST' }, { error: 'net::ERR_FAILED' }, { path: `${base}/start` },
+    { path: `/api/local/friend/${fixtureIds.secondary}/shared-world/hosting/progress` }, { path: `${base}/progress?unexpected=1` }
+  ]) assert.equal(expectedFixtureRequestAbort(state, { ...aborted, ...changed }), false,
+    'unrelated failures cannot be hidden as a deliberate passive-read cancellation');
+  assert.equal(expectedFixtureRequestAbort({ ...state, hostingStartPending: false }, aborted), false);
+  assert.equal(expectedFixtureRequestAbort({ ...state, simpleHosting: 'prepare' }, aborted), false);
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  assert.match(source, /kind: 'intentional-passive-progress-abort'/u, 'the scoped cancellation remains in the artifact evidence');
+});
+
 test('the prepared timeout capture waits for its automatic response, settled control and paint after advancing time', async () => {
   let completeRead;
   let loading = true;
+  let expectedButton = 'Start hosting', expectedTicks = 30001;
   const order = [];
   const response = { url: () => 'http://fixture.invalid/api/local/friend/synthetic/shared-world/hosting',
     request: () => ({ method: () => 'GET' }), ok: () => true,
     finished: async () => { order.push('body-finished'); loading = false; } };
   const button = { isConnected: true, get disabled() { return loading; } };
   const modal = { getByRole: (role, options) => {
-    if (role === 'button') { assert.equal(options.name, 'Start hosting'); return { elementHandle: async () => button }; }
+    if (role === 'button') { assert.equal(options.name, expectedButton); return { elementHandle: async () => button }; }
     assert.equal(role, 'region'); assert.equal(options.name, 'Hosting progress');
     return { count: async () => Number(loading) };
   } };
@@ -1417,7 +1583,7 @@ test('the prepared timeout capture waits for its automatic response, settled con
       assert.equal(predicate({ ...response, request: () => ({ method: () => 'POST' }) }), false);
       return new Promise(resolve => { completeRead = resolve; });
     },
-    clock: { fastForward: async ticks => { assert.equal(ticks, 30001); order.push('clock-advanced'); } },
+    clock: { fastForward: async ticks => { assert.equal(ticks, expectedTicks); order.push('clock-advanced'); } },
     waitForFunction: async (predicate, element, options) => {
       assert.deepEqual(options, { timeout: 8000 }); assert.equal(predicate(element), true);
       order.push('control-settled');
@@ -1429,8 +1595,14 @@ test('the prepared timeout capture waits for its automatic response, settled con
   assert.deepEqual(order, ['response-registered', 'clock-advanced'], 'advancing timers alone cannot authorize capture');
   assert.equal(loading, true);
   completeRead(response);
-  await flight;
+  assert.equal(await flight, response);
   assert.deepEqual(order, ['response-registered', 'clock-advanced', 'body-finished', 'control-settled', 'paint-settled']);
+  expectedButton = 'Share stopped progress'; expectedTicks = 10001; loading = true;
+  const sharingCheck = advancePreparedHostingCheck(page, modal, 10001, 'Share stopped progress');
+  await Promise.resolve();
+  completeRead(response);
+  assert.equal(await sharingCheck, response, 'the refusal journey can await the automatic read while retaining its sharing footer');
+  expectedButton = 'Start hosting'; expectedTicks = 30001;
   loading = true;
   const failed = advancePreparedHostingCheck(page, modal, 30001);
   await Promise.resolve();

@@ -26,6 +26,11 @@ const prepared: LocalHostingStatus = {
   localProfileId, branchHash, readyForManualStart: true,
   steps: initial.steps.map(step => step.key === 'connection' ? step : { ...step, state: 'Ready' })
 }
+const stoppedProgress: LocalHostingStatus = {
+  ...prepared, ok: false, code: 'LocalStoppedProgressNeedsSharing', message: 'The last stopped save is still local.', readyForManualStart: false,
+  remedy: { kind: 'ShareStoppedProgress', title: 'Share stopped progress', message: 'Review the stopped save before sharing.' },
+  steps: prepared.steps.map(step => step.key === 'save' ? { ...step, state: 'ActionRequired', message: 'Share the last stopped save before hosting.' } : step)
+}
 const response = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
 const props = { profileId, connectionId: 'first', worldName: 'Shared world', available: true, onOpenHost: vi.fn() }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -80,6 +85,246 @@ async function pendingPreparation(progressAtPoll: () => HostingProgress) {
   await act(async () => {})
   return { view, writes, open, signal: () => signal, finish: (value: Response) => release(value) }
 }
+
+it('shares stopped progress only on an explicit click, then requires a separate Start without preparation', async () => {
+  let latest = stoppedProgress
+  let finishSharing!: (value: Response) => void
+  const writes: { url: string; body: unknown }[] = []
+  const opened = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
+    if (url.endsWith('/share-stopped-progress')) return new Promise<Response>(resolve => { finishSharing = resolve })
+    if (url.endsWith('/start')) return response({ ok: true, code: 'Starting', message: 'Start requested.' })
+    return response(latest)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={opened} />)
+  let dialog = await openHosting()
+  expect(parseLocalHostingStatus(stoppedProgress)).toBe(stoppedProgress)
+  expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled()
+  expect(dialog.queryByRole('button', { name: 'Start hosting' })).not.toBeInTheDocument()
+  expect(writes).toEqual([])
+  fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+  expect(dialog.getByRole('button', { name: 'Sharing stopped progress...' })).toBeDisabled()
+  expect(dialog.getByRole('region', { name: 'Hosting progress' })).toHaveTextContent('This action does not start the server.')
+  fireEvent.click(dialog.getByRole('button', { name: 'Sharing stopped progress...' }))
+  expect(writes).toEqual([{ url: `${base}/hosting/share-stopped-progress`, body: { localProfileId, branchHash } }])
+  latest = prepared
+  await act(async () => { finishSharing(response({ ok: true, code: 'StoppedProgressShared', message: 'This stopped save is now shared within its signed history.' })) })
+  await waitFor(() => expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeEnabled())
+  expect(opened).not.toHaveBeenCalled()
+  expect(writes).toHaveLength(1)
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await waitFor(() => expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeEnabled())
+  fireEvent.click(dialog.getByRole('button', { name: 'Close Host locally' }))
+  dialog = await openHosting()
+  expect(writes).toHaveLength(1)
+  fireEvent.click(dialog.getByRole('button', { name: 'Start hosting' }))
+  await waitFor(() => expect(opened).toHaveBeenCalledWith(localProfileId))
+  expect(writes.map(write => write.url)).toEqual([`${base}/hosting/share-stopped-progress`, `${base}/hosting/start`])
+})
+
+it.each(['StoppedProgressProofRequired', 'StoppedProgressSetupChanged', 'StoppedProgressBusy', 'StoppedProgressSharingChanged', 'StoppedProgressPublicationFailed'])(
+  'keeps a real %s result and the sharing action across a generic prepared refresh', async code => {
+    let latest = stoppedProgress
+    const writes: string[] = []
+    const failure = 'The stopped save needs review. Existing worlds and backups were kept.'
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method) { writes.push(url); return response({ ok: false, code, message: failure }) }
+      return response(latest)
+    }))
+    render(<FriendLocalHosting {...props} onReviewSharedSave={vi.fn()} />)
+    const dialog = await openHosting()
+    fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+    await waitFor(() => expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(failure))
+    expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeDisabled()
+    latest = prepared
+    fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+    await waitFor(() => expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled())
+    expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(failure)
+    expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('the last stopped save still needs sharing')
+    expect(dialog.getByRole('status', { name: 'Last check result' })).not.toHaveTextContent('this PC is prepared')
+    expect(dialog.queryByRole('button', { name: 'Start hosting' })).not.toBeInTheDocument()
+    expect(dialog.getByRole('heading', { name: 'Share this PC\'s stopped progress' })).toBeInTheDocument()
+    expect(writes).toEqual([`${base}/hosting/share-stopped-progress`])
+  })
+
+it.each(['StoppedProgressProofRequired', 'UnreviewedFailure'])('retains safe sharing failure guidance for HTTP refusal %s', async code => {
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method
+    ? new Response(JSON.stringify({ ok: false, code, message: 'Synthetic private path C:/private/backup/detail.txt' }), { status: 409 })
+    : response(stoppedProgress)))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+  await waitFor(() => expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(code === 'StoppedProgressProofRequired'
+    ? 'could not be matched to its latest completed backup' : 'Sharing stopped progress could not be confirmed'))
+  expect(dialog.queryByText(/Synthetic private path/)).not.toBeInTheDocument()
+  expect(dialog.queryByRole('button', { name: 'Start hosting' })).not.toBeInTheDocument()
+})
+
+it('times out one pending sharing request without replay after a late success, refresh or navigation', async () => {
+  vi.useFakeTimers()
+  let finishSharing!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const opened = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { finishSharing = resolve }) }
+    return response(stoppedProgress)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={opened} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  let dialog = within(screen.getByRole('dialog'))
+  fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(119999) })
+  expect(signal?.aborted).toBe(false)
+  expect(dialog.getByRole('button', { name: 'Sharing stopped progress...' })).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(signal?.aborted).toBe(true)
+  expect(dialog.getByRole('alert')).toHaveTextContent('did not return a confirmed result within 2 minutes')
+  await act(async () => { finishSharing(response({ ok: true, code: 'StoppedProgressShared', message: 'Late result.' })) })
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await act(async () => {})
+  fireEvent.click(dialog.getByRole('button', { name: 'Close Host locally' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('within 2 minutes')
+  expect(writes).toEqual([`${base}/hosting/share-stopped-progress`])
+  expect(opened).not.toHaveBeenCalled()
+})
+
+it('aborts sharing on a connection change and ignores its late result without replay', async () => {
+  let finishSharing!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const opened = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { finishSharing = resolve }) }
+    return response(stoppedProgress)
+  }))
+  const view = render(<FriendLocalHosting {...props} onOpenHost={opened} />)
+  const dialog = await openHosting()
+  fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+  expect(signal?.aborted).toBe(false)
+  view.rerender(<FriendLocalHosting {...props} connectionId="second" onOpenHost={opened} />)
+  expect(signal?.aborted).toBe(true)
+  await act(async () => { finishSharing(response({ ok: true, code: 'StoppedProgressShared', message: 'Late result.' })) })
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(writes).toEqual([`${base}/hosting/share-stopped-progress`])
+  expect(opened).not.toHaveBeenCalled()
+})
+
+it('lets the user pause sharing and keeps its unconfirmed result after reopening without replay', async () => {
+  let finishSharing!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { finishSharing = resolve }) }
+    return response(stoppedProgress)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  let dialog = await openHosting()
+  fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+  fireEvent.click(dialog.getByRole('button', { name: 'Pause sharing' }))
+  expect(signal?.aborted).toBe(true)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  await act(async () => { finishSharing(response({ ok: true, code: 'StoppedProgressShared', message: 'Late result.' })) })
+  dialog = await openHosting()
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('paused before its result was confirmed')
+  expect(writes).toEqual([`${base}/hosting/share-stopped-progress`])
+})
+
+it('retains the typed sharing remedy and failed Start result when later status polling says prepared', async () => {
+  vi.useFakeTimers()
+  let latest = prepared
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(url); latest = stoppedProgress; return response({ ok: false, code: stoppedProgress.code, message: stoppedProgress.message }) }
+    return response(latest)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog'))
+  fireEvent.click(dialog.getByRole('button', { name: 'Start hosting' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled()
+  latest = prepared
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(stoppedProgress.message)
+  expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled()
+  expect(dialog.queryByRole('button', { name: 'Start hosting' })).not.toBeInTheDocument()
+  expect(writes).toEqual([`${base}/hosting/start`])
+})
+
+it.each([
+  { allowed: false, code: 'HostingPermissionRequired', remedy: null },
+  { code: 'HostingHistoryChoiceRequired', remedy: { kind: 'ChooseHistory' as const, title: 'Review the save histories', message: 'Keep all existing saves.' } },
+  { running: true, code: 'LocalHostingRunning', remedy: null }
+])('gives current permission, history and running checks priority over a retained stopped-sharing result: $code', async patch => {
+  let latest = stoppedProgress
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(latest)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled()
+  latest = { ...stoppedProgress, ...patch }
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await waitFor(() => expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-busy', 'true'))
+  expect(dialog.queryByRole('button', { name: 'Share stopped progress' })).not.toBeInTheDocument()
+  if (!patch.running) expect(dialog.getByRole('button', { name: /^(Host locally|Retry and start)$/ })).toBeDisabled()
+  else expect(dialog.getByRole('button', { name: 'Open local server' })).toBeEnabled()
+  expect(writes).toEqual([])
+})
+
+it.each([{ branchHash: 'B'.repeat(64) }, { localProfileId: '33333333-3333-4333-8333-333333333333' }])(
+  'does not use a retained sharing result to authorize a changed checked hosting identity %j', async changedIdentity => {
+    vi.useFakeTimers()
+    let latest = stoppedProgress
+    const writes: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(latest) }))
+    render(<FriendLocalHosting {...props} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+    await act(async () => {})
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled()
+    latest = { ...prepared, ...changedIdentity }
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeDisabled()
+    expect(dialog.getByRole('heading', { name: 'Recheck the selected hosting copy' })).toBeInTheDocument()
+    expect(dialog.getByRole('status', { name: 'Last check result' })).toHaveTextContent('selected hosting copy changed')
+    fireEvent.click(dialog.getByRole('button', { name: 'Share stopped progress' }))
+    expect(writes).toEqual([])
+  })
+
+it('shows current withdrawn copy consent instead of a retained sharing remedy and sends no write', async () => {
+  vi.useFakeTimers()
+  let latest = stoppedProgress
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(latest) }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByRole('button', { name: 'Share stopped progress' })).toBeEnabled()
+  latest = { ...stoppedProgress, consented: false, code: 'LocalSaveConsentRequired', message: 'Review current hosting-copy permission.',
+    remedy: { kind: 'ConfirmCopy', title: 'Review current hosting-copy permission', message: 'Current copy permission is no longer confirmed.' } }
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(dialog.queryByRole('button', { name: 'Share stopped progress' })).not.toBeInTheDocument()
+  expect(dialog.getByRole('heading', { name: 'Review current hosting-copy permission' })).toBeInTheDocument()
+  expect(dialog.queryByRole('heading', { name: 'Share this PC\'s stopped progress' })).not.toBeInTheDocument()
+  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  expect(writes).toEqual([])
+})
 
 it.each(['action', 'card'] as const)('waits for confirmed permission before offering the %s entry', async presentation => {
   const calls: string[] = []

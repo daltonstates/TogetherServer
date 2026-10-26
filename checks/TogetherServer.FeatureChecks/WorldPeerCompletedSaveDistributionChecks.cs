@@ -18,6 +18,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
     {
         ReceiptBoundaries();
         await TerminalHeadBoundariesAsync(parent);
+        await LatePublicationAfterClosedSessionAsync(parent);
         var folder = Path.Combine(parent, "completed-save-distribution-" + Guid.NewGuid().ToString("N"));
         using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         using var sourceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -252,6 +253,148 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             "a later backup rewrote an already closed session's final save");
     }
 
+    private static async Task LatePublicationAfterClosedSessionAsync(string parent)
+    {
+        var folder = Path.Combine(parent, "late-closed-save-" + Guid.NewGuid().ToString("N"));
+        using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var member = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var observer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var a = new LocalData(Path.Combine(folder, "owner"));
+        using var b = new LocalData(Path.Combine(folder, "source"));
+        using var c = new LocalData(Path.Combine(folder, "observer"));
+        var original = new ServerProfile
+        {
+            Kind = GameKinds.Fixture,
+            WorldId = "LateStoppedFilesOnly",
+            SharedSavesEnabled = true,
+            WorldDirectory = Path.Combine(a.RootPath, "original-world")
+        };
+        Directory.CreateDirectory(original.WorldDirectory);
+        File.WriteAllText(Path.Combine(original.WorldDirectory, "world.dat"), "original world stays unchanged");
+        Configure(a, "https://192.0.2.174:5131", [original]);
+        Configure(b, "https://192.0.2.175:5131", []);
+        Configure(c, "https://192.0.2.176:5131", []);
+        a.SaveProtected("shared-world-signing-key.protected", owner.ExportPkcs8PrivateKey());
+        var aRoute = Route(a); var bRoute = Route(b); var cRoute = Route(c);
+        var pairing = new PairingService(a);
+        var invite = pairing.IssueServer(original.Id, false, false, aRoute.Address, aRoute.CertificateSha256, false);
+        var memberCredential = pairing.Activate(new(original.Id, invite.Code, ServerScope: true))!;
+        var observerCredential = pairing.Activate(new(original.Id, invite.Code, ServerScope: true))!;
+        Bind(pairing, memberCredential.DeviceId, member);
+        Bind(pairing, observerCredential.DeviceId, observer);
+        var completed = new CompletedFiles(a.RootPath) { CapturedUtc = DateTimeOffset.UtcNow.AddMinutes(-20) };
+        var publisher = new SharedWorldService(a, completed);
+        var roster = publisher.PublishRoster(original, pairing.SharedRosterMembers(original.Id));
+        pairing.ConfirmSharedRosterPublished(original.Id, roster);
+        var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, original.Id, roster.GroupId);
+        var baseBytes = Encoding.UTF8.GetBytes("synthetic original base three");
+        completed.Set(baseBytes);
+        var originalHistory = new List<SharedWorldVersion>();
+        SharedWorldVersion? third = null;
+        for (var number = 1; number <= 3; number++)
+        {
+            var published = publisher.PublishAfterStop(original, Guid.NewGuid());
+            Require(published is { Ok: true, Version: not null } && published.Version.Number == number,
+                "synthetic base-three publication failed");
+            third = published.Version;
+            originalHistory.Add(published.Version!);
+        }
+        var basis = third!;
+        Initialize(a, root, roster, Guid.Empty, owner, bRoute, null);
+        Initialize(b, root, roster, memberCredential.DeviceId, member, aRoute, memberCredential);
+        Initialize(c, root, roster, observerCredential.DeviceId, observer, aRoute, observerCredential);
+        var received = Vault(b, memberCredential.DeviceId, original.Id);
+        foreach (var version in originalHistory) WriteCopy(received, version, baseBytes);
+        var copies = new SharedWorldSeparateCopyStore(b);
+        var offer = SharedWorldSeparateCopyStore.PrepareSoloOffer(received, roster,
+            new(root.GroupId, roster.Epoch, roster.Revision, roster.Signature), memberCredential.DeviceId, member,
+            bRoute.Address, bRoute.CertificateSha256, new WorldAuthorityStore(b));
+        var branch = copies.Declare(offer, received, member, true);
+        var localId = SharedWorldBranchLiveSource.LocalProfileId(branch.BranchHash);
+        var local = new ServerProfile
+        {
+            Id = localId,
+            Kind = GameKinds.Fixture,
+            WorldId = basis.WorldId,
+            GamePort = basis.PortableSetup.GamePort,
+            WorldDirectory = SharedWorldBranchLiveSource.WorldRoot(b, basis, localId),
+            SeparateCopySourceProfileId = root.ProfileId,
+            SeparateCopyBranchHash = branch.BranchHash,
+            Backups = new() { Enabled = true, MinimumFreeSpaceMb = 0 }
+        };
+        var settings = b.LoadSettings(); settings.Profiles = [local]; b.SaveSettings(settings);
+        Directory.CreateDirectory(local.WorldDirectory);
+        var closed = new SharedWorldPeerSession(Guid.NewGuid(), branch.BranchHash, 2, "Stopped",
+            basis.VersionHash, basis.VersionHash, DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow.AddMinutes(-5));
+        var closedBytes = JsonSerializer.SerializeToUtf8Bytes(closed, Json);
+        var bStore = Store(b, root, roster);
+        bStore.Publish(memberCredential.DeviceId, member, [bRoute], [closed],
+            [new(branch.BranchHash, basis.VersionHash, basis.VersionHash, basis.ParentHash, basis.Number)], [basis.VersionHash]);
+        Require(bStore.Import(Store(c, root, roster).Publish(observerCredential.DeviceId, observer, [cRoute], [], [], [])).Changed,
+            "the late-publication observer contact was not retained");
+
+        // The old session is already terminal before the new strict backup is
+        // completed. Its final head remains base three, while publication four
+        // has a later capture time and must travel through the ordinary branch.
+        var lateBytes = Encoding.UTF8.GetBytes("synthetic late stopped progress becomes child four");
+        File.WriteAllBytes(Path.Combine(local.WorldDirectory, "world.dat"), lateBytes);
+        var backups = new WorldBackupService(b, TimeProvider.System, games: new GameServerRegistry(b, true, PortProbeMode.ObserveOnly));
+        var backup = backups.Create(local, BackupKinds.Rolling);
+        Require(backup is { Ok: true, Backup: not null }, "the late strict rolling backup failed");
+        var publication = copies.PublishAfterStop(branch, local, backup.Backup!.Id, backups);
+        Require(publication is { Ok: true, Version: not null } && publication.Version.Number == 4 &&
+            publication.Version.ParentHash == basis.VersionHash && publication.Version.CreatedUtc > closed.EndedUtc &&
+            publication.Version.BackupId == backup.Backup.Id,
+            "the late backup was not published as the exact signed child after terminal session time");
+        var fourth = publication.Version!;
+        HttpClient Offline(string _, IEnumerable<string> __) => throw new HttpRequestException("Synthetic route is offline.");
+        using var aFriends = new FriendService(a, Offline);
+        using var bFriends = new FriendService(b, Offline);
+        using var cFriends = new FriendService(c, Offline);
+        using var aService = new WorldPeerService(a, new HostManager(a), aFriends, pairing, Offline);
+        using var cService = new WorldPeerService(c, new HostManager(c), cFriends, new PairingService(c), Offline);
+        using var aHandler = new Handler(aService, root, aRoute);
+        using var cHandler = new Handler(cService, root, cRoute);
+        HttpClient Client(string endpoint, IEnumerable<string> pins)
+        {
+            var route = endpoint.TrimEnd('/') == aRoute.Address ? aRoute : cRoute;
+            Require(endpoint.TrimEnd('/') == route.Address && pins.SequenceEqual([route.CertificateSha256]),
+                "late publication changed a pinned recipient origin");
+            return new(route == aRoute ? aHandler : cHandler, disposeHandler: false) { BaseAddress = new Uri(route.Address + "/") };
+        }
+        using var source = new WorldPeerService(b, new HostManager(b), bFriends, new PairingService(b), Client);
+        for (var pass = 0; pass < 6; pass++) await source.SyncNowAsync(default);
+        VerifyCopy(SharedWorldBranchVault.Root(a, branch), fourth, lateBytes);
+        VerifyCopy(SharedWorldBranchVault.Root(c, branch), fourth, lateBytes);
+        var receipts = Receipts(b, root);
+        var ownerReceipt = receipts.Single(item => item.DeviceId == Guid.Empty && item.VersionHash == fourth.VersionHash);
+        var observerReceipt = receipts.Single(item => item.DeviceId == observerCredential.DeviceId && item.VersionHash == fourth.VersionHash);
+        Require(aHandler.SeedRequests > 0 && cHandler.SeedRequests > 0 &&
+            SharedWorldReceiptTrust.VerifyPeerOwner(ownerReceipt, root) &&
+            !SharedWorldReceiptTrust.Verify(ownerReceipt, root.OwnerPublicKey) &&
+            SharedWorldReceiptTrust.Verify(observerReceipt, Public(observer)),
+            "late post-terminal delivery lacked exact owner-domain and eligible-member receipts");
+        foreach (var service in new[] { source, aService, cService })
+        {
+            var latest = await service.ResolveLatestPreparedSourceAsync(root, default);
+            Require(latest.Ok && latest.Source?.Descriptor.Version.VersionHash == fourth.VersionHash &&
+                latest.Source.BranchHash == branch.BranchHash,
+                "a stale closed-session head prevented selection of its later complete signed child");
+        }
+        var projected = bStore.Project();
+        Require(projected.Branches.Any(item => item.Branch.BranchHash == branch.BranchHash &&
+                item.Branch.HeadVersionHash == fourth.VersionHash && item.Authorized && !item.HasConflict),
+            "late publication did not advertise its current exact branch head");
+        foreach (var data in new[] { a, b, c })
+            Require(JsonSerializer.SerializeToUtf8Bytes(Store(data, root, roster).Project().Sessions
+                    .Single(item => item.Session.SessionId == closed.SessionId).Session, Json).SequenceEqual(closedBytes),
+                "late publication rewrote the old closed session bytes at the source or recipient");
+        Require(File.ReadAllText(Path.Combine(original.WorldDirectory, "world.dat")) == "original world stays unchanged" &&
+            publisher.Status(original).Latest?.VersionHash == basis.VersionHash &&
+            a.LoadRuns().Count == 0 && b.LoadRuns().Count == 0 && c.LoadRuns().Count == 0,
+            "late publication changed the original world/default pointer or created a run");
+    }
+
     private static async Task TerminalHeadBoundariesAsync(string parent)
     {
         foreach (var scenario in new[] { "MissingPointer", "SameNumberFork", "LargerNumberFork", "NullHead" })
@@ -440,9 +583,10 @@ internal static class WorldPeerCompletedSaveDistributionChecks
     private sealed class CompletedFiles(string root) : ISharedWorldCaptureAdapter
     {
         private readonly string path = Path.Combine(root, "completed-synthetic-backup");
+        internal DateTimeOffset? CapturedUtc { get; set; }
         internal void Set(byte[] bytes) { Directory.CreateDirectory(path); File.WriteAllBytes(Path.Combine(path, "world.dat"), bytes); }
         public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId) => new(1,
-            SharedWorldCaptureKinds.PostStopBackup, backupId, DateTimeOffset.UtcNow,
+            SharedWorldCaptureKinds.PostStopBackup, backupId, CapturedUtc ?? DateTimeOffset.UtcNow,
             [Fact(File.ReadAllBytes(Path.Combine(path, "world.dat")))], path,
             new(3, profile.Id, profile.Kind, profile.WorldId, "Unknown", "SyntheticFilesOnly", [], [], profile.GamePort));
     }

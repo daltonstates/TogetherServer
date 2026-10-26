@@ -31,12 +31,16 @@ internal interface ISharedWorldCaptureAdapter
 
 internal sealed class PostStopBackupCaptureAdapter(WorldBackupService backups) : ISharedWorldCaptureAdapter
 {
-    public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId)
+    public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId) =>
+        ReadVerified(profile, backupId, CancellationToken.None);
+
+    internal VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backupId,
+        CancellationToken cancellationToken)
     {
-        var (manifest, payloadRoot) = backups.ReadVerifiedTransfer(profile, backupId);
+        var (manifest, payloadRoot) = backups.ReadVerifiedTransfer(profile, backupId, cancellationToken);
         return new(1, SharedWorldCaptureKinds.PostStopBackup, backupId, manifest.CreatedUtc,
             manifest.Files.Select(file => new SharedWorldFile(file.Path, file.Length, file.Sha256)).ToArray(),
-            payloadRoot, backups.ReadSetup(profile, backupId));
+            payloadRoot, backups.ReadSetup(profile, backupId, cancellationToken));
     }
 }
 

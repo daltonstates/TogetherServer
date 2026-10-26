@@ -32,6 +32,22 @@ function currentStep(name: RegExp) {
 }
 
 describe('Local hosting setup guide', () => {
+  it('explains explicit stopped-save sharing without offering a sharing mutation in the guide', () => {
+    const status = withCheck('save', 'ActionRequired', { code: 'LocalStoppedProgressNeedsSharing',
+      message: 'The last stopped save is still local.',
+      remedy: { kind: 'ShareStoppedProgress', title: 'Share stopped progress', message: 'Review the stopped save before sharing.' } })
+    const { actions } = setup(status)
+    expect(screen.getByRole('heading', { name: 'Share this PC\'s stopped progress' })).toBeInTheDocument()
+    expect(screen.getByText(/If the save or setup cannot be verified, keep every copy/)).toBeInTheDocument()
+    expect(screen.getByText(/Choose Start hosting separately/)).toBeInTheDocument()
+    expect(screen.getByText(/Sharing does not confirm another PC received the save/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Share stopped progress' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Recheck the save' }))
+    expect(actions.onRetry).toHaveBeenCalledOnce()
+    expect(actions.onPrepare).not.toHaveBeenCalled()
+    expect(actions.onOpenLocalServer).not.toHaveBeenCalled()
+  })
+
   it('keeps the selected repair readable through a refresh and labels its last result after a failure', () => {
     const status = withCheck('save', 'ActionRequired', { code: 'SharedChunkUnavailable',
       message: 'Ask the source PC to share its completed backup again.' })

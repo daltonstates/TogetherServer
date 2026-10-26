@@ -157,7 +157,12 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var hosted = branch is null ? null : await manager.RecordedLocalHostingStatusAsync(sourceProfileId,
             branch.BranchHash, cancellationToken);
         var running = hosted?.Running == true;
-        var saveReady = hosted is { Restored: true, ReviewRequired: false } && (hosted.ReadyForManualStart || running);
+        var stoppedProgressPending = access.Allowed && access.Consented && !ambiguous && !running &&
+            hosted is { Restored: true, ReviewRequired: false } && existing is not null && branch is not null &&
+            await manager.StoppedSeparateSavePublicationPendingAsync(sourceProfileId, existing.Id,
+                branch.BranchHash, cancellationToken);
+        var saveReady = !stoppedProgressPending && hosted is { Restored: true, ReviewRequired: false } &&
+            (hosted.ReadyForManualStart || running);
         var preparationReady = access.Allowed && access.Consented && !ambiguous && !running &&
             saveReady && ports.Available && serverFile is not null && !manualSetup &&
             hosted is { ReadyForManualStart: true };
@@ -182,6 +187,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             "The matching server file is available on this PC. Start repeats its checks.";
         var code = ambiguous ? "HostingHistoryChoiceRequired" : !access.Allowed ? access.Code :
             hosted?.ReviewRequired == true ? "LocalHostingReviewRequired" :
+            stoppedProgressPending ? StoppedProgressCode :
             connectionBlocksStart ? "LocalConnectionSetupRequired" : ready ? "LocalHostingPrepared" :
             running ? "LocalHostingRunning" : manualSetup ? "LocalServerSetupRequired" :
             !access.Consented ? "LocalConsentRequired" : !saveReady ? "LocalHostingPreparationRequired" :
@@ -189,6 +195,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var message = ambiguous ? "More than one local history is available. Choose a history in shared-save setup; every save is preserved." :
             !access.Allowed ? access.Message : hosted?.ReviewRequired == true ? hosted.Message :
             running ? "This shared save is already hosted on this PC. Its local world is preserved." :
+            stoppedProgressPending ? StoppedProgressMessage :
             connectionBlocksStart ? $"The verified hosting copy is prepared. {connectionStep.Message} Open Connection help before starting." :
             ready ? "This PC is prepared. Current save, game and port checks run again when you choose Host on this PC." :
             manualSetup ? serverMessage : "Choose Host locally to get the latest completed save and prepare a checked hosting copy on this PC.";
@@ -201,6 +208,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
              // This read does not hash received payloads or prepare a hosting
              // branch. An unprepared copy is unverified, not a failed transfer.
              new("save", saveReady ? "Ready" : !ambiguous && branch is null ? "Unknown" : "ActionRequired", ambiguous ? "Choose an exact shared history before continuing." :
+                stoppedProgressPending ? StoppedProgressMessage :
                 saveReady ? "Preparation verified this retained signed save. Start repeats current checks; existing local progress is preserved." :
                 hosted?.Restored == true ? "The existing local world is preserved. Prepare again to repeat its verification checks." :
                 !access.Consented ? "Prepare can allow shared saves on this PC after your consent." :
