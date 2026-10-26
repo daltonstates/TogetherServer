@@ -171,6 +171,24 @@ one reported operation is stage promotion. Backup code is unchanged from
 recorded for independent hosted validation. One internal source-link case lacks
 local symlink capability. No 0.3.3.15 physical result or release exists yet.
 
+The [frozen 0.3.3.15 run](https://github.com/daltonstates/TogetherServer/actions/runs/40349982642)
+uses source `4179a1ab1b38c2a45bb407171fc40750640a62ea`. Fresh Windows checks
+pass all 79 source groups and eight packaged API cases, including all five
+locally failing groups. This does not establish the local I/O failures' cause.
+UI tests 1,528/109 files, hosting captures 108/108, server-access captures 36/36,
+browser, rehearsal, all six compatibility/update lanes and packaging pass.
+All six installer checks and three wizard choices pass. Existing records 12
+successful gates, one Custom-driver gate failure (`CustomStopTimedOut`, 5/6
+checks), and 14 later gates NotRun, including the mandatory packaged core journey.
+Core source checks 114/114 do not substitute for that missing journey. A single
+dedicated hosted core verification against the unchanged EXE is being prepared.
+Automatic hosting fails initial preparation before any Start; its separate
+diagnostic attempt fails too. Pairing UX 3/3 and loopback 11/11 pass; LAN records
+three passes, governance GET HTTP 409 failure and 14 stages NotRun. The response
+code was not retained, so its exact refusal predicate remains unavailable.
+Windows QuietTime again blocks required OS notification delivery/click proof.
+No failed lane is erased or accepted by the independent source/UI passes.
+
 Stable private observations before and after the stalled action contain 38
 metadata files. Signed journals, floors, indexes and lookups are byte-identical,
 with no pending roster record. Seven other protected files were rewritten. All

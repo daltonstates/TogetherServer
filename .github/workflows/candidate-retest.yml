@@ -1,0 +1,265 @@
+name: Verify required core on immutable directory-lock candidate
+
+on:
+  push:
+    branches: ['review/candidate-retest-*']
+
+permissions:
+  contents: read
+  actions: read
+
+# The original candidate, fixtures and embedded UI are never rebuilt here.
+# Verification changes have their own revision; the first failed run is retained.
+env:
+  CANDIDATE_SOURCE: '4179a1ab1b38c2a45bb407171fc40750640a62ea'
+  CANDIDATE_RUN_ID: '40349982642'
+  CANDIDATE_ARTIFACT_ID: '12662529208'
+  CANDIDATE_ARTIFACT_SHA256: 'e1926a6ab88bd102f9b35997e853282a38df68c9b9677b4d3f7456473ba3a564'
+  CANDIDATE_SHA256: 'dfd981452639c7143f34fe24748bc3ae09195b4bd322b74ad2d1b31027483958'
+  CANDIDATE_PRODUCT_VERSION: '0.3.3.15+4179a1ab1b38c2a45bb407171fc40750640a62ea'
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  core:
+    name: Verify required core once with immutable candidate15
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the verification revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Require unchanged product and build inputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor $env:CANDIDATE_SOURCE HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The original candidate source is not an ancestor.' }
+          $inputs = @('src', 'ui', 'installer', 'global.json', '.node-version', 'TogetherServer.slnx',
+            'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props',
+            'NuGet.config', 'NuGet.Config', 'Nuget.config', 'nuget.config',
+            ':(glob)**/Directory.Build.*', ':(glob)**/Directory.Packages.*',
+            'scripts/build.ps1', 'scripts/build-installer.ps1', 'scripts/prepare-github-release.ps1',
+            'scripts/prepare-staging-package.ps1', 'scripts/prepare-demo-package.ps1', 'scripts/verify-demo-package.py',
+            'checks/TogetherServer.CompanionChecks')
+          $changes = @(git diff --name-only $env:CANDIDATE_SOURCE HEAD -- @inputs)
+          if ($LASTEXITCODE -ne 0 -or $changes.Count -ne 0) { throw 'A product or build input changed after the immutable candidate.' }
+          $proof = New-Item -ItemType Directory -Path "local-data/ci-evidence/candidate-retest-$env:GITHUB_JOB" -Force
+          @{sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;
+            productAndBuildInputsUnchanged=$true;checkedInputs=$inputs;changedPaths=@($changes)} |
+            ConvertTo-Json -Depth 5 | Set-Content (Join-Path $proof.FullName 'unchanged-product-inputs.json') -Encoding utf8
+
+      - name: Retrieve the exact original candidate artifact and fixtures
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: '12662529208'
+          run-id: '40349982642'
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: .
+
+      - name: Verify and retain original candidate and packaging provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $artifact = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:CANDIDATE_ARTIFACT_ID"
+          if ([string]$artifact.id -cne $env:CANDIDATE_ARTIFACT_ID -or $artifact.name -cne 'windows-candidate' -or
+              $artifact.expired -ne $false -or [string]$artifact.workflow_run.id -cne $env:CANDIDATE_RUN_ID -or
+              $artifact.workflow_run.head_sha -cne $env:CANDIDATE_SOURCE -or
+              $artifact.digest -cne "sha256:$env:CANDIDATE_ARTIFACT_SHA256") { throw 'Original artifact provenance differs.' }
+          $app = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $candidate = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          $package = Get-Content local-data/release-candidate/package-evidence.json -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash.ToLowerInvariant()
+          $productVersion = (Get-Item -LiteralPath $app).VersionInfo.ProductVersion
+          if ($hash -cne $env:CANDIDATE_SHA256 -or $productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or
+              $candidate.source -cne $env:CANDIDATE_SOURCE -or [string]$candidate.runId -cne $env:CANDIDATE_RUN_ID -or
+              [int]$candidate.runAttempt -lt 1 -or $candidate.job -cne 'candidate' -or $candidate.version -cne '0.3.3.15' -or
+              $candidate.productVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or $candidate.sha256 -cne $hash -or
+              $package.app.sha256 -cne $hash -or $package.assembly.matchesCurrentBuild -ne $true -or
+              @($package.assets).Count -lt 1 -or @($package.assets).Count -gt 64) { throw 'Original candidate or static package identity differs.' }
+          $proof = New-Item -ItemType Directory -Path "local-data/ci-evidence/candidate-retest-$env:GITHUB_JOB" -Force
+          Copy-Item -LiteralPath local-data/release-candidate/candidate.json -Destination (Join-Path $proof.FullName 'original-candidate.json')
+          Copy-Item -LiteralPath local-data/release-candidate/package-evidence.json -Destination (Join-Path $proof.FullName 'original-package-evidence.json')
+          $immutableRoots = @('local-data/release-candidate', 'ui/dist',
+            'src/TogetherServer.Fixture/bin/Release/net10.0', 'src/TogetherServer.ValheimFixture/bin/Release/net10.0',
+            'src/TogetherServer.MinecraftFixture/bin/Release/net10.0', 'src/TogetherServer.FactorioFixture/bin/Release/net10.0',
+            'src/TogetherServer.TerrariaFixture/bin/Release/net10.0')
+          $immutableFiles = @(foreach ($root in $immutableRoots) {
+            if (!(Test-Path -LiteralPath $root -PathType Container)) { throw 'An immutable candidate or fixture directory is missing.' }
+            foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -File -Force)) {
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'An immutable artifact file is linked.' }
+              @{path=[IO.Path]::GetRelativePath((Get-Location).Path,$file.FullName).Replace('\','/');
+                sizeBytes=$file.Length;sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+            }
+          })
+          @{roots=$immutableRoots;files=$immutableFiles;candidateArtifactSha256=$env:CANDIDATE_ARTIFACT_SHA256} |
+            ConvertTo-Json -Depth 5 | Set-Content (Join-Path $proof.FullName 'immutable-files.json') -Encoding utf8
+          @{sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;candidateRunId=$env:CANDIDATE_RUN_ID;
+            candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;candidateSha256=$hash;productVersion=$productVersion;
+            originalCandidateRunAttempt=$candidate.runAttempt;verificationRunId=$env:GITHUB_RUN_ID;
+            verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT;rebuilt=$false;fullyAccepted=$false;nativeNotificationVerified=$false;
+            boundary='Original build/package proof retained unchanged; new dedicated hosted verification only.'} |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof.FullName 'verification-context.json') -Encoding utf8
+
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+
+      - name: Build only the CompanionChecks dispatcher and source dependencies
+        run: |
+          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dispatcher restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Dispatcher compilation failed.' }
+          if ((Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:CANDIDATE_SHA256) {
+            throw 'Dispatcher compilation changed the immutable candidate.'
+          }
+
+      - name: Run the original required core journey exactly once on this hosted Windows runner
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or
+              ![OperatingSystem]::IsWindows()) { throw 'This process verification is authorized only on the dedicated hosted Windows runner.' }
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $dispatcher = (Resolve-Path checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll).Path
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:CANDIDATE_SHA256 -or
+              (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion -cne $env:CANDIDATE_PRODUCT_VERSION) {
+            throw 'Core verification candidate identity differs.'
+          }
+          # These frozen original sources supply the fixed log allowlist. The
+          # unchanged-input guard also pins the entire dispatcher source tree.
+          $coreSource = Get-Content checks/TogetherServer.CompanionChecks/CoreRemoteJourney.cs -Raw
+          $passwordSource = Get-Content checks/TogetherServer.CompanionChecks/CoreRemoteJourney.Passwords.cs -Raw
+          $rehearsalSource = Get-Content checks/TogetherServer.CompanionChecks/RemoteRehearsalJourney.cs -Raw
+          $expectedCore = @([regex]::Matches($coreSource, 'Console\.WriteLine\("PASS ([^"\r\n]+)"\)') | ForEach-Object { $_.Groups[1].Value })
+          $expectedCore += @([regex]::Matches($passwordSource, 'passed\("([^"\r\n]+)"\)') | ForEach-Object { $_.Groups[1].Value })
+          $expectedRehearsal = @([regex]::Matches($rehearsalSource, 'Console\.WriteLine\("PASS ([^"\r\n]+)"\)') | ForEach-Object { $_.Groups[1].Value })
+          if ($expectedCore.Count -ne 14 -or @($expectedCore | Select-Object -Unique).Count -ne 14 -or
+              $expectedRehearsal.Count -ne 2 -or @($expectedRehearsal | Select-Object -Unique).Count -ne 2) {
+            throw 'The original core or appended rehearsal group inventory differs.'
+          }
+          $evidence = (New-Item -ItemType Directory -Path local-data/ci-evidence/core-only -Force).FullName
+          @{coreGroups=$expectedCore;appendedRehearsalGroups=$expectedRehearsal} |
+            ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'expected-groups.json') -Encoding utf8
+          $observedCore = [Collections.Generic.List[string]]::new()
+          $observedRehearsal = [Collections.Generic.List[string]]::new()
+          $coreSummaries = [Collections.Generic.List[object]]::new()
+          $rehearsalSummaries = [Collections.Generic.List[object]]::new()
+          $safeLog = [Collections.Generic.List[string]]::new()
+          $exceptionTypes = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+          $exitCode = $null
+          $passed = $false
+          $failureCategory = 'RequiredCoreEvidenceMismatch'
+          $cleanupWarningObserved = $false
+          $failureObserved = $false
+          $logBoundExceeded = $false
+          $omittedOutputLines = 0
+          $started = [DateTimeOffset]::UtcNow
+          try {
+            # Exactly one invocation. This original flag includes its original
+            # appended two-group rehearsal; neither is retried or replaced.
+            dotnet $dispatcher $candidate --core-remote-journey 2>&1 | ForEach-Object {
+              $line = ([string]$_).Trim()
+              $retainedLine = $null
+              if ($line.StartsWith('PASS ', [StringComparison]::Ordinal) -and $line.Substring(5) -cin $expectedCore) {
+                $observedCore.Add($line.Substring(5)); $retainedLine = $line
+              } elseif ($line.StartsWith('PASS ', [StringComparison]::Ordinal) -and $line.Substring(5) -cin $expectedRehearsal) {
+                $observedRehearsal.Add($line.Substring(5)); $retainedLine = $line
+              } elseif ($line -cmatch '^Core remote journey: ([0-9]+) groups passed, ([0-9]+) failed\.') {
+                $coreSummaries.Add(@{passed=[int]$Matches[1];failed=[int]$Matches[2]})
+                $retainedLine = "Core remote journey: $($Matches[1]) groups passed, $($Matches[2]) failed."
+              } elseif ($line -cmatch '^Remote rehearsal: ([0-9]+) groups passed, ([0-9]+) failed\.') {
+                $rehearsalSummaries.Add(@{passed=[int]$Matches[1];failed=[int]$Matches[2]})
+                $retainedLine = "Remote rehearsal: $($Matches[1]) groups passed, $($Matches[2]) failed."
+              } elseif ($line.StartsWith('Core journey cleanup could not ask the Host to stop its disposable run:', [StringComparison]::Ordinal)) {
+                $cleanupWarningObserved = $true; $retainedLine = 'WARNING original core cleanup reported an unavailable graceful cleanup request.'
+              } elseif ($line -cmatch '^FAIL core remote journey after ([0-9]+) passing groups: ([A-Za-z_][A-Za-z0-9_.]{0,150})') {
+                $failureObserved = $true; [void]$exceptionTypes.Add($Matches[2])
+                $retainedLine = "FAIL core remote journey after $($Matches[1]) passing groups; exception category $($Matches[2])."
+              } else {
+                # No body, credential, password, generated data path or raw
+                # exception text is persisted or echoed from other output.
+                $omittedOutputLines++
+              }
+              if ($null -ne $retainedLine) {
+                if ($safeLog.Count -ge 128 -or $retainedLine.Length -gt 1024) { $logBoundExceeded = $true }
+                else { $safeLog.Add($retainedLine); Write-Host $retainedLine }
+              }
+            }
+            $exitCode = $LASTEXITCODE
+            $passed = $exitCode -eq 0 -and !$failureObserved -and !$logBoundExceeded -and
+              $coreSummaries.Count -eq 1 -and $coreSummaries[0].passed -eq 14 -and $coreSummaries[0].failed -eq 0 -and
+              $rehearsalSummaries.Count -eq 1 -and $rehearsalSummaries[0].passed -eq 2 -and $rehearsalSummaries[0].failed -eq 0 -and
+              $observedCore.Count -eq 14 -and ($observedCore -join '|') -ceq ($expectedCore -join '|') -and
+              $observedRehearsal.Count -eq 2 -and ($observedRehearsal -join '|') -ceq ($expectedRehearsal -join '|')
+            $failureCategory = if ($passed) { 'None' } elseif ($exitCode -ne 0) { 'NativeExitNonzero' } else { 'RequiredCoreEvidenceMismatch' }
+          } catch {
+            $failureCategory = 'HarnessExecutionFailure'
+            [void]$exceptionTypes.Add($_.Exception.GetType().Name)
+          } finally {
+            $ended = [DateTimeOffset]::UtcNow
+            $safeLog | Set-Content (Join-Path $evidence 'core.log') -Encoding utf8
+            @{schema=1;sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;
+              candidateRunId=$env:CANDIDATE_RUN_ID;candidateArtifactId=$env:CANDIDATE_ARTIFACT_ID;
+              candidateSha256=$env:CANDIDATE_SHA256;productVersion=$env:CANDIDATE_PRODUCT_VERSION;
+              verificationRunId=$env:GITHUB_RUN_ID;verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT;
+              invocationAttempts=1;startedUtc=$started;endedUtc=$ended;durationMs=[long]($ended-$started).TotalMilliseconds;
+              passed=$passed;exitCode=$exitCode;failureCategory=$failureCategory;exceptionTypes=@($exceptionTypes);
+              requiredCoreGroups=14;observedCoreGroups=@($observedCore.ToArray());coreSummaries=@($coreSummaries.ToArray());
+              appendedRehearsalGroups=@($observedRehearsal.ToArray());rehearsalSummaries=@($rehearsalSummaries.ToArray());
+              cleanupWarningObserved=$cleanupWarningObserved;globalProcessEmptinessAsserted=$false;
+              omittedOutputLines=$omittedOutputLines;retainedLogLines=$safeLog.Count;logBoundExceeded=$logBoundExceeded;
+              fullyAccepted=$false;nativeNotificationVerified=$false;
+              boundary='Dedicated hosted Windows synthetic loopback core only. Original cleanup is retained; global process emptiness, physical PCs, real games, WAN and native notifications are not established.'} |
+              ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'core-report.json') -Encoding utf8
+          }
+          if (!$passed) { throw 'The original required core journey did not pass all fourteen groups, its appended rehearsal and exit-zero check.' }
+
+      - name: Verify every immutable artifact file after hosted verification
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proof = "local-data/ci-evidence/candidate-retest-$env:GITHUB_JOB"
+          $inventory = Get-Content (Join-Path $proof 'immutable-files.json') -Raw | ConvertFrom-Json
+          $actual = @(foreach ($root in $inventory.roots) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $root -Recurse -File -Force)) {
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'An immutable artifact became linked.' }
+              [IO.Path]::GetRelativePath((Get-Location).Path,$file.FullName).Replace('\','/')
+            }
+          })
+          if ($actual.Count -ne @($inventory.files).Count -or @($actual | Select-Object -Unique).Count -ne $actual.Count -or
+              @($actual | Where-Object { $_ -cnotin $inventory.files.path }).Count -ne 0) { throw 'The immutable artifact file inventory changed.' }
+          foreach ($expected in $inventory.files) {
+            $file = Get-Item -LiteralPath $expected.path
+            if ($file.Length -ne $expected.sizeBytes -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected.sha256) {
+              throw 'A candidate, original proof, embedded UI or fixture byte changed.'
+            }
+          }
+          if ((Get-Item local-data/release-candidate/TogetherServer.exe).VersionInfo.ProductVersion -cne $env:CANDIDATE_PRODUCT_VERSION -or
+              (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:CANDIDATE_SHA256) {
+            throw 'The immutable candidate identity changed.'
+          }
+          @{sourceRevision=$env:CANDIDATE_SOURCE;verificationRevision=$env:GITHUB_SHA;candidateRunId=$env:CANDIDATE_RUN_ID;
+            candidateSha256=$env:CANDIDATE_SHA256;unchanged=$true;verifiedFileCount=$actual.Count;rebuilt=$false;
+            fullyAccepted=$false;nativeNotificationVerified=$false} |
+            ConvertTo-Json | Set-Content (Join-Path $proof 'final-immutable-files.json') -Encoding utf8
+
+      - name: Retain bounded required-core logs report and original provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-retest-required-core
+          path: |
+            local-data/ci-evidence/core-only/
+            local-data/ci-evidence/candidate-retest-core/
+          if-no-files-found: error
+          retention-days: 7
