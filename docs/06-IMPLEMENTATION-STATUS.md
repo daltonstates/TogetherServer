@@ -139,6 +139,48 @@ history; published versions have their own
 
 ## Current delivery
 
+Candidate 0.3.3.15 addresses a directory/publication lock-order inversion found
+during the real 0.3.3.14 test. The installed laptop EXE matches that release's
+hash/source and uses the same production root, with 10.37 GiB free. Its initial
+check correctly reports `LocalStoppedProgressNeedsSharing`, current permission
+and consent, and the exact retained local profile/branch. One native **Share
+stopped progress** click at 2026-10-26 14:54:56 UTC creates a third backup record
+bound to the original backup and stopped operation, but does not confirm a signed
+publication or receipt. The UI's absolute two-minute deadline releases its busy
+state and reports an unconfirmed result. No game starts. The instance endpoint
+remains responsive; Friend snapshot and progress reads time out after ten seconds.
+
+Source shows opposing edges: directory projection holds `FriendService.sync`
+while waiting for `SharedWorldMutationGate`; stopped publication holds the world
+gate while its final selected-connection callback requests `FriendService.sync`.
+These synchronous monitor waits cannot be canceled by aborting the HTTP request.
+No runtime stack was attached. A generated-data regression using the exact old
+directory source reproduces blocked snapshot/progress/selection reads and fails
+at the expected bounded assertion; its finally block releases and drains every
+worker. The fix retains the service/links, snapshots connection scope under the
+list lock, projects rows outside that lock, and rejects changed/disposed scope
+before returning. Publication's final selection, current permission/consent,
+signature and ancestry checks remain unchanged. The fixed concurrency regression
+passes, including changed-selection rejection, fresh rows and balanced retains.
+Strict solution compilation passes with zero warnings/errors. The broader local
+suite records 74 passes and five backup-related failures; one focused rerun passes
+two of those groups and still fails three. Initial catalogs show `BackupFailed`
+and generated staging-directory access denial, before sharing authorization;
+one reported operation is stage promotion. Backup code is unchanged from
+0.3.3.14, and no external cause has been established. These failures remain
+recorded for independent hosted validation. One internal source-link case lacks
+local symlink capability. No 0.3.3.15 physical result or release exists yet.
+
+Stable private observations before and after the stalled action contain 38
+metadata files. Signed journals, floors, indexes and lookups are byte-identical,
+with no pending roster record. Seven other protected files were rewritten. All
+315 working files, both original backup trees, their records and failure history
+remain unchanged; the new recapture is additional. Independent read-only hashing
+verifies all 315 new payload files, its protected setup hash, decoded setup equality
+with the original Stop and both original-backup/stopped-operation anchors. Its
+publication root, staged publication and latest pointer are absent. Evidence stays owner-only
+outside Git. The timed-out dialog was closed without repeating Share or Start.
+
 Candidate 0.3.3.14 adds an explicit **Share stopped progress** action for a
 retained local session whose completed Stop has not been published. Its save
 check is actionable and cannot claim Start readiness. Refresh keeps the failure

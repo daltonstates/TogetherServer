@@ -4,9 +4,37 @@ public sealed partial class FriendService
 {
     internal IReadOnlyList<ServerDirectoryHost> ServerDirectoryHosts()
     {
-        lock (sync)
-            return disposed ? [] : links.Take(ServerDirectory.MaximumEntries)
-                .Select(item => item.Link.ServerDirectoryHost(item.Id)).ToArray();
+        if (!TryRetain()) return [];
+        var retained = new List<(Guid Id, FriendLink Link)>();
+        try
+        {
+            Guid selected;
+            lock (sync)
+            {
+                if (disposed) return [];
+                selected = selectedId;
+                foreach (var item in links.Take(ServerDirectory.MaximumEntries))
+                    if (item.Link.RetainLocalHosting()) retained.Add(item);
+            }
+
+            // A row reads the current protected roster under the world lock.
+            // Share's final scope check takes the connection-list lock while
+            // holding that world lock, so never project a row under sync.
+            var projected = retained.Select(item => item.Link.ServerDirectoryHost(item.Id)).ToArray();
+            lock (sync)
+            {
+                // A new selection or forgotten/replaced connection requires a
+                // fresh poll; never return a completed read for that old scope.
+                if (disposed || selectedId != selected || retained.Any(item => !item.Link.Configured ||
+                    !links.Any(current => current.Id == item.Id && ReferenceEquals(current.Link, item.Link)))) return [];
+                return projected;
+            }
+        }
+        finally
+        {
+            try { foreach (var item in retained) item.Link.ReleaseLocalHosting(); }
+            finally { ReleaseRetained(); }
+        }
     }
 }
 
