@@ -133,50 +133,73 @@ internal sealed partial class FriendLocalHostingService
         if (!announced.Ok) return Refused(announced.Code, announced.Message);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
-        if (input.RequestId is null && HasLatestSource)
+        WorldPeerPreparedStartSource? heldPreparedSource = null;
+        try
         {
-            // Discovery and full verification happen once, after the address
-            // update that can change the observed peer state. The final Host
-            // gate still consumes that exact observation and rechecks the
-            // working world; a second complete resolver pass adds no fence.
-            progress.Report("LatestSave", "Confirming the latest verified progress immediately before Start.");
-            var latest = await LatestSourceAsync(root, progress, cancellationToken, preparedStart: true);
-            if (!latest.Ok || latest.Source is null)
+            if (input.RequestId is null && (HasLatestSource || preparedStartSource is not null))
             {
-                if (status.BranchHash is { } refusedBranch)
-                    await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refusedBranch, cancellationToken);
-                return Refused(latest.Code, latest.Message);
+                // Prepared Start verifies a held existing source. Missing or newer
+                // bytes require explicit Prepare; Start never creates a new copy.
+                progress.Report("LatestSave", "Confirming the latest verified progress immediately before Start.");
+                var latest = preparedStartSource is null
+                    ? new WorldPeerPreparedStartResult(false, "LocalHostingPreparationRequired", "Repeat preparation before starting this local save.")
+                    : await preparedStartSource(root, input.LocalProfileId, input.BranchHash!, cancellationToken, progress.Source);
+                heldPreparedSource = latest.Source;
+                if (!latest.Ok || latest.Source is null)
+                {
+                    if (status.BranchHash is { } refusedBranch)
+                        await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refusedBranch, cancellationToken);
+                    return Refused(latest.Code, latest.Message);
+                }
+                if (!friend.CurrentLocalHostingConnection(connection))
+                    return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
+                var sourceProof = latest.Source;
+                try
+                {
+                    void RequireScope()
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!friend.CurrentLocalHostingConnection(connection))
+                            throw new InvalidDataException("The prepared Start connection changed.");
+                        sourceProof.RequireCurrent(data, root, input.LocalProfileId, input.BranchHash!, cancellationToken);
+                    }
+                    RequireScope();
+                    var current = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
+                    RequireScope();
+                    if (current?.VersionHash != sourceProof.Descriptor.Version.VersionHash)
+                    {
+                        if (status.BranchHash is { } changedBranch)
+                            await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, changedBranch, cancellationToken);
+                        return Refused("LatestSaveChanged", "A newer save arrived. Continue hosting to check the latest copy before starting.");
+                    }
+                    await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, RequireScope, cancellationToken);
+                }
+                catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
+                {
+                    if (status.BranchHash is { } failedBranch)
+                        await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, failedBranch, cancellationToken);
+                    return Refused("LocalHostingPreparationRequired", "The exact prepared source or working save changed. Repeat preparation; existing saves were kept.");
+                }
             }
-            if (!friend.CurrentLocalHostingConnection(connection))
-                return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
-            latest.Source.Verify(data, root, cancellationToken, (bytes, total, files, count) =>
-                progress.Source(new("Verifying", "Repeating the protected source's file checks before Start.",
-                    bytes, total, files, count)));
-            var current = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
-            if (!friend.CurrentLocalHostingConnection(connection))
-                return Refused("ConnectionChanged", "The selected server changed. Start was canceled.");
-            if (current?.VersionHash != latest.Source.Descriptor.Version.VersionHash)
+            cancellationToken.ThrowIfCancellationRequested();
+            progress.Report("Starting", "Starting the checked game server on this PC. Waiting for the Host's result.");
+            if (input.RequestId is { } requestId)
             {
-                if (status.BranchHash is { } changedBranch)
-                    await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, changedBranch, cancellationToken);
-                return Refused("LatestSaveChanged", "A newer save arrived. Continue hosting to check the latest copy before starting.");
+                if (status.HandoffRequest is not { RecipientState: "Completed" } handoff || handoff.RequestId != requestId ||
+                    status.BranchHash is not null || input.LocalProfileId != profileId)
+                    return Refused("HostingRequestChanged", "The exact final hosting move needs review before starting.");
+                // StartUnderGate repeats signed authority, final-save/setup, route,
+                // source fencing, process identity and all declared port checks.
+                return Basic(await manager.StartAsync(input.LocalProfileId, cancellationToken));
             }
-            await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, cancellationToken);
+            if (!input.AcceptSplitWarning || status.BranchHash != input.BranchHash ||
+                !connection.Link.SeparateCopyBranches(profileId).Any(branch => branch.BranchHash == input.BranchHash))
+                return Refused("SplitWarningRequired", "Review the exact local save. Another Host may still be running and progress stays separate.");
+            var started = await manager.StartSeparateCopyAsync(input.LocalProfileId, input.BranchHash!, cancellationToken);
+            if (!started.Ok && started.Code == "LatestSaveChanged" && status.BranchHash is { } refused)
+                await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refused, cancellationToken);
+            return Basic(started);
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        progress.Report("Starting", "Starting the checked game server on this PC. Waiting for the Host's result.");
-        if (input.RequestId is { } requestId)
-        {
-            if (status.HandoffRequest is not { RecipientState: "Completed" } handoff || handoff.RequestId != requestId ||
-                status.BranchHash is not null || input.LocalProfileId != profileId)
-                return Refused("HostingRequestChanged", "The exact final hosting move needs review before starting.");
-            // StartUnderGate repeats signed authority, final-save/setup, route,
-            // source fencing, process identity and all declared port checks.
-            return Basic(await manager.StartAsync(input.LocalProfileId, cancellationToken));
-        }
-        if (!input.AcceptSplitWarning || status.BranchHash != input.BranchHash ||
-            !connection.Link.SeparateCopyBranches(profileId).Any(branch => branch.BranchHash == input.BranchHash))
-            return Refused("SplitWarningRequired", "Review the exact local save. Another Host may still be running and progress stays separate.");
-        return Basic(await manager.StartSeparateCopyAsync(input.LocalProfileId, input.BranchHash!, cancellationToken));
+        finally { heldPreparedSource?.Dispose(); }
     }
 }

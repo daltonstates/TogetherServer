@@ -59,8 +59,9 @@ function updateAge(updatedUtc: string, now: number): string {
 }
 
 /** A separate, read-only flight keeps progress moving while preparation holds its own gate. */
-export function LocalHostingProgress({ endpoint, title, message, startedAt, onResult, onUpdate }: {
-  endpoint?: string; title: string; message: string; startedAt?: number; onResult?: (result: HostingProgress) => void; onUpdate?: (progress: HostingProgress) => void
+export function LocalHostingProgress({ endpoint, title, message, startedAt, expectedStartedUtc, onResult, onUpdate }: {
+  endpoint?: string; title: string; message: string; startedAt?: number; expectedStartedUtc?: string
+  onResult?: (result: HostingProgress) => void; onUpdate?: (progress: HostingProgress) => void
 }) {
   const titleId = useId()
   const detailId = useId()
@@ -92,11 +93,11 @@ export function LocalHostingProgress({ endpoint, title, message, startedAt, onRe
         if (!active || abort.signal.aborted) return
         // Queued work may still observe a previous attempt updating. Only this
         // attempt's start belongs to the caller's already-captured dispatch.
-        if (next && Date.parse(next.startedUtc) >= began && (!accepted ||
+        if (next && (!expectedStartedUtc || next.startedUtc === expectedStartedUtc) && Date.parse(next.startedUtc) >= began && (!accepted ||
           next.startedUtc === accepted.startedUtc && Date.parse(next.updatedUtc) >= Date.parse(accepted.updatedUtc))) {
           accepted = next
           finished = next.state !== 'Working'
-          updateCallback.current?.(next)
+          updateCallback.current?.({ ...next, message: progressMessage(next) })
           setProgress(next)
           setPhases(prior => prior.at(-1) === next.phase ? prior : [...prior, next.phase].slice(-8))
         }
@@ -110,7 +111,7 @@ export function LocalHostingProgress({ endpoint, title, message, startedAt, onRe
     // Quick checks can finish before the first passive read is needed.
     timer = window.setTimeout(() => void read(), 250)
     return () => { active = false; readController?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout) }
-  }, [endpoint, began])
+  }, [endpoint, began, expectedStartedUtc])
   const terminal = progress !== null && progress.state !== 'Working'
   useEffect(() => {
     if (progress && progress.state !== 'Working') onResult?.({ ...progress, message: progressMessage(progress) })

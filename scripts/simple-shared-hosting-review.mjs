@@ -138,19 +138,40 @@ export function assertStoppedProgressRequests(state, expectedShares) {
     ...(expectedShares ? { shareBody: bodies[0] } : {}) };
 }
 
+// A completed read must leave the lost Start outcome blocked and readable.
+export async function assertUnconfirmedStart(page, modal) {
+  const check = modal.getByRole('button', { name: 'Check Start result', exact: true });
+  await check.waitFor({ state: 'visible', timeout: 8000 });
+  await page.waitForFunction(button => button.isConnected && !button.disabled, await check.elementHandle(), { timeout: 8000 });
+  const lastCheck = modal.getByRole('status', { name: 'Last check result', exact: true });
+  await lastCheck.getByText(/^(?:First check finished|Refresh finished: results (?:unchanged|updated))$/u).waitFor({ state: 'visible', timeout: 8000 });
+  const earlier = modal.getByRole('status', { name: 'Earlier Start result', exact: true });
+  await earlier.waitFor({ state: 'visible', timeout: 8000 });
+  if (await modal.getByRole('button', { name: 'Start hosting', exact: true }).isEnabled() ||
+      !/unconfirmed/u.test(await earlier.textContent() ?? '') ||
+      await modal.getByRole('button', { name: 'Retry and start', exact: true }).count())
+    throw new Error('A generic Prepared check cannot authorize another Start while the earlier result remains unconfirmed');
+  const progress = modal.getByRole('region', { name: 'Hosting progress', exact: true });
+  if (await progress.count() !== 1 || !/earlier Start/u.test(await progress.textContent() ?? ''))
+    throw new Error('An unconfirmed Start must retain its separate read-only result feedback');
+}
+
 // Clock advancement dispatches the automatic read; it does not await its
 // response or React's loading/result paint. Finish both before scroll capture.
-export async function advancePreparedHostingCheck(page, modal, ticks, buttonName = 'Start hosting') {
+export async function advancePreparedHostingCheck(page, modal, ticks, buttonName = 'Start hosting', unconfirmed = false) {
   const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
     response.request().method() === 'GET', { timeout: 8000 });
   await page.clock.fastForward(ticks);
   const response = await refreshed;
   if (!response.ok()) throw new Error('The final automatic hosting check did not succeed');
   await response.finished();
-  const start = modal.getByRole('button', { name: buttonName, exact: true });
-  await page.waitForFunction(button => button.isConnected && !button.disabled, await start.elementHandle(), { timeout: 8000 });
+  if (unconfirmed) await assertUnconfirmedStart(page, modal);
+  else {
+    const start = modal.getByRole('button', { name: buttonName, exact: true });
+    await page.waitForFunction(button => button.isConnected && !button.disabled, await start.elementHandle(), { timeout: 8000 });
+  }
   await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
-  if (await modal.getByRole('region', { name: 'Hosting progress', exact: true }).count())
+  if (!unconfirmed && await modal.getByRole('region', { name: 'Hosting progress', exact: true }).count())
     throw new Error('The final automatic hosting check is still changing the captured dialog');
   return response;
 }
@@ -413,26 +434,33 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await page.clock.fastForward(120001);
       const failure = modal.getByRole('alert');
       await failure.waitFor({ state: 'visible', timeout: 8000 });
-      if (!/The Start result could not be checked in time/u.test(await failure.textContent() ?? ''))
+      if (!/No new Start progress was reported for 2 minutes/u.test(await failure.textContent() ?? '') ||
+          !/The Start result is unconfirmed/u.test(await failure.textContent() ?? ''))
         throw new Error('The pending prepared-copy Start did not expose its timeout result');
-      await page.clock.fastForward(30001);
+      const automatic = await advancePreparedHostingCheck(page, modal, 30001, 'Start hosting', true);
+      if (!(await automatic.json()).readyForManualStart)
+        throw new Error('The timeout fixture must exercise an automatic generic Prepared response');
       assertPreparedHostingRequests(state, 1);
       const checkedAgain = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
         response.request().method() === 'GET', { timeout: 8000 });
-      await modal.getByRole('button', { name: 'Retry automatic checks', exact: true }).click();
-      await checkedAgain;
-      await page.waitForFunction(button => !button.disabled, await start.elementHandle(), { timeout: 8000 });
+      await modal.getByRole('button', { name: 'Check Start result', exact: true }).click();
+      await (await checkedAgain).finished();
+      await assertUnconfirmedStart(page, modal);
       assertPreparedHostingRequests(state, 1);
       await modal.getByRole('button', { name: 'Close Host locally', exact: true }).click();
       await modal.waitFor({ state: 'hidden', timeout: 8000 });
+      const reopened = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
+        response.request().method() === 'GET', { timeout: 8000 });
       await page.getByRole('region', { name: 'Play', exact: true }).getByRole('button', { name: 'Host locally', exact: true }).click();
-      await start.waitFor({ state: 'visible', timeout: 8000 });
-      await page.waitForFunction(button => !button.disabled, await start.elementHandle(), { timeout: 8000 });
-      await advancePreparedHostingCheck(page, modal, 30001);
+      await (await reopened).finished();
+      await assertUnconfirmedStart(page, modal);
+      await advancePreparedHostingCheck(page, modal, 30001, 'Start hosting', true);
       assertPreparedHostingRequests(state, 1);
       if (state.simpleHostingStarted) throw new Error('A timed-out synthetic Start must not claim a running server');
       await page.clock.resume();
       record.assertions.push({ preparedStartTimedOut: true, timeoutAndNavigationReplay: false,
+        startRemainsUnconfirmed: true, genericPreparedCannotReenableStart: true, resultChecksReadOnly: true,
+        matchingTerminalProgressReceived: false,
         finalAutomaticCheckSettledBeforeCapture: true,
         ...assertPreparedHostingRequests(state, 1), evidence: 'Synthetic pending Start and browser clock only' });
     } else {

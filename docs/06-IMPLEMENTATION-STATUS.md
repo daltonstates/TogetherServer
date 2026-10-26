@@ -139,9 +139,50 @@ history; published versions have their own
 
 ## Current delivery
 
+The current 0.3.3.16 source removes the redundant recovery-cache copy from an
+already prepared Start. A separate held-source proof derives only this exact
+protected local branch's existing publication or retained base; callers cannot
+supply a path or alias a publication as a recovery cache. It verifies the
+immutable source files, current signed ancestry/selection, local permission,
+consent and full decoded setup. The lease stays held through the final manager
+gate, which checks scope and material observations around working-tree hashing.
+A missing, newer or changed source requires explicit preparation and invalidates
+readiness. Ordinary recovery-source storage checks are unchanged. Start now
+uses measured inactivity within the original ten-minute intent limit and keeps
+an unconfirmed Start blocked until matching terminal evidence and fresh exact
+status arrive. Validation is in progress; no 0.3.3.16 binary has run on either PC.
+
+The real 0.3.3.15 laptop process independently matches the published EXE
+version/source/hash and uses the same account and production root. Authenticated
+metadata reports 0.3.3.15 on the main Host; its actual EXE path/hash remain
+inaccessible. The owner confirmed both updates and the main world stopped.
+One native Share click at 2026-10-26 16:45:13 UTC completed in 15.47 seconds,
+publishing signed child 4 of base 3. Independent read-only checks verify its
+signature, branch proof, strict parents and all 315 files (119,452,903 bytes).
+A subsequent observation confirms the main Host's exact owner-domain completed-
+copy receipt under the current roster. This proves protocol-level completed-copy
+acknowledgement, not direct inspection of its filesystem or a game load. The
+second eligible external member has no known route/contact; its availability
+and delivery remain unconfirmed. The owner also returned true for exact world,
+original owner, receive consent, receiving permission, sharing and sufficient
+reserve on the main Host's actual data-root drive. Receipts carry no completion
+timestamp, so the exact transfer duration is unavailable.
+
+One native Start click at 16:59:16 UTC then copied that same publication into
+the recovery-source cache. After 120 seconds the UI canceled; progress ends
+Failed with 154 of 315 files and 58,779,344 of 119,452,903 bytes copied. No game
+process launched. Source inspection identifies the unconditional full-retention
+resolver before the prepared continuation comparison: received base 3 cannot
+reuse the cache for publication 4. This is a measured copy/cancellation result
+and deterministic source-path diagnosis, not an attached runtime stack. The
+working world, both original backups, their records and failure history remain
+unchanged in stable read-only comparison. Share publication/delivery success
+does not establish Start, graceful Stop of a new session, client join or saved
+restart; those physical checks remain open.
+
 Prerelease 0.3.3.15 addresses a directory/publication lock-order inversion found
-during the real 0.3.3.14 test. The installed laptop EXE matches that release's
-hash/source and uses the same production root, with 10.37 GiB free. Its initial
+during the real 0.3.3.14 test. The installed 0.3.3.14 laptop EXE matched that
+release's hash/source and used the same production root, with 10.37 GiB free. Its initial
 check correctly reports `LocalStoppedProgressNeedsSharing`, current permission
 and consent, and the exact retained local profile/branch. One native **Share
 stopped progress** click at 2026-10-26 14:54:56 UTC creates a third backup record
@@ -169,7 +210,8 @@ and generated staging-directory access denial, before sharing authorization;
 one reported operation is stage promotion. Backup code is unchanged from
 0.3.3.14, and no external cause has been established. These failures remain
 recorded for independent hosted validation. One internal source-link case lacks
-local symlink capability. No 0.3.3.15 physical success has been established.
+local symlink capability. The later physical publication and receipt results
+are recorded above; hosting and saved restart remain unaccepted.
 
 The [frozen 0.3.3.15 run](https://github.com/daltonstates/TogetherServer/actions/runs/40349982642)
 uses source `4179a1ab1b38c2a45bb407171fc40750640a62ea`. Fresh Windows checks
@@ -205,10 +247,9 @@ installer is 60,654,227 bytes, SHA-256
 `b9a0be49b6ea6249ccea2e445070aa58ac2d92b0acc02a6b974fae635be42cc9`.
 All four public downloads/checksums, version resources and tag/source verify
 anonymously. Both EXEs remain unsigned. All 29 earlier releases/assets are
-preserved; inventory is 30 and stable/latest remains 0.3.3. The owner has been
-asked to update both PCs, retaining data/pairing/history, before the physical
-Share/Start/graceful-Stop/receipt/restart test. The laptop's stalled 0.3.3.14
-app remains running and minimized, with no game started by this attempt.
+preserved; inventory is 30 and stable/latest remains 0.3.3. The owner manually
+updated both PCs, retaining data/pairing/history. The physical 0.3.3.15 test above
+supersedes the earlier stalled-app state without accepting the remaining stages.
 
 Stable private observations before and after the stalled action contain 38
 metadata files. Signed journals, floors, indexes and lookups are byte-identical,

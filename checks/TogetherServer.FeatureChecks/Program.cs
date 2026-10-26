@@ -84,6 +84,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root)),
     ("Completed save delivery to owner and online peers", () => WorldPeerCompletedSaveDistributionChecks.RunAsync(root)),
     ("Bounded prepared hosting discovery", () => WorldPeerHostingDiscoveryChecks.RunAsync(root)),
+    ("Prepared Start reuses exact published progress", () => LocalHostingChecks.PreparedPublicationReuseAsync(root)),
     ("Completed backup destination integrity", () => { BackupCompletionIntegrityChecks.Run(root); return Task.CompletedTask; }),
     ("Proof-bound stopped progress publication", () => StoppedSavePublicationChecks.RunAsync(root))
 };

@@ -8,7 +8,7 @@ import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, expectedFixtureRequestAbort, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
-import { advancePreparedHostingCheck, assertPreparedHostingRequests, assertStoppedProgressRequests, installHostingReviewClock, simpleHostingCases, simpleHostingVariants, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
+import { advancePreparedHostingCheck, assertPreparedHostingRequests, assertStoppedProgressRequests, assertUnconfirmedStart, installHostingReviewClock, simpleHostingCases, simpleHostingVariants, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
 import { uiReviewBuild } from './ui-review-provenance.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
@@ -1640,6 +1640,53 @@ test('the prepared timeout capture waits for its automatic response, settled con
   completeRead({ ...response, ok: () => false });
   await assert.rejects(failed, /final automatic hosting check did not succeed/u,
     'failed refreshes cannot be relabeled as a stable captured result');
+});
+
+test('prepared timeout capture requires blocked Start and honest read-only result checks after generic Prepared', async () => {
+  let startEnabled = false;
+  let earlierText = 'The earlier Start result is unconfirmed.';
+  let progressText = 'Checking the earlier Start result. No matching progress was received.';
+  const actions = [];
+  const checkButton = { isConnected: true, disabled: false };
+  const page = { waitForFunction: async (predicate, element) => { assert.equal(predicate(element), true); } };
+  const modal = { getByRole: (role, options) => {
+    if (role === 'button' && options.name === 'Check Start result') return {
+      waitFor: async () => actions.push('read-only-control-visible'), elementHandle: async () => checkButton,
+      click: () => { throw new Error('A capture assertion must not issue a new instruction.'); }
+    };
+    if (role === 'button' && options.name === 'Start hosting') return { isEnabled: async () => startEnabled };
+    if (role === 'button' && options.name === 'Retry and start') return { count: async () => 0 };
+    if (role === 'status' && options.name === 'Last check result') return { getByText: pattern => {
+      assert.equal(pattern.test('Checking this PC…'), false);
+      assert.equal(pattern.test('Refresh finished: results unchanged'), true);
+      return { waitFor: async () => actions.push('automatic-read-finished') };
+    } };
+    if (role === 'status' && options.name === 'Earlier Start result') return {
+      waitFor: async () => actions.push('unconfirmed-result-visible'), textContent: async () => earlierText
+    };
+    assert.equal(role, 'region'); assert.equal(options.name, 'Hosting progress');
+    return { count: async () => 1, textContent: async () => progressText };
+  } };
+  await assertUnconfirmedStart(page, modal);
+  assert.deepEqual(actions, ['read-only-control-visible', 'automatic-read-finished', 'unconfirmed-result-visible']);
+  startEnabled = true;
+  await assert.rejects(assertUnconfirmedStart(page, modal), /cannot authorize another Start/u,
+    'the previous re-enabled Start behavior must fail the new timeout journey');
+  startEnabled = false; earlierText = 'This PC is prepared.';
+  await assert.rejects(assertUnconfirmedStart(page, modal), /cannot authorize another Start/u,
+    'generic readiness cannot replace the unconfirmed outcome');
+  earlierText = 'The earlier Start result is unconfirmed.'; progressText = 'Checking this PC...';
+  await assert.rejects(assertUnconfirmedStart(page, modal), /separate read-only result feedback/u,
+    'ordinary refresh loading is not a settled unconfirmed Start result');
+  const timeout = simpleHostingCases.find(item => item.readyStartTimeout);
+  const state = createFixtureState({ id: timeout.scenario, ...timeout.fixture });
+  const base = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting`;
+  routeFixture(state, { method: 'POST', path: `${base}/start`,
+    body: { localProfileId: fixtureIds.primary, branchHash: 'A'.repeat(64), requestId: null, acceptSplitWarning: true } });
+  for (let read = 0; read < 3; read++) assert.equal(get(state, base).readyForManualStart, true);
+  assert.equal(routeFixture(state, { method: 'GET', path: `${base}/progress` }).pending, true,
+    'this journey deliberately has no matching terminal response; it cannot claim reconciliation');
+  assert.deepEqual(assertPreparedHostingRequests(state, 1), { startRequests: 1, prepareRequests: 0 });
 });
 
 test('hosting progress fixtures expose passive byte updates and indeterminate verification during one pending preparation', () => {

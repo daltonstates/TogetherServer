@@ -86,6 +86,247 @@ async function pendingPreparation(progressAtPoll: () => HostingProgress) {
   return { view, writes, open, signal: () => signal, finish: (value: Response) => release(value) }
 }
 
+async function pendingStart(progressAtPoll: () => HostingProgress | null, statusAtRead: () => LocalHostingStatus = () => prepared) {
+  const releases: ((value: Response) => void)[] = []
+  let signal: AbortSignal | null | undefined
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/progress')) return response(progressAtPoll())
+    if (init?.method) {
+      writes.push(url)
+      if (url.endsWith('/start')) { signal = init.signal; return new Promise<Response>(resolve => { releases.push(resolve) }) }
+      throw new Error('Unexpected synthetic hosting mutation.')
+    }
+    return response(statusAtRead())
+  }))
+  const view = render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Start hosting' }))
+  await act(async () => {})
+  return { view, writes, open, signal: () => signal, finish: (value: Response, attempt = 0) => releases[attempt](value) }
+}
+
+it.each(['bytes', 'zero-byte files'] as const)('keeps one Start active beyond 120 seconds while its current copy %s advance', async mode => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingStart(() => ({ phase: 'PreparingCopy', state: 'Working', message: 'Preparing the protected hosting copy.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: mode === 'bytes' ? Date.now() - began : 0, totalBytes: mode === 'bytes' ? 1_000_000 : 0,
+    completedFiles: Math.floor((Date.now() - began) / 1000), totalFiles: 315, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(181000) })
+  expect(flight.signal()?.aborted).toBe(false)
+  expect(screen.getByRole('button', { name: 'Requesting Start...' })).toBeDisabled()
+  expect(screen.getByRole('region', { name: 'Hosting progress' })).toHaveTextContent('Preparing the hosting copy on this PC')
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+  await act(async () => { flight.finish(response({ ok: true, code: 'Starting', message: 'Start requested.' })) })
+  expect(flight.open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+})
+
+it('preserves an unconfirmed Start when an already-pending access read cancels it', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  let accessReads = 0
+  let finishAccess!: (value: Response) => void
+  let signal: AbortSignal | null | undefined
+  let began = Date.now()
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/access')) return ++accessReads === 1 ? response(prepared) : new Promise<Response>(resolve => { finishAccess = resolve })
+    if (url.endsWith('/progress')) return response({ phase: 'Verifying', state: 'Working', message: 'Checking this attempt.',
+      startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(), receivedBytes: 0, totalBytes: 0, percent: null })
+    if (init?.method) { writes.push(url); signal = init.signal; began = Date.now(); return new Promise<Response>(() => {}) }
+    return response(prepared)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog'))
+  fireEvent.click(dialog.getByRole('button', { name: 'Start hosting' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+  await act(async () => { finishAccess(response({ allowed: false, code: 'HostingPermissionRequired', message: 'Hosting permission was removed.' })) })
+  expect(signal?.aborted).toBe(true)
+  expect(dialog.getByRole('status', { name: 'Earlier Start result' })).toBeInTheDocument()
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent('Hosting access changed')
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  expect(writes).toEqual([`${base}/hosting/start`])
+})
+
+it.each(['heartbeat', 'unchanged', 'changed-counts-with-old-timestamp', 'earlier-attempt', 'different-operation'] as const)(
+  'does not extend Start authorization for %s progress', async mode => {
+    vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+    const began = Date.now()
+    const flight = await pendingStart(() => ({ phase: 'Verifying', state: 'Working', message: 'Checking the current files.',
+      startedUtc: new Date(mode === 'earlier-attempt' ? began - 10000 : mode === 'different-operation' && Date.now() - began > 1000 ? began + 1000 : began).toISOString(),
+      updatedUtc: new Date(mode === 'unchanged' || mode === 'changed-counts-with-old-timestamp' ? began : Date.now()).toISOString(),
+      receivedBytes: mode === 'changed-counts-with-old-timestamp' ? Date.now() - began : 0,
+      totalBytes: mode === 'changed-counts-with-old-timestamp' ? 1_000_000 : 0,
+      completedFiles: 0, totalFiles: 0, percent: null }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(120251) })
+    expect(flight.signal()?.aborted).toBe(true)
+    expect(screen.getByRole('status', { name: 'Earlier Start result' })).toHaveTextContent('unconfirmed')
+    expect(screen.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+    expect(flight.writes).toEqual([`${base}/hosting/start`])
+  })
+
+it('keeps Start bounded by its original ten-minute intent despite continuously advancing work', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingStart(() => ({ phase: 'Verifying', state: 'Working', message: 'Checking the current files.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: Date.now() - began, totalBytes: 1_000_000, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(599999) })
+  expect(flight.signal()?.aborted).toBe(false)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(flight.signal()?.aborted).toBe(true)
+  expect(screen.getByRole('alert')).toHaveTextContent('authorized time limit')
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(screen.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+})
+
+it('keeps a timed-out Start blocked through generic Prepared polls and reconciles only its matching terminal result with a fresh status', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const began = Date.now()
+  let progress: HostingProgress = { phase: 'Verifying', state: 'Working', message: 'Checking the current files.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(began).toISOString(), receivedBytes: 0, totalBytes: 0, percent: null }
+  const flight = await pendingStart(() => progress)
+  await act(async () => { await vi.advanceTimersByTimeAsync(130000) })
+  const dialog = within(screen.getByRole('dialog'))
+  expect(flight.signal()?.aborted).toBe(true)
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  progress = { ...progress, state: 'Failed', message: 'The earlier Start was canceled before launching.', updatedUtc: new Date(Date.now()).toISOString() }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1250) })
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeEnabled()
+  expect(dialog.queryByRole('status', { name: 'Earlier Start result' })).not.toBeInTheDocument()
+  expect(dialog.getByRole('status', { name: 'Last hosting attempt' })).toHaveTextContent(progress.message)
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+  expect(flight.open).not.toHaveBeenCalled()
+  await act(async () => { flight.finish(response({ ok: true, code: 'Starting', message: 'Late result.' })) })
+  expect(flight.open).not.toHaveBeenCalled()
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+})
+
+it('does not reconcile a prior Start with another operation or a changed local-copy identity', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const began = Date.now()
+  let status = prepared
+  let progress: HostingProgress = { phase: 'Verifying', state: 'Working', message: 'Checking the current files.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(began).toISOString(), receivedBytes: 0, totalBytes: 0, percent: null }
+  const flight = await pendingStart(() => progress, () => status)
+  await act(async () => { await vi.advanceTimersByTimeAsync(130000) })
+  const dialog = within(screen.getByRole('dialog'))
+  progress = { ...progress, state: 'Failed', startedUtc: new Date(began + 1000).toISOString(),
+    updatedUtc: new Date(Date.now()).toISOString(), message: 'Different operation finished.' }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1250) })
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  expect(dialog.queryByText(progress.message)).not.toBeInTheDocument()
+  status = { ...prepared, branchHash: 'B'.repeat(64) }
+  progress = { ...progress, startedUtc: new Date(began).toISOString(), message: 'The original attempt finished.' }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1250) })
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+  fireEvent.click(dialog.getByRole('button', { name: 'Earlier Start server details' }))
+  expect(flight.open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+})
+
+it('clears the old Start intent on a connection change and never adopts its progress or late completion for a new Start', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const began = Date.now()
+  const flight = await pendingStart(() => ({ phase: 'PreparingCopy', state: 'Working', message: 'Old connection copy work.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+    receivedBytes: Date.now() - began, totalBytes: 1_000_000, percent: null }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  const oldSignal = flight.signal()
+  flight.view.rerender(<FriendLocalHosting {...props} connectionId="second" onOpenHost={flight.open} />)
+  expect(oldSignal?.aborted).toBe(true)
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  expect(flight.writes).toHaveLength(1)
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Start hosting' }))
+  await act(async () => { flight.finish(response({ ok: true, code: 'Starting', message: 'Late old-connection result.' })) })
+  expect(flight.open).not.toHaveBeenCalled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(120001) })
+  expect(flight.signal()?.aborted).toBe(true)
+  expect(screen.queryByText('Old connection copy work.')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  expect(flight.writes).toEqual([`${base}/hosting/start`, `${base}/hosting/start`])
+})
+
+it('does not treat a status read begun before terminal progress as fresh Start reconciliation', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const began = Date.now()
+  let progress: HostingProgress = { phase: 'Verifying', state: 'Working', message: 'Checking the current files.',
+    startedUtc: new Date(began).toISOString(), updatedUtc: new Date(began).toISOString(), receivedBytes: 0, totalBytes: 0, percent: null }
+  const flight = await pendingStart(() => progress)
+  await act(async () => { await vi.advanceTimersByTimeAsync(130000) })
+  const dialog = within(screen.getByRole('dialog'))
+  let completeOldStatus!: (value: Response) => void
+  vi.mocked(fetch).mockImplementationOnce(async url => {
+    expect(String(url)).toBe(`${base}/hosting`)
+    return new Promise<Response>(resolve => { completeOldStatus = resolve })
+  })
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  progress = { ...progress, state: 'Failed', message: 'This attempt finished.', updatedUtc: new Date(Date.now()).toISOString() }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1250) })
+  await act(async () => { completeOldStatus(response(prepared)) })
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  fireEvent.click(dialog.getByRole('button', { name: 'Check Start result' }))
+  await act(async () => {})
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeEnabled()
+  expect(flight.writes).toEqual([`${base}/hosting/start`])
+})
+
+it('does not extend the original Start intent after eight minutes of advancing preparation', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-26T12:00:00Z')
+  const intentBegan = Date.now()
+  let startBegan: number | null = null
+  let finishPreparation!: (value: Response) => void
+  let startSignal: AbortSignal | null | undefined
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/progress')) return response({ phase: 'Verifying', state: 'Working', message: 'Checking this attempt.',
+      startedUtc: new Date(startBegan ?? intentBegan).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
+      receivedBytes: Date.now() - (startBegan ?? intentBegan), totalBytes: 1_000_000, percent: null })
+    if (init?.method) writes.push(url)
+    if (url.endsWith('/prepare')) return new Promise<Response>(resolve => { finishPreparation = resolve })
+    if (url.endsWith('/start')) { startBegan = Date.now(); startSignal = init?.signal; return new Promise<Response>(() => {}) }
+    return response(initial)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(480000) })
+  await act(async () => { finishPreparation(response(prepared)) })
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+  await act(async () => { await vi.advanceTimersByTimeAsync(119999) })
+  expect(startSignal?.aborted).toBe(false)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(startSignal?.aborted).toBe(true)
+  expect(screen.getByRole('alert')).toHaveTextContent('authorized time limit')
+  expect(writes).toHaveLength(2)
+})
+
 it('shares stopped progress only on an explicit click, then requires a separate Start without preparation', async () => {
   let latest = stoppedProgress
   let finishSharing!: (value: Response) => void
@@ -1307,7 +1548,7 @@ it('keeps Start busy beyond 30 seconds and accepts a delayed reply exactly once'
   expect(writes).toEqual([`${base}/hosting/start`])
 })
 
-it.each([true, false])('expires Start at exactly 120 seconds and ignores a late reply without retrying (success: %s)', async ok => {
+it.each([true, false])('expires inactive Start at exactly 120 seconds and ignores a late reply without retrying (success: %s)', async ok => {
   vi.useFakeTimers()
   let release!: (value: Response) => void
   let signal: AbortSignal | null | undefined
@@ -1334,14 +1575,15 @@ it.each([true, false])('expires Start at exactly 120 seconds and ignores a late 
   await act(async () => { await vi.advanceTimersByTimeAsync(1) })
   expect(signal?.aborted).toBe(true)
   expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-busy', 'true')
-  const timeoutMessage = /The Start result could not be checked in time. Open local servers to check this PC before trying again./
-  expect(screen.getByText(timeoutMessage)).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Retry automatic checks' })).toBeEnabled()
+  const timeoutMessage = /No new Start progress was reported for 2 minutes/
+  expect(screen.getByRole('alert')).toHaveTextContent(timeoutMessage)
+  expect(screen.getByRole('button', { name: 'Check Start result' })).toBeEnabled()
   await act(async () => {
     release(response({ ok, code: ok ? 'Starting' : 'PortInUse', message: 'Late result.' }))
     await vi.advanceTimersByTimeAsync(30000)
   })
-  expect(screen.getByText(timeoutMessage)).toBeInTheDocument()
+  expect(screen.getByRole('alert')).toHaveTextContent(timeoutMessage)
+  expect(screen.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
   expect(open).not.toHaveBeenCalled()
   expect(writes).toEqual([`${base}/hosting/start`])
 })

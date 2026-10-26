@@ -2,6 +2,59 @@ namespace TogetherServer;
 
 internal sealed partial class WorldPeerService
 {
+    // Start verifies an already prepared local source without retaining another
+    // payload. A different or missing newest save requires explicit preparation.
+    internal async Task<WorldPeerPreparedStartResult> ResolveLatestPreparedStartSourceAsync(
+        SharedWorldPeerRoot root, Guid localProfileId, string branchHash, CancellationToken cancellationToken,
+        Action<WorldPeerSourceProgress>? progress = null)
+    {
+        WorldPeerPreparedStartSource? source = null;
+        var code = "LocalHostingPreparationRequired";
+        try
+        {
+            await DiscoverHostingMetadataAsync(root, cancellationToken);
+            var group = Find(root.GroupKey);
+            if (group is null || group.Root != root || !await RecoveryAllowedAsync(group, cancellationToken))
+                return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
+            var observation = LatestObservationHash(root) ?? throw new InvalidDataException("The current save observation is unavailable.");
+            var prepared = WorldPeerPreparedStartSource.Open(data, root, localProfileId, branchHash, cancellationToken, progress);
+            source = prepared;
+            if (!AuthorizedDescriptor(group, prepared.Descriptor))
+                throw new InvalidDataException("The exact prepared descriptor is no longer authorized.");
+            code = "LatestSaveChanged";
+            var state = Store(group).Project();
+            if (state.Peers.Any(peer => peer.HasConflict)) throw new InvalidDataException("Conflicting signed metadata needs review.");
+            var local = (await LocalSavesAsync(group, cancellationToken)).Where(item => !item.Descriptor.TestOnly &&
+                item.Descriptor.TestArtifact is null && AuthorizedDescriptor(group, item.Descriptor)).ToArray();
+            if (!local.Any(item => item.Descriptor.Version.VersionHash == prepared.Descriptor.Version.VersionHash &&
+                item.Descriptor.Branch?.BranchHash == branchHash))
+                throw new InvalidDataException("The prepared source is not in this world's current signed inventory.");
+            var required = state.Branches.Select(item => item.Branch.HeadVersionHash)
+                .Concat(state.Sessions.Select(item => item.Session.HeadVersionHash).OfType<string>())
+                .Concat(local.Select(item => item.Descriptor.Version.VersionHash)).Distinct(StringComparer.Ordinal).ToArray();
+            _ = await WorldPeerLatestSelection.SelectAsync(root, [prepared.Descriptor], required,
+                (_, token) => { prepared.RequireCurrent(data, root, localProfileId, branchHash, token); return Task.CompletedTask; },
+                (hash, number, token) => FindManifestAsync(group, hash, number, token), cancellationToken, ReportLatestReview);
+            var current = Find(root.GroupKey);
+            if (current is null || current.Root != root || !await RecoveryAllowedAsync(current, cancellationToken) ||
+                LatestObservationHash(root) != observation)
+                throw new InvalidDataException("The prepared source's permission or signed save information changed.");
+            prepared.RequireCurrent(data, root, localProfileId, branchHash, cancellationToken);
+            var result = new WorldPeerPreparedStartResult(true, "LatestSharedSaveReady",
+                "This PC's complete prepared continuation matches the latest signed history.", prepared, observation);
+            source = null;
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error) when (PeerFailure(error) || SharedWorldBranchLiveSource.ExpectedFailure(error))
+        {
+            return new(false, code, code == "LatestSaveChanged"
+                ? "New or competing signed progress needs preparation before Start. Existing saves were kept."
+                : "The complete prepared source could not be verified. Repeat preparation; existing saves were kept.");
+        }
+        finally { source?.Dispose(); }
+    }
+
     // Membership registration only appends worlds and is capped at 128. Do not
     // allocate gates for requester-supplied or unregistered world identities.
     private sealed class WorldExchangeGates

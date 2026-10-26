@@ -45,7 +45,7 @@ internal static class FriendLocalHostingRoutes
             announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync,
             latestSource: peers is null ? null : peers.ResolveLatestRecoverySourceAsync,
             latestSourceProgress: peers is null ? null : peers.ResolveLatestRecoverySourceAsync,
-            latestPreparedSourceProgress: peers is null ? null : peers.ResolveLatestPreparedSourceAsync);
+            preparedStartSource: peers is null ? null : peers.ResolveLatestPreparedStartSourceAsync);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
         app.MapGet(route + "/progress", (HttpContext context, Guid profileId) =>
         {

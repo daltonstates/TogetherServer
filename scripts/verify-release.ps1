@@ -4,7 +4,7 @@ param(
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
-    [ValidateSet('All', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop', 'Rehearsal')][string]$Suite = 'All',
+    [ValidateSet('All', 'Core', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop', 'Rehearsal')][string]$Suite = 'All',
     [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
@@ -177,6 +177,11 @@ try {
             !$_.Value.Contains('inMemoryTransport: builder => builder.UseTestServer()')
         }).Count -gt 0) {
             throw 'Core route checks must use in-memory TestServer; packaged journeys own real sockets.'
+        }
+    }
+    if ($Suite -eq 'Core') {
+        Invoke-Checked 'Core remote journey' {
+            dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -p:CodeOnlyVerification=true -- $AppPath --core-remote-journey
         }
     }
     if ($Suite -in 'All', 'Existing') {

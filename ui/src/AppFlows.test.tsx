@@ -542,17 +542,19 @@ describe('Task-first app and Host PC navigation', () => {
     fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowRight' })
     for (const mode of ['Host', 'Join', 'Host']) {
       if (mode === 'Join') {
-        fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
-        fireEvent.click(await screen.findByRole('button', { name: 'Open Synthetic world on Evening Host' }))
+        await act(async () => { fireEvent.click(workspaces().getByRole('button', { name: 'Servers' })) })
+        const friendServer = await screen.findByRole('button', { name: 'Open Synthetic world on Evening Host' })
+        await act(async () => { fireEvent.click(friendServer) })
         await screen.findByRole('region', { name: 'Play' })
       } else if (state.mode === 'Friend') {
-        fireEvent.click(workspaces().getByRole('button', { name: 'Servers' }))
-        fireEvent.click(await screen.findByRole('button', { name: 'Open Contract fixture on this PC' }))
+        await act(async () => { fireEvent.click(workspaces().getByRole('button', { name: 'Servers' })) })
+        const localServer = await screen.findByRole('button', { name: 'Open Contract fixture on this PC' })
+        await act(async () => { fireEvent.click(localServer) })
         await screen.findByRole('region', { name: 'Contract fixture workspace' })
       }
       await act(async () => { await Promise.resolve() })
       expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '278')
-      fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' }))
+      await act(async () => { fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' })) })
       const settings = await screen.findByRole('region', { name: 'App Settings' })
       expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '268')
       expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
@@ -560,7 +562,7 @@ describe('Task-first app and Host PC navigation', () => {
       expect(sections.getAllByRole('button').map(button => button.textContent)).toEqual([
         'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
       ])
-      fireEvent.click(sections.getByRole('button', { name: 'Windows behavior' }))
+      await act(async () => { fireEvent.click(sections.getByRole('button', { name: 'Windows behavior' })) })
       expect(await within(settings).findByRole('heading', { name: 'Windows behavior' })).toBeVisible()
       expect(within(settings).queryByRole('checkbox', { name: /awake/i })).not.toBeInTheDocument()
       expect(screen.queryByRole('navigation', { name: 'This Host PC sections' })).not.toBeInTheDocument()

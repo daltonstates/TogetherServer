@@ -24,14 +24,13 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>>? announceHosting = null,
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>>? latestSource = null,
     Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestSourceProgress = null,
-    Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestPreparedSourceProgress = null)
+    Func<SharedWorldPeerRoot, Guid, string, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerPreparedStartResult>>? preparedStartSource = null)
 {
     private bool HasLatestSource => latestSource is not null || latestSourceProgress is not null;
 
     private Task<WorldPeerLatestSourceResult> LatestSourceAsync(SharedWorldPeerRoot root,
-        LocalHostingProgressStore.Operation progress, CancellationToken cancellationToken, bool preparedStart = false) =>
-        preparedStart && latestPreparedSourceProgress is not null ? latestPreparedSourceProgress(root, cancellationToken, progress.Source) :
-            latestSourceProgress is not null ? latestSourceProgress(root, cancellationToken, progress.Source) :
+        LocalHostingProgressStore.Operation progress, CancellationToken cancellationToken) =>
+        latestSourceProgress is not null ? latestSourceProgress(root, cancellationToken, progress.Source) :
             latestSource!(root, cancellationToken);
     private static bool ExpectedFailure(Exception error) => error is IOException or InvalidDataException or
         JsonException or CryptographicException or UnauthorizedAccessException or ArgumentException;

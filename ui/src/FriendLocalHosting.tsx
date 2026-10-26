@@ -120,6 +120,9 @@ type CheckAttempt = { title: string; summary: string; finishedAt: number }
 type HostingAttempt = { state: 'Completed' | 'Failed'; message: string; phase: string | null; finishedAt: number;
   receivedBytes?: number; totalBytes?: number; completedFiles?: number; totalFiles?: number; status: LocalHostingStatus | null;
   action?: 'start' | 'shareStoppedProgress' }
+type StartAttempt = { scope: string; localProfileId: string; branchHash: string | null; requestId: string | null;
+  began: number; startedUtc: string | null; latest: HostingProgress | null }
+type ProgressWatch = { sequence: number; clear: () => void; expire: (reason?: string) => void; observe: (progress: HostingProgress) => void }
 const hostingPhaseSteps: Record<string, CheckKey> = {
   Permission: 'permission', PeerSync: 'save', LatestSave: 'save', Receiving: 'save', Verifying: 'save', Receipt: 'save', PreparingCopy: 'save',
   ServerSetup: 'server', Ports: 'ports', Connection: 'connection'
@@ -224,10 +227,26 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const base = `/api/local/friend/${profileId}/shared-world`
   const resultsId = useId()
   const scope = JSON.stringify([connectionId, profileId])
+  const currentScope = useRef(scope)
+  currentScope.current = scope
   const request = useRef(0)
   const mutation = useRef(false)
-  const preparationWatch = useRef<{ sequence: number; clear: () => void; expire: () => void; observe: (progress: HostingProgress) => void } | null>(null)
-  const observePreparationProgress = useCallback((progress: HostingProgress) => preparationWatch.current?.observe(progress), [])
+  const preparationWatch = useRef<ProgressWatch | null>(null)
+  const startWatch = useRef<ProgressWatch | null>(null)
+  const [unconfirmedStart, setUnconfirmedStart] = useState<StartAttempt | null>(null)
+  const unconfirmedStartRef = useRef<StartAttempt | null>(null)
+  const observePreparationProgress = useCallback((progress: HostingProgress) => {
+    if (currentScope.current !== scope) return
+    preparationWatch.current?.observe(progress)
+    startWatch.current?.observe(progress)
+    const attempt = unconfirmedStartRef.current
+    if (attempt?.scope !== scope || !attempt.startedUtc || progress.startedUtc !== attempt.startedUtc ||
+      attempt.latest && (Date.parse(progress.updatedUtc) < Date.parse(attempt.latest.updatedUtc) ||
+        attempt.latest.state !== 'Working' && progress.state === 'Working')) return
+    if (attempt.latest && JSON.stringify(progress) === JSON.stringify(attempt.latest)) return
+    const next = { ...attempt, latest: progress }
+    unconfirmedStartRef.current = next; setUnconfirmedStart(next)
+  }, [scope])
   const [scopedPermission, setPermission] = useState<(LocalHostingPermission & { scope: string }) | null>(null)
   const permission = scopedPermission?.scope === scope ? scopedPermission : null
   const [permissionCheck, setPermissionCheck] = useState<{ scope: string; pending: boolean; message: string } | null>(null)
@@ -292,8 +311,22 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setStatus(next)
     setChecksCurrent(true); setLastCheckedAt(Date.now()); setNow(Date.now())
   }, [scope])
+  const reconcileStart = useCallback((next: LocalHostingStatus, observed: StartAttempt | null) => {
+    const pending = unconfirmedStartRef.current
+    const terminal = observed?.latest
+    if (!observed?.startedUtc || !terminal || terminal.state === 'Working' ||
+      pending?.scope !== scope || pending.began !== observed.began || pending.startedUtc !== observed.startedUtc ||
+      next.localProfileId !== observed.localProfileId || next.branchHash !== observed.branchHash ||
+      (activeHostingRequest(next)?.requestId ?? null) !== observed.requestId) return
+    unconfirmedStartRef.current = null; setUnconfirmedStart(null); setError('')
+    const state = terminal.state
+    setLastHostingAttempt({ state, action: 'start', message: terminal.message, phase: terminal.phase, finishedAt: Date.now(), status: next,
+      receivedBytes: terminal.receivedBytes, totalBytes: terminal.totalBytes, completedFiles: terminal.completedFiles, totalFiles: terminal.totalFiles })
+    setActionMessage(next.running ? 'The earlier Start finished and this server is hosted on this PC. Open the local server to check its current state.' :
+      'The earlier Start finished. Current hosting checks were read again. Starting requires a separate explicit choice.')
+  }, [scope])
   const controller = useRef<AbortController | null>(null)
-  const invalidate = useCallback(() => { ++request.current; preparationWatch.current?.clear(); window.clearTimeout(sharingTimeout.current); controller.current?.abort() }, [])
+  const invalidate = useCallback(() => { ++request.current; preparationWatch.current?.clear(); startWatch.current?.clear(); window.clearTimeout(sharingTimeout.current); controller.current?.abort() }, [])
 
   useEffect(() => {
     mutation.current = false
@@ -302,6 +335,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setStatus(null); setOpen(false); setBusy(false); setPendingAction(null); setError(''); setAcceptedTerms(false)
     setChecksCurrent(false); setChecking(false); setLastCheckedAt(null); setLastCheckAttempt(null); setLastHostingAttempt(null); setGuideStep(null)
     setStoppedSharingStatus(null)
+    unconfirmedStartRef.current = null; setUnconfirmedStart(null)
     setServerFile(''); setPassword(''); setActionMessage('')
     setNetworkConfirmed(false)
     setPlannedOperation(null); plannedAttempt.current = ''
@@ -336,6 +370,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             setPermissionCheck({ scope, pending: false, message: '' })
             if (!next.allowed) {
               startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
+              startWatch.current?.expire('Hosting access changed before the Start result was confirmed.')
               invalidate(); mutation.current = false; setBusy(false); setPendingAction(null); setChecking(false); setChecksCurrent(false)
               if (dialogOpen.current) setError(next.message)
             }
@@ -379,8 +414,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           abort.abort()
         }, 15000)
         try {
+          const observedStart = unconfirmedStartRef.current
           const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
-          if (active && sequence === request.current && !abort.signal.aborted) acceptStatus(next, false, true)
+          if (active && sequence === request.current && !abort.signal.aborted) { acceptStatus(next, false, true); reconcileStart(next, observedStart) }
         } catch (cause) {
           if (active && sequence === request.current && !abort.signal.aborted) {
             setChecksCurrent(false); plannedAuthorization.current = null; setPlannedOperation(null)
@@ -396,7 +432,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
     timer = window.setTimeout(() => void read(), 10000)
     return () => { active = false; currentRead?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout) }
-  }, [scope, base, open, available, accessBlocked, acceptStatus])
+  }, [scope, base, open, available, accessBlocked, acceptStatus, reconcileStart])
 
   useEffect(() => {
     if (!open) return
@@ -425,8 +461,11 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       }
     }, 15000)
     try {
+      const observedStart = unconfirmedStartRef.current
       const next = await getLocalJson(`${base}/hosting`, parseLocalHostingStatus, abort.signal)
-      if (sequence === request.current && !abort.signal.aborted) { acceptStatus(next, false, true); setActionMessage(hostingCheckResult(next)) }
+      if (sequence === request.current && !abort.signal.aborted) {
+        acceptStatus(next, false, true); setActionMessage(hostingCheckResult(next)); reconcileStart(next, observedStart)
+      }
     } catch (cause) {
       if (sequence === request.current && !abort.signal.aborted) {
         setChecksCurrent(false); startIntent.current = null; setError(hostingRequestError(cause))
@@ -439,7 +478,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
   }
   const prepareStatus = useCallback(async (target: LocalHostingStatus, authorization: typeof plannedOperation) => {
-    if (mutation.current || disabled || !target.allowed || stoppedSharingStatus || needsStoppedProgressSharing(target)) return
+    if (mutation.current || disabled || unconfirmedStartRef.current || !target.allowed || stoppedSharingStatus || needsStoppedProgressSharing(target)) return
     const planned = activeHostingRequest(target)
     if (planned?.recipientState === 'Requested') return
     if (planned?.requestId && ['MinecraftJava', 'MinecraftBedrock'].includes(target.game ?? '') && !acceptedTerms) return
@@ -567,7 +606,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }
   const shareStoppedProgress = async () => {
     const target = currentStatus.current
-    if (mutation.current || disabled || checking || !checksCurrent || !permission?.allowed || !target?.allowed || !target.consented ||
+    if (mutation.current || disabled || unconfirmedStartRef.current || checking || !checksCurrent || !permission?.allowed || !target?.allowed || !target.consented ||
       target.running || localHostingAccessBlocker(target) || !target.localProfileId || !target.branchHash ||
       !stoppedSharingStatus && !needsStoppedProgressSharing(target) ||
       stoppedSharingStatus && (target.localProfileId !== stoppedSharingStatus.localProfileId || target.branchHash !== stoppedSharingStatus.branchHash) ||
@@ -633,6 +672,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     if (!plannedOperation) return
     const timeout = window.setTimeout(() => {
       if (preparationWatch.current) { preparationWatch.current.expire(); return }
+      if (startWatch.current) { startWatch.current.expire(); return }
       plannedAuthorization.current = null; setPlannedOperation(null)
       startIntent.current = null
       if (mutation.current) { controller.current?.abort(); ++request.current; mutation.current = false; setBusy(false); setPendingAction(null); setChecking(false); setChecksCurrent(false) }
@@ -642,7 +682,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }, [plannedOperation])
   const startPrepared = useCallback(async (target: LocalHostingStatus) => {
     const intent = startIntent.current
-    if (mutation.current || disabled || stoppedSharingStatus || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
+    if (mutation.current || disabled || stoppedSharingStatus || unconfirmedStartRef.current || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
       || !target.allowed || !target.readyForManualStart || target.running || !target.localProfileId
       || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)
       || localHostingAttention(target, acceptedTerms, serverFile)) return
@@ -651,13 +691,52 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     const sequence = ++request.current
     const abort = new AbortController()
     controller.current = abort
-    setActionStartedAt(Date.now()); setBusy(true); setPendingAction('start'); setError(''); setActionMessage('')
     const localProfileId = target.localProfileId
-    const timeout = window.setTimeout(() => {
-      if (sequence !== request.current) return
+    const began = Date.now()
+    const overallDeadline = Math.min(began + 10 * 60 * 1000, intent.until, plannedAuthorization.current?.until ?? Infinity)
+    let lastActivityAt = began
+    let lastProgressUtc = -Infinity
+    let lastWork = ''
+    let attempt: StartAttempt = { scope, localProfileId, branchHash: target.branchHash,
+      requestId: intent.requestId, began, startedUtc: null, latest: null }
+    let timeout: number | undefined
+    const clearWatch = () => {
+      window.clearTimeout(timeout)
+      if (startWatch.current?.sequence === sequence) startWatch.current = null
+    }
+    const unconfirmed = (reason: string) => {
+      const latest = attempt.latest
+      const message = `${reason} Last step: ${latest ? hostingProgressPhaseLabel(latest.phase) : 'Checking this PC'}. The Start result is unconfirmed. Wait for this attempt's result and current server checks before choosing Start again.`
+      unconfirmedStartRef.current = attempt; setUnconfirmedStart(attempt)
+      setLastHostingAttempt({ state: 'Failed', action: 'start', phase: latest?.phase ?? null, message, finishedAt: Date.now(), status: null,
+        receivedBytes: latest?.receivedBytes, totalBytes: latest?.totalBytes, completedFiles: latest?.completedFiles, totalFiles: latest?.totalFiles })
+      setError(message); setChecksCurrent(false)
+    }
+    const expire = (reason?: string) => {
+      if (sequence !== request.current || abort.signal.aborted) { clearWatch(); return }
+      clearWatch()
       abort.abort(); ++request.current; mutation.current = false; setBusy(false); setPendingAction(null); setOpen(true); setChecksCurrent(false)
-      setError('The Start result could not be checked in time. Open local servers to check this PC before trying again.')
-    }, 120000)
+      plannedAuthorization.current = null; setPlannedOperation(null)
+      unconfirmed(reason ?? (Date.now() >= overallDeadline ? 'The Start request reached its authorized time limit.' : 'No new Start progress was reported for 2 minutes.'))
+    }
+    const schedule = () => {
+      window.clearTimeout(timeout)
+      timeout = window.setTimeout(expire, Math.max(0, Math.min(lastActivityAt + 120000, overallDeadline) - Date.now()))
+    }
+    startWatch.current = { sequence, clear: clearWatch, expire, observe: progress => {
+      if (sequence !== request.current || abort.signal.aborted || Date.parse(progress.startedUtc) < began ||
+        attempt.startedUtc !== null && progress.startedUtc !== attempt.startedUtc || Date.parse(progress.updatedUtc) < lastProgressUtc ||
+        Date.parse(progress.updatedUtc) === lastProgressUtc && (progress.state === 'Working' || progress.state === attempt.latest?.state) ||
+        attempt.latest && attempt.latest.state !== 'Working' && progress.state === 'Working') return
+      lastProgressUtc = Date.parse(progress.updatedUtc)
+      attempt = { ...attempt, startedUtc: progress.startedUtc, latest: progress }
+      if (progress.state !== 'Working') return
+      const work = JSON.stringify([progress.phase, progress.receivedBytes, progress.totalBytes, progress.completedFiles, progress.totalFiles])
+      if (work === lastWork) return
+      lastWork = work; lastActivityAt = Date.now(); schedule()
+    } }
+    schedule()
+    setActionStartedAt(began); setBusy(true); setPendingAction('start'); setLastHostingAttempt(null); setError(''); setActionMessage('')
     try {
       const result = await changeJson(`${base}/hosting/start`, 'POST', parseBasicResult, {
         branchHash: target.branchHash, requestId: intent.requestId, localProfileId,
@@ -680,10 +759,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         }
       }
     } catch (cause) {
-      if (sequence === request.current && !abort.signal.aborted) { setError(hostingRequestError(cause)); setChecksCurrent(false) }
+      if (sequence === request.current && !abort.signal.aborted) unconfirmed(hostingRequestError(cause))
       if (sequence === request.current) setOpen(true)
     } finally {
-      window.clearTimeout(timeout)
+      clearWatch()
       if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
     }
   }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus, stoppedSharingStatus])
@@ -694,7 +773,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }, [status, busy, checking, disabled, checksCurrent, acceptedTerms, serverFile, startPrepared])
 
   const host = () => {
-    if (mutation.current || disabled || !checksCurrent || checking || !status?.allowed) return
+    if (mutation.current || disabled || unconfirmedStartRef.current || !checksCurrent || checking || !status?.allowed) return
     if (status.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setError(''); setActionMessage('')
     const attention = localHostingAttention(status, acceptedTerms, serverFile)
@@ -748,6 +827,13 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const currentHistoryChoice = checkedGuidance && (['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'].includes(checkedGuidance.code)
     || checkedGuidance.remedy?.kind === 'ChooseHistory')
   const priorityStep: CheckKey | undefined = currentAccessBlocker ? 'permission' : currentHistoryChoice ? 'save' : undefined
+  const pendingStartResult = unconfirmedStart?.scope === scope ? unconfirmedStart : null
+  const startUnconfirmed = pendingStartResult !== null
+  const startResultMessage = !pendingStartResult?.startedUtc
+    ? 'The earlier Start result is unconfirmed and no matching attempt progress was received. Open the local server details to review it. A prepared check alone cannot confirm that the earlier Start finished.'
+    : pendingStartResult.latest && pendingStartResult.latest.state !== 'Working'
+    ? 'The earlier Start reported a finished step. Its exact result must be checked against this PC’s current server status before another Start.'
+    : 'The earlier Start result is unconfirmed. Read-only checks do not retry Start. Wait for that exact attempt to finish and check the local server before choosing Start again.'
   const sharingRequired = status?.allowed && status.consented && permissionAllowed && !status.running && !priorityStep
     && !!(stoppedSharingStatus || needsStoppedProgressSharing(status))
   const sharingConsentChanged = !!stoppedSharingStatus && status?.consented === false
@@ -764,7 +850,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const attention = (!status || !checksCurrent) && permission?.allowed === false
     ? { kind: denied ? 'Permission' as const : 'Review' as const,
       title: denied ? 'Ask the owner to allow hosting' : 'Check hosting on this PC', message: permission.message }
-    : sharingIdentityChanged ? { kind: 'Review' as const, title: 'Recheck the selected hosting copy', message: sharingIdentityMessage }
+    : startUnconfirmed && !priorityStep ? { kind: 'Review' as const, title: 'Check the earlier Start result', message: startResultMessage }
+      : sharingIdentityChanged ? { kind: 'Review' as const, title: 'Recheck the selected hosting copy', message: sharingIdentityMessage }
       : localHostingAttention(sharingRequired ? stoppedSharingStatus ?? status : status, acceptedTerms, serverFile)
   const historyChoice = attention?.kind === 'ChooseHistory'
   const accessBlocker = localHostingAccessBlocker(checkedGuidance)
@@ -788,7 +875,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           sharingRequired && step.key === 'save' ? { state: 'ActionRequired' as const, message: stoppedSharingStatus?.message ?? status?.message ?? step.message } : {}) }
     })
   const actionFeedback = busy && pendingAction ? hostingActions[pendingAction].message : checking
-    ? 'Updating the hosting checks. Wait for the current result before starting.' : sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus
+    ? 'Updating the hosting checks. Wait for the current result before starting.' : startUnconfirmed && !priorityStep ? startResultMessage : sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus
       ? hostingCheckResult(guidanceStatus) : actionMessage
   const pause = () => {
     if (pendingAction === 'shareStoppedProgress') setLastHostingAttempt(previous => previous?.action === 'shareStoppedProgress' && previous.state === 'Completed' ? previous : { state: 'Failed', action: 'shareStoppedProgress', phase: null,
@@ -815,9 +902,9 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
-    && !(status?.readyForManualStart && attention) && !sharingRequired && !(stoppedSharingStatus && !sharingRequired)
+    && !(status?.readyForManualStart && attention) && !startUnconfirmed && !sharingRequired && !(stoppedSharingStatus && !sharingRequired)
   const canShareStoppedProgress = sharingRequired && permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled
-    && !sharingIdentityChanged && !!status?.consented && !!status.localProfileId && !!status.branchHash
+    && !startUnconfirmed && !sharingIdentityChanged && !!status?.consented && !!status.localProfileId && !!status.branchHash
   return <>
     {!permissionAllowed && !open && <div className={presentation === 'card' ? 'local-hosting-card' : 'local-hosting-next'}>
       <div className="local-hosting-next" role="status" aria-label="Hosting access" aria-busy={permissionChecking}>
@@ -852,17 +939,19 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           ? 'Start checks this PC and the prepared save again before starting.'
           : 'The app will get the latest available save, check this PC and start when it is ready.'}</p>}
         <>
-          {busy || checking || waitingForHost ? <LocalHostingProgress key={`${scope}:${pendingAction ?? (waitingForHost ? 'waiting' : 'checks')}:${actionStartedAt}:${request.current}`}
-            startedAt={actionStartedAt}
-            endpoint={busy && (pendingAction === 'prepare' || pendingAction === 'start') ? `${base}/hosting/progress` : undefined}
+          {busy || checking || waitingForHost || startUnconfirmed ? <LocalHostingProgress key={`${scope}:${pendingAction ?? (waitingForHost ? 'waiting' : 'checks')}:${pendingStartResult?.began ?? actionStartedAt}:${request.current}`}
+            startedAt={pendingStartResult?.began ?? actionStartedAt}
+            expectedStartedUtc={pendingStartResult?.startedUtc ?? undefined}
+            endpoint={busy && (pendingAction === 'prepare' || pendingAction === 'start') || pendingStartResult?.startedUtc ? `${base}/hosting/progress` : undefined}
             onResult={recordProgressResult}
             onUpdate={observePreparationProgress}
-            title={waitingForHost && !busy ? 'Waiting for the current Host’s final save' : hostingActions[pendingAction ?? 'checks'].label}
-            message={waitingForHost && !busy ? 'Keep TogetherServer open on both PCs. The final save must arrive and pass verification before Start.' :
+            title={startUnconfirmed ? 'Checking the earlier Start result' : waitingForHost && !busy ? 'Waiting for the current Host’s final save' : hostingActions[pendingAction ?? 'checks'].label}
+            message={startUnconfirmed ? startResultMessage : waitingForHost && !busy ? 'Keep TogetherServer open on both PCs. The final save must arrive and pass verification before Start.' :
               hostingActions[pendingAction ?? 'checks'].message} /> :
             status?.running ? <p>This server is already hosted on this PC.</p> : attention &&
             <section className="local-hosting-next" aria-label="Next hosting step"><h3>{attention.title}</h3><p>{attention.message}</p></section>}
           {busy && pendingAction === 'shareStoppedProgress' && <Button className="secondary" onClick={pause}>Pause sharing</Button>}
+          {startUnconfirmed && <section className="local-hosting-next" role="status" aria-label="Earlier Start result"><h3>Check the earlier Start result</h3><p>{startResultMessage}</p></section>}
           {lastHostingAttempt && !busy && <section className="local-hosting-attempt-result" role="status" aria-label="Last hosting attempt">
             <strong>{lastHostingAttempt.state === 'Failed' ? 'Last hosting attempt needs attention' : 'Last hosting step finished'}</strong>
             {lastHostingAttempt.phase && <p>Last step: {hostingProgressPhaseLabel(lastHostingAttempt.phase)}.</p>}
@@ -910,7 +999,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             <section className="local-hosting-check-result" role="status" aria-label="Last check result" aria-live="polite" aria-atomic="true">
               <strong>{checking ? 'Checking this PC…' : lastCheckAttempt?.title ?? 'Checks have not finished'}</strong>
               <p>{checking ? 'Reading current hosting access and setup. Wait for the result before starting.' :
-                sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus ? hostingCheckResult(guidanceStatus) :
+                startUnconfirmed && !priorityStep ? startResultMessage : sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus ? hostingCheckResult(guidanceStatus) :
                   lastCheckAttempt?.summary ?? 'Keep TogetherServer open on both PCs, then retry the checks.'}</p>
               {lastCheckAttempt && <small>Last attempt finished <time dateTime={new Date(lastCheckAttempt.finishedAt).toISOString()}>{checkedAgo(lastCheckAttempt.finishedAt, now)}</time></small>}
             </section>
@@ -942,8 +1031,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             onGameSetup={onOpenGameSetup && status?.localProfileId ? gameSetup : undefined}
             onOpenLocalServer={status?.localProfileId ? () => { pause(); onOpenHost(status.localProfileId!) } : undefined}
             onReviewSharedSave={onReviewSharedSave ? () => { pause(); onReviewSharedSave() } : undefined} />
-          <div className="local-hosting-secondary-actions"><Button className="text-button" disabled={busy || disabled} onClick={() => void refresh()}><Icon name="refresh" />Retry automatic checks</Button>
-            {status?.localProfileId && <Button className="text-button" disabled={busy || disabled}
+          <div className="local-hosting-secondary-actions"><Button className="text-button" disabled={busy || disabled} onClick={() => void refresh()}><Icon name="refresh" />{startUnconfirmed ? 'Check Start result' : 'Retry automatic checks'}</Button>
+            {pendingStartResult && <Button className="text-button" disabled={busy || disabled}
+              onClick={() => { pause(); onOpenHost(pendingStartResult.localProfileId) }}>Earlier Start server details</Button>}
+            {status?.localProfileId && status.localProfileId !== pendingStartResult?.localProfileId && <Button className="text-button" disabled={busy || disabled}
               onClick={() => { pause(); onOpenHost(status.localProfileId!) }}>Local server &amp; connection details</Button>}
             {onOpenConnectionHelp && attention?.kind !== 'Connection' && status?.steps[4].state !== 'Ready' && <Button className="text-button"
               disabled={busy || disabled} onClick={connectionHelp}><Icon name="plug" />Connection help</Button>}

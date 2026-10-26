@@ -11,7 +11,7 @@ namespace TogetherServer.FeatureChecks;
 
 // File-only preparation with an adapter that refuses every process operation.
 // These checks create no app, game, listener, window or console attachment.
-internal static class LocalHostingChecks
+internal static partial class LocalHostingChecks
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -311,7 +311,7 @@ internal static class LocalHostingChecks
             catch (InvalidOperationException error) when (error.Message == "No process operation is permitted.")
             { reachedDriver = true; }
             if (fault == "none")
-                Require(reachedDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1 && observations == 1,
+                Require(reachedDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1 && observations == 2,
                     "an exact verified Start did not reach only the final fake launch boundary after one latest resolution");
             else
             {
@@ -510,7 +510,7 @@ internal static class LocalHostingChecks
 
     private sealed class HasBody : IHttpRequestBodyDetectionFeature { public bool CanHaveBody => true; }
 
-    private sealed class Fixture : IDisposable
+    private sealed partial class Fixture : IDisposable
     {
         internal readonly LocalData Data;
         internal readonly Guid ProfileId = Guid.NewGuid();
@@ -524,10 +524,14 @@ internal static class LocalHostingChecks
         private readonly ECDsa owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         private readonly ECDsa member = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         private readonly string vault;
+        private readonly int fileCount;
+        private readonly Guid? alternateConnectionId;
         private SharedWorldVersion head;
 
-        internal Fixture(string root, bool granted, bool automaticReceiving = false)
+        internal Fixture(string root, bool granted, bool automaticReceiving = false, int fileCount = 1, int initialVersion = 1,
+            bool alternateConnection = false)
         {
+            this.fileCount = fileCount;
             Data = new(Path.Combine(root, "local-hosting-" + Guid.NewGuid().ToString("N")));
             var properties = IPGlobalProperties.GetIPGlobalProperties();
             var occupied = properties.GetActiveTcpListeners().Concat(properties.GetActiveUdpListeners()).Select(item => item.Port).ToHashSet();
@@ -543,6 +547,11 @@ internal static class LocalHostingChecks
             var bytes = Encoding.UTF8.GetBytes("complete signed source bytes");
             head = Version(1, null, bytes);
             WriteCopy(head, bytes);
+            for (var number = 2; number <= initialVersion; number++)
+            {
+                head = Version(number, head.VersionHash, bytes);
+                WriteCopy(head, bytes);
+            }
             Data.SaveProtected("friend.protected", JsonSerializer.SerializeToUtf8Bytes(new FriendConfiguration
             {
                 DeviceId = DeviceId,
@@ -556,6 +565,16 @@ internal static class LocalHostingChecks
                 SharedRosterFloors = new() { [ProfileId] = new(GroupId, 1, 1, roster.Signature) },
                 LastSharedHostManifests = new() { [ProfileId] = head }
             }, Json));
+            if (alternateConnection)
+            {
+                alternateConnectionId = Guid.NewGuid();
+                var alternate = JsonSerializer.Deserialize<FriendConfiguration>(Data.LoadProtected("friend.protected")!, Json)!;
+                alternate.Endpoint = "https://192.0.2.20:5131";
+                alternate.DisplayName = "Other generated saved connection";
+                Data.SaveProtected($"friend-{alternateConnectionId.Value:N}.protected", JsonSerializer.SerializeToUtf8Bytes(alternate, Json));
+                Data.SaveProtected("friend-connections.protected", JsonSerializer.SerializeToUtf8Bytes(
+                    new { ids = new[] { Guid.Empty, alternateConnectionId.Value }, selectedId = Guid.Empty }, Json));
+            }
             var executable = Path.Combine(Data.RootPath, "never-run.synthetic");
             File.WriteAllText(executable, "file boundary only; never executable");
             Manager = new(Data, new GameServerRegistry([Driver], PortProbeMode.ObserveOnly));
@@ -607,16 +626,31 @@ internal static class LocalHostingChecks
             Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>> latest,
             LocalHostingRouteCheck? checker = null) =>
             new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")],
-                routeCheck: checker, announceHosting: announce, latestSource: latest);
+                routeCheck: checker, announceHosting: announce, latestSource: latest,
+                preparedStartSource: async (root, localId, branchHash, token, _) =>
+                {
+                    var observed = await latest(root, token);
+                    if (!observed.Ok || observed.Source is null)
+                        return new(false, observed.Code, observed.Message);
+                    var source = WorldPeerPreparedStartSource.Open(Data, root, localId, branchHash, token);
+                    if (source.Descriptor.Version.VersionHash != observed.Source.Descriptor.Version.VersionHash)
+                    {
+                        source.Dispose();
+                        return new(false, "LatestSaveChanged", "The synthetic latest metadata changed.");
+                    }
+                    return new(true, observed.Code, observed.Message, source, observed.ObservationHash);
+                });
         private SharedWorldVersion Version(long number, string? parent, byte[] bytes) => SharedWorldService.SignVersion(new(4,
             GroupId, number, parent, ProfileId, GameKinds.Fixture, "SyntheticLocalHosting", DateTimeOffset.UtcNow,
             SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(ControlPort, false, "Unknown", [], []),
-            [new("world.dat", bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)))], "", "", ""), owner);
+            Enumerable.Range(0, fileCount).Select(index => new SharedWorldFile(index == 0 ? "world.dat" : $"world-{index:D3}.dat",
+                bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)))).ToArray(), "", "", ""), owner);
         private void WriteCopy(SharedWorldVersion version, byte[] bytes)
         {
             var directory = Path.Combine(vault, version.VersionHash);
             Directory.CreateDirectory(Path.Combine(directory, SharedWorldService.PayloadDirectory));
-            File.WriteAllBytes(Path.Combine(directory, SharedWorldService.PayloadDirectory, "world.dat"), bytes);
+            foreach (var file in version.Files)
+                File.WriteAllBytes(SharedWorldService.SafeChild(Path.Combine(directory, SharedWorldService.PayloadDirectory), file.Path), bytes);
             File.WriteAllBytes(Path.Combine(directory, "version.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
             FriendLink.KeepSignedManifest(vault, version);
             File.WriteAllBytes(Path.Combine(vault, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
@@ -627,6 +661,7 @@ internal static class LocalHostingChecks
     internal sealed class FilesOnlyDriver : IGameServerDriver
     {
         internal int ProcessAttempts { get; private set; }
+        internal Action? BeforeProcessAttempt { get; set; }
         public string Kind => GameKinds.Fixture;
         public string DisplayName => "Source-only preparation";
         public bool ShowPortDiagnostics => false;
@@ -637,7 +672,12 @@ internal static class LocalHostingChecks
         public IReadOnlyList<GamePort> Ports(ServerProfile profile) => [new("UDP", profile.GamePort, "Game"), new("UDP", profile.GamePort + 1, "Query")];
         public string? JoinAddress(ServerProfile profile, string? publicIp) => null;
         public GameValidation? ValidateForStart(ServerProfile profile) => null;
-        private InvalidOperationException NoProcess() { ProcessAttempts++; return new("No process operation is permitted."); }
+        private InvalidOperationException NoProcess()
+        {
+            ProcessAttempts++;
+            BeforeProcessAttempt?.Invoke();
+            return new("No process operation is permitted.");
+        }
         public void PrepareStart(ServerProfile profile, ManagedRun run) => throw NoProcess();
         public GameLaunchResult Start(ServerProfile profile, ManagedRun run) => throw NoProcess();
         public GameHealthResult Health(ManagedRun run) => throw NoProcess();

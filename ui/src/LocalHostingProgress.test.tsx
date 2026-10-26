@@ -134,6 +134,23 @@ describe('honest hosting progress', () => {
     expect(screen.queryByText('25% received')).not.toBeInTheDocument()
   })
 
+  it('reconciles only the expected server attempt after the requesting flight has ended', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(instant)
+    const update = vi.fn()
+    let current = progress({ startedUtc: '2026-10-24T12:00:01Z', updatedUtc: '2026-10-24T12:00:02Z',
+      state: 'Completed', message: 'Another operation completed.' })
+    vi.stubGlobal('fetch', vi.fn(async () => response(current)))
+    render(<LocalHostingProgress endpoint={endpoint} startedAt={Date.parse(instant)} expectedStartedUtc={instant}
+      title="Checking the earlier Start" message="Wait for this exact attempt." onUpdate={update} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.queryByText('Another operation completed.')).not.toBeInTheDocument()
+    expect(update).not.toHaveBeenCalled()
+    current = progress({ state: 'Failed', updatedUtc: new Date(Date.now()).toISOString(), message: 'This exact attempt finished.' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText(current.message)).toBeInTheDocument()
+    expect(update).toHaveBeenCalledExactlyOnceWith(current)
+  })
+
   it.each(['Failed', 'Completed'] as const)('shows a current %s result without reviving the spinner or claiming the next action', async state => {
     vi.useFakeTimers(); vi.setSystemTime(instant)
     let current = progress()
