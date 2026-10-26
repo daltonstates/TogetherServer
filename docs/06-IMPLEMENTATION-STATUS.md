@@ -186,6 +186,16 @@ Friend enrollment or generate a key, roster or announcement. Regressions cover
 immediate first Start with and without a completed publication, strict identity,
 consent and roster refusal, and preservation of other protected records.
 
+Review also caught an existing first-publication boundary: a published-roster
+read could create a replacement owner key when a signed roster existed without
+a completed-save pointer. Published peer reads now require the retained key;
+the first-owner path checks it before reading the roster. A bounded direct
+protected-byte reader refuses missing, malformed or undecryptable keys without
+quarantining or replacing them. Five actual first-Start fault cases, direct
+published roster/version reads and background registration all refuse before
+the fake driver, preserving the damaged bytes/path and other protected records.
+Explicit initial setup/publication retains its separate key-creation path.
+
 Cache boundaries remain explicit:
 
 | Responsibility | Reuse and invalidation |
@@ -228,6 +238,49 @@ Existing passed all 1,545 UI cases and several game checks but failed Minecraft
 capture-host identity verification and Bedrock fixture readiness; their cause
 is not established, and subsequent Existing gates were not run. No failed or
 unrun gate is accepted by the successful lanes.
+
+The follow-up [5ee78b4 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40396913228)
+also completed 12 successful lanes and five failed lanes. All 82 source groups
+and the packaged QoL API passed. Both automatic-sharing journeys passed with
+one explicit Friend Start each, no repeated preparation, returning-owner Start,
+signed global-disable enforcement and empty owned-process cleanup. These are
+same-runner synthetic results. Core passed its 14 groups but then failed the
+same rehearsal-enrollment assertion as the separate Rehearsal lane: that fixture
+still expected target-world sync to enroll an unknown world and claim fresh
+loopback peer information. Rehearsal now observes automatic membership before
+one honestly inconclusive loopback check; the shared-world convergence helper
+now uses only GET observations within its existing deadline. Pairing passed
+the three UX and 11 loopback stages, then reached a later LAN scoped-removal
+failure after 15 passing stages: the returned signed roster still showed the
+removed member active. A generated source case reproduces that exact predicate
+with the prior baseline rule: its journal starts before the second member's
+later valid legacy enrollment, and removal retains that member while leaving
+the other member and sibling server unchanged. The correction takes the
+current legacy owner's baseline, or walks exact verified ancestors of a
+delegated head; it never treats delegated membership as the owner's local
+choice or rewrites prior signed records. The corrected scoped-removal and
+one-action permission groups pass, including preservation of a delegated
+grant, sibling access, the original credential, legacy signed files and the
+existing exact-parent schema-3 migration. Related legacy trust-floor,
+projection, concurrent-import and revoked-rejoin groups pass. Existing
+passed 11 Minecraft cases but its same-name/numeric-port case lost the Java
+fixture before readiness; the earlier run lost Bedrock there. Cause remains
+unestablished, and later Existing gates were not run. Desktop again retained
+the required QuietTime notification block. No candidate from either failed
+run was published or installed.
+
+The repeated Minecraft readiness failure now has bounded fixture-only exit and
+startup/socket-code diagnostics. They retain an exact recorded process identity
+and operation log before run archival, emit no paths or captured text, and
+cannot authorize a lifecycle action. A pure early code-only parser check covers
+malformed, truncated, wrong-stream, spoofed and out-of-range records. Native
+identity, port selection, startup deadlines and readiness requirements remain
+unchanged; the unknown exit cause has no speculative workaround.
+The strict diagnostic project build, pure parser branch and targeted formatting
+pass without launching a fixture or touching production state. The key-fault
+prepared-discovery group and strict solution build/formatting also pass; the
+final integrated discovery and 315-file prepared-publication reuse groups pass.
+The integrated corrections still require their own hosted candidate.
 
 The owner reconfirmed the unattended target-world-only session and main world's
 stopped state. Static read-only inspection still finds one installed/running

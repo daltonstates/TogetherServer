@@ -6,11 +6,21 @@ using System.Text;
 using System.Text.Json;
 using TogetherServer;
 
+if (args.SequenceEqual(["--fixture-diagnostics-code-only"], StringComparer.Ordinal))
+{
+    FixtureReadinessDiagnostics.CheckParser();
+    Console.WriteLine("PASS bounded fixture diagnostic parser (code only)");
+    return 0;
+}
+
 if (MinecraftConsoleCapture.IsCommand(args))
 {
     Environment.ExitCode = await MinecraftConsoleCapture.RunAsync(args);
     return Environment.ExitCode;
 }
+
+// Also exercise the pure parser in the hosted native runner without a new workflow step.
+FixtureReadinessDiagnostics.CheckParser();
 
 var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/net10.0/TogetherServer.MinecraftFixture.exe");
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the Minecraft console fixture first.", fixture);
@@ -130,8 +140,9 @@ ServerProfile Profile(string kind, string name, string world, int port, bool eul
     };
 }
 
-async Task Ready(HostManager manager, Guid id, ActionResult launch)
+async Task Ready(HostManager manager, LocalData data, Guid id, ActionResult launch)
 {
+    using var fixtureDiagnostic = FixtureReadinessDiagnostics.Capture(data, id, launch, root);
     var budget = TimeSpan.FromSeconds(30);
     var elapsed = Stopwatch.StartNew();
     var attempts = 0;
@@ -148,7 +159,7 @@ async Task Ready(HostManager manager, Guid id, ActionResult launch)
     }
     var startView = launch.Snapshot.Runs.FirstOrDefault(run => run.ProfileId == id);
     string? Bounded(string? value) => value is { Length: > 320 } ? value[..320] : value;
-    // Existing typed results only: no log, path, credential or process probe reads.
+    // Only fixed numeric fixture evidence is added; paths and captured text stay private.
     var diagnostic = JsonSerializer.Serialize(new
     {
         phase = "readiness",
@@ -171,7 +182,8 @@ async Task Ready(HostManager manager, Guid id, ActionResult launch)
         observationPresent = lastView?.PlayerCountObservedUtc is not null,
         runViewPresent = lastView is not null,
         processPresent = lastView?.ProcessId is not null,
-        operationPresent = lastView?.RunOperationId is not null
+        operationPresent = lastView?.RunOperationId is not null,
+        fixtureFailure = fixtureDiagnostic.Read()
     });
     throw new Exception("Synthetic Minecraft status did not become ready. Diagnostic: " + diagnostic);
 }
@@ -251,7 +263,7 @@ await Check("Java live-save candidate sends only to its exact fixture run", asyn
     Require(started.Ok, $"Java candidate fixture did not start: {started.Code} {started.Message}");
     try
     {
-        await Ready(manager, profile.Id, started);
+        await Ready(manager, data, profile.Id, started);
         var run = data.LoadRuns().Single();
         var port = new ExactManagedConsoleLiveSaveCommandPort();
         run.StartTimeUtcTicks++;
@@ -310,7 +322,7 @@ await Check("Bedrock live-save candidate validates synthetic snapshot and resume
     Require(started.Ok, $"Bedrock candidate fixture did not start: {started.Code} {started.Message}");
     try
     {
-        await Ready(manager, profile.Id, started);
+        await Ready(manager, data, profile.Id, started);
         var run = data.LoadRuns().Single();
         File.WriteAllText(Path.Combine(profile.WorldDirectory, "synthetic-save-operation-id.txt"),
             run.OperationId.ToString("D"));
@@ -472,7 +484,7 @@ await Check("Bedrock pending resume survives a Host data reopen", async () =>
         var started = await manager.StartAsync(profile.Id);
         Require(started.Ok, $"Bedrock recovery fixture did not start: {started.Code} {started.Message}");
         run = data.LoadRuns().Single();
-        await Ready(manager, profile.Id, started);
+        await Ready(manager, data, profile.Id, started);
         new BedrockLiveSaveCandidate(data).Hold(run);
         Require(new BedrockLiveSaveCandidate(data).HasPendingResume,
             "pending resume was not written before interruption");
@@ -572,7 +584,7 @@ await Check("known pre-game capture failure clears only its exact run and permit
     Require(retry.Ok, $"known-safe launch cleanup did not permit retry: {retry.Code} {retry.Message}");
     try
     {
-        await Ready(manager, profile.Id, retry);
+        await Ready(manager, data, profile.Id, retry);
         var exactRun = data.LoadRuns().Single();
         await Stop(manager, profile);
         await WaitForExit(exactRun.ConsoleCaptureProcessId, exactRun.ConsoleCaptureStartTimeUtcTicks);
@@ -634,7 +646,7 @@ await Check("Java and Bedrock logs are exact-run bounded, typed, and sanitized",
         Require(started.Ok, $"{kind} log fixture start failed: {started.Code} {started.Message}");
         try
         {
-            await Ready(manager, profile.Id, started);
+            await Ready(manager, data, profile.Id, started);
             var exactRun = data.LoadRuns().Single();
             Require(exactRun.LogPath == data.NewRunLogPath(exactRun.OperationId) &&
                 exactRun.ConsoleCaptureProcessId is not null &&
@@ -691,7 +703,7 @@ await Check("Java and Bedrock logs are exact-run bounded, typed, and sanitized",
 
             var restarted = await manager.StartAsync(profile.Id);
             Require(restarted.Ok, $"{kind} fixture restart failed: {restarted.Code} {restarted.Message}");
-            await Ready(manager, profile.Id, restarted);
+            await Ready(manager, data, profile.Id, restarted);
             var nextRun = data.LoadRuns().Single();
             Require(nextRun.OperationId != exactRun.OperationId,
                 kind + " restart reused its managed-run operation ID");
@@ -747,7 +759,7 @@ await Check("chatty capture cannot block graceful Stop or kill an unrelated proc
     {
         var started = await manager.StartAsync(profile.Id);
         Require(started.Ok, $"chatty fixture start failed: {started.Code} {started.Message}");
-        await Ready(manager, profile.Id, started);
+        await Ready(manager, data, profile.Id, started);
         var exactRun = data.LoadRuns().Single();
         var timer = Stopwatch.StartNew();
         await Stop(manager, profile);
@@ -804,7 +816,7 @@ await Check("missing display log cannot change Minecraft lifecycle authority", a
     Require(started.Ok, $"log-failure fixture start failed: {started.Code} {started.Message}");
     try
     {
-        await Ready(manager, profile.Id, started);
+        await Ready(manager, data, profile.Id, started);
         var exactRun = data.LoadRuns().Single();
         File.Delete(exactRun.LogPath);
         var unavailable = await new ServerLogService(data, manager)
@@ -860,10 +872,10 @@ await Check("two games can share a world name and numeric port on different prot
     {
         var startedJava = await manager.StartAsync(java.Id);
         Require(startedJava.Ok, $"Java fixture start failed: {startedJava.Code} {startedJava.Message}");
-        await Ready(manager, java.Id, startedJava);
+        await Ready(manager, data, java.Id, startedJava);
         var startedBedrock = await manager.StartAsync(bedrock.Id);
         Require(startedBedrock.Ok, $"Bedrock fixture start failed: {startedBedrock.Code} {startedBedrock.Message}");
-        await Ready(manager, bedrock.Id, startedBedrock);
+        await Ready(manager, data, bedrock.Id, startedBedrock);
         var snapshot = await manager.SnapshotAsync();
         Require(snapshot.Runs.Where(run => run.ProfileId == java.Id || run.ProfileId == bedrock.Id)
             .All(run => run.OnlinePlayers == 0 && run.MaxPlayers == 10 && run.AutoShutdownAtUtc is not null),

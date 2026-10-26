@@ -47,7 +47,7 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             }
             if (original is null || !original.SharedSavesEnabled)
                 return await manager.StartAsync(profileId, cancellationToken);
-            var roster = await manager.PeerPublishedRosterAsync(sourceId);
+            var roster = await peers.ReadOwnerHostingRosterAsync(sourceId, cancellationToken);
             if (roster is null)
                 return await Refused("SharedHostingReviewRequired", "This server's sharing permission needs review before hosting.");
             var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, sourceId, roster.GroupId);

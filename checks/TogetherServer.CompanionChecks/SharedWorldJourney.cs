@@ -973,8 +973,8 @@ internal static partial class SharedWorldJourney
     internal static async Task RequireAutomaticSharingAsync(HttpClient owner, Guid profileId,
         params (HttpClient Client, Guid DeviceId)[] receivers)
     {
-        // Membership refresh can queue behind a 45-second peer sync. Use the
-        // bounded hosting-check budget rather than the ordinary short read clients.
+        // Observe ordinary background enrollment and automatic consent within
+        // the existing budget; observation never requests enrollment or transfer.
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         using var rosterClient = new HttpClient { BaseAddress = owner.BaseAddress, Timeout = TimeSpan.FromSeconds(120) };
         var receiverNumber = 0;
@@ -1028,11 +1028,9 @@ internal static partial class SharedWorldJourney
                 {
                     observations++;
                     // Automatic consent projects the verified local roster/floor.
-                    // Refresh normal Friend status before synchronizing membership;
-                    // do not replace convergence with a consent or hosting mutation.
-                    phase = "FriendPoll";
-                    var view = await PostAsync<object, FriendView>(client,
-                        "/api/local/friend/poll", new { }, deadline.Token);
+                    // Read status without starting a poll, enrollment or transfer.
+                    phase = "FriendStatus";
+                    var view = await GetAsync<FriendView>(client, "/api/local/snapshot", deadline.Token);
                     lastConnectionCode = SupportReportRedactor.Token(view.ConnectionCode);
                     Require((view.State is "Connected" or "Disabled") && view.ConnectionId != Guid.Empty &&
                         view.Profiles.Any(profile => profile.Id == profileId) &&
@@ -1041,10 +1039,15 @@ internal static partial class SharedWorldJourney
                     connectionId ??= view.ConnectionId;
                     Require(connectionId == view.ConnectionId,
                         "the selected Friend connection changed during automatic receiving checks");
-                    phase = "PeerSync";
-                    Require((await PostAsync<object, WorldPeerActionResult>(client,
-                        $"/api/local/world-peers/{root.GroupKey}/sync", new { }, deadline.Token)).Ok,
-                        "an approved Friend could not automatically enroll and refresh its shared hosting membership");
+                    phase = "LocalGroup";
+                    var groups = await GetAsync<WorldPeerGroupView[]>(client,
+                        "/api/local/world-peers", deadline.Token);
+                    var local = groups.SingleOrDefault(group => group.GroupKey == root.GroupKey);
+                    localGroupPresent = local is not null;
+                    Require(local is null || local.ProfileId == profileId && local.SelfDeviceId == deviceId &&
+                        local.State.Root == root && local.State.GroupKey == root.GroupKey,
+                        "automatic receiving adopted another signed world or Friend identity");
+                    if (local is null) { await Task.Delay(250, deadline.Token); continue; }
                     phase = "OwnerRoster";
                     var roster = await ReadOwnerRosterAsync();
                     if (roster is null) { await Task.Delay(250, deadline.Token); continue; }
@@ -1070,14 +1073,6 @@ internal static partial class SharedWorldJourney
                     memberKey ??= member!.PublicKey;
                     Require(memberKey == member!.PublicKey,
                         "the signed Friend identity changed during automatic receiving checks");
-                    phase = "LocalGroup";
-                    var groups = await GetAsync<WorldPeerGroupView[]>(client,
-                        "/api/local/world-peers", deadline.Token);
-                    var local = groups.SingleOrDefault(group => group.GroupKey == root.GroupKey);
-                    localGroupPresent = local is not null;
-                    Require(local is null || local.ProfileId == profileId && local.SelfDeviceId == deviceId &&
-                        local.State.Root == root && local.State.GroupKey == root.GroupKey,
-                        "automatic receiving adopted another signed world or Friend identity");
                     phase = "ReceiveStatus";
                     var status = await GetAsync<ReceivedSharedWorldStatus>(client,
                         $"/api/local/friend/{profileId}/shared-world", deadline.Token);

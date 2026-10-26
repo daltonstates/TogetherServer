@@ -14,8 +14,129 @@ internal static class ServerAccessRemovalChecks
     internal static void Run(string root)
     {
         ScopedRemovalAndFreshPairing(root);
+        LegacyEnrollmentRemoval(root, delegated: false);
+        LegacyEnrollmentRemoval(root, delegated: true);
         HiddenTransportsKeepTheirAuthority(root);
         InheritedAssignmentRemoval(root);
+    }
+
+    private static void LegacyEnrollmentRemoval(string root, bool delegated)
+    {
+        using var fixture = new LegacyEnrollmentFixture(root);
+        var chain = new SharedWorldRosterChainStore(fixture.Data);
+        var first = chain.First(fixture.Main.Id)!;
+        var latestLegacy = chain.Heads(fixture.Main.Id).Single();
+        Require(first.Schema == 2 && first.Members.Count == 1 && latestLegacy.Schema == 2 &&
+            latestLegacy.Members.Count == 2 && first.Members.All(member => member.DeviceId != fixture.PcB.DeviceId),
+            "the legacy journal did not begin before the second PC's owner-signed enrollment");
+        var retainedFiles = new[] { first, latestLegacy }.Select(roster => Path.Combine(fixture.Data.RootPath,
+            "shared-worlds", fixture.Main.Id.ToString("N"), "roster-chain", SharedWorldRosterTrust.Hash(roster) + ".json"))
+            .ToDictionary(path => path, File.ReadAllBytes);
+        var siblingSignature = fixture.Shared.ReadRoster(fixture.Sibling)!.Signature;
+        var expectedA = latestLegacy.Members.Single(member => member.DeviceId == fixture.PcA.DeviceId);
+        if (delegated)
+        {
+            var revision = latestLegacy with
+            {
+                Schema = 3,
+                Epoch = latestLegacy.Epoch + 1,
+                Revision = latestLegacy.Revision + 1,
+                PreviousRosterHash = SharedWorldRosterTrust.Hash(latestLegacy),
+                SignerDeviceId = fixture.PcB.DeviceId,
+                SignerPublicKey = Public(fixture.KeyB),
+                Members = latestLegacy.Members.Select(member => member.DeviceId == fixture.PcA.DeviceId
+                    ? member with { Grants = member.Grants with { RecoveryVoter = true } } : member).ToArray(),
+                Signature = ""
+            };
+            revision = revision with { Signature = Sign(fixture.KeyB, SharedWorldRosterTrust.Basis(revision)) };
+            var accepted = fixture.Shared.CountersignDelegatedRoster(revision, DateTimeOffset.UtcNow);
+            chain.Append(accepted, latestLegacy.OwnerPublicKey);
+            expectedA = accepted.Members.Single(member => member.DeviceId == fixture.PcA.DeviceId);
+            Require(accepted.OwnerLocalBaselineMembers is null && expectedA.Grants.RecoveryVoter &&
+                !fixture.Pairing.SharedRosterMembers(fixture.Main.Id).Single(member => member.DeviceId == fixture.PcA.DeviceId).Grants.RecoveryVoter,
+                "the delegated negative did not separate the signed role from the unchanged owner-local choice");
+            var reconciled = fixture.Shared.PublishRoster(fixture.Main, fixture.Pairing.SharedRosterMembers(fixture.Main.Id), applyHostingPolicy: true);
+            fixture.Pairing.ConfirmSharedRosterPublished(fixture.Main.Id, reconciled);
+            Require(reconciled.Members.Single(member => member.DeviceId == fixture.PcA.DeviceId) == expectedA &&
+                reconciled.OwnerLocalBaselineMembers!.SequenceEqual(fixture.Pairing.SharedRosterMembers(fixture.Main.Id).OrderBy(member => member.DeviceId)) &&
+                chain.Contains(fixture.Main.Id, accepted),
+                "reconciling a delegated null-baseline head reversed its signed edit or lost its exact proof");
+        }
+        var credentialBefore = fixture.Data.LoadPairingState().Devices.Single(device => device.Id == fixture.PcB.DeviceId).CredentialHash;
+        Require(fixture.Pairing.RemoveServerAccess(fixture.PcB.DeviceId, fixture.Main.Id).Code == "ServerAccessRemoved",
+            "the legacy enrollment fixture did not remove the second PC's exact scope");
+        var published = fixture.Shared.PublishRoster(fixture.Main, fixture.Pairing.SharedRosterMembers(fixture.Main.Id), applyHostingPolicy: true);
+        fixture.Pairing.ConfirmSharedRosterPublished(fixture.Main.Id, published);
+        var bStillActive = published.Members.Any(member => member.DeviceId == fixture.PcB.DeviceId && !member.Revoked);
+        var aUnchanged = published.Members.Single(member => member.DeviceId == fixture.PcA.DeviceId) == expectedA;
+        var siblingUnchanged = fixture.Shared.ReadRoster(fixture.Sibling)!.Signature == siblingSignature;
+        Require(!bStillActive && aUnchanged && siblingUnchanged &&
+            chain.Contains(fixture.Main.Id, first) && chain.Contains(fixture.Main.Id, latestLegacy) &&
+            retainedFiles.All(item => File.ReadAllBytes(item.Key).AsSpan().SequenceEqual(item.Value)),
+            $"legacy scoped removal: bStillActive={bStillActive}, aUnchanged={aUnchanged}, siblingUnchanged={siblingUnchanged}");
+        var removed = fixture.Data.LoadPairingState().Devices.Single(device => device.Id == fixture.PcB.DeviceId);
+        Require(!removed.Revoked && removed.CredentialHash == credentialBefore &&
+            fixture.Pairing.Authenticate(fixture.PcB.DeviceId, fixture.PcB.Credential, out var b).Ok &&
+            !fixture.Pairing.CanAccess(b!, fixture.Main.Id) &&
+            fixture.Pairing.Authenticate(fixture.PcA.DeviceId, fixture.PcA.Credential, out var a).Ok &&
+            fixture.Pairing.CanAccess(a!, fixture.Main.Id) && fixture.Pairing.CanAccess(a!, fixture.Sibling.Id) &&
+            !fixture.Pairing.SharedRosterDirty(fixture.Main.Id),
+            "signed scope removal revoked a whole PC, changed sibling access, or left publication unconfirmed");
+    }
+
+    private sealed class LegacyEnrollmentFixture : IDisposable
+    {
+        internal LocalData Data { get; }
+        internal PairingService Pairing { get; }
+        internal SharedWorldService Shared { get; }
+        internal ServerProfile Main { get; }
+        internal ServerProfile Sibling { get; }
+        internal PairingCredential PcA { get; }
+        internal PairingCredential PcB { get; }
+        internal ECDsa KeyB { get; } = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        private readonly ECDsa owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        private readonly ECDsa keyA = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        internal LegacyEnrollmentFixture(string root)
+        {
+            Data = new(Path.Combine(root, "legacy-enrollment-removal-" + Guid.NewGuid().ToString("N")));
+            Main = Profile("Legacy main"); Sibling = Profile("Untouched sibling");
+            Data.SaveSettings(new() { Profiles = [Main, Sibling] });
+            Data.SaveProtected("shared-world-signing-key.protected", owner.ExportPkcs8PrivateKey());
+            Pairing = new(Data);
+            var invite = Pairing.IssueServer(Main.Id, false, false, "https://192.0.2.115:5131", new string('A', 64), false);
+            PcA = Pairing.Activate(new(Main.Id, invite.Code, true)) ?? throw new InvalidOperationException("legacy first PC pairing failed");
+            Require(Pairing.SetServerAccess(PcA.DeviceId, [Main.Id, Sibling.Id], null, [Main.Id, Sibling.Id]).Ok &&
+                Bind(Pairing, PcA.DeviceId, keyA).Ok, "legacy first PC assignment/enrollment failed");
+            Shared = new(Data, new WorldBackupService(Data, TimeProvider.System));
+            var first = Shared.PublishRoster(Main, Pairing.SharedRosterMembers(Main.Id));
+            var chain = new SharedWorldRosterChainStore(Data);
+            chain.Append(first, first.OwnerPublicKey);
+            Pairing.ConfirmSharedRosterPublished(Main.Id, first);
+            var sibling = Shared.PublishRoster(Sibling, Pairing.SharedRosterMembers(Sibling.Id));
+            Pairing.ConfirmSharedRosterPublished(Sibling.Id, sibling);
+            PcB = Pairing.Activate(new(Main.Id, invite.Code, true)) ?? throw new InvalidOperationException("legacy second PC pairing failed");
+            Require(Bind(Pairing, PcB.DeviceId, KeyB).Ok && Pairing.SetSharedWorldGrants(PcB.DeviceId, Main.Id,
+                new(Receive: true, EligibleHost: true, Reshare: true, ManageSharing: true)).Ok,
+                "legacy second PC signing enrollment or sharing-manager setup failed");
+            var latest = first with
+            {
+                Epoch = first.Epoch + 1,
+                Revision = first.Revision + 1,
+                Members = Pairing.SharedRosterMembers(Main.Id).OrderBy(member => member.DeviceId).ToArray(),
+                Signature = ""
+            };
+            latest = latest with { Signature = Sign(owner, SharedWorldRosterTrust.Basis(latest)) };
+            chain.Append(latest, latest.OwnerPublicKey);
+            Pairing.ConfirmSharedRosterPublished(Main.Id, latest);
+        }
+        private ServerProfile Profile(string name)
+        {
+            var profile = new ServerProfile { Name = name, WorldId = name.Replace(" ", ""), SharedSavesEnabled = true };
+            profile.WorldDirectory = Data.NewWorldDirectory(profile.Id);
+            return profile;
+        }
+        public void Dispose() { KeyB.Dispose(); keyA.Dispose(); owner.Dispose(); Data.Dispose(); }
     }
 
     private static void ScopedRemovalAndFreshPairing(string root)

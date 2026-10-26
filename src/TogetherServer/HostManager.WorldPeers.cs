@@ -24,7 +24,7 @@ public sealed partial class HostManager
         if (!SharedWorldPeerTrust.ValidRoot(root)) return null;
         var profile = DurablePeerProfile(root.ProfileId);
         if (profile is null) return null;
-        var roster = sharedWorlds.ReadRoster(profile);
+        var roster = sharedWorlds.ReadRoster(profile, requireRetainedSigningKey: true);
         if (roster?.OwnerPublicKey != root.OwnerPublicKey || roster.GroupId != root.GroupId) return null;
         var latest = sharedWorlds.Status(profile).Latest;
         if (latest is null || latest.ProfileId != root.ProfileId || latest.GroupId != root.GroupId ||
@@ -42,11 +42,11 @@ public sealed partial class HostManager
         lock (SharedWorldMutationGate.For(data.RootPath))
         {
             var profile = DurablePeerProfile(profileId);
-            var roster = profile is null ? null : sharedWorlds.ReadRoster(profile);
+            var roster = profile is null ? null : sharedWorlds.ReadRoster(profile, requireRetainedSigningKey: true);
             if (profile is null || roster is null) return Task.FromResult<SharedWorldRoster?>(null);
             var currentProfile = DurablePeerProfile(profileId);
             if (currentProfile is null || !SamePeerSource(profile, currentProfile)) return Task.FromResult<SharedWorldRoster?>(null);
-            var currentRoster = sharedWorlds.ReadRoster(currentProfile);
+            var currentRoster = sharedWorlds.ReadRoster(currentProfile, requireRetainedSigningKey: true);
             return Task.FromResult<SharedWorldRoster?>(currentRoster is not null &&
                 SharedWorldRosterTrust.Hash(roster) == SharedWorldRosterTrust.Hash(currentRoster) ? roster : null);
         }

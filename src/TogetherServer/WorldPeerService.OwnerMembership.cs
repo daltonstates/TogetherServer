@@ -4,6 +4,19 @@ namespace TogetherServer;
 
 internal sealed partial class WorldPeerService
 {
+    internal Task<SharedWorldRoster?> ReadOwnerHostingRosterAsync(Guid profileId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (stateSync)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var owner = SharedWorldService.RetainedOwnerPublicKey(data);
+            if (owner is null) return Task.FromResult<SharedWorldRoster?>(null);
+            var roster = manager.PeerPublishedRosterAsync(profileId).GetAwaiter().GetResult();
+            return Task.FromResult(roster?.OwnerPublicKey == owner ? roster : null);
+        }
+    }
+
     // First owner Start must not depend on a background pass registering its
     // already-published local roster. This exact-world registration neither refreshes
     // Friend connections nor creates a signing key, roster or peer announcement.
@@ -28,7 +41,7 @@ internal sealed partial class WorldPeerService
                 if (data.Recovery.LifecycleBlocked || profile is null || !profile.SharedSavesEnabled ||
                     profile.SeparateCopySourceProfileId is not null || profile.SeparateCopyBranchHash is not null ||
                     profile.WorldLoadRehearsalId is not null ||
-                    LocalOwnerKey() != root.OwnerPublicKey)
+                    SharedWorldService.RetainedOwnerPublicKey(data) != root.OwnerPublicKey)
                     return Result(false, "WorldMembershipRequired", "This PC's original shared-server identity needs review before hosting.");
                 if (pairing.SharedRosterDirty(profile.Id))
                     return Result(false, "SharedSaveHistoryNeedsReview", "Confirm this server's current signed sharing permission before hosting.");

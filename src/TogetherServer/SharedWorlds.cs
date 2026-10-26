@@ -109,6 +109,44 @@ internal sealed partial class SharedWorldService
         return Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
     }
 
+    // Published identity reads must neither create a missing key nor quarantine
+    // unreadable protected bytes. Initial explicit publication retains its
+    // separate creating path through LoadSigningKey.
+    internal static string? RetainedOwnerPublicKey(LocalData data)
+    {
+        var path = Path.Combine(data.RootPath, SigningKeyFile);
+        if (!File.Exists(path)) return null;
+        EnsureUnlinkedRoot(data.RootPath, data.RootPath);
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (input.Length is < 1 or > 64 * 1024 || (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("The retained world signing identity needs review.");
+        var encoded = new byte[(int)input.Length];
+        input.ReadExactly(encoded);
+        byte[] protectedKey;
+        try
+        {
+            protectedKey = Convert.FromBase64String(JsonSerializer.Deserialize<string>(encoded, Json) ??
+                throw new InvalidDataException("The retained world signing identity is missing."));
+        }
+        catch (FormatException error)
+        { throw new InvalidDataException("The retained world signing identity is invalid.", error); }
+        var privateKey = ProtectedData.Unprotect(protectedKey, null, DataProtectionScope.CurrentUser);
+        try
+        {
+            using var key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(privateKey, out var consumed);
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            if (consumed != privateKey.Length || !SharedWorldRosterTrust.ValidKey(publicKey))
+                throw new InvalidDataException("The retained world signing identity is invalid.");
+            return publicKey;
+        }
+        finally { CryptographicOperations.ZeroMemory(privateKey); }
+    }
+
+    private string RosterOwnerPublicKey(bool requireRetainedSigningKey) => requireRetainedSigningKey
+        ? RetainedOwnerPublicKey(data) ?? throw new InvalidDataException("The existing world signing identity is missing.")
+        : LocalAuthorityPublicKey();
+
     internal WorldAuthorityOwnerApproval SignResolutionOwnerApproval(WorldAuthorityProposal proposal)
     {
         using var key = LoadSigningKey();
@@ -232,7 +270,7 @@ internal sealed partial class SharedWorldService
         binding.Directory.Equals(SourceDirectory(profile), StringComparison.OrdinalIgnoreCase) &&
         binding.Game == profile.Kind && binding.WorldId == profile.WorldId;
 
-    internal SharedWorldRoster? ReadRoster(ServerProfile profile)
+    internal SharedWorldRoster? ReadRoster(ServerProfile profile, bool requireRetainedSigningKey = false)
     {
         lock (sync)
         {
@@ -242,7 +280,7 @@ internal sealed partial class SharedWorldService
             {
                 var heads = chain.Heads(profile.Id);
                 var chainSuccessor = Authority.LocalAuthorizedHead(profile.Id);
-                var chainOwner = chainSuccessor?.Roster.OwnerPublicKey ?? LocalAuthorityPublicKey();
+                var chainOwner = chainSuccessor?.Roster.OwnerPublicKey ?? RosterOwnerPublicKey(requireRetainedSigningKey);
                 if (heads.Count != 1 || binding is null || !BindingMatches(binding, profile) ||
                     heads[0].GroupId != binding.GroupId || heads[0].ProfileId != profile.Id ||
                     heads[0].OwnerPublicKey != chainOwner ||
@@ -255,7 +293,7 @@ internal sealed partial class SharedWorldService
                     // the owner had already published a newer standalone snapshot.
                     // Import only that same owner's strictly newer legacy state;
                     // retain both exact signatures and never cross a schema-3 head.
-                    var standalone = ReadRosterForBinding(profile, binding);
+                    var standalone = ReadRosterForBinding(profile, binding, requireRetainedSigningKey);
                     if (standalone is not null && SharedWorldRosterTrust.Hash(standalone) !=
                         SharedWorldRosterTrust.Hash(heads[0]))
                     {
@@ -278,7 +316,7 @@ internal sealed partial class SharedWorldService
                 throw new InvalidDataException("Shared roster is oversized or linked.");
             var roster = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(path), Json);
             var successor = Authority.LocalAuthorizedHead(profile.Id);
-            var expectedOwner = successor?.Roster.OwnerPublicKey ?? LocalAuthorityPublicKey();
+            var expectedOwner = successor?.Roster.OwnerPublicKey ?? RosterOwnerPublicKey(requireRetainedSigningKey);
             if (!SharedWorldRosterTrust.Verify(roster) || binding is null ||
                 !BindingMatches(binding, profile) || roster!.GroupId != binding.GroupId ||
                 roster.ProfileId != profile.Id ||
@@ -314,7 +352,7 @@ internal sealed partial class SharedWorldService
                     var orderedMembers = members.OrderBy(item => item.DeviceId).ToArray();
                     if (chain.HasUnreviewedOwnerEdit(profile.Id))
                         throw new InvalidDataException("Earlier owner edits need sharing review before another change.");
-                    var baseline = parent.OwnerLocalBaselineMembers ?? chain.First(profile.Id)!.Members;
+                    var baseline = OwnerLocalBaseline(chain, parent);
                     var mergedMembers = MergeOwnerChanges(parent.Members, baseline, orderedMembers, ownerEdit);
                     if (applyHostingPolicy)
                     {
@@ -330,9 +368,13 @@ internal sealed partial class SharedWorldService
                             };
                         }).ToArray();
                     }
+                    // Advanced legacy membership and delegated heads without
+                    // a recorded local baseline still need one owner revision.
                     if (parent.Members.SequenceEqual(mergedMembers) &&
                         baseline.SequenceEqual(orderedMembers) &&
-                        parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride)) return parent;
+                        parent.OwnerOverride == (ownerOverride ?? parent.OwnerOverride) &&
+                        (parent.OwnerLocalBaselineMembers is not null || parent.Schema < 3 &&
+                            chain.First(profile.Id)!.Members.SequenceEqual(baseline))) return parent;
                     using var ownerKey = LoadSigningKey();
                     var draftRevision = parent with
                     {
@@ -409,6 +451,33 @@ internal sealed partial class SharedWorldService
             }
     }
 
+    private static IReadOnlyList<SharedWorldRosterMember> OwnerLocalBaseline(
+        SharedWorldRosterChainStore chain, SharedWorldRoster parent)
+    {
+        if (parent.OwnerLocalBaselineMembers is { } recorded) return recorded;
+        // Legacy snapshots were signed wholly by the owner. Their latest
+        // membership, including later enrollments, is the owner's local state.
+        if (parent.Schema < 3) return parent.Members;
+        // Delegated edits can intentionally differ from local pairing state.
+        // Follow exact, fully reverified ancestry to its recorded baseline or
+        // nearest legacy owner snapshot; never treat delegated Members as local.
+        var history = chain.Read(parent.ProfileId).ToDictionary(SharedWorldRosterTrust.Hash, StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var current = parent;
+        while (visited.Add(SharedWorldRosterTrust.Hash(current)))
+        {
+            if (current.OwnerLocalBaselineMembers is { } baseline) return baseline;
+            if (current.Schema < 3 || current.PreviousRosterHash is null &&
+                current.SignerDeviceId == Guid.Empty && current.SignerPublicKey == current.OwnerPublicKey)
+                return current.Members;
+            if (current.PreviousRosterHash is not { } parentHash || !history.TryGetValue(parentHash, out var previous) ||
+                !SharedWorldRosterTrust.VerifyRevision(current, previous, parent.OwnerPublicKey, DateTimeOffset.MinValue, false))
+                throw new InvalidDataException("The owner's local membership baseline needs its exact signed ancestry.");
+            current = previous;
+        }
+        throw new InvalidDataException("The owner's local membership baseline has competing or cyclic ancestry.");
+    }
+
     private static SharedWorldRosterMember[] MergeOwnerChanges(
         IReadOnlyList<SharedWorldRosterMember> signed,
         IReadOnlyList<SharedWorldRosterMember> baseline,
@@ -476,7 +545,8 @@ internal sealed partial class SharedWorldService
         };
     }
 
-    private SharedWorldRoster? ReadRosterForBinding(ServerProfile profile, SourceBinding binding)
+    private SharedWorldRoster? ReadRosterForBinding(ServerProfile profile, SourceBinding binding,
+        bool requireRetainedSigningKey = false)
     {
         var path = File.Exists(GroupRosterPath(profile.Id, binding.GroupId))
             ? GroupRosterPath(profile.Id, binding.GroupId) : RosterPath(profile.Id);
@@ -485,10 +555,10 @@ internal sealed partial class SharedWorldService
             (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("Shared roster is oversized or linked.");
         var roster = JsonSerializer.Deserialize<SharedWorldRoster>(File.ReadAllBytes(path), Json);
-        using var key = LoadSigningKey();
+        var ownerPublicKey = RosterOwnerPublicKey(requireRetainedSigningKey);
         if (!SharedWorldRosterTrust.Verify(roster) || roster!.GroupId != binding.GroupId ||
             roster.ProfileId != profile.Id ||
-            roster.OwnerPublicKey != Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()))
+            roster.OwnerPublicKey != ownerPublicKey)
             throw new InvalidDataException("The previous shared roster failed verification.");
         return roster;
     }

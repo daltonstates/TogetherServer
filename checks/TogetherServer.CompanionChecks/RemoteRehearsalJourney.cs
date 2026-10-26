@@ -59,15 +59,34 @@ internal static partial class CoreRemoteJourney
             var initialRoster = await RehearsalOwnerGetAsync<SharedWorldRoster>(owner,
                 $"/api/local/profiles/{profileId}/shared-world/governance");
             Require(SharedWorldRosterTrust.Verify(initialRoster), "initial rehearsal roster was not signed");
-            var groupKey = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profileId, initialRoster.GroupId).GroupKey;
-            // Enroll through the ordinary peer refresh, without per-PC grant or
-            // receiving choices. The verified server policy supplies both.
+            var peerRoot = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profileId, initialRoster.GroupId);
+            var groupKey = peerRoot.GroupKey;
+            // Observe automatic enrollment and consent before checking this
+            // registered world. These reads submit no per-PC grant or choice.
+            try { await WaitForAutomaticLabMembershipAsync(test, peerRoot, deviceId, "RehearsalAutomaticMembershipMissing"); }
+            catch (PairingLabFailure failure)
+            {
+                var code = failure.Code is { Length: > 0 and <= 64 } && failure.Code.All(char.IsAsciiLetterOrDigit)
+                    ? failure.Code : "UnobservedOrInvalid";
+                throw new Exception("rehearsal automatic signing enrollment failed: " + code);
+            }
             using (var syncClient = LocalClient(friendPort))
             {
                 syncClient.Timeout = TimeSpan.FromSeconds(65);
-                var enrolled = await PostAsync<object, WorldPeerActionResult>(syncClient,
+                var peerCheck = await PostAsync<object, WorldPeerActionResult>(syncClient,
                     $"/api/local/world-peers/{groupKey}/sync", new { });
-                Require(enrolled.Ok && enrolled.Code == "WorldPeersChecked", "rehearsal signing enrollment failed");
+                var code = peerCheck.Code is { Length: > 0 and <= 64 } && peerCheck.Code.All(char.IsAsciiLetterOrDigit)
+                    ? peerCheck.Code : "UnobservedOrInvalid";
+                Console.WriteLine("REHEARSAL_LOOPBACK_PEER_SYNC " + JsonSerializer.Serialize(new
+                {
+                    ok = peerCheck.Ok,
+                    code,
+                    freshPeerResponse = peerCheck.Ok && peerCheck.Code == "WorldPeersChecked"
+                }));
+                // This loopback rehearsal has no eligible signed peer route.
+                // Its successful companion transfer remains separate evidence.
+                Require(!peerCheck.Ok && peerCheck.Code == "WorldPeerSyncInconclusive",
+                    "rehearsal loopback peer sync did not stay inconclusive: " + code);
             }
             var roster = await RehearsalOwnerGetAsync<SharedWorldRoster>(owner,
                 $"/api/local/profiles/{profileId}/shared-world/governance");

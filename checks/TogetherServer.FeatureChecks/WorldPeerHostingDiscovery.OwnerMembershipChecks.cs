@@ -182,13 +182,46 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, profile.Id, roster.GroupId);
         var keyBefore = File.ReadAllBytes(Path.Combine(data.RootPath, "shared-world-signing-key.protected"));
         var identityBefore = OwnerIdentityFiles(data);
-        HttpClient NoNetwork(string _, IEnumerable<string> __) => throw new InvalidOperationException("First local registration cannot make an outbound request.");
+        var networkRequests = 0;
+        HttpClient NoNetwork(string _, IEnumerable<string> __)
+        {
+            networkRequests++;
+            throw new InvalidOperationException("First local registration cannot make an outbound request.");
+        }
         using var friends = new FriendService(data, NoNetwork);
         using var peers = new WorldPeerService(data, manager, friends, new PairingService(data), NoNetwork);
         Require(!data.HasProtected("world-peer-memberships.protected") && await manager.PeerPublishedVersionAsync(root) is null,
             "initial owner fixture already had a membership or save publication");
         var owner = new SimpleOwnerHostingService(data, manager, peers,
             () => throw new InvalidOperationException("First local registration cannot activate a listener."));
+        var keyPath = Path.Combine(data.RootPath, "shared-world-signing-key.protected");
+        foreach (var fault in new[] { "missing", "invalid-json", "invalid-base64", "unreadable-ciphertext", "invalid-private-key" })
+        {
+            switch (fault)
+            {
+                case "missing": File.Delete(keyPath); break;
+                case "invalid-json": File.WriteAllText(keyPath, "{invalid-owner-key"); break;
+                case "invalid-base64": File.WriteAllBytes(keyPath, JsonSerializer.SerializeToUtf8Bytes("invalid base64", Json)); break;
+                case "unreadable-ciphertext": File.WriteAllBytes(keyPath, JsonSerializer.SerializeToUtf8Bytes(Convert.ToBase64String(new byte[32]), Json)); break;
+                case "invalid-private-key": data.SaveProtected("shared-world-signing-key.protected", Encoding.UTF8.GetBytes("invalid private key")); break;
+            }
+            var faultBefore = OwnerIdentityFiles(data);
+            await RefusedPublishedRead(async () => await manager.PeerPublishedRosterAsync(profile.Id), fault);
+            await RefusedPublishedRead(async () => await manager.PeerPublishedVersionAsync(root), fault);
+            var membership = await peers.EnsureOwnerHostingMembershipAsync(root, default);
+            Require(!membership.Ok, fault + " key was accepted by direct owner registration");
+            var backgroundRejected = false;
+            try { await peers.RefreshMembershipsAsync(false, default); }
+            catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error)) { backgroundRejected = true; }
+            Require(backgroundRejected, fault + " key was accepted by background owner registration");
+            var refused = await owner.StartAsync(profile.Id, default).WaitAsync(TimeSpan.FromSeconds(5));
+            Require(refused.Code == "SharedHostingReviewRequired" && driver.StartBoundaryAttempts == 0 &&
+                !data.HasProtected("world-peer-memberships.protected") && networkRequests == 0 &&
+                data.LoadRuns().Count == 0 && !data.LoadSettings().CompanionListeningEnabled,
+                $"first owner Start with {fault} key reached a driver/network/listener or rebuilt membership: {refused.Code}");
+            RequireOwnerIdentityFiles(data, faultBefore);
+            File.WriteAllBytes(keyPath, keyBefore);
+        }
         var result = await owner.StartAsync(profile.Id, default).WaitAsync(TimeSpan.FromSeconds(5));
         Require(result.Code == "SharedHostingReviewRequired" && driver.StartBoundaryAttempts == 1 &&
             data.LoadRuns().Count == 0 && !data.LoadSettings().CompanionListeningEnabled &&
@@ -200,6 +233,14 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             Require(File.Exists(Path.Combine(data.RootPath, item.Key)) &&
                 File.ReadAllBytes(Path.Combine(data.RootPath, item.Key)).SequenceEqual(item.Value),
                 "initial owner Start changed a pre-existing signed source record");
+
+        static async Task RefusedPublishedRead(Func<Task<object?>> read, string fault)
+        {
+            var refused = false;
+            try { refused = await read() is null; }
+            catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error)) { refused = true; }
+            Require(refused, fault + " key was accepted by a published identity read");
+        }
     }
 
     private static string RegisteredGroupJson(LocalData data, SharedWorldPeerRoot root)
@@ -215,9 +256,9 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         var files = Directory.Exists(root) ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories) : [];
         // Peer journals, roster floors/indexes and the retained owner key live
         // beside the signed world tree, rather than inside it.
-        var histories = Directory.EnumerateFiles(data.RootPath, "shared-*.protected*");
-        var consent = Path.Combine(data.RootPath, WorldPeerReceiveConsentStore.StateName);
-        return files.Concat(histories).Concat(File.Exists(consent) ? [consent] : []).ToDictionary(
+        var histories = Directory.EnumerateFiles(data.RootPath, "*.protected*")
+            .Where(path => Path.GetFileName(path) != "world-peer-memberships.protected");
+        return files.Concat(histories).ToDictionary(
             path => Path.GetRelativePath(data.RootPath, path), File.ReadAllBytes);
     }
 
