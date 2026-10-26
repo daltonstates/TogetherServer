@@ -60,6 +60,7 @@ internal static partial class CoreRemoteJourney
         var ownerStartAttempts = 0;
         var initialStartObservations = new List<object>();
         var friendStartObservations = new List<object>();
+        var ownerStartObservations = new List<object>();
         LocalHostingStatus? prepared = null;
         SharedWorldVersion? initialVersion = null, continuedVersion = null;
         var timer = Stopwatch.StartNew();
@@ -79,6 +80,11 @@ internal static partial class CoreRemoteJourney
             ("LaunchFailed", "Server launch failed: The current original publication or signed roster is unavailable.") => "OriginalFinalPrelaunchScope",
             _ => result.Ok ? "None" : "Unclassified"
         };
+        static string ReturningOwnerCode(string? value) => value is "SeparateCopyStarted" or "FixtureStarted" or
+            "LatestSaveChanged" or "NewerSharedSaveAvailable" or "SharedSaveHistoryNeedsReview" or
+            "HostingPermissionRequired" or "SharedHostingReviewRequired" or "WorldMembershipRequired" or
+            "OwnerRecoveryUnavailable" or "WorldRosterCatchUpRequired" or "LocalPortsRequired" or
+            "RecipientConnectionRequired" ? value : "Unclassified";
         try
         {
             host = Launch("host", "--host", ports[0], hostData);
@@ -379,7 +385,23 @@ internal static partial class CoreRemoteJourney
             await PairingLabWaitAsync(async () =>
             {
                 ownerStartAttempts++;
+                var startedMs = timer.ElapsedMilliseconds;
                 returnedStart = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
+                var returnedSnapshot = returnedStart.Snapshot;
+                var activeRuns = returnedSnapshot?.Runs.Where(item => item.ProcessId is not null).ToArray();
+                // Preserve each existing attempt before its assertion or the
+                // next instruction. Retain no message or profile identity.
+                ownerStartObservations.Add(new
+                {
+                    attempt = ownerStartAttempts,
+                    durationMs = timer.ElapsedMilliseconds - startedMs,
+                    resultCode = ReturningOwnerCode(returnedStart.Code),
+                    refusalBoundary = OriginalRefusalBoundary(returnedStart),
+                    ok = returnedStart.Ok,
+                    activeRunCount = activeRuns?.Length,
+                    activeProfileMatchesSource = activeRuns is { Length: 1 } && returnedSnapshot!.Settings.Profiles.Any(item =>
+                        item.Id == activeRuns[0].ProfileId && item.SeparateCopySourceProfileId == profile.Id && item.Id != profile.Id)
+                });
                 LabRequire(returnedStart.Ok || returnedStart.Code is "LatestSaveChanged" or "NewerSharedSaveAvailable",
                     "SimpleReturningOwnerStartRejected-" + returnedStart.Code);
                 return returnedStart.Ok;
@@ -458,6 +480,7 @@ internal static partial class CoreRemoteJourney
                 ownerStartAttempts,
                 initialStartObservations,
                 friendStartObservations,
+                ownerStartObservations,
                 latestReviewDiagnostic,
                 processIdentityObservations = processes.Select(process => process.IdentityObservation()).ToArray(),
                 processes = processes.Select(process => process.Report()).ToArray(),

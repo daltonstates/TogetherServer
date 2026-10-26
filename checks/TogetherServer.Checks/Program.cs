@@ -3652,9 +3652,14 @@ await Check("shared Stop before first signed roster leaves setup recoverable", a
     profile.SharedSavesEnabled = true;
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "first stop");
     var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.ObserveOnly));
-    Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok &&
-        (await manager.StartAsync(profile.Id)).Ok &&
-        (await manager.StopAsync(profile.Id)).Ok, "the first graceful Stop failed");
+    string TypedCode(ActionResult result) => result.Code is { Length: > 0 and <= 80 } && result.Code.All(char.IsAsciiLetterOrDigit)
+        ? result.Code : "InvalidTypedCode";
+    var configured = await manager.UpdateSettingsAsync(Settings(profile));
+    Require(configured.Ok, $"Shared Stop before roster: stage=UpdateSettings; typedCode={TypedCode(configured)}.");
+    var firstStart = await manager.StartAsync(profile.Id);
+    Require(firstStart.Ok, $"Shared Stop before roster: stage=Start; typedCode={TypedCode(firstStart)}.");
+    var firstStop = await manager.StopAsync(profile.Id);
+    Require(firstStop.Ok, $"Shared Stop before roster: stage=Stop; typedCode={TypedCode(firstStop)}.");
     var sharedRoot = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"));
     Require(!File.Exists(Path.Combine(sharedRoot, "source.json")) &&
         (await manager.SharedWorldStatusAsync(profile.Id)).Latest is null,
@@ -3664,9 +3669,11 @@ await Check("shared Stop before first signed roster leaves setup recoverable", a
     Require(SharedWorldRosterTrust.Verify(roster) && roster.Revision == 1,
         "the first signed roster could not recover after Stop");
     File.WriteAllText(Path.Combine(profile.WorldDirectory, "world.dat"), "second stop");
-    Require((await manager.StartAsync(profile.Id)).Ok &&
-        (await manager.StopAsync(profile.Id)).Ok &&
-        (await manager.SharedWorldStatusAsync(profile.Id)).Latest is { Number: 1 },
+    var laterStart = await manager.StartAsync(profile.Id);
+    Require(laterStart.Ok, $"Shared Stop after roster: stage=Start; typedCode={TypedCode(laterStart)}.");
+    var laterStop = await manager.StopAsync(profile.Id);
+    Require(laterStop.Ok, $"Shared Stop after roster: stage=Stop; typedCode={TypedCode(laterStop)}.");
+    Require((await manager.SharedWorldStatusAsync(profile.Id)).Latest is { Number: 1 },
         "a later confirmed Stop did not publish after roster setup");
 });
 

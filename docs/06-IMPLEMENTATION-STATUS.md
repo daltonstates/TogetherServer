@@ -460,6 +460,55 @@ EXEs are unsigned, review-only, unpublished and uninstalled. Evidence is retaine
 under ignored `local-data/simplified-hosting-0da81b4/`. These bytes retain the
 failed acceptance cases above and are not a physical repair claim.
 
+The [0c0a069 run](https://github.com/daltonstates/TogetherServer/actions/runs/40418879316)
+checks source `0c0a069113cbad644bfd26ce42aa556c9d42e2b3` and finishes with 15
+successful lanes and two failures. Source/API passes all 82 feature groups with
+no skips and all eight packaged groups. Pairing passes all 32 stages (UX 3,
+loopback 11, LAN 18), including one ordinary Start per mode with the same
+session/PID consumed, scoped removal, exact receipts and cleanup. Ordinary
+Prepare takes 1,234/4,686 ms and Start 707/3,829 ms in these synthetic modes;
+these are not laptop preparation or real game-readiness measurements.
+Both automatic-sharing journeys pass all nine stages in 126,810 and 118,035 ms.
+Each Friend starts once without repeated preparation, and both initial original
+publications start successfully. The first returning-owner stage uses two Start
+requests in the existing polling test loop; the second uses one. That proves
+eventual success, not reliable single-action returning-owner acceptance. Its
+first refusal code/boundary was not retained. A late duplicate incoming copy can
+change the material fence even with the same selected version; that is a possible
+source schedule, not attribution. Product UI polling still does not issue Start.
+
+Core/rehearsal, browser, UI capture, six compatibility lanes and packaging pass.
+Desktop again retains the QuietTime notification block. Existing passes all
+1,552 UI tests, then records 113 passed core checks and one failed composite
+settings/Start/Stop assertion before the first signed roster. The assertion's
+message does not prove that Stop itself failed: the individual action results
+were discarded. Its gate summary is six passed, one failed and 20 NotRun;
+Minecraft and all later gates remain unverified for these bytes. Hosted cleanup
+terminates an orphan fixture, whose source case is unproved. The final immutable
+hash guard is NotRun after that failure; other completed lanes retain their own
+unchanged-hash checks. The old 0da81b4 all-27-gate pass remains separate evidence.
+The failed composite is now split into typed, sanitized per-action diagnostics;
+no retry, timeout, cleanup or product behavior changed. Next hosted evidence must
+identify a recurrence before attributing or claiming a repair of that failure.
+The returning-owner report now retains each existing attempt's allowlisted code,
+boundary classification, duration and anonymous run/profile-match observations.
+The retry count remains visible; no new retry was added. These evidence-only
+changes compile strictly and pass targeted formatting. Product source,
+dependencies and packaging files are unchanged from 0c0a069. The next build has
+a different revision identity and must exercise the revised diagnostics.
+
+The 0c0a069 portable is 66,217,096 bytes, SHA-256
+`5bb6ad6a19639db170816fa33c74e057e91eb9afe20e75e6cd671351665c1e92`;
+installer is 60,682,444 bytes, SHA-256
+`567fa6f66e8fd6b9e7bcb190df696b808089bed3f16829e840cc4bddf4e95331`.
+Archive/source/run, native resources, embedded assembly and assets/checksums were
+independently verified without loading or launching the app. The six installer
+checks and three wizard choices pass. All seven UI assets are byte-identical to
+the earlier four visually sampled images; fresh PNGs were not visually sampled.
+Both EXEs remain unsigned, review-only, unpublished and uninstalled. Evidence is
+under ignored `local-data/simplified-hosting-0c0a069/`. No physical repair or full
+acceptance is claimed.
+
 The owner reconfirmed the unattended target-world-only session and main world's
 stopped state. Static read-only inspection still finds one installed/running
 0.3.3.15 process with the published source/hash below. No new app was installed
