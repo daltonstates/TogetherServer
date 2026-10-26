@@ -209,17 +209,65 @@ UI tests in 109 files. The final recompiled hosting/recovery groups pass;
 unreadable publication metadata cannot project a prepared result. The 181
 focused UI checks and 57 pure fixture checks pass. The render inventory retains
 all previous 99 captures and adds nine stopped-progress captures, totaling 108;
-actual hosted capture remains pending. Strict solution compilation has zero
+all 108 now pass the unchanged-candidate hosted retest. Strict solution compilation has zero
 warnings/errors; formatting, TypeScript, lint, production bundle and desktop
 diagnostic isolation pass. One internal source-link scenario is skipped for
 this local account's missing symlink capability. The positive fake-peer late
 publication check passes: source, owner and observer select child 4 by ancestry;
 exact owner/member receipts and payloads verify while the closed terminal and
-original world/default pointer remain unchanged. Hosted acceptance is pending.
+original world/default pointer remain unchanged.
 The source regression uses generated identities and disposable files.
 No fixture, installer or full-release suite runs on this laptop. Real client
 join, recognizable saved change, new-save receipts and saved restart remain
 separate physical acceptance.
+
+The [0.3.3.14 candidate run](https://github.com/daltonstates/TogetherServer/actions/runs/40248543185)
+tests application source `774751679a61835dd532b8275283bcf4025926cd`, portable
+SHA-256 `debcc1aef87cccfdc77147e50c1ea53dad6788701ef81f61ee288c44b0377287`.
+All 27 Existing gates pass, including core checks 114/0, the required packaged
+core remote journey 14/0, Shared Worlds 11/0 with zero recovery scenarios skipped,
+Shared LiveSave transfer 5/0, Companion 46/0 and 4,102-version history catch-up.
+API/source, browser, rehearsal, all six compatibility/update lanes and packaging
+pass. The six installer checks and three wizard choices pass. Its original
+automatic-hosting, pairing and hosting-capture failures remain recorded.
+Native notification acceptance remains blocked by QuietTime: 12 required cases
+pass, one required case is blocked, one development-startup case is inapplicable;
+all 14 separate window-control cases pass. Full acceptance flags remain false.
+
+The [unchanged 0.3.3.14 retest](https://github.com/daltonstates/TogetherServer/actions/runs/40250355051)
+uses verification source `7395c214a2a48f05d6d54d165e787e416b642ee4` without
+changing product/build inputs or the packaged EXE. Both ordinary nine-stage
+hosting handoffs pass, each advancing version 2 to 3 with exact cleanup; no
+diagnostic attempt was needed. All 108 hosting captures pass with 653 screenshots,
+zero failed/skipped/layout/fatal findings, including the intentional fixture
+error states. This does not claim every screenshot was visually reviewed.
+Pairing UX 3/3 and loopback 11/11 pass. LAN passes 16 stages, fails lost-response
+cleanup with `JsonException`, and leaves the final receipt stage NotRun. Exact
+tracked process identities are exited and job cleanup is empty. The JSON boundary
+is under investigation; this run remains failed.
+
+The owner subsequently requested GitHub prerelease publication so both PCs can
+update for the physical test. The published
+[0.3.3.14 prerelease](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.14)
+is release ID `424371648`, published 2026-10-26 14:46:07 UTC. Annotated tag
+`01facce1c27db9831a54c317a1c45944cc10fc66` points to the exact application source
+above. Its portable is 66,191,617 bytes with the candidate hash above. Installer
+is 60,653,522 bytes, SHA-256
+`04a45a38cae4598e869fded35c5337e8348bf2438c809e45c630f1f482e45b8a`.
+All four public assets/checksums, version resources and tag/source were verified
+anonymously. Both EXEs remain unsigned. All 28 earlier releases/assets are
+preserved; inventory is 29 and stable/latest remains 0.3.3. Publication is for
+coordinated testing and does not accept the remaining LAN or physical tests.
+
+The existing 0.3.3.13 EXE is preserved separately. Read-only comparison on
+2026-10-26 still finds all 315 world files, both original backups, their records
+and failure history unchanged. No game is running on the laptop. Automatic app
+replacement was rejected by policy; the owner has been asked to update both PCs
+manually, keeping app data and pairing. Actual 0.3.3.14 hosting, new signed-save
+receipts on the main Host and eligible online peers, and saved restart remain
+unverified. The failed LAN JSON boundary now has narrow verification-only
+sub-operation/HTTP/content-kind/allowlisted DTO-path observations; those changes
+compile with zero warnings/errors but have not had a further hosted run.
 
 The published [0.3.3.13 prerelease](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.13)
 is release ID `423712444`, published 2026-10-25 22:57:55 UTC, annotated tag

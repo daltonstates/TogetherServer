@@ -14,7 +14,10 @@ internal static partial class CoreRemoteJourney
         IReadOnlyList<PairingLabOperation>? Operations = null);
     private sealed record PairingLabOperation(string Id, string State, long StartedMs, long DurationMs, long TimeoutMs,
         string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false,
-        int? HttpStatus = null);
+        int? HttpStatus = null, string? HttpContentKind = null, string? JsonExceptionCategory = null,
+        string? JsonPath = null);
+    private sealed record PairingLabHttpBoundary(int? Status, string? ContentKind,
+        string? JsonExceptionCategory = null, string? JsonPath = null);
     private sealed record PairingLabDevices(IReadOnlyList<DeviceView> Devices);
     private sealed record PairingLabTransferObservation(int Attempt, long CandidateSyncMs, long ObserverSyncMs,
         bool CandidateHeadAdvertised, bool CandidateClaimsPayload, bool ObserverReceiveConsented, bool ObserverCanReceive,
@@ -114,6 +117,7 @@ internal static partial class CoreRemoteJourney
         var transferObservations = new List<PairingLabTransferObservation>();
         var guidedOperations = new List<PairingLabOperation>();
         var restartOperations = new List<PairingLabOperation>();
+        var cleanupFaultOperations = new List<PairingLabOperation>();
         var hostedCopy = false;
         string? failureCode = null;
         string? activeStage = null;
@@ -151,6 +155,7 @@ internal static partial class CoreRemoteJourney
         {
             "guided-hosting" => guidedOperations.ToArray(),
             "new-host-restart-reconnect" => restartOperations.ToArray(),
+            "lost-response-cleanup" => cleanupFaultOperations.ToArray(),
             _ => null
         };
 
@@ -926,14 +931,31 @@ internal static partial class CoreRemoteJourney
                 }
                 await Stage("lost-response-cleanup", async () =>
                 {
-                    var before = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
+                    var operationClock = Stopwatch.StartNew();
+                    Task<T> ObserveAsync<T>(string id, Func<Task<T>> action, long timeoutMs = 0) =>
+                        ObserveLabOperationAsync("CleanupFault", id, operationClock, cleanupFaultOperations, timeoutMs, action);
+                    Task<T> GetAsync<T>(string id, HttpClient client, string path) =>
+                        ObserveLabHttpAsync<T>(id, client, HttpMethod.Get, path, null, operationClock, cleanupFaultOperations);
+                    Task<TResponse> PostAsync<TRequest, TResponse>(string id, HttpClient client, string path, TRequest request) =>
+                        ObserveLabHttpAsync<TResponse>(id, client, HttpMethod.Post, path, JsonContent.Create(request, options: Json),
+                            operationClock, cleanupFaultOperations);
+                    async Task SyncAsync(string id, HttpClient client)
+                    {
+                        LabRequire(groupKey is not null, "SignedWorldRootMissing");
+                        using var syncClient = LocalClient(client.BaseAddress!.Port);
+                        syncClient.Timeout = TimeSpan.FromSeconds(65);
+                        var result = await PostAsync<object, WorldPeerActionResult>(id, syncClient,
+                            $"/api/local/world-peers/{groupKey}/sync", new { });
+                        LabRequire(result.Ok && result.Code == "WorldPeersChecked", "PeerSyncRequestRejected");
+                    }
+                    var before = await GetAsync<HostSnapshot>("ReadOwnerBefore", owner, "/api/local/snapshot");
                     LabRequire(before.Runs.All(run => run.State == "Offline" && run.ProcessId is null && run.RunOperationId is null),
                         "CleanupFaultExistingManagedRun");
                     var published = lanAddress is null ? null : Path.Combine(friendData, "shared-world-separate-published",
                         profile.Id.ToString("N"), prepared!.BranchHash!);
                     var sourceVersion = published is null ?
-                        (await PairingLabGetAsync<SharedWorldStatus>(owner, $"/api/local/profiles/{profile.Id}/shared-world")).Latest :
-                        FriendLink.ReadReceivedLatest(published);
+                        (await GetAsync<SharedWorldStatus>("ReadCanonicalSource", owner, $"/api/local/profiles/{profile.Id}/shared-world")).Latest :
+                        await ObserveAsync("ReadCandidateSource", () => Task.FromResult(FriendLink.ReadReceivedLatest(published)));
                     LabRequire(sourceVersion is not null && SharedWorldService.VerifySignature(sourceVersion) &&
                         sourceVersion.ProfileId == profile.Id && sourceVersion.GroupId == signedRoster!.GroupId &&
                         (published is null || preparedBranch is not null && SharedWorldSeparateCopyStore.Verify(preparedBranch) &&
@@ -950,24 +972,28 @@ internal static partial class CoreRemoteJourney
                         // LatestSaveChanged refusal must not be treated as a
                         // failed cleanup mechanism or retried as a Start action.
                         var received = Path.Combine(hostData, "received-shared-branches", groupKey!, prepared!.BranchHash!);
-                        await PairingLabWaitAsync(async () =>
+                        await ObserveAsync("FinalSaveConvergence", async () =>
                         {
-                            await SyncPeersAsync(first);
-                            await SyncPeersAsync(owner);
-                            var current = (await PairingLabGetAsync<WorldPeerGroupView[]>(owner, "/api/local/world-peers"))
-                                .Single(item => item.GroupKey == groupKey);
-                            return FriendLink.ReadReceivedLatest(received)?.VersionHash == sourceVersion.VersionHash &&
-                                current.State.Branches.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
-                                    item.Branch.BranchHash == prepared.BranchHash && item.Branch.HeadVersionHash == sourceVersion.VersionHash) &&
-                                current.State.Sessions.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
-                                    item.Session.SessionId == candidateSessionId && item.Session.State == "Stopped" &&
-                                    item.Session.HeadVersionHash == sourceVersion.VersionHash);
-                        }, "CleanupFaultFinalSaveNotConverged", TimeSpan.FromSeconds(90));
+                            await PairingLabWaitAsync(async () =>
+                            {
+                                await SyncAsync("SyncFinalCandidate", first);
+                                await SyncAsync("SyncFinalOwner", owner);
+                                var current = (await GetAsync<WorldPeerGroupView[]>("ReadFinalInventory", owner, "/api/local/world-peers"))
+                                    .Single(item => item.GroupKey == groupKey);
+                                return FriendLink.ReadReceivedLatest(received)?.VersionHash == sourceVersion.VersionHash &&
+                                    current.State.Branches.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                        item.Branch.BranchHash == prepared.BranchHash && item.Branch.HeadVersionHash == sourceVersion.VersionHash) &&
+                                    current.State.Sessions.Any(item => item.DeviceId == deviceA && item.Authorized && !item.HasConflict &&
+                                        item.Session.SessionId == candidateSessionId && item.Session.State == "Stopped" &&
+                                        item.Session.HeadVersionHash == sourceVersion.VersionHash);
+                            }, "CleanupFaultFinalSaveNotConverged", TimeSpan.FromSeconds(90));
+                            return true;
+                        }, 90000);
                         LabRequire(SharedWorldSeparateCopyStore.VerifyReceivedBranch(received, preparedBranch!, sourceVersion),
                             "CleanupFaultFinalReceivedProofRejected");
 
                         var recovery = $"/api/local/world-peers/{groupKey}/owner-recovery";
-                        var declared = await PostAsync<object, WorldSeparateCopyResult>(owner, recovery,
+                        var declared = await PostAsync<object, WorldSeparateCopyResult>("PrepareOwnerRecovery", owner, recovery,
                             new { sourceBranchHash = prepared.BranchHash, acceptSplitWarning = true });
                         var branch = declared.Branch;
                         LabRequire(declared.Ok && branch is not null && SharedWorldSeparateCopyStore.Verify(branch) &&
@@ -981,11 +1007,11 @@ internal static partial class CoreRemoteJourney
                         cleanupProfileId = SharedWorldBranchLiveSource.LocalProfileId(branch.BranchHash);
                         var setup = new TakeoverLocalSetup(Path.GetFullPath(fixturePath), sourceVersion.PortableSetup.GameVersion,
                             sourceVersion.PortableSetup.AddOns ?? [], true, before.Settings.CompanionPort, profile.GamePort);
-                        var restored = await PostAsync<SeparateCopyHostRestoreRequest, SuccessorRestoreResult>(owner, recovery + "/restore",
+                        var restored = await PostAsync<SeparateCopyHostRestoreRequest, SuccessorRestoreResult>("RestoreOwnerRecovery", owner, recovery + "/restore",
                             new(branch.BranchHash, setup, profile.Name, profile.ServerName));
                         LabRequire(restored.Ok && restored.ProfileId == cleanupProfileId && restored.VersionHash == sourceVersion.VersionHash,
                             "CleanupFaultOwnerRestoreRejected");
-                        var finished = await PostAsync<SeparateCopyHostFinishRequest, SuccessorRestoreResult>(owner, recovery + "/finish",
+                        var finished = await PostAsync<SeparateCopyHostFinishRequest, SuccessorRestoreResult>("FinishOwnerRecovery", owner, recovery + "/finish",
                             new(branch.BranchHash, setup));
                         LabRequire(finished.Ok && finished.ProfileId == cleanupProfileId && finished.VersionHash == sourceVersion.VersionHash,
                             "CleanupFaultOwnerFinishRejected");
@@ -995,19 +1021,19 @@ internal static partial class CoreRemoteJourney
                         // and repeats the final in-gate fence for that Start.
                         await PairingLabWaitAsync(async () =>
                         {
-                            await SyncPeersAsync(owner);
-                            var current = (await PairingLabGetAsync<WorldPeerGroupView[]>(owner, "/api/local/world-peers"))
+                            await SyncAsync("SyncPreparedOwner", owner);
+                            var current = (await GetAsync<WorldPeerGroupView[]>("ReadPreparedOwnerInventory", owner, "/api/local/world-peers"))
                                 .Single(item => item.GroupKey == groupKey);
                             return current.State.Branches.Any(item => item.DeviceId == Guid.Empty &&
                                 item.PublicKey == signedRoster.OwnerPublicKey && item.Authorized && !item.HasConflict &&
                                 item.Branch.BranchHash == branch.BranchHash && item.Branch.BaseVersionHash == sourceVersion.VersionHash &&
                                 item.Branch.HeadVersionHash == sourceVersion.VersionHash);
                         }, "CleanupFaultOwnerPreparationNotAnnounced", TimeSpan.FromSeconds(90));
-                        var ready = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
+                        var ready = await GetAsync<HostSnapshot>("ReadOwnerPrepared", owner, "/api/local/snapshot");
                         LabRequire(ready.Runs.All(item => item.ProcessId is null && item.RunOperationId is null),
                             "CleanupFaultPreparationStartedGame");
                     }
-                    var started = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
+                    var started = await PostAsync<object, ActionResult>("StartOwner", owner, $"/api/local/profiles/{profile.Id}/start", new { });
                     // Record only the bounded fixed result code, never a response
                     // message, saved identity, credential or world path.
                     var startCode = started.Code is { Length: > 0 and <= 64 } && started.Code.All(char.IsAsciiLetterOrDigit)
@@ -1027,7 +1053,7 @@ internal static partial class CoreRemoteJourney
                             startedProfile.Id == SharedWorldBranchLiveSource.LocalProfileId(hash)), "CleanupFaultStartedProfileMismatch");
                     if (startedProfile.Id != profile.Id)
                     {
-                        var group = (await PairingLabGetAsync<WorldPeerGroupView[]>(owner, "/api/local/world-peers"))
+                        var group = (await GetAsync<WorldPeerGroupView[]>("ReadStartedOwnerInventory", owner, "/api/local/world-peers"))
                             .Single(item => item.GroupKey == groupKey);
                         LabRequire(group.SelfDeviceId == Guid.Empty && group.State.Root.ProfileId == profile.Id &&
                             group.State.Root.GroupId == signedRoster!.GroupId && group.State.Root.OwnerPublicKey == signedRoster.OwnerPublicKey &&
@@ -1036,8 +1062,8 @@ internal static partial class CoreRemoteJourney
                                 item.Branch.BaseVersionHash == sourceVersion.VersionHash && item.Branch.HeadVersionHash == sourceVersion.VersionHash),
                             "CleanupFaultContinuationVersionMismatch");
                     }
-                    var run = await WaitForFixtureIdentityAsync(launched[0],
-                        () => PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot"));
+                    var run = await ObserveAsync("WaitOwnerFixtureIdentity", () => WaitForFixtureIdentityAsync(launched[0],
+                        () => GetAsync<HostSnapshot>("ReadOwnerFixtureIdentity", owner, "/api/local/snapshot")));
                     foreach (var file in sourceVersion.Files)
                         SharedWorldService.VerifyFile(SharedWorldService.SafeChild(startedProfile.WorldDirectory, file.Path), file);
                     LabRequire(run.ProcessId is not null && run.RunOperationId is not null, "CleanupFaultFixtureIdentityMissing");
@@ -1048,12 +1074,12 @@ internal static partial class CoreRemoteJourney
                         Path.GetFullPath(fixturePath), StringComparison.OrdinalIgnoreCase), "CleanupFaultFixtureMismatch");
                     runOperations.Add(run.RunOperationId!.Value);
                     var stoppedHost = processes.Single(process => process.Role == "host" && process.Alive);
-                    await stoppedHost.StopOwnedAsync();
+                    await ObserveAsync("StopOwnerApp", async () => { await stoppedHost.StopOwnedAsync(); return true; });
                     LabRequire(!stoppedHost.Alive && !stoppedHost.IdentityReview, "CleanupFaultHostDidNotExit");
                     LabRequire(!untracked.HasExited, "CleanupFaultDidNotLeaveChildForJob");
-                    await job.StopAsync();
+                    await ObserveAsync("StopOwningJob", async () => { await job.StopAsync(); return true; });
                     using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await untracked.WaitForExitAsync(deadline.Token);
+                    await ObserveAsync("WaitUntrackedExit", async () => { await untracked.WaitForExitAsync(deadline.Token); return true; }, 5000);
                     LabRequire(untracked.HasExited && job.ActiveCount() == 0, "UntrackedFixtureSurvivedJobCleanup");
                     return null;
                 });
@@ -1258,7 +1284,8 @@ internal static partial class CoreRemoteJourney
     }
 
     private static async Task<T> ObserveLabOperationAsync<T>(string scope, string id, Stopwatch clock,
-        List<PairingLabOperation> observations, long timeoutMs, Func<Task<T>> action)
+        List<PairingLabOperation> observations, long timeoutMs, Func<Task<T>> action,
+        Func<PairingLabHttpBoundary?>? httpBoundary = null)
     {
         var startedMs = clock.ElapsedMilliseconds;
         var marker = "LOCAL_PAIRING_" + scope.ToUpperInvariant() + "_OPERATION ";
@@ -1270,6 +1297,9 @@ internal static partial class CoreRemoteJourney
             {
                 LocalHostingStatus status => status.Code,
                 ActionResult status => status.Code,
+                WorldPeerActionResult status => status.Code,
+                WorldSeparateCopyResult status => status.Code,
+                SuccessorRestoreResult status => status.Code,
                 FriendView status => status.ConnectionCode ?? status.State,
                 JsonElement json when json.ValueKind == JsonValueKind.Object &&
                     json.TryGetProperty("code", out var field) && field.ValueKind == JsonValueKind.String => field.GetString(),
@@ -1278,28 +1308,88 @@ internal static partial class CoreRemoteJourney
             // Export only fixed codes and timing, never response bodies, paths,
             // identities, messages or raw errors. Zero means no single HTTP budget.
             if (code is not { Length: > 0 and <= 64 } || !code.All(char.IsAsciiLetterOrDigit)) code = null;
-            var observation = new PairingLabOperation(id, "Returned", startedMs, clock.ElapsedMilliseconds - startedMs, timeoutMs, code);
+            var boundary = httpBoundary?.Invoke();
+            var observation = new PairingLabOperation(id, "Returned", startedMs, clock.ElapsedMilliseconds - startedMs, timeoutMs, code,
+                HttpStatus: boundary?.Status, HttpContentKind: boundary?.ContentKind);
             lock (observations) observations.Add(observation);
             Console.WriteLine(marker + JsonSerializer.Serialize(observation, Json));
             return result;
         }
         catch (Exception error)
         {
-            int? httpStatus = error switch
+            var boundary = httpBoundary?.Invoke();
+            int? httpStatus = boundary?.Status ?? (error switch
             {
                 HttpRequestException request => (int?)request.StatusCode ?? 0,
                 PairingLabFailure failure => failure.HttpStatus,
                 _ => null
-            };
+            });
             var observation = new PairingLabOperation(id, "Failed", startedMs, clock.ElapsedMilliseconds - startedMs, timeoutMs,
                 Code: error is PairingLabFailure assertion ? assertion.Code : null,
                 ExceptionType: error.GetType().Name, InnerExceptionType: error.InnerException?.GetType().Name,
-                HttpClientTimeout: error is TaskCanceledException && error.InnerException is TimeoutException, HttpStatus: httpStatus);
+                HttpClientTimeout: error is TaskCanceledException && error.InnerException is TimeoutException, HttpStatus: httpStatus,
+                HttpContentKind: boundary?.ContentKind, JsonExceptionCategory: boundary?.JsonExceptionCategory, JsonPath: boundary?.JsonPath);
             lock (observations) observations.Add(observation);
             Console.WriteLine(marker + JsonSerializer.Serialize(observation, Json));
             throw new PairingLabFailure(scope + id + (error is TaskCanceledException ? "TimedOut" : "Failed"), httpStatus);
         }
     }
+
+    private static async Task<T> ObserveLabHttpAsync<T>(string id, HttpClient client, HttpMethod method,
+        string path, HttpContent? content, Stopwatch clock, List<PairingLabOperation> observations)
+    {
+        PairingLabHttpBoundary? boundary = null;
+        return await ObserveLabOperationAsync("CleanupFault", id, clock, observations,
+            (long)client.Timeout.TotalMilliseconds, async () =>
+            {
+                using var request = new HttpRequestMessage(method, path) { Content = content };
+                if (method != HttpMethod.Get)
+                    request.Headers.Add("Origin", client.BaseAddress!.ToString().TrimEnd('/'));
+                request.Headers.Add("X-TogetherServer-Local", "1");
+                using var response = await client.SendAsync(request);
+                var contentKind = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() switch
+                {
+                    null => "None",
+                    "application/json" => "Json",
+                    "application/problem+json" => "ProblemJson",
+                    "text/plain" => "Text",
+                    "text/html" => "Html",
+                    _ => "Other"
+                };
+                boundary = new((int)response.StatusCode, contentKind);
+                if (method == HttpMethod.Get) response.EnsureSuccessStatusCode();
+                // Preserve the ordinary helper's typed-body/assertion behavior,
+                // including typed non-success POST responses. Export no response body,
+                // arbitrary content type, exception message or requested URL.
+                try
+                {
+                    return await response.Content.ReadFromJsonAsync<T>(Json) ??
+                        throw new PairingLabFailure("LocalResponseMissing", (int)response.StatusCode);
+                }
+                catch (JsonException error)
+                {
+                    var safePath = SafeLabJsonPath(error.Path);
+                    var category = response.Content.Headers.ContentLength == 0 ? "EmptyResponse" :
+                        contentKind is not ("Json" or "ProblemJson") ? "NonJsonResponse" :
+                        safePath == "$" ? "JsonAtRoot" : safePath is "Unlisted" or "Unavailable" ?
+                        "JsonAtUnlistedField" : "JsonAtFixedField";
+                    boundary = boundary with { JsonExceptionCategory = category, JsonPath = safePath };
+                    throw;
+                }
+            }, () => boundary);
+    }
+
+    private static string SafeLabJsonPath(string? path) => path switch
+    {
+        null => "Unavailable",
+        "$" or "$.ok" or "$.code" or "$.message" or "$.branch" or "$.profileId" or "$.versionHash" or
+        "$.pendingChecks" or "$.settings" or "$.runs" or "$.branch.schema" or "$.branch.branchId" or
+        "$.branch.branchHash" or "$.branch.candidatePublicKey" or "$.branch.signature" or "$.branch.warningAccepted" or
+        "$.branch.sourceBranch" or "$.branch.offer" or "$.branch.offer.proposal" or "$.branch.offer.roster" or
+        "$.branch.offer.version" or "$.branch.offer.version.number" or "$.branch.offer.version.profileId" or
+        "$.branch.offer.version.groupId" or "$.branch.offer.version.files" => path,
+        _ => "Unlisted"
+    };
 
     private static async Task<T> PairingLabGetAsync<T>(HttpClient client, string path,
         [System.Runtime.CompilerServices.CallerLineNumber] int sourceLine = 0)
