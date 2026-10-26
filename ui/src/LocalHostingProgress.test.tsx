@@ -19,6 +19,31 @@ describe('honest hosting progress', () => {
       { completedFiles: 1 }, { completedFiles: -1, totalFiles: 3 }, { completedFiles: 4, totalFiles: 3 },
       { completedFiles: 1.5, totalFiles: 3 }, { completedFiles: 0, totalFiles: '3' }])
       expect(() => parseHostingProgress({ ...progress(), ...patch })).toThrow(/progress/)
+    for (const phaseTimings of [true, [{ phase: 'Ready', elapsedMilliseconds: 1 }],
+      [{ phase: 'Verifying', elapsedMilliseconds: -1 }], [{ phase: 'Verifying', elapsedMilliseconds: 1.5 }],
+      [{ phase: 'Starting', elapsedMilliseconds: 86400001 }],
+      [{ phase: 'Receiving', elapsedMilliseconds: 1 }, { phase: 'Receiving', elapsedMilliseconds: 2 }], Array(13).fill(null)])
+      expect(() => parseHostingProgress(progress({ phaseTimings } as Partial<HostingProgress>))).toThrow(/progress/)
+    expect(parseHostingProgress(progress({ phaseTimings: null }))).not.toBeNull()
+    expect(parseHostingProgress(progress({ phaseTimings: [{ phase: 'Receiving', elapsedMilliseconds: 1234 }] }))).not.toBeNull()
+  })
+
+  it('shows separate observed transfer, preparation, verification and launch times without claiming Ready', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(instant)
+    vi.stubGlobal('fetch', vi.fn(async () => response(progress({ state: 'Completed', phase: 'Starting', phaseTimings: [
+      { phase: 'Receiving', elapsedMilliseconds: 1230 }, { phase: 'PreparingCopy', elapsedMilliseconds: 2400 },
+      { phase: 'Verifying', elapsedMilliseconds: 3450 }, { phase: 'Starting', elapsedMilliseconds: 100 }
+    ] }))))
+    render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.getByText('Save transfer')).toBeInTheDocument()
+    expect(screen.getByText('Local save preparation')).toBeInTheDocument()
+    expect(screen.getByText('Save verification')).toBeInTheDocument()
+    expect(screen.getByText('Launch request')).toBeInTheDocument()
+    expect(screen.getByText('3.45s')).toBeInTheDocument()
+    expect(screen.getByText(/does not confirm game Ready/)).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByText('3.45s')).toBeInTheDocument()
   })
 
   it('shows measured copy bytes and file counts as preparation still awaiting verification', async () => {

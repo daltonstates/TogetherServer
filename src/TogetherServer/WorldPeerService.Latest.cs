@@ -36,6 +36,7 @@ internal sealed partial class WorldPeerService
         var phase = "PeerSync";
         try
         {
+            using var preparation = BeginHostingPreparation(root);
             WorldPeerSourceProgress.Report(progress, new("PeerSync", "Checking approved PCs for completed saves."));
             await SyncWorldAsync(root, cancellationToken);
             for (var attempt = 0; ; attempt++)

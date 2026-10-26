@@ -18,7 +18,7 @@ internal sealed class AppBackgroundTasks(
     {
         if (tasks.Length != 0) throw new InvalidOperationException("Background work is already running.");
         notificationStartedUtc = clock.GetUtcNow();
-        tasks = [Task.Run(RunFriendPollAsync), Task.Run(RunLifecycleAsync),
+        tasks = [Task.Run(RunFriendPollAsync), Task.Run(RunSharedCatchUpAsync), Task.Run(RunLifecycleAsync),
             Task.Run(RunUpdateChecksAsync), Task.Run(RunNotificationsAsync)];
     }
 
@@ -41,10 +41,23 @@ internal sealed class AppBackgroundTasks(
         {
             try
             {
-                await friend.PollAsync(); friend.ScheduleSharedCatchUp(stop.Token);
-                worldPeers?.ScheduleSync(stop.Token);
+                await friend.PollAsync();
             }
             catch (Exception ex) { DiagnosticOutput.WriteError("Friend poll failed: " + ex.GetType().Name); }
+            if (!await Delay(TimeSpan.FromSeconds(5))) break;
+        }
+    }
+
+    private async Task RunSharedCatchUpAsync()
+    {
+        while (!stop.IsCancellationRequested)
+        {
+            // Save discovery/delivery must keep running while a saved Host's
+            // heartbeat is slow or unavailable, including after a local Stop.
+            try { friend.ScheduleSharedCatchUp(stop.Token); }
+            catch (Exception ex) { DiagnosticOutput.WriteError("Shared catch-up scheduling failed: " + ex.GetType().Name); }
+            try { worldPeers?.ScheduleSync(stop.Token); }
+            catch (Exception ex) { DiagnosticOutput.WriteError("Peer scheduling failed: " + ex.GetType().Name); }
             if (!await Delay(TimeSpan.FromSeconds(5))) break;
         }
     }

@@ -17,6 +17,7 @@ internal static class LocalHostingPermissionChecks
 
     internal static async Task RunAsync(string root)
     {
+        await PassivePermissionReadsAsync(root);
         await PermissionBeforePreparationAsync(root);
         await RefreshSignedPermissionAsync(root);
         await FirstGroupDenialsAsync(root);
@@ -76,9 +77,35 @@ internal static class LocalHostingPermissionChecks
                     expected = "SharingReviewRequired";
                     break;
             }
-            var result = await fixture.Service.PermissionAsync(fixture.ProfileId);
+            var result = await fixture.Service.CheckPermissionAsync(fixture.ProfileId);
             Require(!result.Allowed && result.Code == expected && fixture.Requests == 0,
                 $"{fault} crossed the permission boundary: {result.Code}");
+            fixture.AssertNoPreparation();
+        }
+    }
+
+    private static async Task PassivePermissionReadsAsync(string root)
+    {
+        foreach (var cache in new[] { "allowed", "unknown", "revoked", "expired", "missing-key" })
+        {
+            using var fixture = new Fixture(root);
+            if (cache == "unknown") fixture.Config.SharedRosterFloors.Clear();
+            if (cache == "revoked") fixture.ReplaceMember(member => member with { Revoked = true });
+            if (cache == "expired") fixture.ReplaceMember(member => member with { AccessExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) });
+            if (cache == "missing-key") fixture.Data.DeleteProtected(fixture.KeyName);
+            fixture.Connect();
+            fixture.TransportOffline = true;
+            var before = fixture.Data.LoadProtected(fixture.RosterName)!;
+            var key = fixture.Data.LoadProtected(fixture.KeyName);
+            for (var poll = 0; poll < 3; poll++)
+            {
+                var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(result.Allowed == (cache == "allowed") && fixture.Requests == 0,
+                    $"passive {cache} permission depended on the original Host or repeated enrollment");
+            }
+            Require(fixture.Data.LoadProtected(fixture.RosterName)!.SequenceEqual(before) &&
+                (key is null ? !fixture.Data.HasProtected(fixture.KeyName) : fixture.Data.LoadProtected(fixture.KeyName)!.SequenceEqual(key)),
+                "passive permission rewrote signed history or created a signing key");
             fixture.AssertNoPreparation();
         }
     }
@@ -95,7 +122,7 @@ internal static class LocalHostingPermissionChecks
             await lifecycleGate.WaitAsync();
             try
             {
-                var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var result = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 Require(result == new LocalHostingPermission(true, "HostingAllowed",
                     "The owner allows this PC to host this server."),
                     $"{save} save/server/port/readiness setup hid an authorized hosting action");
@@ -121,7 +148,7 @@ internal static class LocalHostingPermissionChecks
             first.Data.DeleteProtected(first.KeyName);
             first.EnrollFreshIdentity = true;
             first.Connect();
-            var result = await first.Service.PermissionAsync(first.ProfileId);
+            var result = await first.Service.CheckPermissionAsync(first.ProfileId);
             Require(result.Allowed && first.Requests == 4 &&
                 first.Config.SharedRosterFloors[first.ProfileId].Signature == first.Roster.Signature,
                 $"first-time signed enrollment did not expose hosting permission: {result.Code}");
@@ -130,11 +157,11 @@ internal static class LocalHostingPermissionChecks
         using (var enabled = new Fixture(root))
         {
             enabled.ReplaceMember(member => member with { Grants = new() });
-            Require(!(await enabled.Service.PermissionAsync(enabled.ProfileId)).Allowed,
+            Require(!(await enabled.Service.CheckPermissionAsync(enabled.ProfileId)).Allowed,
                 "the unsigned local UI state granted hosting");
             enabled.AdvanceRoster(Hosting);
             enabled.Connect();
-            Require((await enabled.Service.PermissionAsync(enabled.ProfileId)).Allowed && enabled.Requests == 4 &&
+            Require((await enabled.Service.CheckPermissionAsync(enabled.ProfileId)).Allowed && enabled.Requests == 4 &&
                 enabled.Config.SharedRosterFloors[enabled.ProfileId].Revision == 2,
                 "a newly enabled owner permission remained hidden behind the older signed grant");
             enabled.AssertNoPreparation();
@@ -143,7 +170,7 @@ internal static class LocalHostingPermissionChecks
         {
             offline.Connect();
             offline.TransportOffline = true;
-            Require((await offline.Service.PermissionAsync(offline.ProfileId)).Allowed && offline.Requests == 1,
+            Require((await offline.Service.CheckPermissionAsync(offline.ProfileId)).Allowed && offline.Requests == 1,
                 "an unreachable original Host invalidated a current signed offline grant");
             offline.AssertNoPreparation();
         }
@@ -151,7 +178,7 @@ internal static class LocalHostingPermissionChecks
         {
             denied.Connect();
             denied.EnrollmentDenied = true;
-            var result = await denied.Service.PermissionAsync(denied.ProfileId);
+            var result = await denied.Service.CheckPermissionAsync(denied.ProfileId);
             Require(!result.Allowed && result.Code == "EnrollmentDenied" && denied.Requests == 1,
                 "an explicit reachable denial fell back to a cached hosting grant");
         }
@@ -159,7 +186,7 @@ internal static class LocalHostingPermissionChecks
         {
             removed.AdvanceRoster(new());
             removed.Connect();
-            var result = await removed.Service.PermissionAsync(removed.ProfileId);
+            var result = await removed.Service.CheckPermissionAsync(removed.ProfileId);
             Require(!result.Allowed && result.Code == "HostingPermissionRequired" &&
                 removed.Config.SharedRosterFloors[removed.ProfileId].Revision == 2,
                 "a newly withdrawn signed grant retained hosting permission");
@@ -183,12 +210,12 @@ internal static class LocalHostingPermissionChecks
                     _ => member with { PublicKey = fixture.Roster.OwnerPublicKey }
                 });
                 var expected = memberState == "wrong-key" ? "HostingIdentityRequired" : "HostingPermissionRequired";
-                var cached = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var cached = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 Require(!cached.Allowed && cached.Code == expected && fixture.Requests == 0 &&
                     !fixture.Config.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId),
                     $"schema {schema} cached {memberState} was hidden behind missing group approval: {cached.Code}");
                 fixture.Connect();
-                var fresh = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var fresh = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 Require(!fresh.Allowed && fresh.Code == expected && fixture.Requests == 4 &&
                     fixture.Config.SharedRosterFloors[fixture.ProfileId].Signature == fixture.Roster.Signature &&
                     fixture.Config.ConsentedSharedWorldProfiles.Count == 0,
@@ -209,7 +236,7 @@ internal static class LocalHostingPermissionChecks
             if (fault == "signature") fixture.SaveRoster(fixture.Roster with { Signature = new string('A', 88) });
             else fixture.Config.SharedRosterFloors[fixture.ProfileId] =
                 fixture.Config.SharedRosterFloors[fixture.ProfileId] with { Revision = 2 };
-            var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+            var result = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
             Require(!result.Allowed && result.Code == "SharingReviewRequired" && fixture.Requests == 0 &&
                 !fixture.Config.ApprovedSharedWorldGroups.ContainsKey(fixture.ProfileId),
                 $"an unverified {fault} became a trusted owner denial: {result.Code}");
@@ -240,7 +267,7 @@ internal static class LocalHostingPermissionChecks
                 fixture.Connect();
                 fixture.TransportOffline = !timeout;
                 fixture.TransportTimeout = timeout;
-                var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var result = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 var expected = cache == "unknown" ? "RosterUnavailable" :
                     cache == "allowed" ? "HostingAllowed" : "HostingPermissionRequired";
                 var after = fixture.Data.LoadProtected(fixture.RosterName);
@@ -267,21 +294,28 @@ internal static class LocalHostingPermissionChecks
                 fixture.EnrollmentFailureStatus = failure;
                 var unavailable = FriendLocalHostingService.WithRemedy(
                     await service.StatusAsync(fixture.ProfileId).WaitAsync(Watchdog));
-                Require(!unavailable.Ok && !unavailable.Allowed && unavailable.Code == "RosterUnavailable" &&
-                    unavailable.Steps.Single(step => step.Key == "permission").State == "Unknown" &&
-                    unavailable.Remedy?.Kind == "Review" && !unavailable.ReadyForManualStart &&
+                Require(unavailable.Allowed && fixture.Requests == 1 &&
+                    unavailable.Steps.Single(step => step.Key == "permission").State == "Ready" &&
+                    !unavailable.ReadyForManualStart &&
                     fixture.Config.SharedRosterFloors[fixture.ProfileId] == floor &&
                     fixture.Data.LoadProtected(fixture.RosterName)!.SequenceEqual(saved),
-                    $"enrollment {method} {(int)failure} became an owner denial or changed the signed cache: {unavailable.Code}");
+                    $"passive status repeated enrollment {method} {(int)failure} or lost signed permission: {unavailable.Code}");
+                var checkedPermission = await service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                Require(!checkedPermission.Allowed && checkedPermission.Code == "RosterUnavailable",
+                    "an explicit access check hid its temporary enrollment failure");
                 fixture.EnrollmentFailureStatus = null;
                 var requests = fixture.Requests;
+                Require((await service.CheckPermissionAsync(fixture.ProfileId)).Allowed,
+                    "an explicit access check did not recover");
                 var retried = await service.StatusAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 Require(retried.Allowed && retried.Steps.Single(step => step.Key == "permission").State == "Ready" &&
                     fixture.Requests >= requests + 4 && !retried.ReadyForManualStart &&
                     fixture.Config.SharedRosterFloors[fixture.ProfileId] == floor &&
                     fixture.Data.LoadProtected(fixture.RosterName)!.SequenceEqual(saved),
-                    $"enrollment {method} {(int)failure} did not recover through an explicit full status retry");
+                    $"enrollment {method} {(int)failure} did not recover through the explicit access action");
                 fixture.AdvanceRoster(new());
+                Require(!(await service.CheckPermissionAsync(fixture.ProfileId)).Allowed,
+                    "the explicit access check missed a signed withdrawal");
                 var withdrawn = FriendLocalHostingService.WithRemedy(
                     await service.StatusAsync(fixture.ProfileId).WaitAsync(Watchdog));
                 Require(!withdrawn.Allowed && withdrawn.Code == "HostingPermissionRequired" &&
@@ -298,13 +332,13 @@ internal static class LocalHostingPermissionChecks
                 fixture.EnrollmentFailureMethod = method;
                 fixture.EnrollmentFailureStatus = failure;
                 var floor = fixture.Config.SharedRosterFloors[fixture.ProfileId];
-                var result = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var result = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 Require(!result.Allowed && result.Code == (method == HttpMethod.Get ? "EnrollmentDenied" : "KeyReviewRequired") &&
                     fixture.Config.SharedRosterFloors[fixture.ProfileId] == floor,
                     $"enrollment {method} {(int)failure} stopped enforcing the existing access denial");
                 fixture.Config.KnownRevoked = true;
                 var requests = fixture.Requests;
-                var revoked = await fixture.Service.PermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
+                var revoked = await fixture.Service.CheckPermissionAsync(fixture.ProfileId).WaitAsync(Watchdog);
                 Require(!revoked.Allowed && revoked.Code == "Revoked" && fixture.Requests == requests,
                     "a transient enrollment retry bypassed known revocation");
                 fixture.AssertNoPreparation();
@@ -322,18 +356,20 @@ internal static class LocalHostingPermissionChecks
         var statusService = new FriendLocalHostingService(fixture.Data, fixture.Friends, fixture.Manager, _ => []);
         fixture.TransportOffline = true;
         var unknown = await statusService.StatusAsync(fixture.ProfileId);
-        Require(!unknown.Allowed && unknown.Code == "RosterUnavailable" &&
+        Require(!unknown.Allowed && unknown.Code == "SharingPermissionUnknown" && fixture.Requests == 1 &&
             unknown.Steps.Single(step => step.Key == "permission").State == "Unknown" && !unknown.ReadyForManualStart,
             "an unavailable first status read fabricated an owner denial");
         fixture.TransportOffline = false;
-        fixture.Disconnect();
+        Require((await statusService.CheckPermissionAsync(fixture.ProfileId)).Allowed,
+            "an explicit access check did not obtain signed permission");
         var refreshed = await statusService.StatusAsync(fixture.ProfileId);
         Require(refreshed.Allowed && refreshed.Steps.Single(step => step.Key == "permission").State == "Ready" &&
             fixture.Config.SharedRosterFloors[fixture.ProfileId].Signature == fixture.Roster.Signature &&
             !refreshed.ReadyForManualStart,
-            $"dialog Retry did not acquire current signed permission without a heartbeat or prepare: code={refreshed.Code}, allowed={refreshed.Allowed}, permission={refreshed.Steps.Single(step => step.Key == "permission").State}, floor={fixture.Config.SharedRosterFloors.GetValueOrDefault(fixture.ProfileId)?.Revision}, requests={fixture.Requests}");
+            "the explicit access check did not become visible to passive status");
         var requests = fixture.Requests;
         fixture.TransportOffline = true;
+        fixture.Disconnect();
         var retained = await statusService.StatusAsync(fixture.ProfileId);
         Require(retained.Allowed && retained.Steps.Single(step => step.Key == "permission").State == "Ready" &&
             fixture.Requests == requests && !retained.ReadyForManualStart,
@@ -341,11 +377,13 @@ internal static class LocalHostingPermissionChecks
         fixture.TransportOffline = false;
         fixture.Connect();
         fixture.AdvanceRoster(new());
+        Require(!(await statusService.CheckPermissionAsync(fixture.ProfileId)).Allowed,
+            "an explicit access check missed the new signed revocation");
         var withdrawn = await statusService.StatusAsync(fixture.ProfileId);
         Require(!withdrawn.Allowed && withdrawn.Code == "HostingPermissionRequired" &&
             withdrawn.Steps.Single(step => step.Key == "permission").State == "ActionRequired" &&
             fixture.Config.SharedRosterFloors[fixture.ProfileId].Revision == 2 && !withdrawn.ReadyForManualStart,
-            "a full status read did not enforce a freshly signed hosting withdrawal");
+            "a status read did not enforce an already learned signed hosting withdrawal");
         fixture.AssertNoPreparation();
     }
 
@@ -357,7 +395,7 @@ internal static class LocalHostingPermissionChecks
             changed.Connect();
             changed.BeforeCurrentRoster = () => Require(changed.Friends.Select(otherId).Ok,
                 "could not switch the synthetic saved Host");
-            var result = await changed.Service.PermissionAsync(changed.ProfileId);
+            var result = await changed.Service.CheckPermissionAsync(changed.ProfileId);
             Require(!result.Allowed && result.Code == "ConnectionChanged" &&
                 Field<int>(changed.Link, "retainedOperations") == 0,
                 "a permission from the previously selected Host escaped connection fencing");
@@ -366,7 +404,7 @@ internal static class LocalHostingPermissionChecks
         {
             closed.Connect();
             closed.BeforeCurrentRoster = closed.Friends.Dispose;
-            var result = await closed.Service.PermissionAsync(closed.ProfileId);
+            var result = await closed.Service.CheckPermissionAsync(closed.ProfileId);
             Require(!result.Allowed && result.Code == "ConnectionChanged" &&
                 Field<int>(closed.Link, "retainedOperations") == 0,
                 "a closing saved connection escaped the retained permission read");
@@ -377,12 +415,12 @@ internal static class LocalHostingPermissionChecks
             token.Cancel();
             try
             {
-                await cancelled.Service.PermissionAsync(cancelled.ProfileId, token.Token);
+                await cancelled.Service.CheckPermissionAsync(cancelled.ProfileId, token.Token);
                 throw new InvalidOperationException("cancelled permission read returned a result");
             }
             catch (OperationCanceledException) { }
             Require(Field<int>(cancelled.Link, "retainedOperations") == 0 &&
-                (await cancelled.Service.PermissionAsync(cancelled.ProfileId)).Allowed && cancelled.Requests == 0,
+                (await cancelled.Service.CheckPermissionAsync(cancelled.ProfileId)).Allowed && cancelled.Requests == 0,
                 "cancelled permission retained the connection or damaged its gate");
         }
     }

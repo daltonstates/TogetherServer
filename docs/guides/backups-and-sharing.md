@@ -97,7 +97,10 @@ the dialog explains it and lets you continue. Game terms remain your choice.
 
 The five hosting checks stay visible while they refresh. The check result says
 whether anything changed, when the check finished, and what to do next.
-**Refresh** checks the setup again; it does not retry a failed preparation.
+**Refresh** reads the saved setup and verified signed access; it does not
+enroll this PC again or retry a failed preparation. **Check hosting access
+again** is a separate explicit action that can verify enrollment and catch up
+signed permission when needed.
 The last hosting attempt keeps its failed step and result visible. If a check
 fails, the previous results stay visible and starting waits for a successful
 recheck. Choose **Show setup steps**
@@ -111,6 +114,13 @@ It does not run preparation again. Checking for new signed save information is
 limited to this server; it does not wait for other saved Host connections or
 repeat their save transfers. A newly learned later or conflicting save still
 requires preparation or review before Start.
+
+The original Host does not need to be online when this PC retains valid signed
+hosting permission and a complete verified save. Approved reachable peers can
+exchange signed updates and completed saves. Offline checks cannot show
+whether another PC has newer progress or is still hosting. Disconnection is
+not evidence that its game stopped. Different histories remain protected for
+review; the app does not merge or overwrite them automatically.
 
 If this PC's previous stopped progress has not been shared, the save check says
 so and offers **Share stopped progress**. Keep the server stopped. This explicit
@@ -130,7 +140,10 @@ show **Not checked** until that prerequisite is verified.
 Preparing a hosting copy can take several minutes. The app shows bytes and
 files prepared locally separately from receiving a save from another PC.
 Those counts do not prove the final copy passed verification. Preparation
-continues while measured work advances; two minutes without progress or the
+also records separate measured step times for discovery, transfer, local
+preparation and verification. Launch request time is separate from the game's
+actual Ready state.
+Preparation continues while measured work advances; two minutes without progress or the
 overall ten-minute limit cancels that attempt. Existing saves remain intact.
 After a timeout, keep the source apps open and choose **Host locally** again
 to resume preparation. Refresh alone does not resume it.

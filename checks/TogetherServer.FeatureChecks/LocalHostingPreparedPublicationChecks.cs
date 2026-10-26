@@ -142,6 +142,11 @@ internal static partial class LocalHostingChecks
             });
         });
 
+        // A stale Connected badge is not a reason to re-enroll, query a
+        // planned move, or pull again from the original Host during Start.
+        // This fixture refuses every direct original-Host network request.
+        if (fault == "none") fixture.MarkOriginalHostConnected();
+
         LocalHostingActionResult? result = null;
         var reachedDriver = false;
         var rejectedStoredHistory = false;
@@ -184,6 +189,21 @@ internal static partial class LocalHostingChecks
                 $"announcements={announcements}; observations={observations}; verifiedFiles={verifiedFiles}; " +
                 $"version={publication.Version.Number}; files={publication.Version.Files.Count}; " +
                 $"parentMatch={publication.Version.ParentHash == publication.Branch.Offer.Version.VersionHash}");
+            heldAtDriver = false;
+            var ownerResult = await new SimpleOwnerHostingService(fixture.Data, fixture.Manager, peers,
+                () => throw new InvalidOperationException("A prepared local Start must not repeat listener setup."))
+                .StartAsync(prepared.LocalProfileId.Value, default);
+            // This service maps the refusing fake driver's exception to its
+            // normal typed failure. Actual boundary entry is the attempt count
+            // and held file lease, never an inferred successful process.
+            Require(ownerResult is { Ok: false, Code: "SharedHostingReviewRequired" } && heldAtDriver && fixture.Driver.ProcessAttempts == 2 &&
+                !Directory.Exists(cacheRoot) && fixture.Data.LoadRuns().Count == 0,
+                "the Host screen did not reuse the same exact 315-file prepared publication through the common launch gate: " +
+                $"code={ownerResult.Code}; held={heldAtDriver}; " +
+                $"attempts={fixture.Driver.ProcessAttempts}; cache={Directory.Exists(cacheRoot)}");
+            using var ownerReleased = new FileStream(Path.Combine(publication.Vault, publication.Version.VersionHash,
+                SharedWorldService.PayloadDirectory, "world.dat"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            Require(ownerReleased.CanWrite, "the Host screen leaked its immutable prepared-source lease");
         }
         else
         {
@@ -200,6 +220,14 @@ internal static partial class LocalHostingChecks
             if (fault == "late-semantic-setup")
                 Require(semanticSetupRejected && result is { Code: "LocalHostingPreparationRequired" },
                     "a late semantic setup change lost its independent proof check or typed refusal");
+            if (fault is "published-file" or "missing-published" or "working-file" or "setup" or "newer" or "fork" or "consent" or "grant" or "revoked" or "expired")
+            {
+                var ownerRefused = await new SimpleOwnerHostingService(fixture.Data, fixture.Manager, peers,
+                    () => throw new InvalidOperationException("Rejected prepared Start repeated setup."))
+                    .StartAsync(prepared.LocalProfileId.Value, default);
+                Require(!ownerRefused.Ok && fixture.Driver.ProcessAttempts == 0 && !Directory.Exists(cacheRoot),
+                    "the Host screen bypassed the prepared-source guard or copied a cache: " + fault);
+            }
         }
     }
 
@@ -259,6 +287,19 @@ internal static partial class LocalHostingChecks
 
     private sealed partial class Fixture
     {
+        internal void MarkOriginalHostConnected()
+        {
+            using var connection = friends.RetainLocalHostingConnection();
+            var link = connection!.Link;
+            typeof(FriendLink).GetField("view", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .SetValue(link, link.View() with
+                {
+                    State = "Connected",
+                    Profiles = [new(ProfileId, "Generated prepared world", "Offline", null, Kind: GameKinds.Fixture)],
+                    HostCapabilities = [CompanionProtocol.SharedWorldsCapability, CompanionProtocol.SharedWorldPeersCapability]
+                });
+        }
+
         internal SharedWorldPeerRoot PublicationRoot => new(Public(owner), ProfileId, GroupId);
         internal ECDsa PreparedMemberKey => member;
         private SharedWorldRoster PreparedRoster => JsonSerializer.Deserialize<SharedWorldRoster>(

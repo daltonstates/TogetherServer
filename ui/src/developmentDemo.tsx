@@ -244,7 +244,8 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     authority: { state: 'NoTakeover', message: demoBoundary, head: null, competingHeads: [], exactManagedProcessRunning: false },
     liveSave: { available: false, message: demoBoundary } })
   const friendBase = `/api/local/friend/${ids.primary}/shared-world`
-  if (path === `${friendBase}/hosting/access` && method === 'GET') {
+  if (path === `${friendBase}/hosting/access` && method === 'GET' ||
+    path === `${friendBase}/hosting/access/check` && method === 'POST' && Object.keys(body).length === 0) {
     const { allowed, code, message } = hostingStatus(session)
     return reply({ allowed, code, message })
   }

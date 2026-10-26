@@ -13,6 +13,10 @@
 .local-hosting-elapsed { flex: none; color: var(--color-text-muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
 .local-hosting-live-progress .local-hosting-byte-progress { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .4rem .8rem; font-size: .85rem; font-variant-numeric: tabular-nums; }
 .local-hosting-phase-history { color: var(--color-text-muted); font-size: .75rem; }
+.local-hosting-phase-timings { min-inline-size: 0; font-size: .8rem; }
+.local-hosting-phase-timings dl { display: grid; gap: .4rem; margin-block: .6rem; }
+.local-hosting-phase-timings dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem 1rem; }
+.local-hosting-phase-timings dd { margin: 0; font-variant-numeric: tabular-nums; }
 .local-hosting-indeterminate { background: var(--color-border-subtle); }
 .local-hosting-indeterminate > span { display: block; inline-size: 35%; block-size: 100%; border-radius: inherit; background: var(--color-accent); animation: local-hosting-progress-pulse 1.8s ease-in-out infinite alternate; }
 @keyframes local-hosting-progress-pulse { from { transform: translateX(-25%); } to { transform: translateX(210%); } }

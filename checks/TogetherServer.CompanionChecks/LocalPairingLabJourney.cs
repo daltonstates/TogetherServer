@@ -474,6 +474,11 @@ internal static partial class CoreRemoteJourney
                     // keeping ordinary status requests on their shorter client.
                     using var prepareClient = LocalClient(friendPort);
                     prepareClient.Timeout = TimeSpan.FromSeconds(120);
+                    // This explicit user check may refresh signed membership;
+                    // ordinary access/status reads remain cached projections.
+                    var checkedPermission = await ObserveAsync("CheckAccess", prepareClient, () => PostAsync<object, LocalHostingPermission>(prepareClient,
+                        $"/api/local/friend/{profile.Id}/shared-world/hosting/access/check", new { }));
+                    LabRequire(checkedPermission.Allowed && checkedPermission.Code == "HostingAllowed", "ExplicitHostingAccessRejected");
                     prepared = await ObserveAsync("PrepareLocal", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                         new(true, true, ServerFile: Path.GetFullPath(fixturePath))));

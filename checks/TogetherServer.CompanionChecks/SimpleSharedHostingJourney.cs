@@ -152,6 +152,13 @@ internal static partial class CoreRemoteJourney
                 RequireCopy(Path.Combine(pc.Data, "received-shared-worlds", pc.Device.ToString("N"), profile.Id.ToString("N")),
                     initialVersion!, initialBytes);
             }
+            // Model the explicit access check before the user prepares hosting.
+            // The earlier automatic enrollment evidence remains separate; passive
+            // access and status reads do not refresh signed membership.
+            var checkedPermission = await PostAsync<object, LocalHostingPermission>(first,
+                $"/api/local/friend/{profile.Id}/shared-world/hosting/access/check", new { });
+            LabRequire(checkedPermission.Allowed && checkedPermission.Code == "HostingAllowed",
+                "SimpleExplicitHostingAccessRejected");
             prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
                 $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                 new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
@@ -189,11 +196,19 @@ internal static partial class CoreRemoteJourney
                 { /* Preserve the original result and record an unavailable status. */ }
                 static string FixedCode(string? value) => value is { Length: > 0 and <= 64 } && value.All(char.IsAsciiLetterOrDigit)
                     ? value : "Unavailable";
-                friendStartObservations.Add(new { attempt = friendStartAttempts, resultCode = FixedCode(result.Code),
-                    statusCode = FixedCode(observed?.Code), allowed = observed?.Allowed == true, consented = observed?.Consented == true,
-                    readyForManualStart = observed?.ReadyForManualStart == true, running = observed?.Running == true,
+                friendStartObservations.Add(new
+                {
+                    attempt = friendStartAttempts,
+                    resultCode = FixedCode(result.Code),
+                    statusCode = FixedCode(observed?.Code),
+                    allowed = observed?.Allowed == true,
+                    consented = observed?.Consented == true,
+                    readyForManualStart = observed?.ReadyForManualStart == true,
+                    running = observed?.Running == true,
                     selectedLocalMatches = observed?.LocalProfileId == preparedLocalId,
-                    selectedBranchMatches = observed?.BranchHash == preparedBranchHash, preparationRepeated });
+                    selectedBranchMatches = observed?.BranchHash == preparedBranchHash,
+                    preparationRepeated
+                });
                 LabRequire(result.Ok || result.Code == "LatestSaveChanged", "SimpleFriendStartRejected-" + result.Code);
                 repeatPreparation = !result.Ok;
                 return result.Ok;

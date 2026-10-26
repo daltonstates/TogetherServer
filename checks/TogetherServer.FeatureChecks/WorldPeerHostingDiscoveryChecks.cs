@@ -10,7 +10,7 @@ namespace TogetherServer.FeatureChecks;
 
 // Protected disposable state and fixed fake HTTPS only. No listener, process,
 // app, game, browser or production data is used by these discovery checks.
-internal static class WorldPeerHostingDiscoveryChecks
+internal static partial class WorldPeerHostingDiscoveryChecks
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -389,6 +389,7 @@ internal static class WorldPeerHostingDiscoveryChecks
         internal int ProofFailures { get; private set; }
         internal bool OnlyMetadata => operations.Count > 0 && operations.Keys.All(item => item == WorldPeerOperations.Metadata);
         internal int PayloadRequests => operations.Where(item => item.Key is WorldPeerOperations.Catalog or WorldPeerOperations.Chunk or WorldPeerOperations.Seed).Sum(item => item.Value);
+        internal int MetadataRequests => operations.GetValueOrDefault(WorldPeerOperations.Metadata);
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             var bytes = await request.Content!.ReadAsByteArrayAsync(token);

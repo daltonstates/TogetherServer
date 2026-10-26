@@ -132,7 +132,21 @@ internal static class LocalPairingLabChecks
         var id = Guid.NewGuid();
         Require(LocalPairingLabMode.AllowsRequest("POST", $"/api/local/servers/{id}/invite") &&
             LocalPairingLabMode.AllowsRequest("POST", $"/api/local/friend/{id}/shared-world/hosting/start") &&
-            LocalPairingLabMode.AllowsRequest("POST", $"/api/local/profiles/{id}/shared-world/hosting/start"), "fixed lab actions blocked");
+            LocalPairingLabMode.AllowsRequest("POST", $"/api/local/profiles/{id}/shared-world/hosting/start") &&
+            LocalPairingLabMode.AllowsRequest("POST", $"/api/local/friend/{id}/shared-world/hosting/access/check"), "fixed lab actions blocked");
+        foreach (var path in new[]
+        {
+            $"/api/local/profiles/{id}/shared-world/hosting/access/check",
+            $"/api/local/friend/{id}/shared-world/hosting/access/check/extra",
+            $"/api/local/friend/{id}/shared-world/hosting/access/check?force=true",
+            $"/api/local/friend/{id}/shared-world/hosting/access/check\n",
+            $"/api/local/friend/{new string('-', 36)}/shared-world/hosting/access/check",
+            $"/api/local/friend/{id}/shared-world/hosting/access",
+            $"/api/local/friend/{id}/shared-world/hosting/access/refresh"
+        }) Require(!LocalPairingLabMode.AllowsRequest("POST", path), "unreviewed hosting access check route admitted");
+        foreach (var method in new[] { "PUT", "DELETE", "PATCH" })
+            Require(!LocalPairingLabMode.AllowsRequest(method, $"/api/local/friend/{id}/shared-world/hosting/access/check"),
+                "hosting access check admitted an unreviewed method");
         var group = new string('A', 64);
         Require(LocalPairingLabMode.AllowsRequest("GET", "/api/local/world-peers") &&
             LocalPairingLabMode.AllowsRequest("PUT", $"/api/local/world-peers/{group}/sharing") &&
@@ -140,6 +154,25 @@ internal static class LocalPairingLabChecks
         Require(!LocalPairingLabMode.AllowsRequest("POST", $"/api/local/world-peers/{group}/sharing") &&
             !LocalPairingLabMode.AllowsRequest("PUT", $"/api/local/world-peers/{group}/connect") &&
             !LocalPairingLabMode.AllowsRequest("POST", "/api/local/world-peers/not-a-group/connect"), "noncanonical peer route admitted");
+        foreach (var suffix in new[] { "", "/restore", "/finish" })
+        {
+            var recovery = $"/api/local/world-peers/{group}/owner-recovery{suffix}";
+            Require(LocalPairingLabMode.AllowsRequest("POST", recovery), "fixed owner continuation preparation blocked");
+            foreach (var method in new[] { "GET", "PUT", "DELETE", "PATCH" })
+                Require(!LocalPairingLabMode.AllowsRequest(method, recovery), "owner continuation admitted an unreviewed method");
+        }
+        foreach (var path in new[]
+        {
+            $"/api/local/world-peers/{group}/owner-recovery/start",
+            $"/api/local/world-peers/{group}/owner-recovery/hosting/{group}",
+            $"/api/local/world-peers/{group}/owner-recovery/restore/extra",
+            $"/api/local/world-peers/{group}/owner-recovery/",
+            $"/api/local/world-peers/{group}/owner-recovery?sourceBranchHash={group}",
+            $"/api/local/world-peers/{group[..63]}/owner-recovery",
+            $"/api/local/world-peers/{group}A/owner-recovery",
+            $"/api/local/world-peers/{new string('G', 64)}/owner-recovery",
+            $"/api/companion/world-peers/{group}/owner-recovery"
+        }) Require(!LocalPairingLabMode.AllowsRequest("POST", path), "unreviewed owner continuation route admitted");
         foreach (var path in new[]
         {
             "/", "/index.html", "/favicon.svg", "/assets/index-review123.js", "/assets/index-review123.css",

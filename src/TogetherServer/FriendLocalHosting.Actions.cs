@@ -88,15 +88,18 @@ internal sealed partial class FriendLocalHostingService
     {
         LocalHostingActionResult Refused(string code, string message) => new(false, code, message);
         static LocalHostingActionResult Basic(ActionResult result) => new(result.Ok, result.Code, result.Message);
-        var access = await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken);
+        // The prepared source resolver exchanges bounded signed peer metadata.
+        // A separate original-Host enrollment is not a Start prerequisite.
+        var access = await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Review this server again.");
         if (!access.Allowed) return Refused(access.Code, access.Message);
         if (!access.Consented) return Refused("LocalConsentRequired", "Allow shared saves on this PC before hosting.");
+        using var preparation = access.Root is { } preparationRoot ? beginPreparation?.Invoke(preparationRoot) : null;
         var sourceProfileId = access.Root?.ProfileId ?? profileId;
         progress.Report("Verifying", "Repeating the prepared save, server and port checks.");
         var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken,
-            checkedAccess: access));
+            checkedAccess: access, checkRemoteHandoff: input.RequestId is not null));
         if (status.Code == StoppedProgressCode)
             return Refused(StoppedProgressCode, StoppedProgressMessage);
         if (!status.ReadyForManualStart || status.Running || status.LocalProfileId != input.LocalProfileId ||

@@ -40,6 +40,8 @@ internal sealed partial class WorldPeerService : IDisposable
     private readonly Dictionary<string, int> routePositions = new(StringComparer.Ordinal);
     private int groupPosition;
     private bool peerDisposed;
+    private Task? syncFlight;
+    private Task? membershipRefresh;
 
     // Direct, fixed-origin TLS only: no redirects, system HTTP proxy, bearer
     // credential sharing, DNS search or arbitrary caller-selected path.
@@ -649,8 +651,48 @@ internal sealed partial class WorldPeerService : IDisposable
         return member is not null && Access(group, member.DeviceId, publicKey) is not null;
     }
 
-    private async Task SyncPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken,
-        bool includePayloads = true)
+    private Task SyncPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken,
+        bool includePayloads = true, bool background = false)
+    {
+        if (!includePayloads) return SyncPeerMetadataAsync(group, route, cancellationToken);
+        var gates = ExchangeGatesFor(group.Root);
+        var routeKey = RouteKey(route);
+        lock (stateSync)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // An explicit preparation joins the same useful transfer. It does
+            // not queue another pull/seed behind that completed request. While
+            // preparing, subsequent background routes yield to that world.
+            if (gates.Transfers.TryGetValue(routeKey, out var existing))
+                return existing.Completion.WaitAsync(cancellationToken);
+            if (background && gates.Preparations > 0) return Task.CompletedTask;
+            var flight = new PeerTransferFlight();
+            gates.Transfers.Add(routeKey, flight);
+            flight.Completion = Task.Run(async () =>
+            {
+                try
+                {
+                    await gates.Transfer.WaitAsync(cancellationToken);
+                    try
+                    {
+                        await SyncPeerMetadataAsync(group, route, cancellationToken);
+                        var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
+                        await PullCatalogAsync(current, route, cancellationToken);
+                        await SeedPeerAsync(current, route, cancellationToken);
+                    }
+                    finally { gates.Transfer.Release(); }
+                }
+                finally
+                {
+                    lock (stateSync)
+                        if (gates.Transfers.GetValueOrDefault(routeKey) == flight) gates.Transfers.Remove(routeKey);
+                }
+            }, CancellationToken.None);
+            return flight.Completion.WaitAsync(cancellationToken);
+        }
+    }
+
+    private async Task SyncPeerMetadataAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken)
     {
         var metadataGate = ExchangeGatesFor(group.Root).Metadata;
         await metadataGate.WaitAsync(cancellationToken);
@@ -661,11 +703,8 @@ internal sealed partial class WorldPeerService : IDisposable
             group = await ExchangePeerMetadataAsync(group, route, cancellationToken);
         }
         finally { metadataGate.Release(); }
-        // Payload work has its own received-vault gates. It must not hold the
-        // world's metadata transaction while a prepared Start checks new heads.
-        if (!includePayloads) return;
-        await PullCatalogAsync(group, route, cancellationToken);
-        await SeedPeerAsync(group, route, cancellationToken);
+        // Payload work follows outside this transaction, so a prepared Start
+        // can check signed heads between bounded payload requests.
     }
 
     private async Task<Group> ExchangePeerMetadataAsync(Group group, SharedWorldPeerRoute route,
@@ -747,7 +786,10 @@ internal sealed partial class WorldPeerService : IDisposable
     internal Task WaitForSyncAsync(CancellationToken cancellationToken = default)
     {
         Task task;
-        lock (stateSync) task = backgroundSync ?? Task.CompletedTask;
+        lock (stateSync) task = Task.WhenAll(new[] { backgroundSync ?? Task.CompletedTask,
+            syncFlight ?? Task.CompletedTask, membershipRefresh ?? Task.CompletedTask }
+            .Concat(worldExchangeGates.Values.SelectMany(gates => gates.Transfers.Values)
+                .Select(flight => flight.Completion)));
         return task.WaitAsync(cancellationToken);
     }
 
@@ -755,102 +797,161 @@ internal sealed partial class WorldPeerService : IDisposable
     // four groups the background round-robin happens to visit this pass.
     private async Task SyncWorldAsync(SharedWorldPeerRoot root, CancellationToken cancellationToken)
     {
-        await refreshGate.WaitAsync(cancellationToken);
-        try
+        var group = Find(root.GroupKey);
+        if (group is null || group.Root != root) return;
+        ObjectDisposedException.ThrowIf(peerDisposed, this);
+        // Registration runs at startup and in the background. An exact
+        // known world uses its signed membership and current peer roster
+        // handshake instead of waiting for every saved Host connection.
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(30));
+        using var key = RetainedLocalKey(group);
+        if (key is null) return;
+        var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        if (KnownRosterRevision(group) >= group.Roster.Revision && Access(group, group.DeviceId, publicKey) is not null)
+        {
+            var advertisement = await BuildAdvertisementAsync(group, bounded.Token);
+            Store(group).Publish(group.DeviceId, key, advertisement.Routes, advertisement.Sessions,
+                advertisement.Branches, advertisement.AvailableVersionHashes);
+        }
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        // A first reachable peer can teach this PC another member's route.
+        // Recompute after every request while bounding all network work.
+        for (var attempt = 0; attempt < SharedWorldPeerStore.MaximumPeers && !bounded.IsCancellationRequested; attempt++)
+        {
+            group = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
+            var peers = Store(group).Project().Peers.Where(peer => peer.Authorized && !peer.HasConflict && peer.PublicKey != publicKey)
+                .SelectMany(peer => peer.Routes);
+            var route = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
+                .GroupBy(RouteKey).Select(routes => routes.First()).FirstOrDefault(route => visited.Add(RouteKey(route)));
+            if (route is null) break;
+            try { await SyncPeerAsync(group, route, bounded.Token); }
+            catch (Exception error) when (PeerFailure(error) || error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+            { SetPeerWarning(root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept."); }
+        }
+    }
+
+    internal Task SyncNowAsync(CancellationToken cancellationToken)
+    {
+        lock (stateSync)
         {
             ObjectDisposedException.ThrowIf(peerDisposed, this);
-            await RefreshMembershipsAsync(true, cancellationToken);
-            var group = Find(root.GroupKey);
-            if (group is null || group.Root != root) return;
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            bounded.CancelAfter(TimeSpan.FromSeconds(30));
+            cancellationToken.ThrowIfCancellationRequested();
+            if (syncFlight is not { IsCompleted: false })
+                syncFlight = Task.Run(() => SyncNowCoreAsync(cancellationToken), CancellationToken.None);
+            // A joining caller can cancel its own wait without canceling the
+            // already running pass owned by the original caller/shutdown.
+            return syncFlight.WaitAsync(cancellationToken);
+        }
+    }
+
+    private async Task SyncNowCoreAsync(CancellationToken cancellationToken)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(45));
+        Task registration;
+        lock (stateSync)
+        {
+            if (membershipRefresh is not { IsCompleted: false })
+                membershipRefresh = Task.Run(() => RefreshScheduledMembershipsAsync(cancellationToken), CancellationToken.None);
+            registration = membershipRefresh;
+        }
+        // Existing worlds exchange against their signed registry immediately.
+        // A slow original-Host poll/roster refresh cannot hold their delivery.
+        // A new empty registry still needs its first verified registration.
+        if (Groups().Length == 0) await registration.WaitAsync(bounded.Token);
+        Group[] selected;
+        Group[] known;
+        lock (stateSync)
+        {
+            var groups = Groups();
+            if (groups.Length == 0) return;
+            known = groups;
+            selected = Enumerable.Range(0, Math.Min(4, groups.Length))
+                .Select(index => groups[(groupPosition + index) % groups.Length]).ToArray();
+            groupPosition = (groupPosition + selected.Length) % groups.Length;
+        }
+        foreach (var initial in selected)
+        {
+            if (bounded.IsCancellationRequested) break;
+            await SyncScheduledGroupAsync(initial, bounded.Token, cancellationToken);
+        }
+        await registration;
+        // Registration may rebind a retained world to a freshly paired member
+        // while its old identity is being refused. Finish that explicit sync
+        // with the new signed membership, without replaying unchanged groups.
+        // One bounded follow-up also covers newly registered worlds.
+        var changed = Groups().Where(current =>
+            !known.Any(before => before.Root == current.Root) ||
+            selected.Any(before => before.Root == current.Root && !SameSyncMembership(before, current)))
+            .Take(4).ToArray();
+        foreach (var current in changed)
+        {
+            if (bounded.IsCancellationRequested) break;
+            await SyncScheduledGroupAsync(current, bounded.Token, cancellationToken);
+        }
+    }
+
+    private static bool SameSyncMembership(Group before, Group after) =>
+        before.Root == after.Root && before.DeviceId == after.DeviceId &&
+        before.Roster.Signature == after.Roster.Signature && before.ReceiveConsented == after.ReceiveConsented &&
+        before.SharingEnabled == after.SharingEnabled && before.Bootstrap == after.Bootstrap;
+
+    private async Task SyncScheduledGroupAsync(Group group, CancellationToken budget, CancellationToken caller)
+    {
+        try
+        {
             using var key = RetainedLocalKey(group);
             if (key is null) return;
             var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
             if (KnownRosterRevision(group) >= group.Roster.Revision && Access(group, group.DeviceId, publicKey) is not null)
             {
-                var advertisement = await BuildAdvertisementAsync(group, bounded.Token);
+                var advertisement = await BuildAdvertisementAsync(group, budget);
                 Store(group).Publish(group.DeviceId, key, advertisement.Routes, advertisement.Sessions,
                     advertisement.Branches, advertisement.AvailableVersionHashes);
             }
-            var visited = new HashSet<string>(StringComparer.Ordinal);
-            // A first reachable peer can teach this PC another member's route.
-            // Recompute after every request while bounding all network work.
-            for (var attempt = 0; attempt < SharedWorldPeerStore.MaximumPeers && !bounded.IsCancellationRequested; attempt++)
+            var peers = Store(group).Project().Peers.Where(value => value.Authorized && !value.HasConflict && value.PublicKey != publicKey)
+                .SelectMany(value => value.Routes);
+            var routes = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
+                .GroupBy(RouteKey).Select(values => values.First()).Take(SharedWorldPeerStore.MaximumPeers).ToArray();
+            if (routes.Length == 0) return;
+            var start = routePositions.GetValueOrDefault(group.Root.GroupKey) % routes.Length;
+            routePositions[group.Root.GroupKey] = (start + Math.Min(2, routes.Length)) % routes.Length;
+            SetPeerWarning(group.Root.GroupKey, null);
+            for (var index = 0; index < Math.Min(2, routes.Length); index++)
             {
-                group = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
-                var peers = Store(group).Project().Peers.Where(peer => peer.Authorized && !peer.HasConflict && peer.PublicKey != publicKey)
-                    .SelectMany(peer => peer.Routes);
-                var route = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
-                    .GroupBy(RouteKey).Select(routes => routes.First()).FirstOrDefault(route => visited.Add(RouteKey(route)));
-                if (route is null) break;
-                try { await SyncPeerAsync(group, route, bounded.Token); }
-                catch (Exception error) when (PeerFailure(error) || error is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-                { SetPeerWarning(root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept."); }
-            }
-        }
-        finally { refreshGate.Release(); }
-    }
-
-    internal async Task SyncNowAsync(CancellationToken cancellationToken)
-    {
-        await refreshGate.WaitAsync(cancellationToken);
-        try
-        {
-            ObjectDisposedException.ThrowIf(peerDisposed, this);
-            await RefreshMembershipsAsync(true, cancellationToken);
-            var groups = Groups();
-            if (groups.Length == 0) return;
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            bounded.CancelAfter(TimeSpan.FromSeconds(45));
-            var selected = Enumerable.Range(0, Math.Min(4, groups.Length))
-                .Select(index => groups[(groupPosition + index) % groups.Length]).ToArray();
-            groupPosition = (groupPosition + selected.Length) % groups.Length;
-            foreach (var initial in selected)
-            {
-                if (bounded.IsCancellationRequested) break;
-                var group = initial;
+                if (budget.IsCancellationRequested) break;
+                var route = routes[(start + index) % routes.Length];
                 try
                 {
-                    using var key = RetainedLocalKey(group);
-                    if (key is null) continue;
-                    var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
-                    if (KnownRosterRevision(group) >= group.Roster.Revision && Access(group, group.DeviceId, publicKey) is not null)
-                    {
-                        var advertisement = await BuildAdvertisementAsync(group, bounded.Token);
-                        Store(group).Publish(group.DeviceId, key, advertisement.Routes, advertisement.Sessions,
-                            advertisement.Branches, advertisement.AvailableVersionHashes);
-                    }
-                    var peers = Store(group).Project().Peers.Where(value => value.Authorized && !value.HasConflict && value.PublicKey != publicKey)
-                        .SelectMany(value => value.Routes);
-                    var routes = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
-                        .GroupBy(RouteKey).Select(values => values.First()).Take(SharedWorldPeerStore.MaximumPeers).ToArray();
-                    if (routes.Length == 0) continue;
-                    var start = routePositions.GetValueOrDefault(group.Root.GroupKey) % routes.Length;
-                    routePositions[group.Root.GroupKey] = (start + Math.Min(2, routes.Length)) % routes.Length;
-                    SetPeerWarning(group.Root.GroupKey, null);
-                    for (var index = 0; index < Math.Min(2, routes.Length); index++)
-                    {
-                        if (bounded.IsCancellationRequested) break;
-                        var route = routes[(start + index) % routes.Length];
-                        try
-                        {
-                            await SyncPeerAsync(group, route, bounded.Token);
-                            group = Find(group.Root.GroupKey) ?? group;
-                        }
-                        catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-                        {
-                            var peer = Store(group).Project().Peers.SingleOrDefault(value => value.Routes.Contains(route));
-                            if (peer is not null) Store(group).RecordSync(peer.DeviceId, peer.PublicKey, false);
-                            SetPeerWarning(group.Root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept.");
-                        }
-                    }
+                    await SyncPeerAsync(group, route, budget, background: true);
+                    group = Find(group.Root.GroupKey) ?? group;
                 }
-                catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-                { SetPeerWarning(group.Root.GroupKey, "This world's signed peer information needs review; existing histories were kept."); }
+                catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
+                {
+                    var peer = Store(group).Project().Peers.SingleOrDefault(value => value.Routes.Contains(route));
+                    if (peer is not null) Store(group).RecordSync(peer.DeviceId, peer.PublicKey, false);
+                    SetPeerWarning(group.Root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept.");
+                }
             }
         }
-        finally { refreshGate.Release(); }
+        catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
+        { SetPeerWarning(group.Root.GroupKey, "This world's signed peer information needs review; existing histories were kept."); }
+    }
+
+    private async Task RefreshScheduledMembershipsAsync(CancellationToken cancellationToken)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(15));
+        try
+        {
+            await refreshGate.WaitAsync(bounded.Token);
+            try { await RefreshMembershipsAsync(true, bounded.Token); }
+            finally { refreshGate.Release(); }
+        }
+        catch (OperationCanceledException) when (bounded.IsCancellationRequested) { }
+        catch (Exception error) when (PeerFailure(error))
+        { /* Retain the verified registry; the next bounded refresh retries. */ }
     }
 
     public void Dispose()

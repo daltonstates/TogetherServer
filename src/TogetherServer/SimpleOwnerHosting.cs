@@ -2,8 +2,9 @@ using System.Security.Cryptography;
 
 namespace TogetherServer;
 
-// The ordinary Host Start button follows the same verified continuation as a
-// Friend. It prepares fresh managed storage and leaves the original world intact.
+// Host and Join consume the same held proof for an existing continuation.
+// Adopting different completed progress prepares fresh managed storage and
+// leaves the original world intact.
 internal sealed class SimpleOwnerHostingService(LocalData data, HostManager manager,
     WorldPeerService peers, Func<Task> synchronizeListener)
 {
@@ -19,28 +20,38 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             var sourceId = requested.SeparateCopySourceProfileId ?? requested.Id;
             var original = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == sourceId &&
                 item.SeparateCopySourceProfileId is null);
-            if (original is null || !original.SharedSavesEnabled)
+            if (requested.SeparateCopyBranchHash is { } directBranch)
             {
-                if (requested.SeparateCopyBranchHash is not { } directBranch)
-                    return await manager.StartAsync(profileId, cancellationToken);
                 var retainedBranch = new SharedWorldSeparateCopyStore(data).Read(sourceId)
                     .SingleOrDefault(item => item.BranchHash == directBranch);
                 if (retainedBranch is null)
                     return await Refused("SharedHostingReviewRequired", "Check this server's signed save before hosting.");
                 var retainedRoot = new SharedWorldPeerRoot(retainedBranch.Offer.Roster.OwnerPublicKey,
                     sourceId, retainedBranch.Offer.Roster.GroupId);
-                var newest = await peers.ResolveLatestRecoverySourceAsync(retainedRoot, cancellationToken);
+                using var preparation = peers.BeginHostingPreparation(retainedRoot);
+                var newest = await peers.ResolveLatestPreparedStartSourceAsync(retainedRoot, profileId, directBranch, cancellationToken);
                 if (!newest.Ok || newest.Source is null) return await Refused(newest.Code, newest.Message);
+                using var heldSource = newest.Source;
+                void RequireScope()
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    heldSource.RequireCurrent(data, retainedRoot, profileId, directBranch, cancellationToken);
+                }
+                RequireScope();
                 var current = await manager.VerifiedLocalContinuationAsync(sourceId, profileId, cancellationToken);
+                RequireScope();
                 if (current?.VersionHash != newest.Source.Descriptor.Version.VersionHash)
                     return await Refused("LatestSaveChanged", "A newer save is available. Use Host locally on the joined server to continue from it.");
-                await manager.RecordHostingObservationAsync(profileId, newest, cancellationToken);
+                await manager.RecordHostingObservationAsync(profileId, newest, RequireScope, cancellationToken);
                 return await manager.StartSeparateCopyAsync(profileId, directBranch, cancellationToken);
             }
+            if (original is null || !original.SharedSavesEnabled)
+                return await manager.StartAsync(profileId, cancellationToken);
             var roster = await manager.PeerPublishedRosterAsync(sourceId);
             if (roster is null)
                 return await Refused("SharedHostingReviewRequired", "This server's sharing permission needs review before hosting.");
             var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, sourceId, roster.GroupId);
+            using var ownerPreparation = peers.BeginHostingPreparation(root);
             var originalVersion = await manager.PeerPublishedVersionAsync(root);
             var latest = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken);
             if (!latest.Ok || latest.Source is null)

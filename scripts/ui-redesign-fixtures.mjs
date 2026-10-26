@@ -540,7 +540,13 @@ export function routeFixture(state, request) {
       p.sharedSavesEnabled = body.enabled;
       return reply(result({ code: 'SharedHostingSaved', message: 'Friends can host this synthetic server.' }));
     }
-    if (!host && suffix === 'shared-world/hosting/access' && method === 'GET') {
+    if (suffix === 'shared-world/hosting/access' || suffix === 'shared-world/hosting/access/check') {
+      const explicit = suffix.endsWith('/check');
+      if (host || url.search || !/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/iu.test(id) ||
+          !state.friend.profiles.some(profile => profile.id === id) || method !== (explicit ? 'POST' : 'GET') ||
+          (explicit ? request.body == null || !body || typeof body !== 'object' || Array.isArray(body) ||
+            Object.keys(body).length !== 0 || typeof request.body === 'string' && new TextEncoder().encode(request.body).length > 64
+            : request.body != null)) return null;
       if (state.simpleHosting) return reply(simpleHostingPermission(state, boundary));
       const allowed = !!state.hostingRemedy;
       return reply({ allowed, code: allowed ? 'HostingAllowed' : 'HostingPermissionRequired', message: boundary });
@@ -554,7 +560,10 @@ export function routeFixture(state, request) {
       return reply({ phase: state.hostingProgress, state: 'Working',
         message: receiving ? 'Receiving the completed synthetic save.' : 'Checking every received synthetic file against its signed hash.',
         startedUtc: fixtureNow, updatedUtc: fixtureNow, receivedBytes: receiving ? receivedBytes : 4194304,
-        totalBytes: 4194304, percent: receiving ? receivedBytes / 4194304 * 100 : null });
+        totalBytes: 4194304, percent: receiving ? receivedBytes / 4194304 * 100 : null,
+        phaseTimings: receiving ? [{ phase: 'PeerSync', elapsedMilliseconds: 500 }, { phase: 'Receiving', elapsedMilliseconds: 1250 }] :
+          [{ phase: 'Receiving', elapsedMilliseconds: 1250 }, { phase: 'PreparingCopy', elapsedMilliseconds: 2500 },
+            { phase: 'Verifying', elapsedMilliseconds: 3750 }] });
     }
     if (state.simpleHosting && !host && suffix === 'shared-world/hosting' && method === 'GET') {
       if (state.simpleHostingReadFailure) return unavailable('Hosting automatic checks');

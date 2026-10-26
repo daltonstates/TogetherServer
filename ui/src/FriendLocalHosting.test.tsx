@@ -733,7 +733,7 @@ it.each([
   expect(flight.open).not.toHaveBeenCalled()
 })
 
-it.each(['network', 'http', 'malformed'] as const)('retries %s permission failures with only a fresh access read', async failure => {
+it.each(['network', 'http', 'malformed'] as const)('checks %s permission failures only on the explicit access action', async failure => {
   let accessReads = 0
   const calls: { url: string; method?: string; headers?: HeadersInit }[] = []
   const open = vi.fn()
@@ -753,8 +753,11 @@ it.each(['network', 'http', 'malformed'] as const)('retries %s permission failur
   expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
   expect(screen.queryByRole('status', { name: 'Hosting access' })).not.toBeInTheDocument()
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  expect(calls).toEqual(Array.from({ length: 2 }, () => ({ url: `${base}/hosting/access`, method: undefined,
-    headers: { 'X-TogetherServer-Local': '1' } })))
+  expect(calls).toEqual([
+    { url: `${base}/hosting/access`, method: undefined, headers: { 'X-TogetherServer-Local': '1' } },
+    { url: `${base}/hosting/access/check`, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TogetherServer-Local': '1' } }
+  ])
   expect(open).not.toHaveBeenCalled()
 })
 
@@ -824,7 +827,7 @@ it('keeps a retry result when a timed-out access read returns allowed later', as
   expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(accessReads).toBe(2)
-  expect(writes).toEqual([])
+  expect(writes).toEqual([`${base}/hosting/access/check`])
 })
 
 it.each(['profile', 'connection'] as const)('cancels a manual access retry when the selected %s changes', async change => {
@@ -856,9 +859,27 @@ it.each(['profile', 'connection'] as const)('cancels a manual access retry when 
   expect(screen.getByRole('status', { name: 'Hosting access' })).toHaveTextContent('This server is not shared with this PC.')
   expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting/access`,
+  expect(calls).toEqual([`${base}/hosting/access`, `${base}/hosting/access/check`,
     `/api/local/friend/${nextProfile}/shared-world/hosting/access`])
-  expect(writes).toEqual([])
+  expect(writes).toEqual([`${base}/hosting/access/check`])
+})
+
+it('returns to read-only permission polling after one explicit access check', async () => {
+  vi.useFakeTimers()
+  const calls: { url: string; method?: string; body?: BodyInit | null }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method, body: init?.body })
+    return response({ allowed: false, code: 'SharingPermissionUnknown', message: 'Check signed permission.' })
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Check hosting access again' }))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(20001) })
+  expect(calls.map(call => call.method)).toEqual([undefined, 'POST', undefined, undefined])
+  expect(calls.filter(call => call.method)).toEqual([{ url: `${base}/hosting/access/check`, method: 'POST', body: '{}' }])
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
 })
 
 it.each(['unavailable', 'blocked'] as const)('keeps hosting access hidden and cancels its lookup when %s', async guard => {

@@ -61,8 +61,39 @@ internal sealed partial class WorldPeerService
     {
         internal SemaphoreSlim Metadata { get; } = new(1, 1);
         internal SemaphoreSlim Wire { get; } = new(1, 1);
+        internal SemaphoreSlim Transfer { get; } = new(1, 1);
+        internal Dictionary<string, PeerTransferFlight> Transfers { get; } = new(StringComparer.Ordinal);
+        internal int Preparations { get; set; }
+    }
+    private sealed class PeerTransferFlight
+    {
+        internal Task Completion { get; set; } = Task.CompletedTask;
+    }
+    private sealed class HostingPreparationScope(WorldPeerService owner, WorldExchangeGates? gates) : IDisposable
+    {
+        private int disposed;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) != 0 || gates is null) return;
+            lock (owner.stateSync) gates.Preparations--;
+        }
     }
     private readonly Dictionary<string, WorldExchangeGates> worldExchangeGates = new(StringComparer.Ordinal);
+
+    // A counter lease gives explicit local work priority without holding a
+    // semaphore through file verification, restoration, or setup. It grants no
+    // membership/hosting authority, and nested operation/source scopes are safe.
+    internal IDisposable BeginHostingPreparation(SharedWorldPeerRoot root)
+    {
+        lock (stateSync)
+        {
+            var group = Find(root.GroupKey);
+            if (group is null || group.Root != root) return new HostingPreparationScope(this, null);
+            var gates = ExchangeGatesFor(root);
+            gates.Preparations++;
+            return new HostingPreparationScope(this, gates);
+        }
+    }
 
     private WorldExchangeGates ExchangeGatesFor(SharedWorldPeerRoot root)
     {

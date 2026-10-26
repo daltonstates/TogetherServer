@@ -1,5 +1,17 @@
 # Product scope: TogetherServer v1
 
+The 2026-10-26 direction uses one local startup pipeline for original and
+shared worlds. Sharing supplies valid signed hosting permission, an exact
+complete verified local save and relevant membership/history/session records.
+The original Host is not a required online participant after enrollment.
+Offline permission remains subject to its signed expiration and every learned
+revocation; a prior successful Start grants no permission. Offline discovery
+cannot establish that nobody else is hosting or has newer progress. Preserve
+competing histories for review. Refresh reads state; explicit operations own
+preparation, enrollment, transfers and Start. Expensive installation checks may
+be reused only while their relevant content/setup inputs match; process
+identity, readiness and trusted fresh occupancy are observed on every run.
+
 The 2026-10-21 shared-hosting direction replaces user-managed save grants,
 forwarding and Host selection with one **Allow friends to host this server**
 setting and a permitted Friend's **Host locally** action. Receiving and

@@ -176,8 +176,12 @@ internal sealed class LocalPairingLabMode
             "/api/local/required-setup/profile-name/complete" or "/api/local/ui-drafts/read" or "/api/local/ui-drafts/clear" ||
             Regex.IsMatch(path, @"^/api/local/(mode/(host|friend)|servers/[0-9a-fA-F-]{36}/invite(/current)?|devices/[0-9a-fA-F-]{36}/(approve|revoke)|friend/connections/[0-9a-fA-F-]{36}/select)$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase) ||
             Regex.IsMatch(path, @"^/api/local/friend/connections/[0-9a-fA-F-]{36}/servers/[0-9a-fA-F-]{36}/chat/(sync|messages)$", RegexOptions.CultureInvariant) ||
+            Regex.IsMatch(path, @"^/api/local/friend/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/shared-world/hosting/access/check\z", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/profiles/[0-9a-fA-F-]{36}/(start|stop|health|chat/messages|backups/manual|shared-world/hosting/start)$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/friend/[0-9a-fA-F-]{36}/(start|stop|chat/(sync|messages)|shared-world/(pull|check|hosting(/(prepare|start))?|recovery/separate(/(restore|finish|start))?)|game-password/reveal)$", RegexOptions.CultureInvariant) ||
+            // The lost-response cleanup journey prepares the original owner's
+            // fresh continuation before using the ordinary guarded profile Start.
+            Regex.IsMatch(path, @"^/api/local/world-peers/[0-9a-fA-F]{64}/owner-recovery(/(restore|finish))?$", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(path, @"^/api/local/world-peers/[0-9a-fA-F]{64}/(sync|connect)$", RegexOptions.CultureInvariant);
     }
 

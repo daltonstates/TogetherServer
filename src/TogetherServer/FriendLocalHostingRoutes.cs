@@ -45,7 +45,8 @@ internal static class FriendLocalHostingRoutes
             announceHosting: peers is null ? null : peers.AnnounceLocalHostingAsync,
             latestSource: peers is null ? null : peers.ResolveLatestRecoverySourceAsync,
             latestSourceProgress: peers is null ? null : peers.ResolveLatestRecoverySourceAsync,
-            preparedStartSource: peers is null ? null : peers.ResolveLatestPreparedStartSourceAsync);
+            preparedStartSource: peers is null ? null : peers.ResolveLatestPreparedStartSourceAsync,
+            beginPreparation: peers is null ? null : peers.BeginHostingPreparation);
         const string route = "/api/local/friend/{profileId:guid}/shared-world/hosting";
         app.MapGet(route + "/progress", (HttpContext context, Guid profileId) =>
         {
@@ -71,6 +72,24 @@ internal static class FriendLocalHostingRoutes
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
             { return Results.Json(FriendLocalHostingService.Unavailable("LocalHostingReviewRequired", "This PC's shared-save setup needs review. Existing saves were kept.")); }
+        });
+        app.MapPost(route + "/access/check", async (HttpContext context, Guid profileId) =>
+        {
+            if (!Fixed(context)) return Results.StatusCode(403);
+            await modeGate.WaitAsync(context.RequestAborted);
+            try
+            {
+                if (!friendMode()) return Results.Conflict(new LocalHostingPermission(false, "HostMode", "Open Join to check shared hosting access."));
+                if (unavailable()) return Results.Conflict(new LocalHostingPermission(false, "AppBusy", "Wait for the current app operation."));
+                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                    context.Request.ContentLength, 64, context.RequestAborted);
+                ValidatePublicationRequest(bytes ?? []);
+                return Results.Json(await service.CheckPermissionAsync(profileId, context.RequestAborted));
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+            { return Results.BadRequest(new LocalHostingPermission(false, "SharingReviewRequired", "This PC's saved sharing permission needs review.")); }
+            finally { modeGate.Release(); }
         });
         app.MapPost(route + "/prepare", async (HttpContext context, Guid profileId) =>
         {

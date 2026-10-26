@@ -68,7 +68,7 @@ export const simpleHostingVariants = [
 ];
 
 export async function installHostingReviewClock(page, testCase, now) {
-  const clockDriven = testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused';
+  const clockDriven = testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused' || testCase.hostingEntry === 'hidden';
   if (clockDriven) await page.clock.install({ time: now });
   return clockDriven;
 }
@@ -234,8 +234,15 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     if (!await live.locator('.local-hosting-elapsed').isVisible() || writes.length !== 1 || !writes[0].path.endsWith('/prepare') ||
         !state.requests.some(item => item.method === 'GET' && item.path.endsWith('/hosting/progress')) || state.simpleHostingStarted)
       throw new Error('Live progress needs elapsed feedback and passive progress reads during the one pending preparation');
+    const timings = live.locator('.local-hosting-phase-timings');
+    await timings.getByText('Measured step times', { exact: true }).click();
+    if (!await timings.getByText('Save transfer', { exact: true }).isVisible() ||
+        !await timings.getByText(/does not confirm game Ready/u).isVisible() ||
+        phase === 'Verifying' && (!await timings.getByText('Local save preparation', { exact: true }).isVisible() ||
+          !await timings.getByText('Save verification', { exact: true }).isVisible()))
+      throw new Error('Measured phase times must separate transfer, preparation and verification without claiming Ready');
     record.assertions.push({ liveHostingPhase: phase, realTransferBytes: phase === 'Receiving' ? [1048576, 3145728, 4194304] : null,
-      fabricatedAggregatePercent: false, progressReadOnly: true });
+      fabricatedAggregatePercent: false, progressReadOnly: true, measuredPhaseTimesExpanded: true });
   } else if (testCase.fixture?.directoryRemote) {
     const directory = page.getByRole('region', { name: 'Servers', exact: true });
     const world = directory.getByRole('button', { name: 'Open Weekend Valheim on this PC', exact: true });
@@ -301,16 +308,19 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     const permission = simpleHostingPermission(state, '');
     const access = scope.getByRole('status', { name: 'Hosting access', exact: true });
     const accessPath = `/api/local/friend/${state.friend.profiles[0]?.id}/shared-world/hosting/access`;
-    const assertHidden = async () => {
+    const checkPath = `${accessPath}/check`;
+    const assertHidden = async (expectedChecks = 0) => {
       if (!state.requests.some(item => item.method === 'GET' && item.path === accessPath) ||
         state.requests.some(item => /shared-world\/hosting(?:\/|$)/u.test(item.path) &&
-          (item.method !== 'GET' || item.path !== accessPath)) ||
+          !(item.method === 'GET' && item.path === accessPath || item.method === 'POST' && item.path === checkPath)) ||
+        state.requests.filter(item => item.method === 'POST' && item.path === checkPath).length !== expectedChecks ||
         await page.getByRole('button', { name: 'Host locally', exact: true }).count() ||
         await page.getByRole('region', { name: 'Host locally', exact: true }).count() ||
         await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() ||
-        await page.getByRole('list', { name: 'Local hosting checks', exact: true }).count() || hostingWrites(state).length ||
+        await page.getByRole('list', { name: 'Local hosting checks', exact: true }).count() ||
+        hostingWrites(state).length !== expectedChecks || state.simpleHostingPrepared || state.simpleHostingStarted ||
         state.requests.some(item => item.method === 'GET' && item.path.endsWith('/shared-world/hosting')))
-        throw new Error('Denied or unknown permission must hide the hosting launcher without opening checks or writing state');
+        throw new Error('Denied or unknown permission must hide the hosting launcher; only the clicked access check may POST, without preparation or Start');
     };
     await page.getByRole('button', { name: 'Host locally', exact: true }).waitFor({ state: 'hidden', timeout: 8000 });
     await access.waitFor({ state: 'visible', timeout: 8000 });
@@ -321,21 +331,32 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     const retry = scope.getByRole('button', { name: 'Check hosting access again', exact: true });
     const retryExpected = permission.code !== 'HostingPermissionRequired';
     if (await retry.count() !== Number(retryExpected) || retryExpected && !await retry.isEnabled())
-      throw new Error('Unknown or review-required hosting access needs an enabled read-only retry; a confirmed denial needs its explanation');
+      throw new Error('Unknown or review-required hosting access needs an enabled explicit access check; a confirmed denial needs its explanation');
     if (retryExpected) {
-      const reads = state.requests.filter(item => item.method === 'GET' && item.path === accessPath).length;
-      const retried = page.waitForResponse(response => response.url().endsWith(accessPath) &&
-        response.request().method() === 'GET' && response.ok(), { timeout: 8000 });
+      const retried = page.waitForResponse(response => response.url().endsWith(checkPath) &&
+        response.request().method() === 'POST' && response.ok(), { timeout: 8000 });
       await retry.click();
-      const result = await (await retried).json();
+      const response = await retried;
+      const input = response.request().postDataJSON();
+      const result = await response.json();
       if (result.allowed !== false || result.code !== permission.code ||
-          state.requests.filter(item => item.method === 'GET' && item.path === accessPath).length <= reads)
-        throw new Error('A hosting access retry must read the current scoped permission without granting access');
+          !input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+        throw new Error('A hosting access check must use one scoped empty-object POST without granting access');
       await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
-      await assertHidden();
+      await assertHidden(1);
+    }
+    for (let poll = 0; poll < 2; poll++) {
+      const polled = page.waitForResponse(response => response.url().endsWith(accessPath) &&
+        response.request().method() === 'GET' && response.ok(), { timeout: 8000 });
+      await page.clock.fastForward(10001);
+      await (await polled).finished();
+      await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+      await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
+      await assertHidden(Number(retryExpected));
     }
     record.assertions.push({ hostingEntryHidden: true, hostingAccessStatusVisible: true, hostingAccessRetry: retryExpected,
-      permissionCode: permission.code, presentation: card ? 'card' : 'action', accessReadOnly: true });
+      permissionCode: permission.code, presentation: card ? 'card' : 'action', passiveAccessPolling: true,
+      explicitAccessChecks: Number(retryExpected), prepareRequests: 0, startRequests: 0 });
   } else if (testCase.hostingEntry === 'visible') {
     const card = testCase.section === sharedSaves;
     const entryRegion = page.getByRole('region', { name: card ? 'Host locally' : 'Play', exact: true });

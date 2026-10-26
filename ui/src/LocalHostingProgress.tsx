@@ -7,6 +7,14 @@ export type HostingProgress = {
   phase: string; state: 'Working' | 'Completed' | 'Failed'; message: string
   startedUtc: string; updatedUtc: string; receivedBytes: number; totalBytes: number; percent: number | null
   completedFiles?: number; totalFiles?: number
+  phaseTimings?: { phase: string; elapsedMilliseconds: number }[] | null
+}
+
+const timingLabels: Record<string, string> = {
+  Permission: 'Hosting permission', PeerSync: 'Signed progress discovery', LatestSave: 'Save selection',
+  Receiving: 'Save transfer', Verifying: 'Save verification', Receipt: 'Receipt confirmation',
+  PreparingCopy: 'Local save preparation', ServerSetup: 'Server setup', Ports: 'Local ports', Connection: 'Connection',
+  Starting: 'Launch request', Other: 'Other preparation'
 }
 
 export function parseHostingProgress(value: unknown): HostingProgress | null {
@@ -25,7 +33,27 @@ export function parseHostingProgress(value: unknown): HostingProgress | null {
         Number(item.completedFiles) > Number(item.totalFiles)) ||
     item.percent !== null && (typeof item.percent !== 'number' || !Number.isFinite(item.percent) || item.percent < 0 || item.percent > 100))
     throw new Error('Hosting progress is unavailable.')
+  if (item.phaseTimings !== undefined && item.phaseTimings !== null) {
+    if (!Array.isArray(item.phaseTimings) || item.phaseTimings.length > 12) throw new Error('Hosting progress is unavailable.')
+    const seen = new Set<string>()
+    for (const timing of item.phaseTimings) {
+      if (!timing || typeof timing !== 'object' || Array.isArray(timing) ||
+        typeof timing.phase !== 'string' || !Object.hasOwn(timingLabels, timing.phase) || seen.has(timing.phase) ||
+        !Number.isSafeInteger(timing.elapsedMilliseconds) || timing.elapsedMilliseconds < 0 || timing.elapsedMilliseconds > 86400000)
+        throw new Error('Hosting progress is unavailable.')
+      seen.add(timing.phase)
+    }
+  }
   return value as HostingProgress
+}
+
+export function HostingPhaseTimings({ timings }: { timings?: HostingProgress['phaseTimings'] }) {
+  if (!timings?.length) return null
+  return <details className="local-hosting-phase-timings"><summary>Measured step times</summary>
+    <dl>{timings.map(timing => <div key={timing.phase}><dt>{timingLabels[timing.phase]}</dt>
+      <dd>{(timing.elapsedMilliseconds / 1000).toFixed(2)}s</dd></div>)}</dl>
+    <p className="helper-text">Times cover observed work in this operation. Launch request time does not confirm game Ready or a player join.</p>
+  </details>
 }
 
 const phaseLabels: Record<string, string> = {
@@ -141,6 +169,7 @@ export function LocalHostingProgress({ endpoint, title, message, startedAt, expe
     {progress?.completedFiles !== undefined && progress.totalFiles !== undefined && progress.totalFiles > 0 && <p className="local-hosting-byte-progress">
       {progress.completedFiles} of {progress.totalFiles} {hostingProgressFilesLabel(progress.phase)}.</p>}
     {terminal && <p className="helper-text">Waiting for the operation result before continuing.</p>}
+    <HostingPhaseTimings timings={progress?.phaseTimings} />
     {phases.length > 1 && <p className="local-hosting-phase-history">Earlier: {phases.slice(0, -1).map(phase => phaseLabels[phase] ?? 'Preparation step').join(' · ')}</p>}
     {stale && <p className="helper-text">Waiting for a fresh progress update. The operation result is still pending. Keep TogetherServer open and wait for that result before trying again.</p>}
   </section>

@@ -139,6 +139,89 @@ history; published versions have their own
 
 ## Current delivery
 
+The hosting simplification preserves the prepared-publication fix below and
+the existing common HostManager launch gate. Passive hosting/access GETs now
+project retained signed permission without enrollment. An explicit, scoped
+empty-object POST performs the access check; ten-second polls cannot replay
+it. Prepared Start reads current signed local permission and uses its bounded
+peer discovery/final proof instead of enrolling or querying planned moves
+against the original Host. Starting an already prepared shared continuation
+from the Host screen now uses that same held-source proof and common launch
+gate, including when an original-owner profile remains on this PC. Planned
+move actions keep their exact final-source,
+receipt and authority fences. Ordinary status's advisory move lookup has a
+two-second budget. Peer preparation no longer performs the redundant legacy
+Host pull before the peer resolver.
+
+Background sharing has an independent app loop, coalesced periodic passes,
+bounded membership refresh, and per-world/per-route transfer flights. Initial
+preparation uses its registered signed world instead of waiting for every
+saved Host; it joins a matching transfer and gives new background routes for
+that world lower priority through the complete preparation/verification/setup
+operation. Payload work holds no global refresh or metadata
+transaction. Completed-save publication, pending offline recipients and exact
+owner/member receipts retain their existing durable signed protocol. This
+does not infer a stopped remote game from a disconnected route.
+
+The initial all-source run caught a rejoin ordering regression in the new
+parallel membership refresh: an explicit sync could exchange with the old
+member before the fresh signed registration finished. A bounded material
+recheck now performs one follow-up for changed/newly registered worlds only.
+The existing rejoin assertions remain unchanged; no protected identity or
+history is reset. Unchanged worlds do not repeat their payload work.
+
+Cache boundaries remain explicit:
+
+| Responsibility | Reuse and invalidation |
+| --- | --- |
+| Installation/setup | Saved selected/profile server candidates are verified before another installation scan. Java reuses at most 32 successful archive-format inspections in process memory, bound to full artifact/folder paths, current JAR SHA-256 and the exact provenance-byte SHA-256. Every call still verifies current bytes against provenance SHA-1. Content/provenance changes, eviction or app restart require inspection again. This is not a measured Valheim startup optimization. |
+| Per Start | Current signed roles, expiry/learned revocation, local consent, exact branch/source/setup and material newest-head observation remain authoritative. Held immutable source files and the working continuation are checked; changed or missing sources require explicit preparation. World/process/port conflicts and cancellation are checked in the common manager gate. |
+| Per run | Recorded process identity, actual game readiness and fresh trusted counts are observed anew. Unknown occupancy never becomes zero. No setup/permission cache or earlier Start substitutes for those observations. |
+| Background sharing | Registered world identity and bounded coalesced flights avoid duplicate work. Current signed membership/consent and full bytes/receipt verification remain required before promotion or acknowledgement. Offline routes remain pending; known competing/newer missing progress cannot fall back silently. |
+
+Explicit operations now retain bounded monotonic phase timings for permission,
+signed discovery, save transfer, local copy preparation, verification, receipt,
+setup and launch-request work. Accepted work callbacks checkpoint elapsed time;
+passive reads, duplicate byte/file callbacks and UTC clock changes cannot renew
+progress or authorization. Terminal timings freeze and the next explicit
+operation starts a new scoped record. The UI's Measured step times distinguishes
+launch-request time from actual game Ready. The physical test must separately
+observe its exact managed process and first real Ready result; no timing here
+accepts game readiness, a join, saved progress or another PC's verified receipt.
+
+The old frozen candidate run completed with 14 successful jobs and three failed
+jobs: Pairing (empty HTTP403 at the lab's owner-recovery preparation), Existing
+(eight formatting findings in SimpleSharedHostingJourney after its process
+gates passed), and Desktop (required OS notification delivery/click blocked by
+QuietTime). The new source admits only the lab's exact fixed recovery routes,
+retains all normal local-header/owner/security handlers, and corrects the fixture
+whitespace. These fixes require a fresh hosted run; the old run is still failed.
+The release inventory was rechecked: 30 releases, latest preview 0.3.3.15,
+stable/latest 0.3.3, no 0.3.3.16 release. No existing release/tag/asset was changed.
+
+The owner reconfirmed the unattended target-world-only session and main world's
+stopped state. Static read-only inspection still finds one installed/running
+0.3.3.15 process with the published source/hash below. No new app was installed
+or launched. New Ready, graceful Stop, new exact receipts and saved restart
+remain physical acceptance work after manual installation of a reviewed new
+candidate; source/CI success cannot close those gates.
+
+Local verification of this simplification compiles the solution with zero
+warnings/errors and passes whole-solution formatting. The first full source
+run recorded 80 passes and two failures; the scheduling/rejoin correction and
+the new Host-screen fixture's typed fake-driver refusal now pass focused
+retests. The final background group also covers nested whole-operation
+priority, canceled joiners, changed registration and independent Host polling.
+The 315-file regression exercises both Host and Join without a recovery-cache
+copy, with an immutable source held at the refusing fake driver and no managed
+run. One internal symbolic-link scenario remains skipped for local account
+capability. Both complete UI attempts recorded 1,544 passes and one timeout in
+different unmodified navigation cases; each timed-out case passes in isolation
+without extending its timeout. Hosting/progress cases pass. Typecheck, lint,
+production bundle and all 59 pure render/fixture checks pass. Fresh hosted
+validation of the committed source remains required; these local results do
+not erase the initial failures or establish physical game acceptance.
+
 The current 0.3.3.16 source removes the redundant recovery-cache copy from an
 already prepared Start. A separate held-source proof derives only this exact
 protected local branch's existing publication or retained base; callers cannot

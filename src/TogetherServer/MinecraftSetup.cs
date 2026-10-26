@@ -1,5 +1,3 @@
-using System.IO.Compression;
-using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace TogetherServer;
@@ -15,10 +13,7 @@ public static class MinecraftSetup
     private static readonly StringComparer Paths = StringComparer.OrdinalIgnoreCase;
     private const string ManagedJavaMetadataFile = ".togetherserver-java.json";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    private static readonly string[] UnsupportedJavaNames =
-        ["paper", "purpur", "spigot", "bukkit", "fabric", "forge", "neoforge", "quilt", "installer", "client"];
-    private static readonly HashSet<string> VanillaMainClasses = new(StringComparer.Ordinal)
-        { "net.minecraft.server.Main", "net.minecraft.bundler.Main" };
+    private static readonly MinecraftJavaInstallationCheck JavaInstallation = new();
 
     public static MinecraftDiscoveryResult Scan(LocalData data, IEnumerable<ServerProfile> profiles, string? extraFolder = null)
     {
@@ -131,43 +126,7 @@ public static class MinecraftSetup
             JsonSerializer.Serialize(new ManagedJavaArtifact(version, sha1.ToUpperInvariant()), Json));
     }
 
-    internal static bool IsSupportedVanillaServerJar(string jar, string folder)
-    {
-        var name = Path.GetFileNameWithoutExtension(jar);
-        if (UnsupportedJavaNames.Any(part => name.Contains(part, StringComparison.OrdinalIgnoreCase))) return false;
-        try
-        {
-            if (new FileInfo(jar).Length is < 100 or > 300_000_000) return false;
-            using var zip = ZipFile.OpenRead(jar);
-            var manifest = zip.GetEntry("META-INF/MANIFEST.MF");
-            if (manifest is null || manifest.Length > 64_000) return false;
-            using var reader = new StreamReader(manifest.Open());
-            var mainClass = reader.ReadToEnd().Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                .Select(line => line.Split(':', 2))
-                .Where(parts => parts.Length == 2 && parts[0].Trim().Equals("Main-Class", StringComparison.OrdinalIgnoreCase))
-                .Select(parts => parts[1].Trim()).SingleOrDefault();
-            if (mainClass is null || !VanillaMainClasses.Contains(mainClass)) return false;
-            if (zip.Entries.Any(entry => entry.FullName.Equals("fabric.mod.json", StringComparison.OrdinalIgnoreCase) ||
-                    entry.FullName.Equals("META-INF/mods.toml", StringComparison.OrdinalIgnoreCase) ||
-                    entry.FullName.StartsWith("io/papermc/", StringComparison.OrdinalIgnoreCase) ||
-                    entry.FullName.StartsWith("org/bukkit/", StringComparison.OrdinalIgnoreCase) ||
-                    entry.FullName.StartsWith("net/fabricmc/", StringComparison.OrdinalIgnoreCase)))
-                return false;
-
-            var metadataPath = Path.Combine(folder, ManagedJavaMetadataFile);
-            if (!File.Exists(metadataPath)) return false;
-            if (new FileInfo(metadataPath).Length > 4096) return false;
-            var provenance = JsonSerializer.Deserialize<ManagedJavaArtifact>(File.ReadAllText(metadataPath), Json);
-            if (provenance is null || string.IsNullOrWhiteSpace(provenance.Version) ||
-                string.IsNullOrWhiteSpace(provenance.Sha1) || provenance.Sha1.Length != 40 ||
-                provenance.Sha1.Any(character => !char.IsAsciiHexDigit(character)) ||
-                !Path.GetFileName(jar).Equals("server.jar", StringComparison.OrdinalIgnoreCase)) return false;
-            using var input = File.OpenRead(jar);
-            return Convert.ToHexString(SHA1.HashData(input)).Equals(provenance.Sha1, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or InvalidOperationException)
-        { return false; }
-    }
+    internal static bool IsSupportedVanillaServerJar(string jar, string folder) => JavaInstallation.Check(jar, folder);
 
     private static bool IsLink(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
 

@@ -18,6 +18,7 @@ internal static partial class LocalHostingChecks
     internal static async Task RunAsync(string root)
     {
         Inputs();
+        await SavedInstallationBeforeDiscoveryAsync(root);
         await WorldPeerLocalHostingChecks.RunAsync(root);
         await OwnerSwitchAsync(root);
         await IncomingConsentAsync(root);
@@ -153,6 +154,21 @@ internal static partial class LocalHostingChecks
         Require(!rejected.Ok && !rejected.Allowed && !rejected.Consented &&
             denied.Data.LoadSettings().CompanionEndpoint == "" && denied.Data.LoadSettings().Profiles.Count == 0 &&
             denied.Driver.ProcessAttempts == 0, "an ungranted PC received hosting, local consent, a profile or identity setup");
+    }
+
+    private static async Task SavedInstallationBeforeDiscoveryAsync(string root)
+    {
+        using var fixture = new Fixture(root, granted: true);
+        var scans = 0;
+        var executable = Path.Combine(fixture.Data.RootPath, "never-run.synthetic");
+        var service = fixture.WithInstallationDiscovery(_ => { scans++; return [executable]; });
+        var saved = await service.StatusAsync(fixture.ProfileId, selectedFile: executable);
+        Require(saved.ServerFile == executable && scans == 0 && fixture.Driver.ProcessAttempts == 0,
+            "a usable selected installation repeated setup discovery");
+        var changed = await service.StatusAsync(fixture.ProfileId,
+            selectedFile: Path.Combine(fixture.Data.RootPath, "missing-selected.synthetic"));
+        Require(changed.ServerFile == executable && scans == 1 && fixture.Driver.ProcessAttempts == 0,
+            "an unavailable selected installation did not repeat discovery before use");
     }
 
     private static async Task UnpreparedCopyStatusAsync(string root)
@@ -617,6 +633,8 @@ internal static partial class LocalHostingChecks
         internal FriendLocalHostingService WithLatestSource(
             Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>> latest) =>
             new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")], latestSource: latest);
+        internal FriendLocalHostingService WithInstallationDiscovery(Func<string, IReadOnlyList<string>> discover) =>
+            new(Data, friends, Manager, discover);
         internal FriendLocalHostingService WithIncomingListener(LocalHostingRouteCheck checker, Func<Task> synchronize,
             Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>> announce) =>
             new(Data, friends, Manager, _ => [Path.Combine(Data.RootPath, "never-run.synthetic")],

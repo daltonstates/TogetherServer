@@ -24,7 +24,8 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerActionResult>>? announceHosting = null,
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>>? latestSource = null,
     Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestSourceProgress = null,
-    Func<SharedWorldPeerRoot, Guid, string, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerPreparedStartResult>>? preparedStartSource = null)
+    Func<SharedWorldPeerRoot, Guid, string, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerPreparedStartResult>>? preparedStartSource = null,
+    Func<SharedWorldPeerRoot, IDisposable>? beginPreparation = null)
 {
     private bool HasLatestSource => latestSource is not null || latestSourceProgress is not null;
 
@@ -42,12 +43,18 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     private static string HostingPermissionState(bool allowed, string code) =>
         allowed ? "Ready" : ConfirmedHostingDenial(code) ? "ActionRequired" : "Unknown";
 
-    internal async Task<LocalHostingPermission> PermissionAsync(Guid profileId,
-        CancellationToken cancellationToken = default)
+    internal Task<LocalHostingPermission> PermissionAsync(Guid profileId,
+        CancellationToken cancellationToken = default) => PermissionAsync(profileId, false, cancellationToken);
+
+    internal Task<LocalHostingPermission> CheckPermissionAsync(Guid profileId,
+        CancellationToken cancellationToken = default) => PermissionAsync(profileId, true, cancellationToken);
+
+    private async Task<LocalHostingPermission> PermissionAsync(Guid profileId, bool refresh,
+        CancellationToken cancellationToken)
     {
         using var connection = friend.RetainLocalHostingConnection();
         if (connection is null) return new(false, "NotPaired", "Choose a saved Host connection first.");
-        var access = await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken,
+        var access = await connection.Link.LocalHostingAccessAsync(profileId, refresh, cancellationToken,
             permissionOnly: true);
         cancellationToken.ThrowIfCancellationRequested();
         return friend.CurrentLocalHostingConnection(connection)
@@ -110,15 +117,27 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
 
     private async Task<LocalHostingStatus> StatusForRetainedConnectionAsync(FriendService.LocalHostingConnection connection,
         Guid profileId, CancellationToken cancellationToken, string? selectedFile = null,
-        LocalHostingAccess? checkedAccess = null)
+        LocalHostingAccess? checkedAccess = null, bool checkRemoteHandoff = true)
     {
-        var access = checkedAccess ?? await connection.Link.LocalHostingAccessAsync(profileId, true, cancellationToken,
-            refreshDisconnected: true);
-        var handoff = await connection.Link.HandoffRequestAsync(profileId, cancellationToken) ??
+        // Refresh projects verified local permission. Enrollment and signed
+        // catch-up belong to an explicit access check or background exchange.
+        var access = checkedAccess ?? await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
+        var handoff = (checkRemoteHandoff ? await ReadHandoffRequestAsync(connection.Link, profileId, cancellationToken) : null) ??
             await LocalCompletedHandoffAsync(connection, profileId, cancellationToken);
         return handoff?.RequestId is not null && handoff.RecipientState is "Requested" or "Accepted" or "Prepared" or "Completed" ?
             await PlannedStatusAsync(connection, profileId, handoff, cancellationToken, access) :
             (await StatusForConnectionAsync(connection, profileId, cancellationToken, selectedFile, access)) with { HandoffRequest = handoff };
+    }
+
+    private static async Task<PlannedHandoffStatus?> ReadHandoffRequestAsync(FriendLink link, Guid profileId,
+        CancellationToken cancellationToken)
+    {
+        // A stale connected indicator must not make ordinary hosting wait for
+        // the original Host. Planned move actions keep their exact final proof.
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(2));
+        try { return await link.HandoffRequestAsync(profileId, bounded.Token); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
     }
 
     private async Task<LocalHostingStatus> StatusForConnectionAsync(FriendService.LocalHostingConnection connection,
@@ -244,7 +263,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var link = connection.Link;
         if (request.RequestId is not null)
             return await PreparePlannedAsync(connection, profileId, request, cancellationToken, progress);
-        if ((await link.HandoffRequestAsync(profileId, cancellationToken)) is { RecipientState: "Requested" or "Accepted" or "Prepared" or "Completed" })
+        if ((await ReadHandoffRequestAsync(link, profileId, cancellationToken)) is { RecipientState: "Requested" or "Accepted" or "Prepared" or "Completed" })
             return Unavailable("HostingRequestConfirmationRequired", "Review and accept the planned hosting request before preparing this PC.");
         bool SameConnection() => friend.CurrentLocalHostingConnection(connection);
         Task<LocalHostingStatus> Status() => StatusForConnectionAsync(connection, profileId, cancellationToken, request.ServerFile);
@@ -262,9 +281,10 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         }
         try
         {
-            var access = await link.LocalHostingAccessAsync(profileId, true, cancellationToken);
+            var access = await link.LocalHostingAccessAsync(profileId, false, cancellationToken);
             if (!SameConnection()) return await Result("ConnectionChanged", "The selected Host changed. Review the shared server again.");
             if (!access.Allowed) return await Result(access.Code, access.Message);
+            using var preparation = access.Root is { } preparationRoot ? beginPreparation?.Invoke(preparationRoot) : null;
             var sourceProfileId = access.Root?.ProfileId ?? profileId;
             if (!access.Consented)
             {
@@ -291,7 +311,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             // Never relabel that signed manifest through the legacy Host route.
             if (access.PeerWorldConnection && !HasLatestSource)
                 return await Result("SharedSaveUnavailable", "Keep an approved PC with this world's completed save reachable, then check hosting again.");
-            if (!access.PeerWorldConnection && (status.LocalProfileId is null || HasLatestSource) &&
+            if (!HasLatestSource && !access.PeerWorldConnection && status.LocalProfileId is null &&
                 link.View().State is "Connected" or "Disabled")
             {
                 progress.Report("Receiving", "Looking for the latest completed save on the connected Host.");
@@ -507,17 +527,20 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
 
     private string? FindServer(SharedWorldVersion version, IReadOnlyList<ServerProfile> profiles, string? selectedFile)
     {
-        var candidates = new List<string>();
-        if (selectedFile is not null) candidates.Add(selectedFile);
-        candidates.AddRange(profiles.Where(profile => profile.Kind == version.Game)
-            .Select(profile => version.Game == GameKinds.MinecraftJava ? profile.Minecraft?.ServerJarPath ?? "" : profile.ExecutablePath));
-        if (discoverServers is not null) candidates.AddRange(discoverServers(version.Game));
-        else if (version.Game == GameKinds.Valheim)
-            candidates.AddRange(ValheimSetup.Scan(includeWorlds: false).Installations.Select(item => item.ExecutablePath));
-        else if (version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock)
-            candidates.AddRange(MinecraftSetup.ScanManaged(data, profiles).Installations.Where(item => item.Kind == version.Game)
-                .Select(item => item.ArtifactPath));
-        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        // Saved choices are checked before installation discovery. A usable
+        // local server must not trigger another Steam/library/setup scan.
+        IEnumerable<string> Candidates()
+        {
+            if (selectedFile is not null) yield return selectedFile;
+            foreach (var profile in profiles.Where(profile => profile.Kind == version.Game))
+                yield return version.Game == GameKinds.MinecraftJava ? profile.Minecraft?.ServerJarPath ?? "" : profile.ExecutablePath;
+            var discovered = discoverServers is not null ? discoverServers(version.Game) :
+                version.Game == GameKinds.Valheim ? ValheimSetup.Scan(includeWorlds: false).Installations.Select(item => item.ExecutablePath) :
+                version.Game is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock ?
+                    MinecraftSetup.ScanManaged(data, profiles).Installations.Where(item => item.Kind == version.Game).Select(item => item.ArtifactPath) : [];
+            foreach (var candidate in discovered) yield return candidate;
+        }
+        foreach (var candidate in Candidates().Distinct(StringComparer.OrdinalIgnoreCase))
         {
             try
             {

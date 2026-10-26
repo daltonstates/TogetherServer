@@ -79,7 +79,7 @@ const localHosting = pureDecoders('FriendLocalHosting.tsx', ['remedyKinds', 'bou
   guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   hashPattern: /^[0-9a-f]{64}$/i, parsePlannedHandoffStatus
 });
-const hostingProgress = pureDecoders('LocalHostingProgress.tsx', ['parseHostingProgress']);
+const hostingProgress = pureDecoders('LocalHostingProgress.tsx', ['timingLabels', 'parseHostingProgress']);
 const requiredSetup = pureDecoders('RequiredFeatureSetup.tsx', ['parseRequiredSetup'], { ContractError: contracts.ContractError });
 const gettingStarted = pureDecoders('useGettingStarted.ts', ['parseGettingStarted'], { ContractError: contracts.ContractError });
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
@@ -1561,20 +1561,22 @@ test('only the exact passive progress abort after a validated pending Start is a
   assert.match(source, /kind: 'intentional-passive-progress-abort'/u, 'the scoped cancellation remains in the artifact evidence');
 });
 
-test('the prepared timeout capture waits for its automatic response, settled control and paint after advancing time', async () => {
+test('clock-driven hosting captures install before polling and wait for settled responses after advancing time', async () => {
   const installs = [];
   for (const testCase of simpleHostingCases) {
     const installed = await installHostingReviewClock({ clock: { install: async options => installs.push({ id: testCase.id, options }) } }, testCase, '2026-10-10T16:00:00Z');
-    assert.equal(installed, testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused');
+    assert.equal(installed, testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused' || testCase.hostingEntry === 'hidden');
   }
   assert.deepEqual(installs, [
+    ...simpleHostingCases.filter(testCase => testCase.hostingEntry === 'hidden')
+      .map(testCase => ({ id: testCase.id, options: { time: '2026-10-10T16:00:00Z' } })),
     { id: 'simple-hosting-ready-start-timeout', options: { time: '2026-10-10T16:00:00Z' } },
     { id: 'simple-hosting-stopped-progress-refused', options: { time: '2026-10-10T16:00:00Z' } }
   ]);
   const renderer = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
   const clockInstall = renderer.indexOf('await installHostingReviewClock(page, testCase, fixtureNow)');
   assert.ok(clockInstall > 0 && clockInstall < renderer.indexOf('await page.goto('),
-    'both clock-driven journeys install before the application can register its first polling timer');
+    'every clock-driven journey installs before the application can register its first polling timer');
   const review = readFileSync(new URL('simple-shared-hosting-review.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(review.slice(review.indexOf('export async function assertSimpleHostingUi')), /clock\.install/u,
     'no late installation can strand a pre-existing automatic poll on native timers');
@@ -1701,6 +1703,9 @@ test('hosting progress fixtures expose passive byte updates and indeterminate ve
     assert.equal(first.state, 'Working');
     assert.equal(first.totalBytes, 4194304);
     assert.equal(first.percent, phase === 'Receiving' ? 25 : null);
+    assert.ok(first.phaseTimings.some(timing => timing.phase === phase && timing.elapsedMilliseconds > 0));
+    assert.throws(() => hostingProgress.parseHostingProgress({ ...first,
+      phaseTimings: [{ phase: 'Verifying', elapsedMilliseconds: -1 }] }), /progress/u);
     state.hostingProgressReceivedBytes = 3145728;
     const next = hostingProgress.parseHostingProgress(get(state, `${base}/progress`));
     assert.equal(next.percent, phase === 'Receiving' ? 75 : null);
@@ -1808,7 +1813,50 @@ test('unprepared hosting fixtures require explicit preparation and preserve no-g
   }
 });
 
-test('hidden hosting launcher evidence requires scoped access text and GET-only recovery across both presentations', async () => {
+test('hosting access fixtures keep passive reads separate from strict scoped explicit checks without preparing or starting', () => {
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting/access`;
+  for (const stage of ['not-allowed', 'permission-unknown', 'permission-review', 'prepare']) {
+    const state = createFixtureState({ id: 'friend-offline', simpleHosting: stage });
+    const before = JSON.stringify({ host: state.host, friend: state.friend });
+    const passive = routeFixture(state, { method: 'GET', path });
+    assert.equal(passive.status, 200);
+    const checked = routeFixture(state, { method: 'POST', path: `${path}/check`, body: {} });
+    assert.equal(checked.status, 200);
+    assert.deepEqual(checked.body, passive.body, 'an explicit check preserves the fixture permission instead of granting access');
+    for (let poll = 0; poll < 3; poll++)
+      assert.deepEqual(routeFixture(state, { method: 'GET', path }).body, passive.body);
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 1);
+    assert.equal(state.simpleHostingPrepared, false);
+    assert.equal(state.simpleHostingStarted, false);
+    assert.equal(JSON.stringify({ host: state.host, friend: state.friend }), before);
+    assert.equal(routeFixture(state, { method: 'POST', path: `${path}/check`, body: '{}' }).status, 200);
+  }
+  const state = createFixtureState({ id: 'friend-offline', simpleHosting: 'permission-unknown' });
+  const rejected = request => {
+    const response = routeFixture(state, request);
+    assert.ok(response === null || response.status >= 400, `must reject ${request.method} ${request.path} with ${JSON.stringify(request.body)}`);
+    assert.equal(state.simpleHostingPrepared, false);
+    assert.equal(state.simpleHostingStarted, false);
+  };
+  for (const body of [undefined, null, [], true, 0, 'null', '[]', 'true', '"text"', '{', '{"force":true}',
+    '{"force":true,"force":false}', `${' '.repeat(64)}{}`])
+    rejected({ method: 'POST', path: `${path}/check`, body });
+  for (const body of [{}, [], { force: true }, '{}', '[]']) rejected({ method: 'GET', path, body });
+  for (const method of ['GET', 'PUT', 'DELETE', 'PATCH']) rejected({ method, path: `${path}/check`, body: {} });
+  for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) rejected({ method, path, body: {} });
+  for (const invalid of [
+    `${path}/check?force=true`, `${path}/check/extra`,
+    `/api/local/profiles/${fixtureIds.primary}/shared-world/hosting/access/check`,
+    '/api/local/friend/not-a-profile/shared-world/hosting/access/check',
+    '/api/local/friend/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee/shared-world/hosting/access/check'
+  ]) rejected({ method: 'POST', path: invalid, body: {} });
+  rejected({ method: 'GET', path: `${path}?force=true` });
+  state.friend.profiles = [];
+  rejected({ method: 'GET', path });
+  rejected({ method: 'POST', path: `${path}/check`, body: {} });
+});
+
+test('hidden hosting launcher evidence requires one clicked access check followed by passive GET polling across both presentations', async () => {
   const { assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
   const hidden = simpleHostingCases.filter(item => item.hostingEntry === 'hidden');
   assert.equal(hidden.length, 6);
@@ -1825,6 +1873,15 @@ test('hidden hosting launcher evidence requires scoped access text and GET-only 
     const counts = { launcher: 0, region: 0, dialog: 0, list: 0, status: 1, retry: Number(retryExpected) };
     let retryEnabled = true;
     let completeResponse;
+    let clicks = 0;
+    let polls = 0;
+    let pollReplaysCheck = false;
+    const respond = (method, path, body) => {
+      const response = routeFixture(state, { method, path, body });
+      completeResponse({ url: () => `http://synthetic.invalid${path}`,
+        request: () => ({ method: () => method, postDataJSON: () => body }),
+        ok: () => response.status === 200, json: async () => response.body, finished: async () => null });
+    };
     const access = {
       waitFor: async options => assert.equal(options.state, 'visible'), count: async () => counts.status,
       isVisible: async () => counts.status === 1,
@@ -1836,9 +1893,8 @@ test('hidden hosting launcher evidence requires scoped access text and GET-only 
     };
     const retry = { count: async () => counts.retry, isEnabled: async () => retryEnabled,
       click: async () => {
-        const response = routeFixture(state, { method: 'GET', path: `${base}/access` });
-        completeResponse({ url: () => `http://synthetic.invalid${base}/access`, request: () => ({ method: () => 'GET' }),
-          ok: () => response.status === 200, json: async () => response.body });
+        clicks++;
+        respond('POST', `${base}/access/check`, {});
       } };
     const scope = { getByRole: (role, options) => {
       assert.equal(options.exact, true);
@@ -1847,6 +1903,14 @@ test('hidden hosting launcher evidence requires scoped access text and GET-only 
       return retry;
     } };
     const page = {
+      evaluate: async action => assert.match(action.toString(), /requestAnimationFrame\(\(\) => requestAnimationFrame/u,
+        'the next timer advance waits for the previous passive result to finish painting'),
+      clock: { fastForward: async ticks => {
+        assert.equal(ticks, 10001);
+        polls++;
+        if (pollReplaysCheck) routeFixture(state, { method: 'POST', path: `${base}/access/check`, body: {} });
+        respond('GET', `${base}/access`);
+      } },
       getByRole: (role, options) => {
         if (role === 'region' && options.name === 'Play') return scope;
         const key = role === 'button' ? 'launcher' : role;
@@ -1857,7 +1921,7 @@ test('hidden hosting launcher evidence requires scoped access text and GET-only 
       waitForResponse: (predicate, options) => {
         assert.deepEqual(options, { timeout: 8000 });
         return new Promise(resolve => { completeResponse = response => {
-          assert.equal(predicate(response), true, 'the retry waits for a successful scoped access GET'); resolve(response);
+          assert.equal(predicate(response), true, 'each wait binds the explicit POST or passive scoped GET'); resolve(response);
         }; });
       }
     };
@@ -1866,10 +1930,21 @@ test('hidden hosting launcher evidence requires scoped access text and GET-only 
     assert.equal(record.assertions[0].hostingEntryHidden, true);
     assert.equal(record.assertions[0].hostingAccessStatusVisible, true);
     assert.equal(record.assertions[0].hostingAccessRetry, retryExpected);
-    assert.equal(record.assertions[0].accessReadOnly, true);
+    assert.equal(record.assertions[0].passiveAccessPolling, true);
+    assert.equal(record.assertions[0].explicitAccessChecks, Number(retryExpected));
+    assert.equal(record.assertions[0].prepareRequests, 0);
+    assert.equal(record.assertions[0].startRequests, 0);
     assert.equal(record.assertions[0].presentation, testCase.section[1] === 'shared-saves' ? 'card' : 'action');
-    assert.equal(state.requests.length, retryExpected ? 2 : 1, 'unknown/review uses a second GET; a known denial keeps its explanation');
-    assert.ok(state.requests.every(request => request.method === 'GET' && request.path === `${base}/access`));
+    assert.equal(clicks, Number(retryExpected), 'only unresolved access causes one explicit button click');
+    assert.equal(polls, 2, 'two later polls must leave explicit checking disabled');
+    assert.deepEqual(state.requests, [
+      { method: 'GET', path: `${base}/access` },
+      ...(retryExpected ? [{ method: 'POST', path: `${base}/access/check` }] : []),
+      { method: 'GET', path: `${base}/access` }, { method: 'GET', path: `${base}/access` }
+    ]);
+    assert.equal(state.simpleHostingPrepared, false);
+    assert.equal(state.simpleHostingStarted, false);
+    state.requests = [{ method: 'GET', path: `${base}/access` }];
     for (const surface of ['launcher', 'region', 'dialog', 'list']) {
       counts[surface] = 1;
       await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /Denied or unknown permission must hide/u);
@@ -1879,20 +1954,25 @@ test('hidden hosting launcher evidence requires scoped access text and GET-only 
     await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /must show one scoped Hosting access status/u);
     counts.status = 1;
     counts.retry = Number(!retryExpected);
-    await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /needs an enabled read-only retry/u);
+    await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /needs an enabled explicit access check/u);
     counts.retry = Number(retryExpected);
     if (retryExpected) {
       retryEnabled = false;
-      await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /needs an enabled read-only retry/u);
+      await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state), /needs an enabled explicit access check/u);
       retryEnabled = true;
     }
     await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, { ...state, requests: [] }),
       /Denied or unknown permission must hide/u, 'an unchecked initial render is not hidden-permission evidence');
     for (const request of [{ method: 'GET', path: base }, { method: 'POST', path: `${base}/prepare` },
+      { method: 'POST', path: `${base}/start` }, { method: 'GET', path: `${base}/access/check` },
+      { method: 'POST', path: `${base}/access/check` },
       { method: 'GET', path: `/api/local/friend/${fixtureIds.secondary}/shared-world/hosting/access` }]) {
       await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, { ...state, requests: [...state.requests, request] }),
         /Denied or unknown permission must hide/u, 'hidden entries must not run setup checks or write hosting state');
     }
+    pollReplaysCheck = true;
+    await assert.rejects(assertSimpleHostingUi(page, testCase, { assertions: [] }, state),
+      /Denied or unknown permission must hide/u, 'a later poll cannot repeat the explicit access check');
   }
 });
 
