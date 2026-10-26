@@ -58,6 +58,7 @@ internal static partial class CoreRemoteJourney
         Guid firstDevice = default, secondDevice = default;
         var friendStartAttempts = 0;
         var ownerStartAttempts = 0;
+        var friendStartObservations = new List<object>();
         LocalHostingStatus? prepared = null;
         SharedWorldVersion? initialVersion = null, continuedVersion = null;
         var timer = Stopwatch.StartNew();
@@ -156,13 +157,45 @@ internal static partial class CoreRemoteJourney
                 new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
             LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId is not null && prepared.BranchHash is not null,
                 "SimpleFriendPreparationRejected");
+            var preparedLocalId = prepared.LocalProfileId;
+            var preparedBranchHash = prepared.BranchHash;
+            var repeatPreparation = false;
             await PairingLabWaitAsync(async () =>
             {
+                var preparationRepeated = repeatPreparation;
+                if (repeatPreparation)
+                {
+                    // Model a new explicit owner instruction after a freshness
+                    // refusal. Replaying Start with invalidated preparation is
+                    // not the normal recovery flow and cannot test another Start.
+                    prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
+                        $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
+                        new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
+                    LabRequire(prepared.Ok && prepared.Allowed && prepared.Consented && prepared.ReadyForManualStart &&
+                        !prepared.Running && prepared.LocalProfileId == preparedLocalId && prepared.BranchHash == preparedBranchHash,
+                        "SimpleFriendFreshPreparationRejected");
+                }
                 friendStartAttempts++;
                 var result = await PostAsync<object, LocalHostingActionResult>(first,
                     $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
                     { localProfileId = prepared.LocalProfileId, branchHash = prepared.BranchHash, requestId = (Guid?)null, acceptSplitWarning = true });
+                LocalHostingStatus? observed = null;
+                try
+                {
+                    observed = await PairingLabGetAsync<LocalHostingStatus>(first,
+                        $"/api/local/friend/{profile.Id}/shared-world/hosting");
+                }
+                catch (Exception error) when (error is IOException or HttpRequestException or JsonException or OperationCanceledException)
+                { /* Preserve the original result and record an unavailable status. */ }
+                static string FixedCode(string? value) => value is { Length: > 0 and <= 64 } && value.All(char.IsAsciiLetterOrDigit)
+                    ? value : "Unavailable";
+                friendStartObservations.Add(new { attempt = friendStartAttempts, resultCode = FixedCode(result.Code),
+                    statusCode = FixedCode(observed?.Code), allowed = observed?.Allowed == true, consented = observed?.Consented == true,
+                    readyForManualStart = observed?.ReadyForManualStart == true, running = observed?.Running == true,
+                    selectedLocalMatches = observed?.LocalProfileId == preparedLocalId,
+                    selectedBranchMatches = observed?.BranchHash == preparedBranchHash, preparationRepeated });
                 LabRequire(result.Ok || result.Code == "LatestSaveChanged", "SimpleFriendStartRejected-" + result.Code);
+                repeatPreparation = !result.Ok;
                 return result.Ok;
             }, "SimpleFriendStartDidNotStabilize", TimeSpan.FromSeconds(45));
             HostSnapshot candidateSnapshot;
@@ -369,7 +402,9 @@ internal static partial class CoreRemoteJourney
                 descendantVersionNumber = continuedVersion?.Number,
                 friendStartAttempts,
                 ownerStartAttempts,
+                friendStartObservations,
                 latestReviewDiagnostic,
+                processIdentityObservations = processes.Select(process => process.IdentityObservation()).ToArray(),
                 processes = processes.Select(process => process.Report()).ToArray(),
                 acceptance = new[] { "SameRunnerPrivateAddressOnly", "PackagedPinnedSyntheticFlow", "NoRealGameOrPhysicalFriendPcAcceptance" }
             }, new JsonSerializerOptions(Json) { WriteIndented = true }));

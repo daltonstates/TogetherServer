@@ -8,7 +8,7 @@ import { runInNewContext } from 'node:vm';
 import { createFixtureState, routeFixture, expectedFixtureRequestAbort, fixtureScenarios, fixtureIds, FIXED_NOW } from './ui-redesign-fixtures.mjs';
 import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
-import { advancePreparedHostingCheck, assertPreparedHostingRequests, assertStoppedProgressRequests, simpleHostingCases, simpleHostingVariants, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
+import { advancePreparedHostingCheck, assertPreparedHostingRequests, assertStoppedProgressRequests, installHostingReviewClock, simpleHostingCases, simpleHostingVariants, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
 import { uiReviewBuild } from './ui-review-provenance.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
@@ -1562,6 +1562,37 @@ test('only the exact passive progress abort after a validated pending Start is a
 });
 
 test('the prepared timeout capture waits for its automatic response, settled control and paint after advancing time', async () => {
+  const installs = [];
+  for (const testCase of simpleHostingCases) {
+    const installed = await installHostingReviewClock({ clock: { install: async options => installs.push({ id: testCase.id, options }) } }, testCase, '2026-10-10T16:00:00Z');
+    assert.equal(installed, testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused');
+  }
+  assert.deepEqual(installs, [
+    { id: 'simple-hosting-ready-start-timeout', options: { time: '2026-10-10T16:00:00Z' } },
+    { id: 'simple-hosting-stopped-progress-refused', options: { time: '2026-10-10T16:00:00Z' } }
+  ]);
+  const renderer = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const clockInstall = renderer.indexOf('await installHostingReviewClock(page, testCase, fixtureNow)');
+  assert.ok(clockInstall > 0 && clockInstall < renderer.indexOf('await page.goto('),
+    'both clock-driven journeys install before the application can register its first polling timer');
+  const review = readFileSync(new URL('simple-shared-hosting-review.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(review.slice(review.indexOf('export async function assertSimpleHostingUi')), /clock\.install/u,
+    'no late installation can strand a pre-existing automatic poll on native timers');
+  const rendererAst = ts.createSourceFile('renderer.mjs', renderer, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let initSource;
+  const findInit = node => {
+    if (ts.isCallExpression(node) && node.expression.getText(rendererAst) === 'page.addInitScript') initSource = node.arguments[0].getText(rendererAst);
+    ts.forEachChild(node, findInit);
+  };
+  findInit(rendererAst);
+  assert.ok(initSource);
+  for (const clockDriven of [true, false]) {
+    const globals = { Date, crypto: {}, localStorage: { setItem: () => {} } };
+    const init = runInNewContext(`(${initSource})`, globals);
+    init({ theme: 'dark', scale: 100, now: '2026-10-10T16:00:00Z', clockDriven });
+    if (clockDriven) assert.equal(globals.Date, Date, 'the fixed-date shim cannot replace the installed clock Date');
+    else assert.equal(globals.Date.now(), FIXED_NOW, 'ordinary captures retain their fixed synthetic observation time');
+  }
   let completeRead;
   let loading = true;
   let expectedButton = 'Start hosting', expectedTicks = 30001;

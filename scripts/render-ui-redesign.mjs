@@ -21,7 +21,7 @@ const { createHash } = await import('node:crypto');
 const { createFixtureState, routeFixture, expectedFixtureRequestAbort, fixtureNow, fixtureIds } = await import('./ui-redesign-fixtures.mjs');
 const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.mjs');
 const { extraCases: accessReviewCases, serverAccessCaseIds, assertServerAccessUi } = await import('./ui-polish-access-review.mjs');
-const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi } = await import('./simple-shared-hosting-review.mjs');
+const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi, installHostingReviewClock } = await import('./simple-shared-hosting-review.mjs');
 const { uiReviewBuild } = await import('./ui-review-provenance.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'local-data/ui-redesign-visual-review');
@@ -1383,14 +1383,20 @@ try {
       page.on('response', response => {
         if (response.status() >= 400 && !deliberatelyFailedURLs.has(response.url())) record.httpFailures.push({ url: response.url(), status: response.status() });
       });
-      await page.addInitScript(({ theme, scale, now, density = 'comfortable' }) => {
-        // Fixed synthetic observation time; keep real timers for visible-state waits.
-        const RealDate = Date, fixed = RealDate.parse(now);
-        globalThis.Date = class extends RealDate { constructor(...values) { super(...(values.length ? values : [fixed])); } static now() { return fixed; } };
+      // Clock-driven journeys must own timers before the app registers its
+      // first poll. Installing after opening the dialog leaves old timers native.
+      const clockDriven = await installHostingReviewClock(page, testCase, fixtureNow);
+      await page.addInitScript(({ theme, scale, now, clockDriven, density = 'comfortable' }) => {
+        // Other captures keep fixed observation time with real timers. A clock
+        // journey lets Playwright own Date too, without a competing init shim.
+        if (!clockDriven) {
+          const RealDate = Date, fixed = RealDate.parse(now);
+          globalThis.Date = class extends RealDate { constructor(...values) { super(...(values.length ? values : [fixed])); } static now() { return fixed; } };
+        }
         let fakeId = 0;
         Object.defineProperty(globalThis.crypto, 'randomUUID', { value: () => `aaaaaaaa-aaaa-4aaa-8aaa-${String(++fakeId).padStart(12, '0')}` });
         localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ theme, density, textScale: scale, highContrast: false, quietMode: false, selectedServer: '', favoriteServers: [], favoriteHosts: [], serverOrder: [], serverTabs: {} }));
-      }, { ...variant, now: fixtureNow });
+      }, { ...variant, now: fixtureNow, clockDriven });
       await page.goto(origin, { waitUntil: 'domcontentloaded' });
       await visible(page.getByRole('navigation', { name: 'TogetherServer navigation', exact: true }));
       if (!testCase.bootOnly) {

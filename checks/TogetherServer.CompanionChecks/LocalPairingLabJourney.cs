@@ -1148,6 +1148,7 @@ internal static partial class CoreRemoteJourney
                 },
                 branchTransfer = new { convergenceTimeoutSeconds = 90, observations = transferObservations },
                 cleanup = new { jobActiveProcesses = job.ActiveCount(), killRemainingMembersOnHarnessExit = true },
+                processIdentityObservations = processes.Select(process => process.IdentityObservation()).ToArray(),
                 resources = new
                 {
                     sampledEveryMs = 250,
@@ -1388,6 +1389,7 @@ internal static partial class CoreRemoteJourney
         private readonly string executable;
         private readonly long startedTicks;
         private readonly int id;
+        private readonly Microsoft.Win32.SafeHandles.SafeProcessHandle? retainedIdentityHandle;
         private readonly object sampleGate = new();
         private bool stopping;
         internal bool Alive { get; private set; } = true;
@@ -1402,7 +1404,16 @@ internal static partial class CoreRemoteJourney
         {
             Process = process; Role = role; this.executable = Path.GetFullPath(executable);
             id = process.Id;
-            try { startedTicks = process.StartTime.ToUniversalTime().Ticks; }
+            try
+            {
+                // GetProcessById otherwise leaves later Refresh/HasExited reads
+                // able to resolve a reused PID. Keep this exact native lifetime
+                // until Process.Dispose, then record its start identity.
+                retainedIdentityHandle = process.SafeHandle;
+                if (retainedIdentityHandle.IsInvalid || retainedIdentityHandle.IsClosed)
+                    throw new InvalidOperationException("The exact lab process handle is unavailable.");
+                startedTicks = process.StartTime.ToUniversalTime().Ticks;
+            }
             catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
             { IdentityReview = true; }
             Sample();
@@ -1412,7 +1423,8 @@ internal static partial class CoreRemoteJourney
         {
             lock (sampleGate) return MatchesCore();
         }
-        private bool MatchesCore() => !Process.HasExited && Process.StartTime.ToUniversalTime().Ticks == startedTicks &&
+        private bool HasRetainedIdentity => retainedIdentityHandle is { IsInvalid: false, IsClosed: false } && startedTicks > 0;
+        private bool MatchesCore() => HasRetainedIdentity && !Process.HasExited && Process.StartTime.ToUniversalTime().Ticks == startedTicks &&
             string.Equals(Process.MainModule?.FileName, executable, StringComparison.OrdinalIgnoreCase);
 
         internal void Sample()
@@ -1432,6 +1444,13 @@ internal static partial class CoreRemoteJourney
 
         private void SampleCore()
         {
+            if (!HasRetainedIdentity)
+            {
+                IdentityReview = true;
+                CurrentWorkingSetBytes = 0;
+                resourceSampleUnavailable = true;
+                return;
+            }
             try
             {
                 Process.Refresh();
@@ -1481,6 +1500,38 @@ internal static partial class CoreRemoteJourney
             finally
             {
                 lock (sampleGate) { stopping = false; SampleCore(); }
+            }
+        }
+
+        internal object IdentityObservation()
+        {
+            lock (sampleGate)
+            {
+                var state = "Unavailable";
+                var queryAvailable = false;
+                var recordedIdentityMatches = false;
+                try
+                {
+                    if (HasRetainedIdentity)
+                    {
+                        Process.Refresh();
+                        if (Process.HasExited)
+                        {
+                            state = "Exited";
+                            recordedIdentityMatches = true; // The retained handle names the original lifetime.
+                            queryAvailable = true;
+                        }
+                        else
+                        {
+                            recordedIdentityMatches = MatchesCore();
+                            state = recordedIdentityMatches ? "Matched" : "Unavailable";
+                            queryAvailable = true;
+                        }
+                    }
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                { /* No raw identity or error is exported; unavailable remains review. */ }
+                return new { role = Role, state, recordedIdentityMatches, queryAvailable };
             }
         }
 

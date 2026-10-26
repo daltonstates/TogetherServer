@@ -67,6 +67,12 @@ export const simpleHostingVariants = [
   { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 },
 ];
 
+export async function installHostingReviewClock(page, testCase, now) {
+  const clockDriven = testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused';
+  if (clockDriven) await page.clock.install({ time: now });
+  return clockDriven;
+}
+
 const permissionCodes = { 'not-allowed': 'HostingPermissionRequired', 'permission-unknown': 'RosterUnavailable',
   'permission-review': 'RosterRollback', 'permission-denied': 'HostingPermissionRequired' };
 const permissionMessages = {
@@ -352,7 +358,6 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       openingReadOnly: true, ...assertStoppedProgressRequests(state, 0) });
     if (testCase.stoppedProgressJourney !== 'required') {
       const refused = testCase.stoppedProgressJourney === 'refused';
-      if (refused) await page.clock.install();
       const shared = page.waitForResponse(response => response.url().endsWith('/hosting/share-stopped-progress') &&
         response.request().method() === 'POST', { timeout: 8000 });
       await share.click();
@@ -402,7 +407,6 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
     assertPreparedHostingRequests(state, 0);
     record.assertions.push({ preparedOpeningReadOnly: true, preparedRefreshReadOnly: true });
     if (testCase.readyStartTimeout) {
-      await page.clock.install();
       await start.click();
       await modal.getByRole('button', { name: 'Requesting Start...', exact: true }).waitFor({ state: 'visible', timeout: 8000 });
       assertPreparedHostingRequests(state, 1);
