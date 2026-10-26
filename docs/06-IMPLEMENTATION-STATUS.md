@@ -325,7 +325,7 @@ port checks. Only the exact incoming-connection result is advisory; membership
 and permission errors still stop Start. The explicit Host instruction registers
 outbound completed-save sharing after a second exact identity/role check, even
 with the incoming listener off, without enabling it or changing an address.
-Initial connection preparation and explicit planned moves retain their stricter
+Explicit incoming-connection preparation and planned moves retain their stricter
 route checks, final-save/source fencing and exact receipt requirements.
 
 The rendered ordinary-ready connection-warning regression failed before the UI
@@ -371,6 +371,94 @@ no permission: missing/corrupt authority, final payload, route and receipt,
 fenced originals and rotated TLS still fail their existing gates. The common
 roster read is noncreating. The final planned-request and discovery groups pass
 with no global owner key or protected-record changes in those planned cases.
+
+The [0da81b4 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40413053906)
+checks source `0da81b4ac3ae5e0eac7c770610c4183073371261`. Core passes all 14
+remote lifecycle groups and both packaged rehearsal groups; the independent
+rehearsal lane also passes both groups. Desktop passes its other 12 required
+cases and all 14 window-control cases, but real notification delivery/click
+remains blocked by Windows QuietTime. Exact cleanup succeeds. Neither packaging
+nor these results establishes full acceptance.
+The API/source lane passes all 82 feature groups with no skips and all eight
+packaged API groups, including its protected-state restart checks.
+Existing passes all 27 gates: 1,552 UI tests in 109 files, core checks 114/0,
+all 12 Minecraft fixture cases, Shared Worlds 11/0 with zero recovery skips,
+Shared LiveSave 5/0, Companion 46/0, the 4,102-version history scenario and every
+later gate through update handoff, with no gate left NotRun. No native
+readiness failure occurred, so the new failure diagnostics were not exercised.
+The previously failing Minecraft cases did not recur; their earlier exit cause
+remains unknown. The run finishes with 14 successful and three failed lanes:
+pairing's stale preparation assertion, the ordinary sharing refusal and the
+QuietTime notification block. It is not a full acceptance pass.
+
+That run's pairing UX passes all three cases. Both network modes then stop at a
+stale harness expectation: ordinary Prepare returns LocalHostingPrepared with
+Ready true and its incoming-route warning retained, while the harness requires
+LocalConnectionSetupRequired. Later pairing stages are unverified for these
+bytes. The harness correction preserves the explicit incoming-connection and
+planned-move checks and consumes one successful ordinary Start in both modes.
+Its new initial-preparation fake regression and adjacent guided group pass on
+a fresh root. The first focused run failed earlier at an atomic protected-file
+replacement in synthetic publication setup (UnauthorizedAccessException), before
+that fixture opened its source or started anything. The actual contender/cause
+is unproven; no I/O retry, timeout extension or storage change was added. Both
+edited check projects compile strictly and their targeted formatting passes.
+
+The first ordinary automatic-sharing journey passes all nine stages in
+161,879 ms. Its second journey refuses original-publication-2-start with
+LatestSaveChanged after 6,586 ms, with no active run. A separate diagnostic
+journey passes all nine stages in 152,776 ms. All three report empty disposable
+jobs. The failed ordinary attempt remains failed; its report lacks the refusal
+boundary and cannot establish a cause. A deterministic source schedule fails
+before the correction: publishing this PC's current advertisement during
+verification invalidates the unchanged exact publication. An initial proposed
+stale-background schedule did not pause its snapshot as intended: the manager
+returns a cached snapshot when its lifecycle gate is busy. That test was
+discarded and replaced with an exact build/publish barrier. The valid regression
+establishes the source race, not attribution of the CI failure.
+
+The correction serializes only local advertisement snapshot/sign/publication
+per world. Explicit discovery settles current local metadata before its
+observation, using retained keys and existing signed routes; it does not create
+a TLS identity. Background publishers yield before building during preparation
+and discard a captured snapshot if preparation begins before publication.
+After the build, exact root/device/key/roster, current access, consent and sharing
+policy are rechecked. No transfer or payload hashing holds this gate, and
+Refresh remains read-only. Changed material still invalidates Start.
+
+The unchanged-publication regression passes after the fix, including the
+prepared 315-file publication at its real verification callback. An exact private,
+normally null build/publish barrier proves both early background yield and
+post-build discard; its release result is asserted outside the callback so a
+swallowed diagnostic timeout cannot pass the test. The discarded manager-gate
+test is not counted as proof. Missing and malformed owner/member keys retain
+their exact bytes/names without quarantine or creation. Post-build identity,
+membership and consent changes refuse publication, and canceled gate waits
+release without changing protected identity records. The focused prepared
+discovery, published-progress reuse and independent background groups pass.
+Strict builds of both edited check projects pass with zero warnings/errors.
+The integrated solution also builds with warnings as errors (zero warnings and
+errors) and passes whole-solution formatting verification.
+The ordinary hosted report now classifies only allowlisted refusal boundaries;
+unknown messages remain Unclassified and never authorize a retry. Fresh hosted
+verification of this corrected source is required.
+
+All 108 hosting UI captures pass with 667 screenshots, zero failed/skipped/layout
+or fatal findings. The retained archive digest, source/run context and all seven
+UI assets independently match the exact candidate. Four actual PNGs were sampled
+for desktop play, the single original-world overview, narrow 150% save-verification
+timings and the unconfirmed-Start action. This is a bounded visual review, not a
+claim that every screenshot was inspected or that a real game ran.
+
+The 0da81b4 portable is 66,215,462 bytes, SHA-256
+`66eea78802d801637aab28fa63f82e33a8d6fbc576481a3f8c40550297d91b90`;
+installer is 60,681,551 bytes, SHA-256
+`83b4b8260e96253765b1033c59e397c2699d8665879f22c6e517b49478ceeb8f`.
+Static bundle parsing independently matches its application assembly and UI
+assets; six hosted installer checks and all three wizard choices pass. Both
+EXEs are unsigned, review-only, unpublished and uninstalled. Evidence is retained
+under ignored `local-data/simplified-hosting-0da81b4/`. These bytes retain the
+failed acceptance cases above and are not a physical repair claim.
 
 The owner reconfirmed the unattended target-world-only session and main world's
 stopped state. Static read-only inspection still finds one installed/running

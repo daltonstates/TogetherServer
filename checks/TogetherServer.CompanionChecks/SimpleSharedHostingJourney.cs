@@ -65,6 +65,20 @@ internal static partial class CoreRemoteJourney
         var timer = Stopwatch.StartNew();
         static string FixedCode(string? value) => value is { Length: > 0 and <= 64 } && value.All(char.IsAsciiLetterOrDigit)
             ? value : "Unavailable";
+        // Match fixed application refusals without retaining any free text.
+        // An unknown message remains unclassified and cannot authorize a retry.
+        static string OriginalRefusalBoundary(ActionResult result) => (result.Code, result.Message) switch
+        {
+            ("LatestSaveChanged", "A shared save or permission changed. Check the latest save again before Start.") => "OriginalResolverFinalObservation",
+            ("LatestSaveChanged", "The original publication or current sharing permission changed. Check the latest save again before Start.") => "OriginalManagerInitialObservation",
+            ("LaunchFailed", "Server launch failed: The original save's current signed information changed.") => "OriginalFinalPrelaunchObservation",
+            ("LaunchFailed", "Server launch failed: The current original publication, settings or sharing permission changed.") or
+            ("LaunchFailed", "Server launch failed: The held original publication or its exact world changed.") or
+            ("LaunchFailed", "Server launch failed: The original Start profile changed after review.") or
+            ("LaunchFailed", "Server launch failed: The original owner's retained identity or current consent changed.") or
+            ("LaunchFailed", "Server launch failed: The current original publication or signed roster is unavailable.") => "OriginalFinalPrelaunchScope",
+            _ => result.Ok ? "None" : "Unclassified"
+        };
         try
         {
             host = Launch("host", "--host", ports[0], hostData);
@@ -148,6 +162,7 @@ internal static partial class CoreRemoteJourney
                     durationMs = timer.ElapsedMilliseconds - startedMs,
                     ok = originalStart.Ok,
                     resultCode = FixedCode(originalStart.Code),
+                    refusalBoundary = OriginalRefusalBoundary(originalStart),
                     snapshotAvailable = originalStart.Snapshot is not null,
                     requestedProfilePresent = originalStart.Snapshot?.Settings.Profiles.Any(item => item.Id == profile.Id) == true,
                     runRecordCount = originalStart.Snapshot?.Runs.Count,

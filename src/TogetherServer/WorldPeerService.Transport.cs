@@ -810,9 +810,7 @@ internal sealed partial class WorldPeerService : IDisposable
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         if (KnownRosterRevision(group) >= group.Roster.Revision && Access(group, group.DeviceId, publicKey) is not null)
         {
-            var advertisement = await BuildAdvertisementAsync(group, bounded.Token);
-            Store(group).Publish(group.DeviceId, key, advertisement.Routes, advertisement.Sessions,
-                advertisement.Branches, advertisement.AvailableVersionHashes);
+            await PublishLocalAdvertisementAsync(group, bounded.Token);
         }
         var visited = new HashSet<string>(StringComparer.Ordinal);
         // A first reachable peer can teach this PC another member's route.
@@ -927,9 +925,7 @@ internal sealed partial class WorldPeerService : IDisposable
             var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
             if (KnownRosterRevision(group) >= group.Roster.Revision && Access(group, group.DeviceId, publicKey) is not null)
             {
-                var advertisement = await BuildAdvertisementAsync(group, budget);
-                Store(group).Publish(group.DeviceId, key, advertisement.Routes, advertisement.Sessions,
-                    advertisement.Branches, advertisement.AvailableVersionHashes);
+                await PublishLocalAdvertisementAsync(group, budget, background: true);
             }
             var peers = Store(group).Project().Peers.Where(value => value.Authorized && !value.HasConflict && value.PublicKey != publicKey)
                 .SelectMany(value => value.Routes);

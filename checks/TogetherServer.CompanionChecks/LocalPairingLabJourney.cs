@@ -108,6 +108,7 @@ internal static partial class CoreRemoteJourney
         string? groupKey = null, receivedBranchVersionHash = null;
         string? candidateSessionState = null;
         Guid? candidateSessionId = null;
+        int? guidedProcessId = null;
         var discoveredHost = false;
         var connectedOwner = false;
         var connectedObserver = false;
@@ -491,13 +492,13 @@ internal static partial class CoreRemoteJourney
                     prepared = await ObserveAsync("PrepareLocal", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                         new(true, true, ServerFile: Path.GetFullPath(fixturePath))));
-                    // This first action prepares the copy without incoming
-                    // consent. Its connection blocker must remain actionable;
-                    // only the later explicit LAN action can make Start ready.
+                    // This ordinary action prepares the local copy without
+                    // incoming consent. The route warning remains visible;
+                    // valid local hosting does not enable incoming connections.
                     LabRequire(prepared.LocalProfileId is not null && prepared.LocalProfileId != Guid.Empty &&
-                        prepared.BranchHash is not null && !prepared.Ok && prepared.Allowed && prepared.Consented &&
-                        !prepared.ReadyForManualStart && !prepared.Running &&
-                        prepared.Code == "LocalConnectionSetupRequired" && prepared.Remedy?.Kind == "Connection" &&
+                        prepared.BranchHash is not null && prepared.Ok && prepared.Allowed && prepared.Consented &&
+                        prepared.ReadyForManualStart && !prepared.Running &&
+                        prepared.Code == "LocalHostingPrepared" && prepared.Remedy is null &&
                         prepared.Steps.Select(step => step.Key).SequenceEqual(["permission", "server", "save", "ports", "connection"]) &&
                         prepared.Steps.Take(4).All(step => step.State == "Ready") && prepared.Steps[4].State == "ActionRequired",
                         "SyntheticHostingPreparationRejected");
@@ -538,8 +539,8 @@ internal static partial class CoreRemoteJourney
                             "PreparedCandidateBranchNotAuthorized");
                     }
                     using var startClient = LocalClient(friendPort);
-                    // Peer/save checks can wait behind the shared sync gate.
-                    // Match the UI's 120-second Start budget without retrying.
+                    // Current peer metadata and exact-save checks use the UI's
+                    // bounded operation budget. Issue this Start request once.
                     startClient.Timeout = TimeSpan.FromSeconds(120);
                     var result = await ObserveAsync("Start", startClient, () => PostAsync<object, JsonElement>(startClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/start", new
@@ -551,52 +552,40 @@ internal static partial class CoreRemoteJourney
                         }));
                     var after = await SnapshotAsync("AfterStart");
                     if (lanAddress is null)
-                    {
-                        // Ordinary peer-route rules deliberately refuse loopback.
-                        LabRequire(!result.GetProperty("ok").GetBoolean() && !prepared.ReadyForManualStart &&
-                            prepared.Code == "LocalConnectionSetupRequired" && prepared.Remedy?.Kind == "Connection" &&
-                            result.GetProperty("code").GetString() == "LocalHostingPreparationRequired", "LoopbackHostingConnectionBlockerMissing");
-                        LabRequire(after.Runs.All(run => run.ProcessId is null), "BlockedGuidedStartCreatedProcess");
-                    }
-                    else
-                    {
-                        LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted",
-                            "GuidedLanStartRejected");
-                        var run = await WaitForFixtureIdentityAsync(after.Runs.Single(item => item.ProfileId == exactLocalProfile),
-                            () => SnapshotAsync("MatchedRun"));
-                        TrackRun(run);
-                        candidateSessionId = run.RunOperationId;
-                        hostedCopy = true;
-                    }
+                        LabRequire(!after.Settings.CompanionListeningEnabled && !after.Settings.RemoteControlsEnabled,
+                            "LocalStartEnabledIncomingConnections");
+                    LabRequire(result.GetProperty("ok").GetBoolean() && result.GetProperty("code").GetString() == "SeparateCopyStarted",
+                        "GuidedLocalStartRejected");
+                    var run = await WaitForFixtureIdentityAsync(after.Runs.Single(item => item.ProfileId == exactLocalProfile),
+                        () => SnapshotAsync("MatchedRun"));
+                    TrackRun(run);
+                    candidateSessionId = run.RunOperationId;
+                    guidedProcessId = run.ProcessId;
+                    hostedCopy = true;
                     return null;
                 });
 
                 await Stage("local-copy-hosting", async () =>
                 {
-                    if (lanAddress is not null)
-                    {
-                        var candidate = await CandidateSnapshotAsync();
-                        var active = candidate.Runs.Single(item => item.ProfileId == localProfileId);
-                        LabRequire(active.State == "Process running" && active.RunOperationId == candidateSessionId &&
-                            candidate.Runs.Count(item => item.ProcessId is not null) == 1, "GuidedCandidateRunChanged");
-                        var source = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
-                        LabRequire(source.Runs.All(item => item.ProcessId is null), "OriginalHostRestartedDuringCopyHosting");
-                        var restored = candidate.Settings.Profiles.Single(item => item.Id == localProfileId);
-                        LabRequire(AppInstance.ContainsPath(friendData, restored.WorldDirectory) && restored.WorldDirectory != profile.WorldDirectory &&
-                            await File.ReadAllTextAsync(Path.Combine(restored.WorldDirectory, "world.dat")) == "Synthetic fixture payload " + runId.ToString("N"),
-                            "GuidedStartDidNotUseReceivedPayload");
-                        return null;
-                    }
+                    // Consume the exact run started by the preceding stage.
+                    // Neither mode issues another Start to verify this copy.
+                    var candidate = await CandidateSnapshotAsync();
+                    var active = candidate.Runs.Single(item => item.ProfileId == localProfileId);
+                    LabRequire(guidedOperations.Count(operation => operation.Id == "Start") == 1 &&
+                        guidedOperations.Single(operation => operation.Id == "Start").State == "Returned",
+                        "GuidedStartRepeated");
+                    LabRequire(active.State == "Process running" && active.RunOperationId == candidateSessionId && active.ProcessId == guidedProcessId &&
+                        candidate.Runs.Count(item => item.ProcessId is not null) == 1, "GuidedCandidateRunChanged");
+                    var source = await PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot");
+                    LabRequire(source.Runs.All(item => item.ProcessId is null), "OriginalHostRestartedDuringCopyHosting");
+                    var restored = candidate.Settings.Profiles.Single(item => item.Id == localProfileId);
+                    LabRequire(AppInstance.ContainsPath(friendData, restored.WorldDirectory) && restored.WorldDirectory != profile.WorldDirectory &&
+                        await File.ReadAllTextAsync(Path.Combine(restored.WorldDirectory, "world.dat")) == "Synthetic fixture payload " + runId.ToString("N"),
+                        "GuidedStartDidNotUseReceivedPayload");
+                    if (lanAddress is not null) return null;
                     LabRequire((await PostAsync<object, JsonElement>(first, "/api/local/mode/host", new { })).GetProperty("ok").GetBoolean(), "LocalCopyHostModeRejected");
-                    var started = await PostAsync<object, ActionResult>(first,
-                        $"/api/local/profiles/{localProfileId}/shared-world/hosting/start", new { branchHash = prepared!.BranchHash, acceptSplitWarning = true });
-                    LabRequire(started.Ok, "ExplicitLocalCopyStartRejected");
-                    var run = await WaitForFixtureIdentityAsync(started.Snapshot.Runs.Single(item => item.ProfileId == localProfileId),
-                        () => PairingLabGetAsync<HostSnapshot>(first, "/api/local/snapshot"));
-                    TrackRun(run);
-                    hostedCopy = true;
                     LabRequire((await PostAsync<object, ActionResult>(first, $"/api/local/profiles/{localProfileId}/stop", new { })).Ok, "LocalCopyPipeStopRejected");
-                    _ = await WaitForRunStateAsync(first, run.ProfileId, "Offline");
+                    _ = await WaitForRunStateAsync(first, active.ProfileId, "Offline");
                     return null;
                 });
                 if (lanAddress is not null) await Stage("new-host-notice", async () =>

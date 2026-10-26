@@ -60,6 +60,7 @@ internal sealed partial class WorldPeerService
     private sealed class WorldExchangeGates
     {
         internal SemaphoreSlim Metadata { get; } = new(1, 1);
+        internal SemaphoreSlim LocalAdvertisement { get; } = new(1, 1);
         internal SemaphoreSlim Wire { get; } = new(1, 1);
         internal SemaphoreSlim Transfer { get; } = new(1, 1);
         internal Dictionary<string, PeerTransferFlight> Transfers { get; } = new(StringComparer.Ordinal);
@@ -144,10 +145,14 @@ internal sealed partial class WorldPeerService
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(TimeSpan.FromSeconds(10));
         var verifiedResponse = false;
+        var localAdvertisementSettled = false;
+        using var preparation = BeginHostingPreparation(root);
         try
         {
             var group = Find(root.GroupKey);
             if (group is null || group.Root != root) return false;
+            await PublishLocalAdvertisementAsync(group, bounded.Token, retainedRoutesOnly: true);
+            localAdvertisementSettled = true;
             using var key = RetainedLocalKey(group);
             if (key is null) return false;
             var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
@@ -181,6 +186,8 @@ internal sealed partial class WorldPeerService
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            if (!localAdvertisementSettled)
+                throw new InvalidDataException("Current local hosting metadata could not be checked within the discovery budget.");
             SetPeerWarning(root.GroupKey, "Signed discovery reached its time limit. Existing signed saves were kept.");
             // This reports at least one fresh authenticated response. Other
             // unavailable routes remain Unknown and never grant Start authority.

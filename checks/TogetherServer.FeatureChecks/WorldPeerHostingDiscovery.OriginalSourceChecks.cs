@@ -10,6 +10,9 @@ internal static partial class WorldPeerHostingDiscoveryChecks
 {
     private static async Task OriginalPublicationStartChecksAsync(string parent)
     {
+        await StaleBackgroundAdvertisementScheduleAsync(parent);
+        await OriginalAdvertisementScheduleAsync(parent);
+        await LocalAdvertisementIdentityChecksAsync(parent);
         using (var fixture = new OriginalPublicationFixture(parent, "two-new-publications"))
         {
             for (var attempt = 0; attempt < 2; attempt++)
@@ -65,7 +68,8 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 if (fault == "material")
                 {
                     var store = Store(fixture.Data, fixture.Root, fixture.Base.Target.Roster);
-                    var current = store.ReadPage().Announcements.Single(item => item.DeviceId == Guid.Empty);
+                    var current = store.ReadPage().Announcements.Where(item => item.DeviceId == Guid.Empty)
+                        .OrderByDescending(item => item.Revision).First();
                     store.Publish(Guid.Empty, fixture.Base.Owner, current.Routes, current.Sessions, current.Branches,
                         [.. current.AvailableVersionHashes, new string('A', 64)]);
                 }
@@ -113,6 +117,82 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             using var released = new FileStream(fixture.PublicationFile(fixture.Current), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             Require(released.CanWrite, "canceled original verification leaked its held payload");
         }
+    }
+
+    private static async Task StaleBackgroundAdvertisementScheduleAsync(string parent)
+    {
+        using var fixture = new OriginalPublicationFixture(parent, "stale-background-advertisement", fileCount: 3);
+        Require((await fixture.Peers.EnsureOwnerHostingMembershipAsync(fixture.Root, default)).Ok,
+            "the stale background schedule lacked its original signed membership");
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var group = typeof(WorldPeerService).GetMethod("Find", flags)!.Invoke(fixture.Peers, [fixture.Root.GroupKey])!;
+        using var release = new ManualResetEventSlim();
+        var barrierReleased = false;
+        var built = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var barrier = typeof(WorldPeerService).GetField("localAdvertisementBuiltForChecks", flags)!;
+        barrier.SetValue(fixture.Peers, (Action)(() =>
+        {
+            built.TrySetResult(true);
+            barrierReleased = release.Wait(TimeSpan.FromSeconds(5));
+        }));
+        var background = Task.Run(async () => await (Task)typeof(WorldPeerService).GetMethod("SyncScheduledGroupAsync", flags)!
+            .Invoke(fixture.Peers, [group, CancellationToken.None, CancellationToken.None])!);
+        try
+        {
+            await built.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            using var preparation = fixture.Peers.BeginHostingPreparation(fixture.Root);
+            var before = fixture.Peers.LatestObservationHash(fixture.Root);
+            release.Set();
+            await background.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(barrierReleased && before is not null && fixture.Peers.LatestObservationHash(fixture.Root) == before,
+                "a background advertisement begun before preparation published stale material after preparation started");
+            var builds = 0;
+            barrier.SetValue(fixture.Peers, (Action)(() => builds++));
+            await (Task)typeof(WorldPeerService).GetMethod("SyncScheduledGroupAsync", flags)!
+                .Invoke(fixture.Peers, [group, CancellationToken.None, CancellationToken.None])!;
+            Require(builds == 0 && fixture.Peers.LatestObservationHash(fixture.Root) == before && fixture.Base.Target.Handler.Challenges == 0,
+                "a new background publisher did not yield before snapshot/network work during preparation");
+            fixture.RequireNoCopyOrTransfer();
+        }
+        finally { release.Set(); barrier.SetValue(fixture.Peers, null); await background; }
+    }
+
+    private static async Task OriginalAdvertisementScheduleAsync(string parent)
+    {
+        using var fixture = new OriginalPublicationFixture(parent, "local-advertisement-schedule", fileCount: 3);
+        Require((await fixture.Peers.EnsureOwnerHostingMembershipAsync(fixture.Root, default)).Ok,
+            "the local advertisement schedule lacked its original signed membership");
+        var armed = await fixture.Peers.AnnounceLocalHostingAsync(fixture.Root, default);
+        Require(armed.Ok || armed.Code == "RecipientConnectionRequired", "the local advertisement schedule could not arm its existing world");
+        var published = false;
+        var changed = false;
+        var version = fixture.Current.VersionHash;
+        var result = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default, update =>
+        {
+            if (published || update.Phase != "Verifying") return;
+            published = true;
+            var before = fixture.Peers.LatestObservationHash(fixture.Root);
+            // Exercise the real background metadata builder at the exact
+            // verification boundary. The publication and setup stay unchanged.
+            var advertisement = LocalAdvertisementForChecksAsync(fixture.Peers, fixture.Root).GetAwaiter().GetResult();
+            Store(fixture.Data, fixture.Root, fixture.Base.Target.Roster).Publish(Guid.Empty, fixture.Base.Owner,
+                advertisement.Routes, advertisement.Sessions, advertisement.Branches, advertisement.AvailableVersionHashes);
+            changed = before != fixture.Peers.LatestObservationHash(fixture.Root);
+        });
+        using var source = result.Source;
+        Require(published && !changed && result.Ok && source?.Descriptor.Version.VersionHash == version,
+            $"same-publication local advertisement invalidated original Start: {result.Code}; published={published}; materialChanged={changed}");
+        source.RequireCurrent(fixture.Data, fixture.Root);
+        fixture.RequireNoCopyOrTransfer();
+    }
+
+    private static async Task<WorldPeerAdvertisement> LocalAdvertisementForChecksAsync(WorldPeerService service, SharedWorldPeerRoot root)
+    {
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var group = typeof(WorldPeerService).GetMethod("Find", flags)!.Invoke(service, [root.GroupKey])!;
+        var method = typeof(WorldPeerService).GetMethod("BuildAdvertisementAsync", flags)!;
+        object?[] arguments = method.GetParameters().Length == 2 ? [group, CancellationToken.None] : [group, CancellationToken.None, true];
+        return await (Task<WorldPeerAdvertisement>)method.Invoke(service, arguments)!;
     }
 
     private static void RequireHeldOriginal(string path)

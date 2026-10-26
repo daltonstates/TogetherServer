@@ -6,11 +6,38 @@ internal static partial class LocalHostingChecks
 {
     private static async Task PreparedRouteWarningsAsync(string root)
     {
+        await InitialPreparationRouteWarningAsync(root);
         foreach (var route in new[] { "listener-off", "loopback", "outside-unreachable", "checker-unavailable" })
             await PreparedRouteWarningAsync(root, route, null);
         foreach (var fault in new[] { "grant", "revoked", "expired", "consent", "late-revoked", "cancel",
             "PeerMembershipRequired", "HostingPermissionChanged" })
             await PreparedRouteWarningAsync(root, "listener-off", fault);
+    }
+
+    private static async Task InitialPreparationRouteWarningAsync(string root)
+    {
+        using var fixture = new Fixture(root, granted: true);
+        var checker = new LocalHostingRouteCheck(_ =>
+        {
+            var settings = fixture.Data.LoadSettings();
+            return Task.FromResult(new LocalHostingRouteSnapshot(settings.CompanionEndpoint, fixture.ControlPort,
+                settings.CompanionBindAddress, false, false, CompanionListenerStates.Off, null, false));
+        }, (_, _, _) => throw new InvalidOperationException("Ordinary local preparation must not probe an incoming route."));
+        var service = fixture.WithIncomingListener(checker,
+            () => throw new InvalidOperationException("Ordinary local preparation must not synchronize a listener."),
+            (_, _) => throw new InvalidOperationException("Ordinary local preparation must not announce an incoming route."));
+        var prepared = FriendLocalHostingService.WithRemedy(await service.PrepareAsync(fixture.ProfileId, new(true, true)));
+        Require(prepared.Ok && prepared.Code == "LocalHostingPrepared" && prepared.ReadyForManualStart &&
+            !prepared.Running && prepared.Allowed && prepared.Consented && prepared.Remedy is null &&
+            prepared.LocalProfileId is not null && prepared.BranchHash is not null &&
+            prepared.Steps.Select(step => step.Key).SequenceEqual(["permission", "server", "save", "ports", "connection"]) &&
+            prepared.Steps.Take(4).All(step => step.State == "Ready") && prepared.Steps[4].State == "ActionRequired" &&
+            !fixture.Data.LoadSettings().CompanionListeningEnabled && !fixture.Data.LoadSettings().RemoteControlsEnabled &&
+            fixture.Data.LoadSettings().CompanionBindAddress == "127.0.0.1" &&
+            fixture.Data.LoadSettings().CompanionEndpoint == $"https://127.0.0.1:{fixture.ControlPort}" &&
+            new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 1 &&
+            fixture.Data.LoadRuns().Count == 0 && fixture.Driver.ProcessAttempts == 0,
+            "initial ordinary preparation lost local readiness or its route warning, enabled incoming access, or started a process");
     }
 
     private static async Task PreparedRouteWarningAsync(string root, string route, string? fault)

@@ -94,6 +94,8 @@ internal static partial class LocalHostingChecks
         var announcements = 0;
         var observations = 0;
         var semanticSetupRejected = false;
+        var localAdvertisementChecked = false;
+        var localAdvertisementChanged = false;
         fixture.Manager.SharedHostingObservation = world =>
         {
             observations++;
@@ -104,6 +106,13 @@ internal static partial class LocalHostingChecks
             resolving++;
             var result = await peers.ResolveLatestPreparedStartSourceAsync(world, localId, branchHash, token, update =>
             {
+                if (fault == "none" && !localAdvertisementChecked && update.Phase == "Verifying")
+                {
+                    localAdvertisementChecked = true;
+                    var before = peers.LatestObservationHash(world);
+                    fixture.PublishCurrentPreparedAdvertisementAsync(peers).GetAwaiter().GetResult();
+                    localAdvertisementChanged = before != peers.LatestObservationHash(world);
+                }
                 if (update.Phase == "PreparingCopy") copying++;
                 if (update.CompletedFiles is { } completed) verifiedFiles = Math.Max(verifiedFiles, completed);
                 progress?.Invoke(update);
@@ -178,7 +187,8 @@ internal static partial class LocalHostingChecks
         }
         if (fault == "none")
         {
-            Require(reachedDriver && heldAtDriver && fixture.Driver.ProcessAttempts == 1 && resolving == 1 && announcements == 1 && observations == 2 &&
+            Require(reachedDriver && heldAtDriver && localAdvertisementChecked && !localAdvertisementChanged &&
+                fixture.Driver.ProcessAttempts == 1 && resolving == 1 && announcements == 1 && observations == 2 &&
                 verifiedFiles == 315 && publication.Version.Number == 4 && publication.Version.Files.Count == 315 &&
                 publication.Version.ParentHash == publication.Branch.Offer.Version.VersionHash &&
                 (await fixture.Manager.VerifiedLocalContinuationAsync(fixture.ProfileId, prepared.LocalProfileId.Value, default))?
@@ -337,6 +347,19 @@ internal static partial class LocalHostingChecks
                 (id, key) => SharedWorldPeerTrust.AccessFromRoster(PublicationRoot, roster, id, key)));
             store.Publish(DeviceId, member, [], [], [new(branch.BranchHash, branch.Offer.Version.VersionHash,
                 version.VersionHash, version.ParentHash, version.Number)], [version.VersionHash]);
+        }
+
+        internal async Task PublishCurrentPreparedAdvertisementAsync(WorldPeerService peers)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var group = typeof(WorldPeerService).GetMethod("Find", flags)!.Invoke(peers, [PublicationRoot.GroupKey])!;
+            var advertisement = await (Task<WorldPeerAdvertisement>)typeof(WorldPeerService).GetMethod("BuildAdvertisementAsync", flags)!
+                .Invoke(peers, [group, CancellationToken.None, true])!;
+            var roster = PreparedRoster;
+            new SharedWorldPeerStore(Data, PublicationRoot, new SharedWorldPeerTrust(PublicationRoot,
+                (id, key) => SharedWorldPeerTrust.AccessFromRoster(PublicationRoot, roster, id, key)))
+                .Publish(DeviceId, member, advertisement.Routes, advertisement.Sessions, advertisement.Branches,
+                    advertisement.AvailableVersionHashes);
         }
 
         internal void ChangePreparedCopyObservation(WorldSeparateCopyBranch branch, SharedWorldVersion version)

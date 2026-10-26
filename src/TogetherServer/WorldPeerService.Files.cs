@@ -83,11 +83,11 @@ internal sealed partial class WorldPeerService
     }
 
     private async Task<IReadOnlyList<LocalSave>> LocalSavesAsync(Group group,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? retainedPublicKey = null)
     {
         var result = new List<LocalSave>();
-        using var localKey = LocalKey(group);
-        var localPublicKey = localKey is null ? null : Convert.ToBase64String(localKey.ExportSubjectPublicKeyInfo());
+        using var localKey = retainedPublicKey is null ? LocalKey(group) : null;
+        var localPublicKey = retainedPublicKey ?? (localKey is null ? null : Convert.ToBase64String(localKey.ExportSubjectPublicKeyInfo()));
         var published = await manager.PeerPublishedVersionAsync(group.Root);
         if (published is not null && MatchesRoot(group, published)) result.Add(new(new(published), null, true));
         if (Directory.Exists(ReceivedRoot(data, group)))
@@ -182,7 +182,7 @@ internal sealed partial class WorldPeerService
     }
 
     private async Task<SharedWorldVersion?> FindManifestAsync(Group group, string versionHash,
-        long? number, CancellationToken cancellationToken)
+        long? number, CancellationToken cancellationToken, IReadOnlyList<LocalSave>? retainedInventory = null)
     {
         // Metadata followers can fetch signed authority proof manifests, but no payload.
         var authority = new WorldAuthorityStore(data);
@@ -191,7 +191,7 @@ internal sealed partial class WorldPeerService
         if (record is not null)
             return number is null || number == record.Version.Number ? record.Version :
                 authority.ReadReviewProofVersion(record, number.Value);
-        var local = await LocalSavesAsync(group, cancellationToken);
+        var local = retainedInventory ?? await LocalSavesAsync(group, cancellationToken);
         foreach (var item in local)
         {
             if (item.Descriptor.Version.VersionHash == versionHash &&
@@ -583,19 +583,21 @@ internal sealed partial class WorldPeerService
             System.Text.Encoding.UTF8.GetBytes($"TogetherServer world hosting lane v1\n{group.Root.GroupKey}\n{group.DeviceId:N}")));
 
     private async Task<WorldPeerAdvertisement> BuildAdvertisementAsync(Group group,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool retainedRoutesOnly = false)
     {
-        using var key = LocalKey(group);
+        using var key = retainedRoutesOnly ? RetainedAdvertisementKey(group) : LocalKey(group);
         if (key is null) return new([], [], [], []);
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         var access = Access(group, group.DeviceId, publicKey);
         var snapshot = await manager.SnapshotAsync();
-        var routes = new List<SharedWorldPeerRoute>();
+        var previous = Store(group).Project();
+        var routes = retainedRoutesOnly ? previous.Peers.Where(peer => peer.DeviceId == group.DeviceId && peer.PublicKey == publicKey)
+            .SelectMany(peer => peer.Routes).ToList() : new List<SharedWorldPeerRoute>();
         // A signed configured contact is an address hint, not listener or
         // reachability evidence. Retaining it while incoming connections are
         // off lets an outbound-only receiver discover this PC after its local
         // owner explicitly enables hosting, even with the original Host offline.
-        if (group.SharingEnabled && HostIdentity.TryEndpoint(snapshot.Settings.CompanionEndpoint, out var configured) &&
+        if (!retainedRoutesOnly && group.SharingEnabled && HostIdentity.TryEndpoint(snapshot.Settings.CompanionEndpoint, out var configured) &&
             configured.Port == snapshot.Settings.CompanionPort &&
             System.Net.IPAddress.TryParse(configured.Host, out var advertisedAddress) &&
             System.Net.IPAddress.TryParse(snapshot.Settings.CompanionBindAddress, out var boundAddress) &&
@@ -612,8 +614,7 @@ internal sealed partial class WorldPeerService
                 if (SharedWorldPeerTrust.ValidRoute(route)) routes.Add(route);
             }
         }
-        var previous = Store(group).Project();
-        var local = await LocalSavesAsync(group, cancellationToken);
+        var local = await LocalSavesAsync(group, cancellationToken, retainedRoutesOnly ? publicKey : null);
         var branches = new List<SharedWorldPeerBranch>();
         var sessions = new List<SharedWorldPeerSession>();
         var producedLanes = local.Where(item => item.ProducedHere)
@@ -678,7 +679,8 @@ internal sealed partial class WorldPeerService
                         // Only exact signed ancestry may advance this session.
                         _ = await WorldPeerLatestSelection.SelectAsync(group.Root, [candidate.Descriptor],
                             [old.HeadVersionHash ?? old.BaseVersionHash], (_, _) => Task.CompletedTask,
-                            (hash, number, token) => FindManifestAsync(group, hash, number, token), cancellationToken);
+                            (hash, number, token) => FindManifestAsync(group, hash, number, token,
+                                retainedRoutesOnly ? local : null), cancellationToken);
                         finalHead = candidate.Descriptor.Version.VersionHash;
                     }
                     catch (Exception error) when (PeerFailure(error))
