@@ -28,9 +28,8 @@ internal sealed partial class WorldPeerService
             }
             var snapshot = await manager.CompanionSnapshotAsync();
             using var certificate = new HostIdentity(data).Load();
-            if (!snapshot.Settings.CompanionListeningEnabled || certificate is not { HasPrivateKey: true } ||
-                !SharedWorldPeerTrust.ValidRoute(new(snapshot.Settings.CompanionEndpoint.TrimEnd('/'), HostIdentity.Fingerprint(certificate))))
-                return new(false, "RecipientConnectionRequired", "Open Connection help and deliberately enable incoming connections on this PC, then continue. No connection setting was changed.");
+            var incomingReady = snapshot.Settings.CompanionListeningEnabled && certificate is { HasPrivateKey: true } &&
+                SharedWorldPeerTrust.ValidRoute(new(snapshot.Settings.CompanionEndpoint.TrimEnd('/'), HostIdentity.Fingerprint(certificate)));
             cancellationToken.ThrowIfCancellationRequested();
             lock (stateSync)
             {
@@ -47,6 +46,11 @@ internal sealed partial class WorldPeerService
                 cancellationToken.ThrowIfCancellationRequested();
                 SaveGroup(current with { SharingEnabled = true });
             }
+            // The explicit Host instruction arms outbound completed-save
+            // sharing even when this PC cannot accept an incoming connection.
+            // Planned moves still require callers to resolve this route result.
+            if (!incomingReady)
+                return new(false, "RecipientConnectionRequired", "Incoming connections need setup before another PC can connect here. Open Connection help and deliberately enable incoming connections. No connection setting was changed.");
         }
         catch (Exception error) when (PeerFailure(error))
         {

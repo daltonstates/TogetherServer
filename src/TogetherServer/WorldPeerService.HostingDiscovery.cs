@@ -164,11 +164,17 @@ internal sealed partial class WorldPeerService
                     .Concat(AdditionalRoutes(group)).GroupBy(RouteKey).Select(routes => routes.First())
                     .FirstOrDefault(route => visited.Add(RouteKey(route)));
                 if (route is null) return verifiedResponse;
+                // A stale original-Host route must leave time for another
+                // approved peer inside the same overall discovery budget.
+                using var routeBudget = CancellationTokenSource.CreateLinkedTokenSource(bounded.Token);
+                routeBudget.CancelAfter(TimeSpan.FromSeconds(2));
                 try
                 {
-                    await SyncPeerAsync(group, route, bounded.Token, includePayloads: false);
+                    await SyncPeerAsync(group, route, routeBudget.Token, includePayloads: false);
                     verifiedResponse = true;
                 }
+                catch (OperationCanceledException) when (routeBudget.IsCancellationRequested && !bounded.IsCancellationRequested)
+                { SetPeerWarning(root.GroupKey, "A known peer could not refresh its signed information. Existing signed saves were kept."); }
                 catch (Exception error) when (PeerFailure(error))
                 { SetPeerWarning(root.GroupKey, "A known peer could not refresh its signed information. Existing signed saves were kept."); }
             }
@@ -176,7 +182,9 @@ internal sealed partial class WorldPeerService
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             SetPeerWarning(root.GroupKey, "Signed discovery reached its time limit. Existing signed saves were kept.");
-            return false;
+            // This reports at least one fresh authenticated response. Other
+            // unavailable routes remain Unknown and never grant Start authority.
+            return verifiedResponse;
         }
         return verifiedResponse;
     }

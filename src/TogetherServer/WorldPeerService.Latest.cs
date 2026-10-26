@@ -11,6 +11,59 @@ internal sealed record WorldPeerLatestReviewDiagnostic(string Phase, string Reas
 
 internal sealed partial class WorldPeerService
 {
+    // Original Start checks signed metadata and the same exact newest-save
+    // selector before deciding whether recovery retention is needed at all.
+    internal async Task<WorldPeerOriginalStartResult> ResolveLatestOriginalStartSourceAsync(
+        SharedWorldPeerRoot root, CancellationToken cancellationToken,
+        Action<WorldPeerSourceProgress>? progress = null)
+    {
+        WorldPeerOriginalStartSource? source = null;
+        try
+        {
+            using var preparation = BeginHostingPreparation(root);
+            await DiscoverHostingMetadataAsync(root, cancellationToken);
+            var group = Find(root.GroupKey);
+            if (group is null || group.Root != root)
+                return new(false, "WorldMembershipRequired", "Reconnect to this shared world before hosting its save.");
+            if (!await RecoveryAllowedAsync(group, cancellationToken))
+                return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
+            var observation = LatestObservationHash(root) ?? throw new InvalidDataException("The shared save observation changed.");
+            var selected = await LatestLocalSaveAsync(group, cancellationToken, progress);
+            if (selected is null)
+                return new(false, "SharedSaveUnavailable", "No complete shared save is available on this PC yet.");
+            if (!selected.ProducedHere || selected.Vault is not null || selected.Descriptor.Branch is not null)
+                return new(true, "DifferentSharedSaveReady", "The newest completed save needs the existing recovery preparation.",
+                    RecoveryRequired: true);
+            source = WorldPeerOriginalStartSource.Open(data, root, selected.Descriptor.Version, cancellationToken, progress);
+            if (!await LatestLocalSelectionCurrentAsync(root, observation, source.Descriptor.Version.VersionHash,
+                cancellationToken, progress))
+                return new(false, "LatestSaveChanged", "A shared save or permission changed. Check the latest save again before Start.");
+            source.RequireCurrent(data, root, cancellationToken);
+            var result = new WorldPeerOriginalStartResult(true, "LatestSharedSaveReady",
+                "This PC's original publication matches the latest signed history.", source, observation);
+            source = null;
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error) when (PeerFailure(error) || SharedWorldBranchLiveSource.ExpectedFailure(error))
+        {
+            return new(false, "SharedSaveHistoryNeedsReview",
+                "The newest known save or current signed permission needs review. Existing saves were kept.");
+        }
+        finally { source?.Dispose(); }
+    }
+
+    private async Task<bool> LatestLocalSelectionCurrentAsync(SharedWorldPeerRoot root,
+        string observation, string versionHash, CancellationToken cancellationToken,
+        Action<WorldPeerSourceProgress>? progress)
+    {
+        var current = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
+        if (current.Root != root || !await RecoveryAllowedAsync(current, cancellationToken) ||
+            LatestObservationHash(root) != observation) return false;
+        var latest = await LatestLocalSaveAsync(current, cancellationToken, progress);
+        return latest?.Descriptor.Version.VersionHash == versionHash && LatestObservationHash(root) == observation;
+    }
+
     // Optional fixed metadata for an isolated source/packaged lab. Production
     // has no sink. No save identity, path, key, payload or raw error is emitted,
     // and a diagnostic failure cannot change an authorization decision.
@@ -105,12 +158,8 @@ internal sealed partial class WorldPeerService
                     selected.Descriptor.Version.VersionHash, progress);
                 phase = "FinalRecheck";
                 WorldPeerSourceProgress.Report(progress, new("LatestSave", "Repeating current permission and newest-save checks before using the prepared copy."));
-                var current = Find(root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
-                if (LatestObservationHash(root) != observation)
-                    return new(false, "LatestSaveChanged", "New shared save information arrived. Try Host locally again.");
-                var latest = await LatestLocalSaveAsync(current, cancellationToken, progress);
-                if (latest?.Descriptor.Version.VersionHash != source.Descriptor.Version.VersionHash ||
-                    LatestObservationHash(root) != observation)
+                if (!await LatestLocalSelectionCurrentAsync(root, observation, source.Descriptor.Version.VersionHash,
+                    cancellationToken, progress))
                     return new(false, "LatestSaveChanged", "A newer save arrived while preparing. Try Host locally again.", null);
                 return new(true, "LatestSharedSaveReady", "The newest verified continuation is ready.", source, observation);
             }

@@ -41,7 +41,7 @@ describe('local hosting response trust', () => {
   })
   it.each([
     { allowed: false }, { consented: false }, { ok: false }, { running: true }, { needsServerFile: true },
-    { localProfileId: null }, { branchHash: 'bad' }, { gamePort: 0 }, { controlPort: 65536 },
+    { localProfileId: null }, { branchHash: null }, { branchHash: 'bad' }, { gamePort: 0 }, { controlPort: 65536 },
     { steps: prepared.steps.slice(1) },
     { steps: prepared.steps.map(step => step.key === 'save' ? { ...step, state: 'Unknown' } : step) },
     { steps: prepared.steps.map(step => step.key === 'server' ? { ...step, state: 'Passed' } : step) }
@@ -1047,6 +1047,91 @@ it('starts the freshly checked prepared copy once after confirmation without pre
   await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId))
   expect(writes).toHaveLength(1)
 })
+
+it('starts an ordinary prepared branch once while its connection warning remains advisory', async () => {
+  vi.useFakeTimers()
+  const warning = 'This PC still needs an incoming connection check.'
+  const ready: LocalHostingStatus = { ...prepared,
+    steps: prepared.steps.map(step => step.key === 'connection' ? { ...step, state: 'ActionRequired', message: warning } : step) }
+  const calls: { url: string; method?: string; body?: unknown }[] = []
+  let finishStart!: (value: Response) => void
+  const open = vi.fn()
+  const connectionHelp = vi.fn()
+  const gameSetup = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    if (url.endsWith('/start')) return new Promise<Response>(resolve => { finishStart = resolve })
+    return response(url.endsWith('/progress') ? null : ready)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} onOpenConnectionHelp={connectionHelp} onOpenGameSetup={gameSetup} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog', { name: 'Host locally' }))
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeEnabled()
+  const checks = within(dialog.getByRole('list', { name: 'Local hosting checks' }))
+  expect(checks.getByText(warning).closest('li')).toHaveAttribute('data-state', 'ActionRequired')
+  expect(dialog.getAllByRole('button', { name: 'Connection help' }).length).toBeGreaterThan(0)
+  const initialReads = calls.length
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(calls.length).toBeGreaterThan(initialReads)
+  expect(calls.every(call => call.method === undefined)).toBe(true)
+  expect(connectionHelp).not.toHaveBeenCalled()
+  expect(gameSetup).not.toHaveBeenCalled()
+  fireEvent.click(dialog.getByRole('button', { name: 'Start hosting' }))
+  await act(async () => {})
+  fireEvent.click(dialog.getByRole('button', { name: 'Requesting Start...' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(calls.filter(call => call.method)).toEqual([{ url: `${base}/hosting/start`, method: 'POST',
+    body: { localProfileId, branchHash, requestId: null, acceptSplitWarning: true } }])
+  expect(open).not.toHaveBeenCalled()
+  await act(async () => { finishStart(response({ ok: true, code: 'Starting', message: 'Start requested.' })) })
+  expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+  expect(calls.filter(call => call.method)).toHaveLength(1)
+})
+
+it.each(['Prepared', 'Completed'] as const)('keeps an active %s planned move blocked by its connection warning', async recipientState => {
+  vi.useFakeTimers()
+  const blocked: LocalHostingStatus = { ...prepared,
+    branchHash: recipientState === 'Completed' ? null : branchHash,
+    handoffRequest: { pending: recipientState !== 'Completed', code: 'RecipientPrepared', message: 'Review this planned move.',
+      successorDeviceId: '33333333-3333-4333-8333-333333333333', requestId: '44444444-4444-4444-8444-444444444444',
+      recipientState, preparedVersionHash: branchHash, finalVersion: recipientState === 'Completed' ? 4 : null,
+      receiptConfirmed: recipientState === 'Completed', canComplete: false, canCancel: recipientState !== 'Completed' },
+    steps: prepared.steps.map(step => step.key === 'connection' ? { ...step, state: 'ActionRequired' } : step) }
+  const calls: { url: string; method?: string }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method })
+    return response(blocked)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog', { name: 'Host locally' }))
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  fireEvent.click(dialog.getByRole('button', { name: 'Start hosting' }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(calls.every(call => call.method === undefined)).toBe(true)
+})
+
+it.each(['SharingPermissionUnknown', 'HostingPermissionRequired', 'SharingReviewRequired'])(
+  'does not expose a prepared branch through %s hosting access', async code => {
+    vi.useFakeTimers()
+    const calls: { url: string; method?: string }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method })
+      return response(url.endsWith('/access') ? { allowed: false, code, message: 'Current signed hosting access is not confirmed.' }
+        : { ...prepared, steps: prepared.steps.map(step => step.key === 'connection' ? { ...step, state: 'ActionRequired' } : step) })
+    }))
+    render(<FriendLocalHosting {...props} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(20000) })
+    expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start hosting' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(calls.length).toBeGreaterThan(1)
+    expect(calls.every(call => call.url === `${base}/hosting/access` && call.method === undefined)).toBe(true)
+  })
 
 it('starts once after a five-minute active preparation returns ready without requiring another click', async () => {
   vi.useFakeTimers(); vi.setSystemTime('2026-10-25T12:00:00Z')

@@ -6,7 +6,8 @@ public sealed partial class HostManager
     internal Func<SharedWorldPeerRoot, string?>? SharedHostingObservation { get; set; }
     private sealed record HostingObservation(SharedWorldPeerRoot Root, string VersionHash,
         string ObservationHash, DateTimeOffset CheckedUtc,
-        WorldPeerPreparedStartSource? PreparedSource = null, Action? RequireScope = null);
+        WorldPeerPreparedStartSource? PreparedSource = null, Action? RequireScope = null,
+        WorldPeerOriginalStartSource? OriginalSource = null);
     private readonly Dictionary<Guid, HostingObservation> hostingObservations = [];
 
     internal async Task RecordHostingObservationAsync(Guid localProfileId, WorldPeerLatestSourceResult latest,
@@ -28,22 +29,54 @@ public sealed partial class HostManager
             latest.Source.Descriptor.Version.VersionHash, latest.ObservationHash!, cancellationToken, latest.Source, requireScope);
     }
 
+    internal Task RecordOriginalHostingObservationAsync(WorldPeerOriginalStartResult latest,
+        Action requireScope, CancellationToken cancellationToken)
+    {
+        if (!latest.Ok || latest.Source is null || latest.RecoveryRequired ||
+            !SharedWorldPeerTrust.ValidHash(latest.ObservationHash))
+            throw new InvalidDataException("Repeat the original publication checks before starting.");
+        return RecordHostingObservationAsync(latest.Source.Root.ProfileId, latest.Source.Root,
+            latest.Source.Descriptor.Version.VersionHash, latest.ObservationHash!, cancellationToken,
+            requireScope: requireScope, originalSource: latest.Source);
+    }
+
     private async Task RecordHostingObservationAsync(Guid localProfileId, SharedWorldPeerRoot root,
         string versionHash, string observationHash, CancellationToken cancellationToken,
-        WorldPeerPreparedStartSource? preparedSource = null, Action? requireScope = null)
+        WorldPeerPreparedStartSource? preparedSource = null, Action? requireScope = null,
+        WorldPeerOriginalStartSource? originalSource = null)
     {
         await gate.WaitAsync(cancellationToken);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            hostingObservations[localProfileId] = new(root, versionHash, observationHash, clock.GetUtcNow(), preparedSource, requireScope);
+            hostingObservations[localProfileId] = new(root, versionHash, observationHash, clock.GetUtcNow(),
+                preparedSource, requireScope, originalSource);
         }
         finally { gate.Release(); }
     }
 
-    private string? SharedContinuationStartIssue(ServerProfile profile)
+    private string? SharedContinuationStartIssue(ServerProfile profile, out Action? requireOriginalSource)
     {
-        if (profile.SeparateCopySourceProfileId is null) return null;
+        requireOriginalSource = null;
+        if (profile.SeparateCopySourceProfileId is null)
+        {
+            if (!hostingObservations.TryGetValue(profile.Id, out var pendingOriginal) || pendingOriginal.OriginalSource is null)
+                return null;
+            hostingObservations.Remove(profile.Id);
+            void RequireOriginal()
+            {
+                if (pendingOriginal.Root.ProfileId != profile.Id ||
+                    clock.GetUtcNow() - pendingOriginal.CheckedUtc > TimeSpan.FromSeconds(30) ||
+                    pendingOriginal.RequireScope is null ||
+                    SharedHostingObservation is { } observe && observe(pendingOriginal.Root) != pendingOriginal.ObservationHash)
+                    throw new InvalidDataException("The original save's current signed information changed.");
+                pendingOriginal.RequireScope?.Invoke();
+                pendingOriginal.OriginalSource.RequireProfile(data, profile);
+            }
+            try { RequireOriginal(); requireOriginalSource = RequireOriginal; return null; }
+            catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
+            { return "The original publication or current sharing permission changed. Check the latest save again before Start."; }
+        }
         if (SharedHostingObservation is null &&
             (!hostingObservations.TryGetValue(profile.Id, out var pending) || pending.PreparedSource is null)) return null;
         try
@@ -101,7 +134,7 @@ public sealed partial class HostManager
             SharedHostingStartBlock is null) return null;
         try
         {
-            var roster = sharedWorlds.ReadRoster(profile);
+            var roster = sharedWorlds.ReadRoster(profile, requireRetainedSigningKey: true);
             return roster is null ? null : SharedHostingStartBlock(new(roster.OwnerPublicKey, profile.Id, roster.GroupId),
                 sharedWorlds.Status(profile).Latest?.VersionHash);
         }

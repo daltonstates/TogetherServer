@@ -192,7 +192,7 @@ try {
         }
         Invoke-Checked 'UI unit tests' {
             Push-Location ui
-            try { npm test }
+            try { npm test -- --maxWorkers=1 }
             finally { Pop-Location }
         }
         Invoke-Checked 'Locked application restore' { dotnet restore src/TogetherServer/TogetherServer.csproj --locked-mode }

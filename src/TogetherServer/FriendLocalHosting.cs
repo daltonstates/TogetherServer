@@ -193,11 +193,10 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             new LocalHostingStep("connection", "Unknown", !endpointValid || localOnly ?
                 "Hosting can be prepared for this PC. Configure this PC's Friend connection before inviting others; no incoming listener is enabled here." :
                 "This PC has an address configured. A real incoming connection and game join still need checking; preparation changes no network settings.");
-        // A retained copy can remain prepared while its current connection needs
-        // repair. Start refuses that remedy, so passive status must not promise
-        // Start readiness until it clears. Unknown connectivity stays distinct.
-        var connectionBlocksStart = preparationReady && connectionStep.State == "ActionRequired";
-        var ready = preparationReady && !connectionBlocksStart;
+        // An ordinary prepared copy can host locally with incoming connections
+        // disabled or unverified. Retain the route evidence for inviting peers;
+        // current signed permission, save, setup and ports govern local Start.
+        var ready = preparationReady;
         var serverMessage = manualSetup ?
             "This save needs matching add-ons. Open game setup to install and enable them, then continue the checks." :
             serverFile is null ? "Install or select the matching dedicated server already on this PC. No command-line tool is required for an installed Valheim server." :
@@ -206,7 +205,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var code = ambiguous ? "HostingHistoryChoiceRequired" : !access.Allowed ? access.Code :
             hosted?.ReviewRequired == true ? "LocalHostingReviewRequired" :
             stoppedProgressPending ? StoppedProgressCode :
-            connectionBlocksStart ? "LocalConnectionSetupRequired" : ready ? "LocalHostingPrepared" :
+            ready ? "LocalHostingPrepared" :
             running ? "LocalHostingRunning" : manualSetup ? "LocalServerSetupRequired" :
             !access.Consented ? "LocalConsentRequired" : !saveReady ? "LocalHostingPreparationRequired" :
             serverFile is null ? "InstalledServerRequired" : !ports.Available ? "LocalPortsRequired" : "LocalHostingPreparationRequired";
@@ -214,7 +213,6 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             !access.Allowed ? access.Message : hosted?.ReviewRequired == true ? hosted.Message :
             running ? "This shared save is already hosted on this PC. Its local world is preserved." :
             stoppedProgressPending ? StoppedProgressMessage :
-            connectionBlocksStart ? $"The verified hosting copy is prepared. {connectionStep.Message} Open Connection help before starting." :
             ready ? "This PC is prepared. Current save, game and port checks run again when you choose Host on this PC." :
             manualSetup ? serverMessage : "Choose Host locally to get the latest completed save and prepare a checked hosting copy on this PC.";
         var result = new LocalHostingStatus(ready || running, code, message, access.Allowed, access.Consented, game,

@@ -45,6 +45,12 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                 await manager.RecordHostingObservationAsync(profileId, newest, RequireScope, cancellationToken);
                 return await manager.StartSeparateCopyAsync(profileId, directBranch, cancellationToken);
             }
+            // A completed planned successor retains the original profile ID.
+            // Authority state classifies this path only: the common manager
+            // still verifies the signed restore, route, final save and fences.
+            // Fenced sources and damaged/historical authority use those same gates.
+            if (requested.SeparateCopySourceProfileId is null && new WorldAuthorityStore(data).HasState(requested.Id))
+                return await manager.StartAsync(profileId, cancellationToken);
             if (original is null || !original.SharedSavesEnabled)
                 return await manager.StartAsync(profileId, cancellationToken);
             var roster = await peers.ReadOwnerHostingRosterAsync(sourceId, cancellationToken);
@@ -58,6 +64,36 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             if (!membership.Ok) return await Refused(membership.Code, membership.Message);
             using var ownerPreparation = peers.BeginHostingPreparation(root);
             var originalVersion = await manager.PeerPublishedVersionAsync(root);
+            if (requested.Id == sourceId)
+            {
+                // Arm outbound completed-save sharing without changing listener
+                // policy. Incoming connectivity is advisory for ordinary Start.
+                var announcedOriginal = await peers.AnnounceLocalHostingAsync(root, cancellationToken);
+                if (!announcedOriginal.Ok && announcedOriginal.Code != "RecipientConnectionRequired")
+                    return await Refused(announcedOriginal.Code, announcedOriginal.Message);
+                var originalLatest = await peers.ResolveLatestOriginalStartSourceAsync(root, cancellationToken);
+                if (originalLatest.Source is { } originalSource)
+                {
+                    using var heldOriginal = originalSource;
+                    void RequireOriginalScope()
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        heldOriginal.RequireCurrent(data, root, cancellationToken);
+                        if (peers.LatestObservationHash(root) != originalLatest.ObservationHash)
+                            throw new InvalidDataException("The original save's current signed information changed.");
+                    }
+                    RequireOriginalScope();
+                    await manager.VerifyRetainedContinuationsAsync(sourceId, cancellationToken);
+                    await manager.RecordOriginalHostingObservationAsync(originalLatest, RequireOriginalScope, cancellationToken);
+                    return await manager.StartAsync(sourceId, cancellationToken);
+                }
+                if (!originalLatest.RecoveryRequired)
+                {
+                    if (originalLatest.Code == "SharedSaveUnavailable" && originalVersion is null)
+                        return await manager.StartAsync(profileId, cancellationToken);
+                    return await Refused(originalLatest.Code, originalLatest.Message);
+                }
+            }
             var latest = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken);
             if (!latest.Ok || latest.Source is null)
             {

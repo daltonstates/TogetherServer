@@ -11,6 +11,11 @@ competing histories for review. Refresh reads state; explicit operations own
 preparation, enrollment, transfers and Start. Expensive installation checks may
 be reused only while their relevant content/setup inputs match; process
 identity, readiness and trusted fresh occupancy are observed on every run.
+For an already prepared ordinary continuation, incoming-connection warnings
+remain visible advice for inviting others; they do not authorize or block local
+game startup. Current signed access, consent, exact save/setup, process/world
+and game-port checks remain required. An explicit planned move keeps its
+stricter route, final-save, source-fencing and receipt requirements.
 
 The 2026-10-21 shared-hosting direction replaces user-managed save grants,
 forwarding and Host selection with one **Allow friends to host this server**

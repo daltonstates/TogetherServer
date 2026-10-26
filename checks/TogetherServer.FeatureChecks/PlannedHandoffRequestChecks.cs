@@ -11,7 +11,7 @@ namespace TogetherServer.FeatureChecks;
 
 // All game adapters refuse launches, observations and Stop. Route transport is
 // injected HTTP and all bytes, credentials and keys are disposable synthetic data.
-internal static class PlannedHandoffRequestChecks
+internal static partial class PlannedHandoffRequestChecks
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -218,14 +218,18 @@ internal static class PlannedHandoffRequestChecks
             recipientData.LoadRuns().Count == 0 && recipientDriver.ProcessAttempts == 0 &&
             File.ReadAllBytes(Path.Combine(destination, "world.dat")).SequenceEqual(beforeOffline),
             "the old Host going offline hid the completed local move, created a recovery branch or changed a world");
+        await CompletedMoveSimpleOwnerStartAsync(fixture, recipientData, recipient, recipientDriver, offlineFriend, destination, beforeOffline);
+        var refusedProcessAttempts = recipientDriver.ProcessAttempts;
         var identity = new HostIdentity(recipientData);
         identity.StageNext(endpoint, force: true);
         identity.ActivateNext();
         var changedCertificate = await service.StatusAsync(fixture.Profile.Id);
         Require(changedCertificate.LocalProfileId == fixture.Profile.Id && !changedCertificate.ReadyForManualStart &&
-            changedCertificate.HandoffRequest?.RecipientState == "Completed" && recipientDriver.ProcessAttempts == 0 &&
+            changedCertificate.HandoffRequest?.RecipientState == "Completed" && recipientDriver.ProcessAttempts == refusedProcessAttempts &&
             File.ReadAllBytes(Path.Combine(destination, "world.dat")).SequenceEqual(beforeOffline),
             "a changed current certificate retained the old signed route's readiness or changed the moved world");
+        await CompletedMoveChangedRouteStartAsync(fixture.Profile.Id, recipientData, recipient, recipientDriver, offlineFriend,
+            refusedProcessAttempts, destination, beforeOffline);
     }
 
     private static async Task AccessChangesAsync(string root)

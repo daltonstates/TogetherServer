@@ -25,6 +25,7 @@ internal static partial class CoreRemoteJourney
             WindowsListenerOwners.RequireTogetherServerOwner(friendPort, friend);
             using var owner = LocalClient(hostPort);
             using var test = LocalClient(friendPort);
+            test.DefaultRequestHeaders.Add("X-TogetherServer-Local", "1");
             var prepared = await PostAsync<object, RemoteRehearsalSetup>(owner, "/api/local/rehearsal/prepare", new { });
             Require(prepared.Ok && prepared.ProfileId is not null, "disposable staging rehearsal was not prepared: " + prepared.Code);
             var profileId = prepared.ProfileId!.Value;

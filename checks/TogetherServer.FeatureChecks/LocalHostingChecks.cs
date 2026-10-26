@@ -18,6 +18,7 @@ internal static partial class LocalHostingChecks
     internal static async Task RunAsync(string root)
     {
         Inputs();
+        await PreparedRouteWarningsAsync(root);
         await SavedInstallationBeforeDiscoveryAsync(root);
         await WorldPeerLocalHostingChecks.RunAsync(root);
         await OwnerSwitchAsync(root);
@@ -326,17 +327,14 @@ internal static partial class LocalHostingChecks
             }
             catch (InvalidOperationException error) when (error.Message == "No process operation is permitted.")
             { reachedDriver = true; }
-            if (fault == "none")
+            if (fault is "none" or "connection")
                 Require(reachedDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1 && observations == 2,
-                    "an exact verified Start did not reach only the final fake launch boundary after one latest resolution");
+                    "an exact verified Start or advisory connection warning did not reach only the final fake launch boundary after one latest resolution");
             else
             {
                 Require(result is { Ok: false } && !reachedDriver && fixture.Driver.ProcessAttempts == 0,
                     "a refused Start crossed the fake process boundary");
-                if (fault == "connection")
-                    Require(announcements == 0 && resolutions == 0 && observations == 0,
-                        "a current connection blocker performed announcement or expensive latest-save work");
-                else if (fault == "announcement")
+                if (fault == "announcement")
                     Require(result.Code == "PeerMembershipRequired" && announcements == 1 && resolutions == 0 && observations == 0,
                         "a rejected address announcement performed expensive latest-save work");
                 else
@@ -434,13 +432,13 @@ internal static partial class LocalHostingChecks
                 var unavailable = FriendLocalHostingService.WithRemedy(await service.StatusAsync(fixture.ProfileId));
                 var retained = await fixture.Manager.RecordedLocalHostingStatusAsync(fixture.ProfileId,
                     result.BranchHash!, CancellationToken.None);
-                Require(!unavailable.Ok && !unavailable.ReadyForManualStart &&
-                    unavailable.Code == "LocalConnectionSetupRequired" && unavailable.Remedy?.Kind == "Connection" &&
+                Require(unavailable.Ok && unavailable.ReadyForManualStart &&
+                    unavailable.Code == "LocalHostingPrepared" && unavailable.Remedy is null &&
                     unavailable.Steps.Take(4).All(step => step.State == "Ready") &&
                     unavailable.Steps[4].State == "ActionRequired" &&
                     unavailable.LocalProfileId == result.LocalProfileId && unavailable.BranchHash == result.BranchHash &&
                     retained.ReadyForManualStart,
-                    "an unavailable current route advertised Start readiness or discarded the prepared copy instead of its typed connection remedy");
+                    "an unavailable current route blocked ordinary local Start or discarded the prepared copy or its advisory evidence");
                 active = true;
                 var recovered = FriendLocalHostingService.WithRemedy(await service.StatusAsync(fixture.ProfileId));
                 Require(recovered.Ok && recovered.ReadyForManualStart && recovered.Code == "LocalHostingPrepared" &&

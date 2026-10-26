@@ -41,7 +41,10 @@ internal sealed partial class FriendLocalHostingService
         };
         if (remedy is null && !status.Running && status.Steps.FirstOrDefault(step => step.Key == "ports")?.State == "ActionRequired")
             remedy = new("Ports", "Free this PC's game ports", "Open local servers to check what is using the game ports, or change the port in Setup. Then retry the automatic checks.");
-        if (remedy is null && !status.Running && status.Steps.FirstOrDefault(step => step.Key == "connection") is { State: "ActionRequired" } connection)
+        var ordinaryPrepared = status.ReadyForManualStart && status.BranchHash is not null &&
+            status.HandoffRequest?.RecipientState is not ("Requested" or "Accepted" or "Prepared" or "Completed");
+        if (remedy is null && !status.Running && !ordinaryPrepared &&
+            status.Steps.FirstOrDefault(step => step.Key == "connection") is { State: "ActionRequired" } connection)
             remedy = new("Connection", "Let friends connect to this PC", connection.Message);
         return status with { Remedy = remedy };
     }
@@ -129,11 +132,15 @@ internal sealed partial class FriendLocalHostingService
         }
         if (root is null || announceHosting is null)
             return Refused("PeerDiscoveryRequired", "This PC's signed Host address could not be shared. Recheck shared-hosting setup before starting.");
-        // The local Host instruction permits publishing this PC's signed
-        // address to current members, using its already enabled listener.
-        progress.Report("Connection", "Sharing this PC's signed hosting address with approved peers.");
+        // The local Host instruction arms completed-save sharing with current
+        // members without changing incoming connection settings.
+        progress.Report("Connection", "Preparing automatic completed-save sharing with approved peers.");
         var announced = await announceHosting(root, cancellationToken);
-        if (!announced.Ok) return Refused(announced.Code, announced.Message);
+        // Incoming reachability is advisory for an exact ordinary local copy.
+        // The announcement still validates current membership and save consent;
+        // planned moves retain their deliberate route requirement.
+        if (!announced.Ok && !(input.RequestId is null && announced.Code == "RecipientConnectionRequired"))
+            return Refused(announced.Code, announced.Message);
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
         WorldPeerPreparedStartSource? heldPreparedSource = null;

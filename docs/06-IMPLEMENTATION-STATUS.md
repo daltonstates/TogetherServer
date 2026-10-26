@@ -282,6 +282,96 @@ prepared-discovery group and strict solution build/formatting also pass; the
 final integrated discovery and 315-file prepared-publication reuse groups pass.
 The integrated corrections still require their own hosted candidate.
 
+The [4f4eb8a run](https://github.com/daltonstates/TogetherServer/actions/runs/40401773440)
+passed all 82 source groups with no skips and the packaged QoL API. Pairing now
+passes all 32 stages (UX 3, loopback 11, LAN 18), including the unchanged scoped
+member-removal assertions, exact new-host receipt, lost-response cleanup and
+empty owned-process cleanup. Twelve lanes passed and five failed. Core passed
+14 groups before its rehearsal read hit HTTP 403: the newly reused test helper
+needed the same fixed local-read header as the other lab clients. That harness
+header is corrected without changing production access checks. Existing stopped
+at one unchanged 5,000 ms AppFlows timeout (1,544/1,545 tests); all 22 later gates,
+including Minecraft diagnostics, were not run. Release verification now selects
+one UI worker, retaining DOM isolation, every assertion, the same timeouts and
+zero retries; the recorded local one-worker suite passed all 1,545 cases. This
+mitigates observed resource contention without establishing its exclusive cause.
+Desktop again retained the QuietTime notification block.
+
+The ordinary automatic-sharing attempt reached one successful Friend Start with
+no repeated preparation, then an explicit peer sync returned inconclusive; its
+last completed stage label did not identify that later operation. The separate
+diagnostic journey passed all nine stages. Retained evidence cannot identify the
+failed sync's route or prove a deadline cause. Source review separately proves
+that a later discovery deadline discards an earlier authenticated response and
+that a stalled first route can consume the whole discovery budget. Bounded
+per-route discovery and retained partial-success checks address those cases;
+unreachable peers still cannot prove universal freshness or authorize Start.
+
+The 4f4eb8a portable and installer were independently checked without execution:
+portable 66,207,987 bytes, SHA-256
+`ba903e4fd03269d37d009952cd1ee30adecd2d35ce0ca907cfa9e69bfaf5e4f8`;
+installer 60,670,558 bytes, SHA-256
+`57694abf7cff11f59c871669f52b19411d31172276550a634d381a650cf8beb4`.
+Artifact digest/source, embedded assembly and seven UI assets match; six hosted
+installer smoke checks and three wizard choices passed. Both assets remain
+unsigned, review-only, unpublished and uninstalled. Evidence is retained under
+ignored `local-data/simplified-hosting-4f4eb8a/`; corrected source needs new bytes.
+
+An already prepared ordinary branch can Start locally while its incoming
+listener or outside-connection warning remains visible with Connection help.
+Local readiness still requires
+current signed permission/consent, exact held save/setup and world/process/game
+port checks. Only the exact incoming-connection result is advisory; membership
+and permission errors still stop Start. The explicit Host instruction registers
+outbound completed-save sharing after a second exact identity/role check, even
+with the incoming listener off, without enabling it or changing an address.
+Initial connection preparation and explicit planned moves retain their stricter
+route checks, final-save/source fencing and exact receipt requirements.
+
+The rendered ordinary-ready connection-warning regression failed before the UI
+change and passes afterward: reads/polls send no writes, one explicit Start sends
+its exact request once, and no wizard/preparation/access check is replayed.
+Active planned moves and unknown/denied/review permission cases remain blocked.
+All 217 related UI tests, type checking and targeted lint pass with pinned Node.
+The discovery regression likewise failed before the fix and passes with a
+verified cached-source proof after a stalled bootstrap, no payload work, retained
+partial authenticated success after the actual overall deadline, no-response
+inconclusive reporting and propagated caller cancellation.
+
+The original-owner path had the same extra-copy class: it selected and verified
+its produced-here publication, retained it into a per-version recovery cache,
+then compared that hash with its original publication before ordinary Start.
+Neither Stop nor background sharing prepopulates that recovery cache, so every
+new publication repeated the copy and extra free-space reservation. Original
+Start now uses the same latest signed ancestry/selection and material recheck,
+holding its existing immutable publication through a distinct original-source
+proof. No recovery-source path or provenance contract is aliased. Its one-use
+observation and exact profile/setup/permission scope are checked in the common
+manager gate and again after preparation immediately before the launch call.
+Different selected progress keeps the existing recovery/adoption path.
+Original Host intent also registers outbound sharing without enabling a listener.
+
+Two fresh original publications with 315 identical payload files and distinct
+signed hashes reach the deliberately refusing fake Start with their original
+leases held, without a recovery cache, payload transfer or listener change.
+Newer/forked progress, current permission/consent/payload, cancellation and late
+material/settings/roster changes retain refusal checks. Adjacent recovery-head
+selection and prepared-publication groups pass. A temporary old-dispatch replay
+exceeded the fixture's ten-second Start bound; it is not claimed as a demonstrated
+cache-assertion failure. One original-fixture publication setup later returned
+SharedSavePublishFailed before Start; its former assertion lost the underlying
+exception, so the exact I/O cause is unknown. Diagnostic reruns passed. The
+assertion now retains the full result message; only independent negative cases
+were reduced to three signed files, while both positive cases retain 315.
+
+Finished planned successors retain the original profile ID with sharing enabled.
+Their Host-card Start now dispatches by existing authority state to the common
+manager before the original-owner-only registration path. Classification grants
+no permission: missing/corrupt authority, final payload, route and receipt,
+fenced originals and rotated TLS still fail their existing gates. The common
+roster read is noncreating. The final planned-request and discovery groups pass
+with no global owner key or protected-record changes in those planned cases.
+
 The owner reconfirmed the unattended target-world-only session and main world's
 stopped state. Static read-only inspection still finds one installed/running
 0.3.3.15 process with the published source/hash below. No new app was installed

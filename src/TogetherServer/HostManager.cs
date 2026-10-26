@@ -1126,7 +1126,7 @@ public sealed partial class HostManager
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
         if (SharedHostingStartIssue(profile) is { } sharedHostingIssue)
             return Result(false, "NewerSharedSaveAvailable", sharedHostingIssue);
-        if (SharedContinuationStartIssue(profile) is { } continuationIssue)
+        if (SharedContinuationStartIssue(profile, out var requireOriginalSource) is { } continuationIssue)
             return Result(false, "LatestSaveChanged", continuationIssue);
         if (profile.WorldLoadRehearsalId is not null && !worldLoadTrial)
             return Result(false, "WorldLoadFixedStartRequired", "Start this disposable copy from its world-load rehearsal.");
@@ -1235,6 +1235,7 @@ public sealed partial class HostManager
         {
             BeforeManagedLaunchForChecks?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
+            requireOriginalSource?.Invoke();
             var launch = driver.Start(profile, run);
             run.ProcessId = launch.ProcessId;
             using (var started = Process.GetProcessById(run.ProcessId.Value))

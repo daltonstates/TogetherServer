@@ -115,6 +115,12 @@ limited to this server; it does not wait for other saved Host connections or
 repeat their save transfers. A newly learned later or conflicting save still
 requires preparation or review before Start.
 
+For an already prepared ordinary hosting copy, an incoming-connection warning
+stays visible but does not require preparation again or block local Start.
+Review **Connection help** before inviting others. Local Start still checks
+current signed permission, consent, the exact save/setup and game ports. A
+planned hosting move retains its final-save, route and receipt requirements.
+
 The original Host does not need to be online when this PC retains valid signed
 hosting permission and a complete verified save. Approved reachable peers can
 exchange signed updates and completed saves. Offline checks cannot show
@@ -148,10 +154,11 @@ overall ten-minute limit cancels that attempt. Existing saves remain intact.
 After a timeout, keep the source apps open and choose **Host locally** again
 to resume preparation. Refresh alone does not resume it.
 
-Hosting requires a configured incoming connection. Confirmation can enable
-that saved app connection; TogetherServer never changes Windows Firewall,
-router forwards or DNS. Local port and outside TCP checks do not prove that a
-particular player can join the game.
+Initial shared-host setup can require a configured incoming connection.
+Confirmation can enable that saved app connection; TogetherServer never changes
+Windows Firewall, router forwards or DNS. Once the ordinary copy is prepared,
+its local Start does not depend on an outside connection check. Local port and
+outside TCP checks do not prove that a particular player can join the game.
 
 ## If another PC has never received a save
 

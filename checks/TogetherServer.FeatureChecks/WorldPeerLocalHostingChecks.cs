@@ -162,10 +162,16 @@ internal static class WorldPeerLocalHostingChecks
                 fixture.Root with { GroupId = Guid.NewGuid() } : fixture.Root, cancellation.Token);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { canceled = true; }
-        Require((fault == "canceled" ? canceled : result is { Ok: false }) && !fixture.SharingEnabled &&
+        var advisoryRoute = fault is "listener-off" or "certificate";
+        Require((fault == "canceled" ? canceled : result is { Ok: false }) && fixture.SharingEnabled == advisoryRoute &&
             fixture.NetworkAttempts == 0 && fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0 &&
             !Directory.Exists(Path.Combine(fixture.Data.RootPath, "never-read-world")),
-            "local announcement bypassed a trust, consent, key, governance, listener or cancellation guard");
+            "local announcement bypassed trust, consent, key, governance or cancellation, or failed to arm outbound sharing for an advisory route");
+        if (advisoryRoute)
+            Require(result is { Code: "RecipientConnectionRequired" } &&
+                fixture.Data.LoadSettings().CompanionListeningEnabled == (fault != "listener-off") &&
+                (fixture.Data.LoadProtected("host-certificate.protected") is not null) == (fault != "certificate"),
+                "an advisory route refusal enabled the listener, created a certificate, or lost its typed planned-move blocker");
         if (fault == "unknown")
             Require(fixture.GroupCount == 0, "an unknown root was implicitly registered by local announcement");
     }

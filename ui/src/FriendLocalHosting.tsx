@@ -203,7 +203,8 @@ export function localHostingAttention(status: LocalHostingStatus | null, accepte
   if (status.remedy && !['ConfirmCopy', 'ChooseServer', 'Terms', 'Respond'].includes(status.remedy.kind)) return status.remedy
   if (status.code === 'LocalServerSetupRequired') return { kind: 'GameSetup', title: 'Finish game setup', message: status.message }
   if (status.steps[3].state === 'ActionRequired') return { kind: 'Ports', title: 'Free the game ports on this PC', message: status.steps[3].message }
-  if (status.steps[4].state === 'ActionRequired') return { kind: 'Connection', title: 'Let friends connect to this PC', message: status.steps[4].message }
+  if (status.steps[4].state === 'ActionRequired' && !(status.readyForManualStart && status.branchHash && !activeHostingRequest(status)))
+    return { kind: 'Connection', title: 'Let friends connect to this PC', message: status.steps[4].message }
   return null
 }
 
