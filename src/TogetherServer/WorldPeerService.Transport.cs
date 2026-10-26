@@ -845,6 +845,28 @@ internal sealed partial class WorldPeerService : IDisposable
         }
     }
 
+    internal async Task<WorldPeerActionResult> SyncWorldNowAsync(string groupKey, CancellationToken cancellationToken)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(40));
+        try
+        {
+            var group = Find(groupKey);
+            if (group is null)
+                return new(false, "WorldMembershipRequired", "Verify this shared world's membership before checking its peers.");
+            using var preparation = BeginHostingPreparation(group.Root);
+            await SyncWorldAsync(group.Root, bounded.Token);
+            // This exact world may have joined a transfer whose old metadata
+            // predates the instruction. Follow it with a fresh metadata-only
+            // barrier, without waiting for an unrelated global background pass.
+            if (await DiscoverHostingMetadataAsync(group.Root, bounded.Token))
+                return new(true, "WorldPeersChecked", "Fresh signed information was checked for this world. Completed copies and game joins remain separate checks.");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+        catch (Exception error) when (PeerFailure(error)) { }
+        return new(false, "WorldPeerSyncInconclusive", "Fresh signed information could not be confirmed. Existing signed history and copies were kept; retry when an approved peer is reachable.");
+    }
+
     private async Task SyncNowCoreAsync(CancellationToken cancellationToken)
     {
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -883,7 +905,7 @@ internal sealed partial class WorldPeerService : IDisposable
         // One bounded follow-up also covers newly registered worlds.
         var changed = Groups().Where(current =>
             !known.Any(before => before.Root == current.Root) ||
-            selected.Any(before => before.Root == current.Root && !SameSyncMembership(before, current)))
+            selected.Any(before => before.Root == current.Root && !SameSyncIdentity(before, current)))
             .Take(4).ToArray();
         foreach (var current in changed)
         {
@@ -892,10 +914,9 @@ internal sealed partial class WorldPeerService : IDisposable
         }
     }
 
-    private static bool SameSyncMembership(Group before, Group after) =>
+    private static bool SameSyncIdentity(Group before, Group after) =>
         before.Root == after.Root && before.DeviceId == after.DeviceId &&
-        before.Roster.Signature == after.Roster.Signature && before.ReceiveConsented == after.ReceiveConsented &&
-        before.SharingEnabled == after.SharingEnabled && before.Bootstrap == after.Bootstrap;
+        before.Bootstrap == after.Bootstrap;
 
     private async Task SyncScheduledGroupAsync(Group group, CancellationToken budget, CancellationToken caller)
     {

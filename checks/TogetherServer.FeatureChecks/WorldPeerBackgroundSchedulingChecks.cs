@@ -14,8 +14,41 @@ internal static partial class WorldPeerHostingDiscoveryChecks
     {
         await PreparationLeaseBoundariesAsync(parent);
         await ChangedRegistrationCatchUpAsync(parent);
+        await SharedRosterRejoinChecks.ExplicitSyncChecksAsync(parent);
+        await ExactExplicitSyncDuringOtherWorldAsync(parent);
         await PreparationAndCoalescingAsync(parent);
         await SharingDuringBlockedHostPollAsync(parent);
+    }
+
+    private static async Task ExactExplicitSyncDuringOtherWorldAsync(string parent)
+    {
+        using var fixture = new Fixture(parent, "exact-explicit-sync");
+        fixture.Other.Handler.HoldMetadata = true;
+        fixture.Target.Handler.HoldMetadata = true;
+        using var stopping = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var background = fixture.Service.SyncNowAsync(stopping.Token);
+        Task<WorldPeerActionResult>? exact = null;
+        try
+        {
+            await fixture.Other.Handler.MetadataEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            exact = fixture.Service.SyncWorldNowAsync(fixture.Target.Root.GroupKey, stopping.Token);
+            await fixture.Target.Handler.MetadataEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(!background.IsCompleted && fixture.Other.Handler.PayloadRequests == 0,
+                "an unrelated world's held metadata delayed or was canceled by the exact explicit sync");
+            fixture.Target.Handler.ReleaseMetadata.TrySetResult(true);
+            var result = await exact.WaitAsync(TimeSpan.FromSeconds(10));
+            Require(result.Ok && !background.IsCompleted && fixture.Target.Handler.ProofFailures == 0,
+                "the exact explicit sync waited for unrelated work or failed its fresh signed proof");
+        }
+        finally
+        {
+            fixture.Target.Handler.ReleaseMetadata.TrySetResult(true);
+            fixture.Other.Handler.ReleaseMetadata.TrySetResult(true);
+            await background;
+            if (exact is not null) await exact;
+            await fixture.Service.WaitForSyncAsync();
+        }
+        fixture.Target.VerifyCachedCopy(); fixture.Other.VerifyCachedCopy();
     }
 
     private static async Task ChangedRegistrationCatchUpAsync(string parent)
@@ -45,10 +78,10 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             fixture.Target.Handler.ReleaseMetadata.TrySetResult(true);
             registrationGate.Release(); held = false;
             await background.WaitAsync(TimeSpan.FromSeconds(10));
-            Require(fixture.Target.Handler.MetadataRequests == targetMetadata + 1 &&
+            Require(fixture.Target.Handler.MetadataRequests == targetMetadata &&
                 fixture.Target.Handler.PayloadRequests == 0 && fixture.Other.Handler.MetadataRequests == 1 &&
                 !fixture.Service.Views().Single(item => item.GroupKey == fixture.Target.Root.GroupKey).ReceiveConsented,
-                "registration did not catch up exactly the changed signed-world membership or repeated an unchanged transfer");
+                "ordinary consent progress repeated the per-call metadata/transfer budget or lost the current deny");
         }
         finally
         {

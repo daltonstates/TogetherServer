@@ -136,39 +136,48 @@ internal sealed partial class WorldPeerService
         }
     }
 
-    private async Task DiscoverHostingMetadataAsync(SharedWorldPeerRoot root, CancellationToken cancellationToken)
+    private async Task<bool> DiscoverHostingMetadataAsync(SharedWorldPeerRoot root, CancellationToken cancellationToken)
     {
         // This budget includes semaphore waits and all targeted network work.
         // An unavailable peer leaves cached signed claims subject to the same
         // newest-head, fork, current-permission and complete-copy checks.
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(TimeSpan.FromSeconds(10));
+        var verifiedResponse = false;
         try
         {
             var group = Find(root.GroupKey);
-            if (group is null || group.Root != root) return;
+            if (group is null || group.Root != root) return false;
             using var key = RetainedLocalKey(group);
-            if (key is null) return;
+            if (key is null) return false;
             var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
             var visited = new HashSet<string>(StringComparer.Ordinal);
             for (var attempt = 0; attempt < SharedWorldPeerStore.MaximumPeers; attempt++)
             {
                 bounded.Token.ThrowIfCancellationRequested();
                 group = Find(root.GroupKey);
-                if (group is null || group.Root != root) return;
+                if (group is null || group.Root != root) return false;
                 var peers = Store(group).Project().Peers
                     .Where(peer => peer.Authorized && !peer.HasConflict && peer.PublicKey != publicKey)
                     .SelectMany(peer => peer.Routes);
                 var route = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap))
                     .Concat(AdditionalRoutes(group)).GroupBy(RouteKey).Select(routes => routes.First())
                     .FirstOrDefault(route => visited.Add(RouteKey(route)));
-                if (route is null) return;
-                try { await SyncPeerAsync(group, route, bounded.Token, includePayloads: false); }
+                if (route is null) return verifiedResponse;
+                try
+                {
+                    await SyncPeerAsync(group, route, bounded.Token, includePayloads: false);
+                    verifiedResponse = true;
+                }
                 catch (Exception error) when (PeerFailure(error))
                 { SetPeerWarning(root.GroupKey, "A known peer could not refresh its signed information. Existing signed saves were kept."); }
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        { SetPeerWarning(root.GroupKey, "Signed discovery reached its time limit. Existing signed saves were kept."); }
+        {
+            SetPeerWarning(root.GroupKey, "Signed discovery reached its time limit. Existing signed saves were kept.");
+            return false;
+        }
+        return verifiedResponse;
     }
 }

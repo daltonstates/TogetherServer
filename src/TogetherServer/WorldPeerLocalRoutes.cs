@@ -52,8 +52,7 @@ internal static class WorldPeerLocalRoutes
         {
             if ((await Read<Dictionary<string, JsonElement>>(context, 32)).Count != 0) return Results.BadRequest();
             if (!SharedWorldPeerTrust.ValidHash(groupKey)) return Results.BadRequest();
-            await peers.SyncNowAsync(context.RequestAborted);
-            return Results.Json(new WorldPeerActionResult(true, "WorldPeersChecked", "Reachable approved peers were checked. Unreachable peers and game joins remain unverified."));
+            return Results.Json(await peers.SyncWorldNowAsync(groupKey, context.RequestAborted));
         }));
         app.MapPut("/api/local/world-peers/{groupKey}/sharing", (HttpContext context, string groupKey) => Change(context, async () =>
         {

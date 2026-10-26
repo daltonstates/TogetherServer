@@ -8,7 +8,7 @@ namespace TogetherServer.FeatureChecks;
 
 // Real pairing, signing and FriendLink code over fake HTTP and disposable protected files.
 // No app, process, listener, socket, browser, game or real world is used.
-internal static class SharedRosterRejoinChecks
+internal static partial class SharedRosterRejoinChecks
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -284,6 +284,8 @@ internal static class SharedRosterRejoinChecks
         internal bool UnreadablePage { get; set; }
         internal List<(Guid DeviceId, string ResponseCode)> PeerChallenges { get; } = [];
         internal List<(Guid DeviceId, string Operation)> PeerOperations { get; } = [];
+        internal Func<WorldPeerExchangeRequest, Task>? AfterPeerExchange { get; set; }
+        internal bool PeerOffline { get; set; }
 
         internal Host(string root)
         {
@@ -326,6 +328,14 @@ internal static class SharedRosterRejoinChecks
                 (_, _) => throw new InvalidOperationException("the synthetic owner must not open another route"));
         }
 
+        internal void DisableHosting()
+        {
+            Profile.SharedSavesEnabled = false;
+            data.SaveSettings(new() { Profiles = [Profile] });
+            Pairing.ReconcileSimpleSharedHosting(Profile.Id);
+            Publish();
+        }
+
         internal SharedWorldRoster OwnerSigned(SharedWorldRoster roster)
         {
             using var key = ECDsa.Create();
@@ -342,6 +352,7 @@ internal static class SharedRosterRejoinChecks
             var path = request.RequestUri!.AbsolutePath;
             if (path.StartsWith("/api/companion/world-peers/", StringComparison.Ordinal))
             {
+                if (PeerOffline) throw new HttpRequestException("The synthetic peer is unavailable.");
                 var service = peerService ?? throw new InvalidOperationException("peer metadata was not enabled in this fixture");
                 Require(request.Method == HttpMethod.Post && request.Headers.Authorization is null &&
                     request.Headers.GetValues("X-TogetherServer-Capability").Single() == CompanionProtocol.SharedWorldPeersCapability,
@@ -362,10 +373,11 @@ internal static class SharedRosterRejoinChecks
                 var exchange = WorldPeerProtocol.DecodeEnvelope<WorldPeerExchangeRequest>(bytes,
                     2 * 1024 * 1024);
                 PeerOperations.Add((exchange.Request.Challenge.DeviceId, exchange.Request.Operation));
+                var result = await service.ExchangeAsync(root.GroupKey, exchange.Request, exchange.Payload, token, Pin);
+                if (AfterPeerExchange is not null) await AfterPeerExchange(exchange);
                 return new(HttpStatusCode.OK)
                 {
-                    Content = new ByteArrayContent(await service.ExchangeAsync(root.GroupKey,
-                    exchange.Request, exchange.Payload, token, Pin))
+                    Content = new ByteArrayContent(result)
                 };
             }
             if (path == "/api/companion/pair")

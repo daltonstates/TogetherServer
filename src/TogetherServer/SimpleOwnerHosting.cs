@@ -51,6 +51,11 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             if (roster is null)
                 return await Refused("SharedHostingReviewRequired", "This server's sharing permission needs review before hosting.");
             var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, sourceId, roster.GroupId);
+            // Enabling sharing can be followed immediately by Start. Register
+            // this saved owner's signed world locally, without waiting for a
+            // periodic pass or any saved Friend connection.
+            var membership = await peers.EnsureOwnerHostingMembershipAsync(root, cancellationToken);
+            if (!membership.Ok) return await Refused(membership.Code, membership.Message);
             using var ownerPreparation = peers.BeginHostingPreparation(root);
             var originalVersion = await manager.PeerPublishedVersionAsync(root);
             var latest = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken);

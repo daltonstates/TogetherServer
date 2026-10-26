@@ -16,6 +16,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
 
     internal static async Task RunAsync(string parent)
     {
+        await OwnerMembershipRegistrationAsync(parent);
         MaterialObservationFence(parent);
         await IndependentWorldAndWireProofsAsync(parent);
         await KnownHeadRefusalAsync(parent, fork: false);

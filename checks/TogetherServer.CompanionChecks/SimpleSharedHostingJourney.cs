@@ -58,10 +58,13 @@ internal static partial class CoreRemoteJourney
         Guid firstDevice = default, secondDevice = default;
         var friendStartAttempts = 0;
         var ownerStartAttempts = 0;
+        var initialStartObservations = new List<object>();
         var friendStartObservations = new List<object>();
         LocalHostingStatus? prepared = null;
         SharedWorldVersion? initialVersion = null, continuedVersion = null;
         var timer = Stopwatch.StartNew();
+        static string FixedCode(string? value) => value is { Length: > 0 and <= 64 } && value.All(char.IsAsciiLetterOrDigit)
+            ? value : "Unavailable";
         try
         {
             host = Launch("host", "--host", ports[0], hostData);
@@ -104,11 +107,16 @@ internal static partial class CoreRemoteJourney
                 "SimpleServerChoiceRejected");
             var initialRoster = await PairingLabGetAsync<SharedWorldRoster>(owner,
                 $"/api/local/profiles/{profile.Id}/shared-world/governance");
-            groupKey = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId).GroupKey;
-            // The ordinary peer refresh enrolls identities before save consent
-            // is projected. No per-PC grant or receiving choice is submitted.
-            await SyncAsync(first);
-            await SyncAsync(second);
+            LabRequire(SharedWorldRosterTrust.Verify(initialRoster), "SimpleInitialSignedRosterRequired");
+            var initialRoot = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId);
+            groupKey = initialRoot.GroupKey;
+            foreach (var pc in new[] { (Client: first, Device: firstDevice), (Client: second, Device: secondDevice) })
+            {
+                // Observe background enrollment and automatic consent through
+                // reads before requesting a sync of this registered world.
+                await WaitForAutomaticLabMembershipAsync(pc.Client, initialRoot, pc.Device, "SimpleAutomaticMembershipMissing");
+                await SyncAsync(pc.Client);
+            }
             var roster = await PairingLabGetAsync<SharedWorldRoster>(owner, $"/api/local/profiles/{profile.Id}/shared-world/governance");
             LabRequire(SharedWorldRosterTrust.Verify(roster) && roster.Members.Count == 2 && roster.Members.All(member =>
                 !member.Revoked && member.Grants is { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
@@ -129,11 +137,29 @@ internal static partial class CoreRemoteJourney
             for (var publication = 1; publication <= 2; publication++)
             {
                 var previousHash = initialVersion?.VersionHash;
+                activeCheck = "original-publication-" + publication + "-start";
+                var startedMs = timer.ElapsedMilliseconds;
                 var originalStart = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-                LabRequire(originalStart.Ok, "SimpleOriginalStartRejected");
-                await TrackFixtureAsync(originalStart.Snapshot.Runs.Single(item => item.ProfileId == profile.Id), owner);
+                // Capture the refusal before the assertion or cleanup changes
+                // state. Never retain its free-text message or full snapshot.
+                initialStartObservations.Add(new
+                {
+                    publication,
+                    durationMs = timer.ElapsedMilliseconds - startedMs,
+                    ok = originalStart.Ok,
+                    resultCode = FixedCode(originalStart.Code),
+                    snapshotAvailable = originalStart.Snapshot is not null,
+                    requestedProfilePresent = originalStart.Snapshot?.Settings.Profiles.Any(item => item.Id == profile.Id) == true,
+                    runRecordCount = originalStart.Snapshot?.Runs.Count,
+                    activeRunCount = originalStart.Snapshot?.Runs.Count(item => item.ProcessId is not null)
+                });
+                LabRequire(originalStart.Ok, "SimpleOriginalStartRejected_" + FixedCode(originalStart.Code));
+                var originalSnapshot = originalStart.Snapshot ?? throw new PairingLabFailure("SimpleOriginalStartSnapshotMissing");
+                await TrackFixtureAsync(originalSnapshot.Runs.Single(item => item.ProfileId == profile.Id), owner);
+                activeCheck = "original-publication-" + publication + "-stop";
                 LabRequire((await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/stop", new { })).Ok,
                     "SimpleOriginalStopRejected");
+                activeCheck = "original-publication-" + publication + "-published";
                 initialVersion = (await PairingLabGetAsync<SharedWorldStatus>(owner,
                     $"/api/local/profiles/{profile.Id}/shared-world")).Latest;
                 LabRequire(initialVersion is not null && initialVersion.Number == publication && initialVersion.ParentHash == previousHash,
@@ -194,8 +220,6 @@ internal static partial class CoreRemoteJourney
                 }
                 catch (Exception error) when (error is IOException or HttpRequestException or JsonException or OperationCanceledException)
                 { /* Preserve the original result and record an unavailable status. */ }
-                static string FixedCode(string? value) => value is { Length: > 0 and <= 64 } && value.All(char.IsAsciiLetterOrDigit)
-                    ? value : "Unavailable";
                 friendStartObservations.Add(new
                 {
                     attempt = friendStartAttempts,
@@ -417,6 +441,7 @@ internal static partial class CoreRemoteJourney
                 descendantVersionNumber = continuedVersion?.Number,
                 friendStartAttempts,
                 ownerStartAttempts,
+                initialStartObservations,
                 friendStartObservations,
                 latestReviewDiagnostic,
                 processIdentityObservations = processes.Select(process => process.IdentityObservation()).ToArray(),
@@ -501,8 +526,9 @@ internal static partial class CoreRemoteJourney
         async Task SyncAsync(HttpClient client)
         {
             LabRequire(groupKey is not null, "SimpleWorldRootMissing");
-            LabRequire((await PostAsync<object, WorldPeerActionResult>(client,
-                $"/api/local/world-peers/{groupKey}/sync", new { })).Ok, "SimplePeerSyncRejected");
+            var result = await PostAsync<object, WorldPeerActionResult>(client,
+                $"/api/local/world-peers/{groupKey}/sync", new { });
+            LabRequire(result.Ok && result.Code == "WorldPeersChecked", "SimplePeerSyncRejected_" + FixedCode(result.Code));
         }
         static async Task ModeAsync(HttpClient client, bool hostMode)
         {

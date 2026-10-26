@@ -115,6 +115,8 @@ internal static partial class CoreRemoteJourney
         var restartedHostConnections = false;
         var isolatedRevocation = false;
         var transferObservations = new List<PairingLabTransferObservation>();
+        var membershipOperations = new List<PairingLabOperation>();
+        var membershipClock = Stopwatch.StartNew();
         var guidedOperations = new List<PairingLabOperation>();
         var restartOperations = new List<PairingLabOperation>();
         var cleanupFaultOperations = new List<PairingLabOperation>();
@@ -153,6 +155,7 @@ internal static partial class CoreRemoteJourney
 
         PairingLabOperation[]? StageOperations(string id) => id switch
         {
+            "separate-permissions-and-consent" => membershipOperations.Count == 0 ? null : membershipOperations.ToArray(),
             "guided-hosting" => guidedOperations.ToArray(),
             "new-host-restart-reconnect" => restartOperations.ToArray(),
             "lost-response-cleanup" => cleanupFaultOperations.ToArray(),
@@ -348,9 +351,13 @@ internal static partial class CoreRemoteJourney
                     var clients = new[] { (Id: deviceA, Client: first), (Id: deviceB, Client: second) };
                     foreach (var pc in clients)
                     {
-                        // Ordinary peer refresh strictly enrolls this identity;
-                        // the server choice supplies all three save permissions.
-                        await SyncPeersAsync(pc.Client);
+                        // The ordinary background pass enrolls this identity;
+                        // wait using reads before syncing the registered world.
+                        await WaitForAutomaticLabMembershipAsync(pc.Client,
+                            new(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId), pc.Id, "AutomaticMembershipMissing");
+                        if (lanAddress is null)
+                            await ExpectLoopbackPeerSyncInconclusiveAsync(pc.Client, pc.Id == deviceA ? "LoopbackFriendA" : "LoopbackFriendB");
+                        else await SyncPeersAsync(pc.Client);
                         var enrolledRoster = await PairingLabGetAsync<SharedWorldRoster>(owner,
                             $"/api/local/profiles/{profile.Id}/shared-world/governance");
                         LabRequire(SharedWorldRosterTrust.Verify(enrolledRoster) && enrolledRoster.Members.Any(member =>
@@ -406,7 +413,9 @@ internal static partial class CoreRemoteJourney
                     var seed = "Synthetic fixture payload " + runId.ToString("N");
                     await File.WriteAllTextAsync(Path.Combine(profile.WorldDirectory, "world.dat"), seed);
                     var start = await PostAsync<object, ActionResult>(owner, $"/api/local/profiles/{profile.Id}/start", new { });
-                    LabRequire(start.Ok, "FixtureStartRejected");
+                    var startCode = start.Code is { Length: > 0 and <= 64 } && start.Code.All(char.IsAsciiLetterOrDigit)
+                        ? start.Code : "Unspecified";
+                    LabRequire(start.Ok, "FixtureStartRejected_" + startCode);
                     var run = await WaitForFixtureIdentityAsync(start.Snapshot.Runs.Single(item => item.ProfileId == profile.Id),
                         () => PairingLabGetAsync<HostSnapshot>(owner, "/api/local/snapshot"));
                     TrackRun(run);
@@ -1241,6 +1250,19 @@ internal static partial class CoreRemoteJourney
             }
         }
 
+        async Task ExpectLoopbackPeerSyncInconclusiveAsync(HttpClient client, string id)
+        {
+            LabRequire(lanAddress is null && groupKey is not null, "LoopbackSyncScopeRequired");
+            using var syncClient = LocalClient(client.BaseAddress!.Port);
+            syncClient.Timeout = TimeSpan.FromSeconds(65);
+            var result = await ObserveLabOperationAsync("Membership", id, membershipClock, membershipOperations,
+                (long)syncClient.Timeout.TotalMilliseconds, () => PostAsync<object, WorldPeerActionResult>(syncClient,
+                    $"/api/local/world-peers/{groupKey}/sync", new { }));
+            // A registered loopback world has no eligible peer route. Exercise
+            // the fixed request without claiming a fresh signed peer response.
+            LabRequire(!result.Ok && result.Code == "WorldPeerSyncInconclusive", "LoopbackPeerSyncDidNotStayInconclusive");
+        }
+
         async Task SyncPeersAsync(HttpClient client)
         {
             LabRequire(groupKey is not null, "SignedWorldRootMissing");
@@ -1426,6 +1448,15 @@ internal static partial class CoreRemoteJourney
         return await response.Content.ReadFromJsonAsync<PairingDecision>(Json) ??
             throw new PairingLabFailure("ScopedServerAccessRemovalResponseMissing");
     }
+
+    private static Task WaitForAutomaticLabMembershipAsync(HttpClient client, SharedWorldPeerRoot root, Guid deviceId, string code) =>
+        PairingLabWaitAsync(async () =>
+        {
+            var group = (await PairingLabGetAsync<WorldPeerGroupView[]>(client, "/api/local/world-peers"))
+                .SingleOrDefault(item => item.GroupKey == root.GroupKey);
+            return group is not null && group.ProfileId == root.ProfileId && group.State.Root == root &&
+                group.SelfDeviceId == deviceId && group.ReceiveConsented && group.CanReceive && group.CanHost && group.CanReshare;
+        }, code);
 
     private static async Task PairingLabWaitAsync(Func<Task<bool>> check, string code, TimeSpan? timeout = null)
     {

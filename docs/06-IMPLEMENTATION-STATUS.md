@@ -165,10 +165,26 @@ does not infer a stopped remote game from a disconnected route.
 
 The initial all-source run caught a rejoin ordering regression in the new
 parallel membership refresh: an explicit sync could exchange with the old
-member before the fresh signed registration finished. A bounded material
-recheck now performs one follow-up for changed/newly registered worlds only.
+member before the fresh signed registration finished. A bounded identity
+recheck now performs one follow-up for newly registered worlds or changed
+device/bootstrap identities only. Ordinary roster progress does not add another
+handshake round; the existing two-handshake bootstrap budget remains enforced.
 The existing rejoin assertions remain unchanged; no protected identity or
 history is reset. Unchanged worlds do not repeat their payload work.
+
+Explicit peer sync now targets its requested registered world and follows any
+joined transfer with a fresh metadata-only barrier. A response predating a
+signed disable cannot satisfy that request. An unavailable peer returns an
+inconclusive result while retaining cached signed history and copies; ordinary
+offline Start keeps its separate permission and complete-save rules. Regressions
+cover a disable arriving during an older transfer, unavailable routes and an
+unrelated world's blocked metadata operation.
+
+First original-owner Start registers only that saved world's existing signed
+membership locally before resolving progress. It does not wait for periodic
+Friend enrollment or generate a key, roster or announcement. Regressions cover
+immediate first Start with and without a completed publication, strict identity,
+consent and roster refusal, and preservation of other protected records.
 
 Cache boundaries remain explicit:
 
@@ -199,6 +215,20 @@ whitespace. These fixes require a fresh hosted run; the old run is still failed.
 The release inventory was rechecked: 30 releases, latest preview 0.3.3.15,
 stable/latest 0.3.3, no 0.3.3.16 release. No existing release/tag/asset was changed.
 
+The subsequent hosted run for cdfd898 completed 12 lanes successfully and failed
+five. Core, Browser, Rehearsal, UI/access review, Package/installer and six
+compatibility lanes passed. QolApi exposed the extra roster handshake above;
+Pairing and the ordinary automatic-sharing attempt refused their first owner
+Start before launching a fixture; the separate automatic diagnostic exposed
+stale permission after an explicit sync. Exact local registration and fresh
+targeted sync now have passing source regressions, and initial Start failures
+retain bounded typed diagnostics. These changes require another hosted run.
+Desktop's required notification delivery/click remained blocked by OS QuietTime.
+Existing passed all 1,545 UI cases and several game checks but failed Minecraft
+capture-host identity verification and Bedrock fixture readiness; their cause
+is not established, and subsequent Existing gates were not run. No failed or
+unrun gate is accepted by the successful lanes.
+
 The owner reconfirmed the unattended target-world-only session and main world's
 stopped state. Static read-only inspection still finds one installed/running
 0.3.3.15 process with the published source/hash below. No new app was installed
@@ -215,11 +245,16 @@ priority, canceled joiners, changed registration and independent Host polling.
 The 315-file regression exercises both Host and Join without a recovery-cache
 copy, with an immutable source held at the refusing fake driver and no managed
 run. One internal symbolic-link scenario remains skipped for local account
-capability. Both complete UI attempts recorded 1,544 passes and one timeout in
+capability. Both initial complete UI attempts recorded 1,544 passes and one timeout in
 different unmodified navigation cases; each timed-out case passes in isolation
-without extending its timeout. Hosting/progress cases pass. Typecheck, lint,
-production bundle and all 59 pure render/fixture checks pass. Fresh hosted
-validation of the committed source remains required; these local results do
+without extending its timeout. The final one-worker run passed all 1,545 cases
+with unchanged timeouts. Hosting/progress cases pass. Typecheck, lint,
+production bundle and all 59 pure render/fixture checks pass. The four final
+focused groups (rejoin, offline-owner catch-up, prepared discovery and independent
+background sharing) pass, including the registration and sync corrections.
+The corrected solution builds with warnings as errors and passes whole-solution
+formatting. Fresh hosted validation of the corrected source remains required;
+these local results do
 not erase the initial failures or establish physical game acceptance.
 
 The current 0.3.3.16 source removes the redundant recovery-cache copy from an
