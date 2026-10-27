@@ -36,6 +36,8 @@ internal sealed partial class WorldPeerService
     private long requestedMembershipGeneration;
     private long startedMembershipGeneration = -1;
     private DateTimeOffset nextMembershipRetryUtc = DateTimeOffset.MaxValue;
+    private DateTimeOffset nextMembershipNetworkUtc;
+    private bool membershipRefreshIncludesFriends;
     private DateTimeOffset nextBackgroundSyncUtc;
     private int remainingGroupSweep = -1;
     private SharedWorldPeerRoot[] replicationOwnedRoots = [];
@@ -208,6 +210,7 @@ internal sealed partial class WorldPeerService
                 var due = scheduledSyncGeneration != Interlocked.Read(ref requestedSyncGeneration)
                     ? now.AddSeconds(1) : nextBackgroundSyncUtc;
                 if (nextMembershipRetryUtc < due) due = nextMembershipRetryUtc;
+                if (nextMembershipNetworkUtc < due) due = nextMembershipNetworkUtc;
                 return TimeSpan.FromSeconds(Math.Clamp((due - now).TotalSeconds, 1, 60));
             }
         }

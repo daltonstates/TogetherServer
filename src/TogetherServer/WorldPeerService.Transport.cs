@@ -1011,25 +1011,38 @@ internal sealed partial class WorldPeerService : IDisposable
         }
     }
 
-    // Call under stateSync. Explicit full syncs and periodic idle passes may
-    // request one fresh registration; material generations can do so while
-    // payload work is active. They never create overlapping registration work.
-    private Task ScheduleMembershipRefreshLocked(CancellationToken cancellationToken, bool force)
+    // Call under stateSync. Global save/run/policy wakes refresh local registry
+    // and owner rosters. Only Friend material, pending retry, periodic network
+    // due time or explicit Sync repeats remote enrollment. Both use one flight.
+    private Task ScheduleMembershipRefreshLocked(CancellationToken cancellationToken, bool force, bool refreshFriends = false)
     {
-        if (membershipRefresh is { IsCompleted: false }) return membershipRefresh;
+        if (membershipRefresh is { IsCompleted: false })
+            return refreshFriends && !membershipRefreshIncludesFriends
+                ? RefreshFriendsAfterMembershipAsync(membershipRefresh, cancellationToken) : membershipRefresh;
+        var now = DateTimeOffset.UtcNow;
         var generation = Interlocked.Read(ref requestedMembershipGeneration);
-        if (!force && startedMembershipGeneration == generation && DateTimeOffset.UtcNow < nextMembershipRetryUtc)
+        refreshFriends |= startedMembershipGeneration != generation || now >= nextMembershipRetryUtc || now >= nextMembershipNetworkUtc;
+        if (!force && !refreshFriends)
             return membershipRefresh ?? Task.CompletedTask;
         startedMembershipGeneration = generation;
-        nextMembershipRetryUtc = DateTimeOffset.MaxValue;
+        membershipRefreshIncludesFriends = refreshFriends;
+        if (refreshFriends)
+        {
+            nextMembershipRetryUtc = DateTimeOffset.MaxValue;
+            nextMembershipNetworkUtc = now.AddMinutes(1);
+        }
         membershipRefresh = Task.Run(async () =>
         {
-            try { await RefreshScheduledMembershipsAsync(cancellationToken); }
+            try { await RefreshScheduledMembershipsAsync(refreshFriends, cancellationToken); }
             finally
             {
-                var retry = membershipRetry.NextDelay(Interlocked.Exchange(ref membershipRefreshPending, 0) != 0);
-                lock (stateSync)
-                    nextMembershipRetryUtc = retry is { } delay ? DateTimeOffset.UtcNow.Add(delay) : DateTimeOffset.MaxValue;
+                TimeSpan? retry = null;
+                if (refreshFriends)
+                {
+                    retry = membershipRetry.NextDelay(Interlocked.Exchange(ref membershipRefreshPending, 0) != 0);
+                    lock (stateSync)
+                        nextMembershipRetryUtc = retry is { } delay ? DateTimeOffset.UtcNow.Add(delay) : DateTimeOffset.MaxValue;
+                }
                 // A newer observation arriving during this flight remains due.
                 // Pending membership owns its retry clock, independently of
                 // the old wire flight. Neither wake replays payload work.
@@ -1038,6 +1051,21 @@ internal sealed partial class WorldPeerService : IDisposable
             }
         }, CancellationToken.None);
         return membershipRefresh;
+    }
+
+    private async Task RefreshFriendsAfterMembershipAsync(Task localRefresh, CancellationToken cancellationToken)
+    {
+        // An explicit full Sync must not mistake a currently active local-only
+        // registry read for its requested network check. Join it, then coalesce
+        // the one network refresh through the same owner and bounded gate.
+        await localRefresh.WaitAsync(cancellationToken);
+        Task next;
+        lock (stateSync)
+        {
+            ObjectDisposedException.ThrowIf(peerDisposed, this);
+            next = ScheduleMembershipRefreshLocked(cancellationToken, force: true, refreshFriends: true);
+        }
+        await next.WaitAsync(cancellationToken);
     }
 
     internal Task WaitForSyncAsync(CancellationToken cancellationToken = default)
@@ -1129,7 +1157,7 @@ internal sealed partial class WorldPeerService : IDisposable
         Task registration;
         lock (stateSync)
         {
-            registration = ScheduleMembershipRefreshLocked(cancellationToken, force: !scheduled);
+            registration = ScheduleMembershipRefreshLocked(cancellationToken, force: !scheduled, refreshFriends: !scheduled);
         }
         // Existing worlds exchange against their signed registry immediately.
         // A slow original-Host poll/roster refresh cannot hold their delivery.
@@ -1233,7 +1261,7 @@ internal sealed partial class WorldPeerService : IDisposable
         }
     }
 
-    private async Task RefreshScheduledMembershipsAsync(CancellationToken cancellationToken)
+    private async Task RefreshScheduledMembershipsAsync(bool refreshFriends, CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref membershipPassBegan, System.Diagnostics.Stopwatch.GetTimestamp());
         Interlocked.Increment(ref membershipPassesStarted);
@@ -1247,8 +1275,8 @@ internal sealed partial class WorldPeerService : IDisposable
             try
             {
                 Volatile.Write(ref membershipPassOutcome, (int)PeerMembershipPassOutcome.Refreshing);
-                Interlocked.Exchange(ref membershipRefreshPending, 0);
-                await RefreshMembershipsAsync(true, bounded.Token);
+                if (refreshFriends) Interlocked.Exchange(ref membershipRefreshPending, 0);
+                await RefreshMembershipsAsync(refreshFriends, bounded.Token);
                 outcome = PeerMembershipPassOutcome.Completed;
             }
             finally { refreshGate.Release(); }

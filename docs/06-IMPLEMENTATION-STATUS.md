@@ -212,6 +212,29 @@ It and adaptive coordination pass locally; strict solution compilation is clean.
 There are now 91 source groups. The failed first-save diagnostic also omitted
 its required local GET header; it now reuses the existing fixed read helper.
 Exact corrected-source CI is required; no intermediate .19 bytes are released.
+The seventh source `1017cfe`, run `40570777586`, passed all 91 source groups,
+packaged API, automatic sharing, compatibility/captures and the full eleven-group
+Shared Worlds journey with no recovery skips. This proves the first-save fallback
+regression is corrected synthetically. Existing subsequently failed after 25
+companion groups: an expected permission denial was RateLimited under the
+unchanged 180/minute device quota. Its first UX attempt reached verified copy,
+prepared Start and the exact running session, then timed out waiting for owner
+discovery. One fresh-VM rerun of the unchanged portable passed UX/loopback/all
+18 LAN stages (job `122439402232`, attempt 2). The initial timeout and its hashed
+masked artifact remain retained; its intermittent cause is not established.
+
+Source review found transfer/run/publication generations also forced network
+enrollment. Those wakes now retain immediate local registry/owner-roster refresh
+while remote enrollment is reserved for changed Friend membership, pending retry,
+the independent minute deadline or explicit Sync. The device quota and lifecycle
+checks are unchanged. New generated counters assert repeated manager wakes add
+no companion enrollment/heartbeat calls, while local-owner policy, material
+Friend changes, periodic and explicit refresh remain covered. Strict solution
+compilation passes with zero warnings/errors. The focused runtime attempt stopped
+at the 1 GiB storage-reserve guard (C: had 0.83 GiB free), before the new cases ran;
+hosted validation is required. Automatic approval review rejected deletion of
+superseded task-generated CI package downloads as blocked by policy; no files
+were deleted and the reserve was not bypassed. No .19 has been published.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an

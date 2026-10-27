@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using TogetherServer;
@@ -52,6 +53,18 @@ internal static class PeerMembershipIndependentRefreshChecks
             }
         }, Json));
         SaveRegistry(localData, host.Root, host.Current, device, Route);
+        var ownerProfile = new ServerProfile
+        {
+            Id = Guid.NewGuid(),
+            Name = "Generated local owner",
+            Kind = GameKinds.Fixture,
+            WorldId = "GeneratedOwner",
+            WorldDirectory = Path.Combine(localData.RootPath, "generated-owner-world"),
+            ExecutablePath = Path.Combine(localData.RootPath, "source-only.synthetic")
+        };
+        Directory.CreateDirectory(ownerProfile.WorldDirectory);
+        File.WriteAllText(ownerProfile.ExecutablePath, "never executed");
+        localData.SaveSettings(new HostSettings { Profiles = [ownerProfile] });
         HttpClient Client(string endpoint, IEnumerable<string> pins)
         {
             Require(endpoint.TrimEnd('/') == Route.Address && pins.SequenceEqual([Route.CertificateSha256]),
@@ -59,7 +72,9 @@ internal static class PeerMembershipIndependentRefreshChecks
             return new(host, false) { BaseAddress = new Uri(Route.Address + "/") };
         }
         using var friends = new FriendService(localData, Client);
-        using var peers = new WorldPeerService(localData, new HostManager(localData), friends,
+        var manager = new HostManager(localData,
+            new GameServerRegistry([new LocalHostingChecks.FilesOnlyDriver()], PortProbeMode.ObserveOnly));
+        using var peers = new WorldPeerService(localData, manager, friends,
             new PairingService(localData), Client);
         using var stop = new CancellationTokenSource();
         try
@@ -104,6 +119,12 @@ internal static class PeerMembershipIndependentRefreshChecks
                 new SharedWorldRosterChainStore(localData).Heads(profile).Single().Signature == host.Current.Signature &&
                 localData.LoadRuns().Count == 0 && remoteData.LoadRuns().Count == 0,
                 "new signed hosting permission waited for the older peer pass or repeated registration/started a process");
+            if (!transientPending)
+            {
+                host.ReleaseWire.TrySetResult(true);
+                await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                await NetworkRefreshCadenceAsync(peers, manager, host, policy, ownerProfile.Id, stop.Token);
+            }
         }
         finally
         {
@@ -112,6 +133,60 @@ internal static class PeerMembershipIndependentRefreshChecks
             try { await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         }
+    }
+
+    private static async Task NetworkRefreshCadenceAsync(WorldPeerService peers, HostManager manager,
+        HoldingHost host, FriendView priorPolicy, Guid ownerProfileId, CancellationToken cancellationToken)
+    {
+        var enrollments = host.Enrollments;
+        var heartbeats = host.Heartbeats;
+        var passes = peers.WorkSnapshot().Membership!.PassesCompleted;
+        var notify = typeof(HostManager).GetMethod("NotifySharedSavePublished", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        for (var index = 0; index < 3; index++)
+        {
+            // Start/Stop/publication dispatch this same fixed scheduling signal.
+            // Exercise it without manufacturing a process or capturing a save.
+            notify.Invoke(manager, []);
+            peers.ScheduleSync(cancellationToken);
+            await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+        Require(peers.WorkSnapshot().Membership!.PassesCompleted >= passes + 3 &&
+            host.Enrollments == enrollments && host.Heartbeats == heartbeats,
+            "publication/run wakes repeated companion enrollment or heartbeat instead of local registry refresh");
+
+        Require((await manager.SetSimpleSharedHostingAsync(ownerProfileId, true, cancellationToken)).Ok,
+            "the generated local owner's sharing policy did not commit");
+        peers.ScheduleSync(cancellationToken);
+        await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        Require(peers.Views().Any(group => group.ProfileId == ownerProfileId && group.SelfDeviceId == Guid.Empty && group.CanHost) &&
+            host.Enrollments == enrollments && host.Heartbeats == heartbeats,
+            "local-only policy refresh delayed the original owner registration or re-enrolled an unrelated saved Host");
+
+        ActivityEvent[] notice = [new(Guid.NewGuid(), DateTimeOffset.UtcNow, "Backup", "SharedSavesEnabled", "Generated later policy",
+            ProfileId: host.Root.ProfileId, Visibility: ActivityVisibility.AssignedFriends)];
+        var material = priorPolicy with
+        {
+            Activity = notice,
+            Connections = priorPolicy.Connections?.Select(connection => connection with { Activity = notice }).ToArray()
+        };
+        Require(peers.ObserveFriendSnapshot(material), "the later Friend policy did not request a network roster check");
+        peers.ScheduleSync(cancellationToken);
+        await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        Require(host.Enrollments == ++enrollments && host.Heartbeats == heartbeats,
+            "a changed Friend policy lost its network enrollment refresh or polled heartbeat again");
+
+        // Move only the disposable service's periodic network deadline. No
+        // clock, production setting, retry budget or transfer due time changes.
+        typeof(WorldPeerService).GetField("nextMembershipNetworkUtc", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(peers, DateTimeOffset.MinValue);
+        peers.ScheduleSync(cancellationToken);
+        await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        Require(host.Enrollments == ++enrollments && host.Heartbeats == heartbeats,
+            "the periodic deadline did not refresh network membership exactly once");
+
+        await peers.SyncNowAsync(cancellationToken).WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        Require(host.Enrollments == ++enrollments && host.Heartbeats == heartbeats,
+            "explicit full Sync reused a local-only registration or added heartbeat work");
     }
 
     private static async Task UntilAsync(Func<bool> condition)
@@ -142,9 +217,10 @@ internal static class PeerMembershipIndependentRefreshChecks
         private readonly WorldPeerService peer;
         private SharedWorldRoster current;
         private string? nonce;
-        private int enrollments, peerChallenges, peerMetadataExchanges;
+        private int enrollments, heartbeats, peerChallenges, peerMetadataExchanges;
         private int grantedCurrentReplies;
         internal int Enrollments => Volatile.Read(ref enrollments);
+        internal int Heartbeats => Volatile.Read(ref heartbeats);
         internal int PeerChallenges => Volatile.Read(ref peerChallenges);
         internal int PeerMetadataExchanges => Volatile.Read(ref peerMetadataExchanges);
         internal SharedWorldRoster Current => Volatile.Read(ref current);
@@ -224,9 +300,12 @@ internal static class PeerMembershipIndependentRefreshChecks
                 request.Headers.GetValues("X-Device-Id").Single() == device.ToString(),
                 "the generated companion request lost its saved device authentication");
             if (path == "/api/companion/heartbeat")
+            {
+                Interlocked.Increment(ref heartbeats);
                 return Reply(new CompanionStatus(false, null, [new(profile, "Generated", "Offline", null, Kind: GameKinds.Valheim)],
                     false, false, DateTimeOffset.UtcNow, new("synthetic", CompanionProtocol.Current, CompanionProtocol.Minimum,
                         [CompanionProtocol.SharedWorldsCapability, CompanionProtocol.SharedWorldPeersCapability])));
+            }
             var prefix = $"/api/companion/servers/{profile}/shared-world";
             if (path == prefix + "/enrollment" && request.Method == HttpMethod.Get)
             { nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)); return Reply(new SharedWorldEnrollmentChallenge(nonce)); }
