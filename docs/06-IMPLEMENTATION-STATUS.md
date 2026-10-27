@@ -102,7 +102,7 @@ it was not retried. The existing observer provided the safe alternative.
 The laptop is improved for prepared Start and saved restart, but is not accepted
 as fully repaired while automatic exact acknowledgement remains unresolved.
 
-The next .17 slice adds read-only transfer observations to the existing shared
+The .17 slice adds read-only transfer observations to the existing shared
 world panel: active phase, fixed request/HTTP result, elapsed time, bytes handled
 in that pass, and retained failures. Metadata-only discovery cannot erase a
 failed payload operation. The memory store is bounded to 256 routes; snapshots
@@ -150,7 +150,52 @@ new background parser and its dependencies. This is a harness dependency error,
 not a browser success or product-delivery diagnosis. The extractor now includes
 those actual functions/constants and has a populated failure/historical-receipt
 case; all 60 pure checks pass locally. Product source remains unchanged from
-0aedd37; a fresh exact-source Windows run is required for the corrected harness.
+0aedd37. That run finished with 13 successful lanes and four failures: the
+extractor, Desktop QuietTime, LAN incoming preparation (`LatestSaveChanged`
+after 12,829 ms), and ordinary automatic-sharing Friend preparation
+(`SimpleFriendPreparationRejected`, whose underlying result was not retained).
+Its separate diagnostic journey passed nine stages with two returning-owner
+Start requests. Existing passed all 27 gates, including all 1,573 UI tests.
+Those failed preparation results remain unexplained; a later green run is not
+evidence that the extractor correction repaired a product race.
+
+The corrected exact-source
+[Windows run 40435440400](https://github.com/daltonstates/TogetherServer/actions/runs/40435440400)
+for `554e795225e81932286775c94e9dfd76c44f01fe` finished with 16 successful lanes
+and only Desktop QuietTime blocked. Existing passed all 27 gates with zero
+NotRun: 109 UI files/1,573 tests, Checks 114, Minecraft 12 and every later gate.
+Source checks pass 83 groups and packaged API checks nine. Pairing passes all
+32 stages; both ordinary nine-stage automatic-sharing journeys pass, each
+returning owner using one Start request. The final candidate hash is unchanged;
+hosted cleanup completed without orphan termination entries. All six installer
+smoke cases and three actual wizard choices pass. The 60 pure fixture checks
+and hosted access/wizard capture manifests pass; those screenshot plans do not
+contain populated background transfer observations. No visual acceptance of
+that populated panel is claimed from those PNGs.
+
+The reviewed [v0.3.3.17 preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.17)
+is published, with annotated tag `d3739caffb6b3e89339207e055370dd1c34533d0`
+pointing to 554e795. Portable: 66,225,822 bytes, SHA-256
+`400e4f37a48fc53387b8120183af7c0862c0d207cea0d7b5fed9b85016872b3f`.
+Installer: 60,685,599 bytes, SHA-256
+`0c9a4c4569e404fd36d2d9aa682891d7fbd19b7767c2a0ab8fd0ff47ffaf0c98`.
+Source/run/attempt, static native versions, embedded UI, manifest and checksum
+sidecars were checked without loading or launching either binary. All four
+public assets were anonymously downloaded and rehashed. All 31 older release
+IDs remain present (32 total), and stable/latest remains `v0.3.3`. Both EXEs
+remain unsigned and review-only; full acceptance remains false.
+
+While the target remained Offline, bounded read-only hashing also matched all
+315 files/119,452,903 bytes in each older local received cache (canonical 3 and
+branch 4), with read leases held and stable pointers. No payload hash mismatch
+was found in those copies; this does not establish remote receipt or reverify
+their current signed authorization. A source review separately found that an
+incoming echo of an already-published/retained exact save can still use another
+receive vault and change the material observation during preparation. That is
+a plausible source schedule for a benign refusal, not runtime attribution.
+No observation fence, ancestry check or incoming-transfer behavior was changed
+on that basis. The next physical step awaits the owner's manual .17 update and
+will read pending delivery state with the game stopped, before another Start.
 
 ## Current behavior
 
