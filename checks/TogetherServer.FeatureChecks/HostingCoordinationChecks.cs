@@ -34,6 +34,33 @@ internal static class HostingCoordinationChecks
         time.Advance(TimeSpan.FromSeconds(60));
         Require(!ownership.Active("world", "save", "member"), "abandoned pull permanently prevented offer retry");
         using var fixture = new WorldPeerExistingCopyChecks.Fixture(parent, "Original");
+        var wakes = 0;
+        fixture.TargetService.BackgroundSyncRequested += () => wakes++;
+        var profile = new PublicProfile(Guid.NewGuid(), "Generated", "Ready", null, Kind: GameKinds.Valheim,
+            OnlinePlayers: 0, PlayerCountObservedUtc: now);
+        var connected = new FriendView("Friend", "Connected", "", "https://192.0.2.1:5131", now,
+            true, true, true, [profile], [CompanionProtocol.SharedWorldPeersCapability], ConnectionId: Guid.NewGuid());
+        Require(fixture.TargetService.ObserveFriendSnapshot(connected) && wakes == 1,
+            "new pinned connection did not wake automatic enrollment");
+        Require(!fixture.TargetService.ObserveFriendSnapshot(connected with
+        {
+            LastConnectedUtc = now.AddSeconds(5),
+            Profiles = [profile with { OnlinePlayers = 2, PlayerCountObservedUtc = now.AddSeconds(5) }],
+            Activity = [new(Guid.NewGuid(), now, "Players", "CountChanged", "Generated")]
+        }) && wakes == 1,
+            "routine heartbeat/player observations restarted enrollment or transfer work");
+        var sharing = connected with
+        {
+            Activity = [new(Guid.NewGuid(), now, "Backup", "SharedSavesEnabled", "Generated",
+            ProfileId: profile.Id, Visibility: ActivityVisibility.AssignedFriends)]
+        };
+        Require(fixture.TargetService.ObserveFriendSnapshot(sharing) && wakes == 2 &&
+            !fixture.TargetService.ObserveFriendSnapshot(sharing), "new sharing policy was delayed by the idle schedule or replayed unchanged");
+        Require(fixture.TargetService.ObserveFriendSnapshot(sharing with { State = "Disconnected/Unknown" }) &&
+            fixture.TargetService.ObserveFriendSnapshot(sharing) && wakes == 4,
+            "authenticated reconnection did not invalidate enrollment scheduling");
+        Require(fixture.TargetService.WorkSnapshot().Work.Single(item => item.Stage == "PeerRequest").Count == 0,
+            "observing a scheduling snapshot itself executed a transfer");
         _ = fixture.TargetService.Views();
         var before = fixture.TargetService.WorkSnapshot().Work.Single(item => item.Stage == "SignedRegistry").Count;
         _ = fixture.TargetService.Views();

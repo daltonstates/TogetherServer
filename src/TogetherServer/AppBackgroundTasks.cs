@@ -51,7 +51,8 @@ internal sealed class AppBackgroundTasks(
         {
             try
             {
-                await friend.PollAsync();
+                var snapshot = await friend.PollAsync();
+                worldPeers?.ObserveFriendSnapshot(snapshot);
             }
             catch (Exception ex) { DiagnosticOutput.WriteError("Friend poll failed: " + ex.GetType().Name); }
             if (!await Delay(TimeSpan.FromSeconds(5))) break;

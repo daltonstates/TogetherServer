@@ -57,6 +57,17 @@ describe('useSingleFlightPolling', () => {
     expect(signals[0].aborted).toBe(true)
   })
 
+  it('aborts its completed response signal when authorization disables the scope', async () => {
+    const task = vi.fn<(signal: AbortSignal) => Promise<void>>().mockResolvedValue(undefined)
+    const view = render(<PollingProbe task={task} />)
+    await act(async () => { await Promise.resolve() })
+    const signal = task.mock.calls[0][0]
+    expect(signal.aborted).toBe(false)
+    view.rerender(<PollingProbe task={task} enabled={false} />)
+    expect(signal.aborted).toBe(true)
+    expect(task).toHaveBeenCalledTimes(1)
+  })
+
   it('reports a failed poll without leaving an unhandled rejection', async () => {
     vi.useFakeTimers()
     const error = new Error('local service unavailable')

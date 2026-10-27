@@ -10,6 +10,7 @@ internal sealed partial class WorldPeerService
     private int remainingGroupSweep = -1;
     private SharedWorldPeerRoot[] replicationOwnedRoots = [];
     private readonly Dictionary<(string World, string Member), long> inboundContacts = [];
+    private string? friendMembershipObservation;
     internal event Action? BackgroundSyncRequested;
 
     internal HostingWorkSnapshot WorkSnapshot()
@@ -20,6 +21,30 @@ internal sealed partial class WorldPeerService
             Work = peer.Work.Where(item => item.Stage != nameof(HostingWorkStage.WorkingVerification))
             .Append(manager.WorkingVerificationMeasurement()).ToArray()
         };
+    }
+
+    // The canonical heartbeat owner supplies this snapshot. UI reads never
+    // call it. Pairing, scoped assignments, sharing-policy notices and reconnects
+    // invalidate enrollment scheduling; player/time/progress polls do not.
+    internal bool ObserveFriendSnapshot(FriendView snapshot)
+    {
+        var material = System.Text.Json.JsonSerializer.Serialize((snapshot.Connections ?? [snapshot])
+            .OrderBy(connection => connection.ConnectionId).Select(connection => new
+            {
+                connection.ConnectionId,
+                connection.HostId,
+                connection.Endpoint,
+                connection.State,
+                connection.ConnectionCode,
+                Capabilities = connection.HostCapabilities.Order(StringComparer.Ordinal),
+                Profiles = connection.Profiles.OrderBy(profile => profile.Id).Select(profile => new { profile.Id, profile.Kind }),
+                Sharing = (connection.Activity ?? []).Where(activity => activity.Category == "Backup" &&
+                    activity.Action is "SharedSavesEnabled" or "SharedSavesDisabled").Select(activity => activity.Id).Order()
+            }));
+        if (material == friendMembershipObservation) return false;
+        friendMembershipObservation = material;
+        RequestBackgroundSync();
+        return true;
     }
 
     // Suppress only the duplicate legacy background receiver for an enrolled

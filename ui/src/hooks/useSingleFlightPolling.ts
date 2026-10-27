@@ -46,7 +46,9 @@ export function useSingleFlightPolling(task: (signal: AbortSignal) => Promise<vo
       try { await flight }
       finally {
         if (flightRef.current === flight) flightRef.current = null
-        controller = undefined
+        // Keep the last signal owned by this scope, even after completion.
+        // Authorization/scope removal still aborts every retained consumer of
+        // that latest response; the next flight replaces its controller.
         waiting = false
         if (active && !hidden) {
           if (resume) { resume = false; void poll() }

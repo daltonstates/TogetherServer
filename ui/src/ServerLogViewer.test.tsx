@@ -95,16 +95,51 @@ describe('ServerLogViewer', () => {
 
   it('ignores a late failed read after the endpoint changes', async () => {
     let rejectOld!: (error: Error) => void
-    const loader: ServerLogLoader = endpoint => endpoint === '/old' ? new Promise((_resolve, reject) => {
+    const loader = vi.fn<ServerLogLoader>(endpoint => endpoint === '/old' ? new Promise((_resolve, reject) => {
       rejectOld = reject
-    }) : Promise.resolve(result('b'.repeat(32), [record('current run')], 'current'))
+    }) : Promise.resolve(result('b'.repeat(32), [record('current run')], 'current')))
     const display = render(<ServerLogViewer endpoint="/old" visible loader={loader} />)
     await flush()
     display.rerender(<ServerLogViewer endpoint="/current" visible loader={loader} />)
-    await screen.findByText('current run')
+    expect(loader.mock.calls[0][2].aborted).toBe(true)
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('current run')).not.toBeInTheDocument()
+    // This loader deliberately ignores abort: a new scope waits instead of
+    // opening a concurrent read, and the old failure cannot reach that scope.
     await act(async () => rejectOld(new Error('PRIVATE_OLD_FAILURE')))
+    await screen.findByText('current run')
+    expect(loader).toHaveBeenCalledTimes(2)
+    expect(loader.mock.calls[1][0]).toBe('/current')
     expect(screen.queryByText('PRIVATE_OLD_FAILURE')).not.toBeInTheDocument()
     expect(screen.getByText('current run')).toBeInTheDocument()
+  })
+
+  it('clears old content immediately and coalesces manual refresh behind an aborted old scope', async () => {
+    vi.useFakeTimers()
+    let finishOld!: (value: ServerLogResult) => void
+    const loader = vi.fn<ServerLogLoader>()
+      .mockResolvedValueOnce(result('a'.repeat(32), [record('Prior scope content')], 'old'))
+      .mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+      .mockResolvedValue(result('b'.repeat(32), [record('Current scope content')], 'current'))
+    const display = render(<ServerLogViewer endpoint="/old" visible loader={loader} pollIntervalMs={1000} />)
+    await flush()
+    expect(screen.getByText('Prior scope content')).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(loader).toHaveBeenCalledTimes(2)
+    display.rerender(<ServerLogViewer endpoint="/current" visible loader={loader} pollIntervalMs={1000} />)
+    expect(loader.mock.calls[1][2].aborted).toBe(true)
+    expect(screen.queryByText('Prior scope content')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await flush()
+    expect(loader).toHaveBeenCalledTimes(2)
+    await act(async () => finishOld(result('a'.repeat(32), [record('PRIVATE_LATE_OLD_CONTENT')], 'late-old')))
+    await flush()
+    expect(loader).toHaveBeenCalledTimes(3)
+    expect(loader.mock.calls[2][0]).toBe('/current')
+    expect(loader.mock.calls[2][1].cursor).toBeNull()
+    expect(screen.getByText('Current scope content')).toBeVisible()
+    expect(screen.queryByText('PRIVATE_LATE_OLD_CONTENT')).not.toBeInTheDocument()
+    expect(screen.queryByText('Prior scope content')).not.toBeInTheDocument()
   })
 
   it('keeps the visible reading anchor when bounded history drops earlier lines, then jumps on request', async () => {

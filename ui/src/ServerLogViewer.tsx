@@ -168,7 +168,7 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
   const cursorRef = useRef<string | null>(null)
   const runIdRef = useRef<string | null>(null)
   const generationRef = useRef(0)
-  const inFlightRef = useRef<Promise<void> | null>(null)
+  const inFlightRef = useRef<{ generation: number; promise: Promise<void> } | null>(null)
   const requestControllerRef = useRef<AbortController | null>(null)
   const manualControllerRef = useRef<AbortController | null>(null)
   const filterKey = useMemo(() => JSON.stringify(filters), [filters])
@@ -233,11 +233,10 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     return () => observer.disconnect()
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     generationRef.current += 1
     requestControllerRef.current?.abort()
     manualControllerRef.current?.abort()
-    inFlightRef.current = null
     cursorRef.current = null
     runIdRef.current = null
     recordsRef.current = []
@@ -285,9 +284,18 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     setRequestError('')
   }, [safeHistoryLimit, rememberReadingPosition])
 
-  const refresh = useCallback((externalSignal: AbortSignal): Promise<void> => {
-    if (inFlightRef.current) return inFlightRef.current
+  const refresh = useCallback(function readCurrentScope(externalSignal: AbortSignal): Promise<void> {
     const generation = generationRef.current
+    if (inFlightRef.current) {
+      const previous = inFlightRef.current
+      if (previous.generation === generation) return previous.promise
+      // Manual refresh shares the polling owner too. Keep an aborted old scope
+      // occupied until its reader settles, then read only the current scope.
+      return previous.promise.then(() => {
+        if (externalSignal.aborted || generation !== generationRef.current) return
+        return readCurrentScope(externalSignal)
+      })
+    }
     const controller = new AbortController()
     requestControllerRef.current = controller
     const abort = () => controller.abort()
@@ -327,10 +335,10 @@ export function ServerLogViewer({ endpoint, visible, unsupported = null, loader 
     }).finally(() => {
       externalSignal.removeEventListener('abort', abort)
       if (requestControllerRef.current === controller) requestControllerRef.current = null
-      if (inFlightRef.current === tracked) inFlightRef.current = null
+      if (inFlightRef.current?.promise === tracked) inFlightRef.current = null
       if (generation === generationRef.current) setLoading(false)
     })
-    inFlightRef.current = tracked
+    inFlightRef.current = { generation, promise: tracked }
     return tracked
   }, [applyResult, endpoint, filters, loader, safeBatchSize, expectedLogRunId])
 

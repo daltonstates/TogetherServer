@@ -77,6 +77,28 @@ source reuse, held working proof/concurrent refusal, chunk provenance, pinned
 connection reuse, scheduling invalidation and nonmutating bounded discovery.
 The separate native namespace-substitution case is registered for hosted Windows
 CI and was not run locally. Exact-source hosted Windows CI remains pending.
+The first integrated source `17f4b04` is retained in Windows run `40551688495`.
+Its packaged Core remote lifecycle passed 14 groups, then rehearsal, automatic
+sharing and pairing all exposed delayed automatic enrollment: an empty registry
+could idle for a minute after pairing or enabling sharing, beyond their bounded
+membership wait. This is a scheduling invalidation regression, not acceptance.
+Canonical background heartbeat snapshots now wake enrollment on connection,
+assignment, sharing-policy or reconnection changes; timestamp/player observations
+do not. The existing sharing-enabled/disabled notice is scoped to assigned Friends
+through the existing activity protocol. No new request or trust field is added.
+Current signed enrollment/consent checks still decide permission. The earlier
+candidate assets will not be published. Exact corrected-source CI is required.
+That first run finished with 11 successful and six failed lanes. All 89 source
+groups and the eight packaged API journeys passed, including actual native
+namespace substitution with no substitution skip. Existing stopped at two UI
+failures (1,578/1,580 passed): scope cleanup did not abort the most recent
+completed signal, and a log-reader test expected a second request before its
+abort-ignoring old reader settled. Cleanup now retains/aborts that signal; log
+scope changes clear old content before paint and polling/manual refresh share
+the same pending reader. Tests require eventual current data and reject old
+errors/content after settlement. The corrected three UI suites pass 115 tests,
+the enrollment-wake regression passes, and strict solution rebuild is clean.
+The independent Desktop lane retained the OS QuietTime notification block.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an
