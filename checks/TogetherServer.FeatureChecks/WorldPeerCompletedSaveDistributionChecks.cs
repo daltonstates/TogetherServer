@@ -452,6 +452,156 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             Receipts(a, root).Length == 0 && !Receipts(b, root).Any(item => item.VersionHash == version.VersionHash) &&
             a.LoadRuns().Count == 0 && b.LoadRuns().Count == 0,
             "canceled completion hashed/reset staged progress, promoted a pointer/receipt or created a process");
+        File.Delete(partialFile); // Only the disposable corrupt cancellation fixture is reset.
+        await IncomingSeedYieldsToPullAsync(a, b, root, branch, version, source, handler, aRoute, bRoute);
+    }
+
+    private static async Task IncomingSeedYieldsToPullAsync(LocalData main, LocalData laptop,
+        SharedWorldPeerRoot root, WorldSeparateCopyBranch branch, SharedWorldVersion version,
+        WorldPeerService sender, Handler mainHandler, SharedWorldPeerRoute mainRoute, SharedWorldPeerRoute laptopRoute)
+    {
+        // Main's real pull owns this exact receive vault while awaiting a
+        // Laptop chunk. An incoming authenticated Seed must not queue behind
+        // that transfer until the sender's six-second HTTP deadline expires.
+        using var laptopHandler = new Handler(sender, root, laptopRoute);
+        HttpClient Client(string endpoint, IEnumerable<string> pins)
+        {
+            Require(endpoint.TrimEnd('/') == laptopRoute.Address && pins.SequenceEqual([laptopRoute.CertificateSha256]),
+                "the contended pull changed its exact pinned fake source");
+            return new(laptopHandler, disposeHandler: false)
+            { BaseAddress = new Uri(laptopRoute.Address + "/"), Timeout = TimeSpan.FromSeconds(6) };
+        }
+        HttpClient Offline(string _, IEnumerable<string> __) => throw new HttpRequestException("Synthetic route is offline.");
+        using var friends = new FriendService(main, Offline);
+        using var pullingMain = new WorldPeerService(main, new HostManager(main), friends, new PairingService(main), Client);
+        var vault = SharedWorldBranchVault.Root(main, branch);
+        var stage = Path.Combine(vault, ".partial-" + version.VersionHash);
+        var partialFile = Path.Combine(stage, SharedWorldService.PayloadDirectory, "world.dat");
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        laptopHandler.BeforeExchange = async exchange =>
+        {
+            if (exchange.Request.Operation != WorldPeerOperations.Chunk || exchange.Request.VersionHash != version.VersionHash) return;
+            entered.TrySetResult(true);
+            await release.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        };
+        var exactSeedOffers = 0;
+        var exactSeedChunks = 0;
+        mainHandler.BeforeExchange = exchange =>
+        {
+            if (exchange.Request.Operation == WorldPeerOperations.Seed && exchange.Request.VersionHash == version.VersionHash)
+            {
+                if (exchange.Request.FileIndex is null) exactSeedOffers++;
+                else exactSeedChunks++;
+            }
+            return Task.CompletedTask;
+        };
+        using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var pull = SyncExactPeerAsync(pullingMain, root, laptopRoute);
+        Task<WorldPeerSeedResponse>? seed = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var partialLength = new FileInfo(partialFile).Length;
+            var partialWrittenUtc = File.GetLastWriteTimeUtc(partialFile);
+            var stagedFiles = Directory.EnumerateFiles(stage, "*", SearchOption.AllDirectories).Count();
+            var observation = pullingMain.LatestObservationHash(root);
+            seed = SendExactSeedAsync(sender, root, mainRoute, new(version, branch), bounded.Token);
+            var paused = await seed.WaitAsync(TimeSpan.FromSeconds(3));
+            Require(paused is { Code: "SeedPaused", Receipt: null } && paused.VersionHash == version.VersionHash &&
+                exactSeedOffers == 1 && exactSeedChunks == 0 && !pull.IsCompleted &&
+                new FileInfo(partialFile).Length == partialLength && File.GetLastWriteTimeUtc(partialFile) == partialWrittenUtc &&
+                Directory.EnumerateFiles(stage, "*", SearchOption.AllDirectories).Count() == stagedFiles &&
+                !Directory.Exists(Path.Combine(vault, version.VersionHash)) && !File.Exists(Path.Combine(vault, "latest.json")) &&
+                !File.Exists(Path.Combine(stage, "version.json")) && !File.Exists(Path.Combine(stage, "receipt.json")) &&
+                pullingMain.LatestObservationHash(root) == observation &&
+                !Receipts(laptop, root).Any(item => item.VersionHash == version.VersionHash),
+                $"Synthetic contended seed checks: paused={paused.Code == "SeedPaused"}, receiptAbsent={paused.Receipt is null}, " +
+                $"exactSeedOffers={exactSeedOffers}, exactSeedChunks={exactSeedChunks}, pullPending={!pull.IsCompleted}.");
+        }
+        finally
+        {
+            release.TrySetResult(true);
+            laptopHandler.BeforeExchange = null;
+            try { await pull.WaitAsync(TimeSpan.FromSeconds(10)); }
+            finally
+            {
+                try { if (seed is not null) await seed.WaitAsync(TimeSpan.FromSeconds(10)); }
+                finally { mainHandler.BeforeExchange = null; }
+            }
+        }
+        var bytes = File.ReadAllBytes(Path.Combine(new SharedWorldSeparateCopyStore(laptop).PublishedRoot(branch),
+            version.VersionHash, SharedWorldService.PayloadDirectory, "world.dat"));
+        VerifyCopy(vault, version, bytes);
+        var receipt = Receipts(laptop, root).Single(item => item.DeviceId == Guid.Empty && item.VersionHash == version.VersionHash);
+        Require(SharedWorldReceiptTrust.VerifyPeerOwner(receipt, root),
+            "the released real pull did not deliver the exact owner's signed receipt");
+        var known = await SendExactSeedAsync(sender, root, mainRoute, new(version, branch), bounded.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Require(known is { Code: "SeedKnown", Receipt: not null } && known.Receipt == receipt &&
+            known.VersionHash == version.VersionHash && exactSeedChunks == 0 &&
+            SharedWorldReceiptTrust.VerifyPeerOwner(known.Receipt, root) &&
+            main.LoadRuns().Count == 0 && laptop.LoadRuns().Count == 0,
+            "the completed contended pull retried payload data, lost its exact receipt or created a process");
+        await RetainedSeedYieldsAsync(main, laptop, root, branch, version, bytes, sender, mainRoute, receipt);
+    }
+
+    private static async Task RetainedSeedYieldsAsync(LocalData main, LocalData laptop, SharedWorldPeerRoot root,
+        WorldSeparateCopyBranch branch, SharedWorldVersion primary, byte[] primaryBytes, WorldPeerService sender,
+        SharedWorldPeerRoute mainRoute, SharedWorldReceipt primaryReceipt)
+    {
+        // A valid sibling belongs in retained history, not over the completed
+        // primary. Contention on that second gate must also release the first.
+        using var hosting = ECDsa.Create();
+        hosting.ImportPkcs8PrivateKey(laptop.LoadProtected(WorldAuthorityStore.HostingKeyName(root.ProfileId))!, out _);
+        Require(Public(hosting) == primary.SigningPublicKey && primary.Number == 2 &&
+            primary.ParentHash == branch.Offer.Version.VersionHash,
+            "the retained-contention fixture did not have its generated signed second publication");
+        var forkBytes = Encoding.UTF8.GetBytes("synthetic independent signed sibling progress");
+        var fork = SharedWorldService.SignVersion(primary with { BackupId = Guid.NewGuid(), Files = [Fact(forkBytes)] }, hosting);
+        Require(fork.VersionHash != primary.VersionHash && fork.ParentHash == primary.ParentHash &&
+            SharedWorldSeparateCopyStore.VerifySnapshotVersion(branch, fork),
+            "the retained-contention fixture did not create a valid signed sibling");
+        var descriptor = new WorldPeerSaveDescriptor(fork, branch);
+        var primaryVault = SharedWorldBranchVault.Root(main, branch);
+        var retained = Path.Combine(main.RootPath, "received-shared-histories", root.GroupKey, fork.VersionHash);
+        var retainedGate = FriendLink.ReceiveGateFor(retained);
+        using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await retainedGate.WaitAsync(bounded.Token);
+        try
+        {
+            var paused = await SendExactSeedAsync(sender, root, mainRoute, descriptor, bounded.Token)
+                .WaitAsync(TimeSpan.FromSeconds(3));
+            Require(paused is { Code: "SeedPaused", Receipt: null } && paused.VersionHash == fork.VersionHash &&
+                !Directory.Exists(retained) && !Receipts(laptop, root).Any(item => item.VersionHash == fork.VersionHash),
+                "the occupied retained-history gate queued or acknowledged a competing save");
+            var primaryKnown = await SendExactSeedAsync(sender, root, mainRoute, new(primary, branch), bounded.Token)
+                .WaitAsync(TimeSpan.FromSeconds(3));
+            Require(primaryKnown is { Code: "SeedKnown", Receipt: not null } && primaryKnown.Receipt == primaryReceipt &&
+                primaryKnown.VersionHash == primary.VersionHash && SharedWorldReceiptTrust.VerifyPeerOwner(primaryKnown.Receipt, root),
+                "the paused retained-history request kept the outer receive gate or changed the exact primary receipt");
+            VerifyCopy(primaryVault, primary, primaryBytes);
+        }
+        finally { retainedGate.Release(); }
+        var requested = await SendExactSeedAsync(sender, root, mainRoute, descriptor, bounded.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Require(requested is { Code: "SeedChunk", FileIndex: 0, ChunkOffset: 0, Receipt: null } &&
+            requested.VersionHash == fork.VersionHash,
+            "the released retained-history gate did not request the exact sibling payload");
+        var completed = await SendExactSeedAsync(sender, root, mainRoute, descriptor, bounded.Token,
+            chunk: forkBytes, fileIndex: 0, offset: 0).WaitAsync(TimeSpan.FromSeconds(5));
+        Require(completed is { Code: "SeedComplete", Receipt: not null } && completed.VersionHash == fork.VersionHash &&
+            completed.Receipt.VersionHash == fork.VersionHash && completed.Receipt.DeviceId == Guid.Empty &&
+            SharedWorldReceiptTrust.VerifyPeerOwner(completed.Receipt, root) &&
+            SharedWorldSeparateCopyStore.VerifyReceivedBranch(retained, branch, fork),
+            "the competing signed payload did not finish in its retained lane with an exact verified receipt");
+        VerifyCopy(retained, fork, forkBytes);
+        VerifyCopy(primaryVault, primary, primaryBytes);
+        Require(JsonSerializer.Deserialize<SharedWorldReceipt>(File.ReadAllBytes(Path.Combine(primaryVault,
+                primary.VersionHash, "receipt.json")), Json) == primaryReceipt &&
+            FriendLink.ReadReceivedLatest(new SharedWorldSeparateCopyStore(laptop).PublishedRoot(branch))?.VersionHash == primary.VersionHash &&
+            main.LoadRuns().Count == 0 && laptop.LoadRuns().Count == 0,
+            "retaining the competing copy replaced primary/source progress, changed its receipt or created a process");
     }
 
     private static async Task LatePublicationAfterClosedSessionAsync(string parent)
@@ -775,6 +925,16 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         var sync = (Task)typeof(WorldPeerService).GetMethod("SyncPeerAsync", flags)!
             .Invoke(service, [group, route, bounded.Token, true, false])!;
         await sync.WaitAsync(TimeSpan.FromSeconds(15));
+    }
+    private static Task<WorldPeerSeedResponse> SendExactSeedAsync(WorldPeerService service, SharedWorldPeerRoot root,
+        SharedWorldPeerRoute route, WorldPeerSaveDescriptor descriptor, CancellationToken cancellationToken,
+        byte[]? chunk = null, int? fileIndex = null, long? offset = null)
+    {
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var group = typeof(WorldPeerService).GetMethod("Find", flags)!.Invoke(service, [root.GroupKey]);
+        Require(group is not null, "the exact fake-peer seed lost its registered group");
+        return (Task<WorldPeerSeedResponse>)typeof(WorldPeerService).GetMethod("SendSeedAsync", flags)!
+            .Invoke(service, [group, route, descriptor, null, chunk, fileIndex, offset, cancellationToken])!;
     }
     private static string Vault(LocalData data, Guid id, Guid profile) => Path.Combine(data.RootPath,
         "received-shared-worlds", id.ToString("N"), profile.ToString("N"));

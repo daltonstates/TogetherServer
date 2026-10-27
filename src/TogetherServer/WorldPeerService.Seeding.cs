@@ -118,9 +118,20 @@ internal sealed partial class WorldPeerService
             throw new InvalidDataException("The offered peer save is not an authorized fixed copy.");
         var version = descriptor.Version;
         if (!await ReceiveAllowedAsync(group, cancellationToken)) return new("SeedPaused", version.VersionHash);
+        lock (stateSync)
+            if (worldExchangeGates.TryGetValue(group.Root.GroupKey, out var preparation) && preparation.Preparations > 0)
+                return new("SeedPaused", version.VersionHash);
+        if (seed.Manifest is null && seed.Chunk is null &&
+            await TryReuseExistingCopyAsync(group, descriptor, cancellationToken,
+                additionalAuthorization: () => SeedSenderAllowed(group, request)) is { } reused)
+            return new("SeedKnown", version.VersionHash, Receipt: reused.Receipt);
         var vault = descriptor.Branch is { } branch ? SharedWorldBranchVault.Root(data, branch) : ReceivedRoot(data, group);
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);
-        await FriendLink.ReceiveGateFor(vault).WaitAsync(cancellationToken);
+        var receiveGate = FriendLink.ReceiveGateFor(vault);
+        // An existing pull owns this writer while it awaits remote chunks.
+        // Report pending immediately rather than queueing an inbound request
+        // beyond its sender's deadline. No partial copy is acknowledged here.
+        if (!await receiveGate.WaitAsync(0, cancellationToken)) return new("SeedPaused", version.VersionHash);
         try
         {
             var existing = ReadPeerPointer(vault);
@@ -141,7 +152,8 @@ internal sealed partial class WorldPeerService
                 // replace the ordinary received pointer, even in one lane.
                 var retained = SharedWorldService.SafeChild(RetainedHistoryParent(data, group), version.VersionHash);
                 SharedWorldService.EnsureUnlinkedRoot(data.RootPath, retained);
-                await FriendLink.ReceiveGateFor(retained).WaitAsync(cancellationToken);
+                var retainedGate = FriendLink.ReceiveGateFor(retained);
+                if (!await retainedGate.WaitAsync(0, cancellationToken)) return new("SeedPaused", version.VersionHash);
                 try
                 {
                     if (ReadPeerPointer(retained)?.VersionHash == version.VersionHash)
@@ -153,11 +165,11 @@ internal sealed partial class WorldPeerService
                     pending = await StageSeedHistoryAsync(group, descriptor, seed.Manifest, retained, anchor, cancellationToken);
                     return pending ?? await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken);
                 }
-                finally { FriendLink.ReceiveGateFor(retained).Release(); }
+                finally { retainedGate.Release(); }
             }
             return await AcceptSeedPayloadAsync(group, request, seed, vault, anchor, cancellationToken);
         }
-        finally { FriendLink.ReceiveGateFor(vault).Release(); }
+        finally { receiveGate.Release(); }
     }
 
     private async Task<WorldPeerSeedResponse?> StageSeedHistoryAsync(Group group, WorldPeerSaveDescriptor descriptor,

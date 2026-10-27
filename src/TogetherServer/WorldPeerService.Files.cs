@@ -306,10 +306,12 @@ internal sealed partial class WorldPeerService
         if (catalog is null || catalog.Root != group.Root || catalog.Saves is null || catalog.Saves.Count > 32 ||
             catalog.Saves.Any(item => !AuthorizedDescriptor(group, item)))
             throw new InvalidDataException("The peer save catalog does not match this trusted world.");
+        var localCopies = await ExistingCopyInventoryAsync(group, cancellationToken);
         // Scheduling a later numbered payload first avoids an older original
         // entry delaying a continuation. Ancestry alone still selects history.
         foreach (var descriptor in catalog.Saves.Where(item => !item.TestOnly).OrderByDescending(item => item.Version.Number))
         {
+            if (await TryReuseExistingCopyAsync(group, descriptor, cancellationToken, localCopies, route) is not null) continue;
             var vault = descriptor.Branch is { } branch ? SharedWorldBranchVault.Root(data, branch) : ReceivedRoot(data, group);
             var version = descriptor.Version;
             SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);

@@ -53,6 +53,40 @@ function transferGroup(current: ReturnType<typeof transferProgress> | null,
 }
 
 describe('Background save transfer observation', () => {
+  it('shows delivery status in the main sharing view without opening permission settings', async () => {
+    const value = transferGroup(null, transferProgress({ state: 'Pending', phase: 'Sending', operation: 'Seed',
+      result: 'ByteBudget', httpStatus: 200, publicationNumber: 7 }))
+    vi.stubGlobal('fetch', vi.fn(async () => reply([value])))
+    render(<WorldPeerPanel profileId={profileId} />)
+    const progress = await screen.findByRole('region', { name: 'Background save transfer for Weekend world' })
+    expect(progress).toBeVisible()
+    expect(progress).toHaveTextContent('Save 7')
+    expect(progress).toHaveTextContent('More bytes remain for another background pass')
+    const permissions = screen.getByText('Save sharing & permissions').closest('details')
+    expect(permissions).not.toHaveAttribute('open')
+    expect(permissions).not.toContainElement(progress)
+    expect(progress).not.toHaveTextContent('Verified receipt for save 7 accepted')
+  })
+
+  it('keeps a busy or paused exchange pending without inventing a receipt or retrying an action', async () => {
+    const calls: { url: string; method?: string }[] = []
+    const value = transferGroup(null, transferProgress({ state: 'Pending', phase: 'Offering', operation: 'Seed',
+      result: 'SeedPaused', error: 'None', httpStatus: 200, submittedBytes: 0, receivedBytes: 0, completedFiles: 0 }))
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method })
+      return reply([value])
+    }))
+    render(<WorldPeerPanel readOnly profileId={profileId} />)
+    const progress = await screen.findByRole('region', { name: 'Background save transfer for Weekend world' })
+    expect(progress).toHaveTextContent('Wait for active transfers to finish')
+    expect(progress).toHaveTextContent('Waiting for another background pass')
+    expect(progress).toHaveTextContent('No verified copy receipt is confirmed')
+    expect(within(progress).queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh details' }))
+    await waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2))
+    expect(calls.every(call => call.url === '/api/local/world-peers' && call.method === undefined)).toBe(true)
+  })
+
   it('keeps fresh metadata, full byte counters and a successful HTTP response separate from a verified receipt', async () => {
     const value = transferGroup(null, transferProgress({ state: 'Succeeded', result: 'PassComplete', httpStatus: 200 }))
     vi.stubGlobal('fetch', vi.fn(async () => reply([value])))
@@ -173,6 +207,12 @@ describe('World groups', () => {
     render(<WorldPeerPanel readOnly profileId={profileId} onRecoverBranch={vi.fn()} onRecoverOwnerBranch={vi.fn()} />)
     const world = await screen.findByRole('article', { name: 'Weekend world' })
     expect(screen.getByRole('region', { name: 'Shared hosting details' })).toHaveAttribute('data-profile-id', profileId)
+    expect(screen.getByRole('heading', { name: 'Save sharing status' })).toBeVisible()
+    const transfers = within(world).getByRole('region', { name: 'Background save transfer for Weekend world' })
+    expect(transfers).toBeVisible()
+    const connections = within(world).getByText('Other Hosts & connections').closest('details')
+    expect(connections).not.toHaveAttribute('open')
+    expect(connections).not.toContainElement(transfers)
     expect(within(world).getByText(/The app checks these copies automatically before hosting/)).toHaveAttribute('role', 'note')
     expect(within(world).queryByRole('checkbox')).not.toBeInTheDocument()
     expect(within(world).queryByRole('button')).not.toBeInTheDocument()

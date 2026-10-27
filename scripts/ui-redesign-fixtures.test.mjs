@@ -10,6 +10,7 @@ import { extraCases as worldReviewCases } from './ui-polish-world-review.mjs';
 import { extraCases as accessReviewCases, serverAccessCaseIds, assertServerAccessUi } from './ui-polish-access-review.mjs';
 import { advancePreparedHostingCheck, assertPreparedHostingRequests, assertStoppedProgressRequests, assertUnconfirmedStart, installHostingReviewClock, simpleHostingCases, simpleHostingVariants, stoppedProgressMessages } from './simple-shared-hosting-review.mjs';
 import { uiReviewBuild } from './ui-review-provenance.mjs';
+import { sharingDeliveryCases, applySharingDeliveryFixture, assertSharingDeliveryEvidence } from './sharing-delivery-review.mjs';
 
 // Read-only source checks against the CURRENT UI, not this older isolated checkout.
 const sourceRoot = process.env.TOGETHERSERVER_UI_SOURCE_ROOT
@@ -130,6 +131,89 @@ test('all presets decode Host and Friend snapshots with current strict decoders'
     if (scenario === 'host-load-error') assert.equal(routeFixture(state, { method: 'GET', path: '/api/local/snapshot' }).status, 503);
     else assert.doesNotThrow(() => contracts.parseSnapshot(get(state, '/api/local/snapshot')), scenario);
   }
+});
+
+test('sharing-delivery capture states pass the current decoder with separate payload, metadata and historical receipt evidence', () => {
+  assert.deepEqual(sharingDeliveryCases.map(item => item.sharingDelivery), ['sending', 'timeout-metadata', 'historical-receipt']);
+  for (const item of sharingDeliveryCases) {
+    const state = createFixtureState(item.scenario);
+    applySharingDeliveryFixture(state, item, new Date(FIXED_NOW).toISOString());
+    const [group] = peers.parseWorldPeerGroups(get(state, '/api/local/world-peers'));
+    const transfer = group.backgroundTransfers[0];
+    assert.equal(transfer.recipientRole, 'OriginalHost');
+    assert.equal(transfer.current.publicationNumber, 6);
+    assert.ok(item.steps.every(step => !step.summary), 'capture navigation opens no disclosure');
+    if (item.sharingDelivery === 'sending') {
+      assert.equal(transfer.current.phase, 'Sending');
+      assert.equal(transfer.lastResult.result, 'ByteBudget');
+      assert.equal(transfer.current.exactReceiptAccepted, false);
+    } else if (item.sharingDelivery === 'timeout-metadata') {
+      assert.equal(transfer.current.phase, 'Metadata');
+      assert.equal(transfer.lastResult.state, 'Succeeded');
+      assert.equal(transfer.lastFailure.error, 'Timeout');
+      assert.equal(transfer.lastFailure.exactReceiptAccepted, false);
+    } else {
+      assert.equal(transfer.current.state, 'Pending');
+      assert.equal(transfer.current.exactReceiptAccepted, true);
+      assert.equal(transfer.current.receiptPublicationNumber, 5);
+    }
+  }
+  const untouched = createFixtureState('host-peers'), before = structuredClone(untouched);
+  applySharingDeliveryFixture(untouched, { id: 'existing-case' }, new Date(FIXED_NOW).toISOString());
+  assert.deepEqual(untouched, before, 'new capture fixtures cannot alter existing plans');
+  assert.throws(() => applySharingDeliveryFixture(untouched, { sharingDelivery: 'arbitrary' }, new Date(FIXED_NOW).toISOString()));
+});
+
+test('sharing-delivery acceptance requires visible closed-details status and refuses mutations or fabricated receipts', () => {
+  const snapshots = {
+    sending: 'Background save transfer Original Host Sending save files In progress This pass: More bytes remain for another background pass',
+    'timeout-metadata': 'Background save transfer Original Host Checking world metadata This pass: Previous save transfer issue: did not respond in time',
+    'historical-receipt': 'Background save transfer Original Host This pass: Save 6 Verified receipt for save 5 accepted'
+  };
+  for (const item of sharingDeliveryCases) {
+    const good = { visible: true, permissionsOpen: false, diagnosticsOpen: false, detailsOpen: false,
+      text: snapshots[item.sharingDelivery], apiRequests: [{ method: 'GET', path: '/api/local/world-peers' }] };
+    assert.doesNotThrow(() => assertSharingDeliveryEvidence(item, good));
+    for (const patch of [{ visible: false }, { permissionsOpen: true }, { diagnosticsOpen: true }, { detailsOpen: true },
+      { apiRequests: [{ method: 'POST', path: '/api/local/world-peers/known/sync' }] }, { text: good.text + ' 100%' }])
+      assert.throws(() => assertSharingDeliveryEvidence(item, { ...good, ...patch }));
+    assert.throws(() => assertSharingDeliveryEvidence(item, { ...good,
+      text: item.sharingDelivery === 'historical-receipt' ? good.text.replace('save 5 accepted', 'save 6 accepted')
+        : good.text + ' Verified receipt for save 6 accepted' }));
+  }
+});
+
+test('sharing-delivery-only inventory is exactly three states by three viewports and preserves other mode inventories', () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const assignment = ast.statements.find(node => ts.isExpressionStatement(node) && node.expression.left?.getText(ast) === 'manifest.inventory');
+  const inventory = source.slice(source.indexOf('const heading ='), source.indexOf('manifest.inventory =')) + assignment.getText(ast) + '\n;({plans,inventory:manifest.inventory,coverage:manifest.coverage})';
+  const focused = runInNewContext(inventory, { manifest: {}, worldReviewCases, accessReviewCases, serverAccessCaseIds,
+    sharingDeliveryCases, simpleHostingVariants, args: ['--sharing-delivery-only'] });
+  assert.equal(focused.coverage.scope, 'sharing-delivery');
+  assert.equal(focused.coverage.plannedCaptures, 9);
+  assert.equal(focused.inventory.length, 9);
+  assert.equal(new Set(focused.inventory.map(item => item.id)).size, 9);
+  assert.deepEqual(Array.from(new Set(focused.plans.map(item => item.testCase.id))), sharingDeliveryCases.map(item => item.id));
+  assert.deepEqual(Array.from(focused.coverage.variants), simpleHostingVariants.map(item => item.id));
+  assert.equal(serverAccessCaseIds.length, 12);
+  assert.equal(simpleHostingCases.length, 36);
+  const pureModule = readFileSync(new URL('sharing-delivery-review.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(pureModule, /(?:from|import\()\s*['"](?:node:)?(?:fs|http|https|net|child_process)(?:\/|['"])/u);
+  assert.doesNotMatch(pureModule, /\.click\(|\.launch\(|createServer\(/u);
+});
+
+test('sharing-delivery hosted capture binds candidate bytes and refuses incomplete or disclosure-dependent evidence', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/windows-ci.yml', import.meta.url), 'utf8');
+  const capture = workflow.slice(workflow.indexOf('      - name: Review visible sharing delivery'), workflow.indexOf('\n  verify:'));
+  assert.ok(capture.length > 0);
+  for (const required of ['--sharing-delivery-only --allow-isolated-browser-tests --hosted-runner github-actions',
+    'candidateSha256', 'verificationRevision', 'uiAssets', "$manifest.coverage.scope -cne 'sharing-delivery'",
+    '$manifest.summary.planned -ne 9', '$manifest.summary.attempted -ne 9', '$manifest.summary.skipped -ne 0',
+    '$manifest.summary.layoutFindings -ne 0', '$manifest.inventory', '$manifest.cases',
+    'visibleWithoutPermissions', 'allSharingDetailsClosed', 'transferDiagnosticsClosed', 'observationOnly',
+    'name: sharing-delivery-visual-review']) assert.ok(capture.includes(required), required);
+  assert.doesNotMatch(capture, /dotnet\s|npm run build|Start-Process|\.exe\s+--/u);
 });
 
 test('every world-group preset passes the current strict peer decoder and stays synthetic', () => {
@@ -658,11 +742,14 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   assert.doesNotThrow(() => check(['--list'], {}, 'linux'), 'the exact inventory-only invocation needs no browser authorization');
   assert.doesNotThrow(() => check(['--list', '--simple-shared-hosting-only'], {}, 'linux'), 'the bounded hosting inventory remains read-only');
   assert.doesNotThrow(() => check(['--list', '--server-access-only'], {}, 'linux'), 'the bounded server-access inventory remains read-only');
+  assert.doesNotThrow(() => check(['--list', '--sharing-delivery-only'], {}, 'linux'), 'the bounded sharing-delivery inventory remains read-only');
   for (const [argv, env, platform] of [
     [[], hosted, 'win32'], [flags, {}, 'win32'],
     [['--list', '--allow-isolated-browser-tests'], {}, 'win32'], [['--list', 'capture'], {}, 'win32'],
     [['--list', '--setup-polish-only'], {}, 'win32'], [['--setup-polish-only'], hosted, 'win32'],
-    [['--server-access-only'], hosted, 'win32'], [['--list', '--simple-shared-hosting-only', '--server-access-only'], {}, 'win32'],
+    [['--server-access-only'], hosted, 'win32'], [['--sharing-delivery-only'], hosted, 'win32'],
+    [['--list', '--sharing-delivery-only', '--server-access-only'], {}, 'win32'],
+    [['--list', '--simple-shared-hosting-only', '--server-access-only'], {}, 'win32'],
     [['--hosted-runner', 'github-actions'], hosted, 'win32'],
     [['github-actions', '--allow-isolated-browser-tests'], hosted, 'win32'],
     [flags, { ...hosted, RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'],

@@ -3,7 +3,7 @@
 // Keep this guard before imports, filesystem reads, servers, or browser side effects.
 const args = process.argv.slice(2);
 const listOnly = args.length === 1 && args[0] === '--list' || args.length === 2 && args.includes('--list') &&
-  (args.includes('--simple-shared-hosting-only') || args.includes('--server-access-only'));
+  (args.includes('--simple-shared-hosting-only') || args.includes('--server-access-only') || args.includes('--sharing-delivery-only'));
 if (!listOnly && (!args.includes('--allow-isolated-browser-tests') ||
     args.indexOf('--hosted-runner') < 0 || args[args.indexOf('--hosted-runner') + 1] !== 'github-actions' ||
     process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_OS !== 'Windows' ||
@@ -22,9 +22,10 @@ const { createFixtureState, routeFixture, expectedFixtureRequestAbort, fixtureNo
 const { extraCases: worldReviewCases } = await import('./ui-polish-world-review.mjs');
 const { extraCases: accessReviewCases, serverAccessCaseIds, assertServerAccessUi } = await import('./ui-polish-access-review.mjs');
 const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi, installHostingReviewClock } = await import('./simple-shared-hosting-review.mjs');
+const { sharingDeliveryCases, applySharingDeliveryFixture, assertSharingDeliveryUi } = await import('./sharing-delivery-review.mjs');
 const { uiReviewBuild } = await import('./ui-review-provenance.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const output = resolve(root, 'local-data/ui-redesign-visual-review');
+const output = resolve(root, args.includes('--sharing-delivery-only') ? 'local-data/sharing-delivery-visual-review' : 'local-data/ui-redesign-visual-review');
 if (!listOnly) await mkdir(output, { recursive: true });
 const manifest = {
   version: 1, evidence: 'Actual bundled React UI; synthetic responses only. No game, .NET, production storage, network or real-world acceptance.',
@@ -328,12 +329,13 @@ const largeTextPages = new Set(['host-overview', 'host-players', 'host-backups',
 const setupPolishOnly = args.includes('--setup-polish-only');
 const simpleHostingOnly = args.includes('--simple-shared-hosting-only');
 const serverAccessOnly = args.includes('--server-access-only');
+const sharingDeliveryOnly = args.includes('--sharing-delivery-only');
 const setupPolishVariants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100, reducedMotion: 'no-preference' },
   { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150, reducedMotion: 'reduce' },
   { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100, reducedMotion: 'reduce' }
 ];
-const reviewCases = serverAccessOnly ? serverAccessCaseIds.map(id => {
+const reviewCases = sharingDeliveryOnly ? sharingDeliveryCases : serverAccessOnly ? serverAccessCaseIds.map(id => {
   const testCase = accessReviewCases.find(testCase => testCase.id === id);
   if (!testCase) throw new Error(`Required server-access review case is missing: ${id}`);
   return testCase;
@@ -342,7 +344,7 @@ const reviewCases = serverAccessOnly ? serverAccessCaseIds.map(id => {
   : args.includes('--sidebar-only') ? [...cases, ...dialogs].filter(testCase => testCase.sidebarReview ||
     ['host-files', 'host-logs', 'host-sessions', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates', 'dialog-protection'].includes(testCase.id))
   : [...cases, ...dialogs];
-const plans = simpleHostingOnly ? reviewCases.flatMap(testCase => simpleHostingVariants.map(variant => ({ testCase, variant }))) : setupPolishOnly || serverAccessOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
+const plans = simpleHostingOnly || sharingDeliveryOnly ? reviewCases.flatMap(testCase => simpleHostingVariants.map(variant => ({ testCase, variant }))) : setupPolishOnly || serverAccessOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) || testCase.sidebarReview ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
   ...(testCase.sidebarReview ? [
@@ -352,9 +354,9 @@ const plans = simpleHostingOnly ? reviewCases.flatMap(testCase => simpleHostingV
   ] : []),
   ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') || testCase.sidebarReview ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
-manifest.coverage = { scope: serverAccessOnly ? 'server-access' : simpleHostingOnly ? 'simple-shared-hosting' : setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
+manifest.coverage = { scope: sharingDeliveryOnly ? 'sharing-delivery' : serverAccessOnly ? 'server-access' : simpleHostingOnly ? 'simple-shared-hosting' : setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
   mainPages: reviewCases.filter(testCase => !isDialogReview(testCase)).length,
-  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (simpleHostingOnly ? simpleHostingVariants : setupPolishOnly || serverAccessOnly ? setupPolishVariants : variants).map(item => item.id),
+  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (simpleHostingOnly || sharingDeliveryOnly ? simpleHostingVariants : setupPolishOnly || serverAccessOnly ? setupPolishVariants : variants).map(item => item.id),
   text150Pages: reviewCases.filter(testCase => largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
 manifest.acceptanceBoundaries = [
   'Finite source inventory of pages, reachable dialogs, disclosures and representative states; not every combinatorial data value.',
@@ -1312,6 +1314,7 @@ try {
     let context;
     try {
       const state = createFixtureState({ id: testCase.scenario, ...testCase.fixture });
+      applySharingDeliveryFixture(state, testCase, fixtureNow);
       if (testCase.sidebarReview) {
         for (const profile of state.host.settings.profiles) profile.name = `${profile.name} · Our weekend adventure with a very long server name`;
         for (const profile of state.friend.profiles) profile.name = `${profile.name} · Our friends' shared adventure with a very long server name`;
@@ -1475,6 +1478,7 @@ try {
       await setupPolishEvidence(page, testCase, variant, record);
       await assertSimpleHostingUi(page, testCase, record, state);
       await assertServerAccessUi(page, testCase, record, state);
+      await assertSharingDeliveryUi(page, testCase, record);
       record.screenBounds = await screen.boundingBox();
       if (!record.screenBounds || record.screenBounds.y >= variant.viewport.height || record.screenBounds.y + record.screenBounds.height <= 0) {
         throw new Error('The named screen is outside the capture viewport');

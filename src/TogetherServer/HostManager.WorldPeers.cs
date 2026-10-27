@@ -53,20 +53,26 @@ public sealed partial class HostManager
     }
 
     internal Task<SharedWorldVersion?> PeerPublishedVersionAsync(SharedWorldPeerRoot root,
+        string? versionHash = null, long? number = null) =>
+        Task.FromResult(PeerPublishedVersion(root, versionHash, number));
+
+    // The same fenced read is also needed by an exact-copy receipt commit,
+    // which already holds the membership mutation monitor and cannot await.
+    internal SharedWorldVersion? PeerPublishedVersion(SharedWorldPeerRoot root,
         string? versionHash = null, long? number = null)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
         {
             var source = ReadPublishedPeer(root);
-            if (source is null) return Task.FromResult<SharedWorldVersion?>(null);
+            if (source is null) return null;
             var selected = source.Version;
             if (versionHash is not null && (selected.VersionHash != versionHash || number is not null && selected.Number != number))
             {
-                if (number is null || number >= selected.Number || number < 1) return Task.FromResult<SharedWorldVersion?>(null);
+                if (number is null || number >= selected.Number || number < 1) return null;
                 selected = sharedWorlds.ReadEarlierVersion(selected, number.Value);
-                if (selected.VersionHash != versionHash) return Task.FromResult<SharedWorldVersion?>(null);
+                if (selected.VersionHash != versionHash) return null;
             }
-            return Task.FromResult<SharedWorldVersion?>(SamePublishedPeer(source, ReadPublishedPeer(root)) ? selected : null);
+            return SamePublishedPeer(source, ReadPublishedPeer(root)) ? selected : null;
         }
     }
 

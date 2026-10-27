@@ -194,8 +194,130 @@ incoming echo of an already-published/retained exact save can still use another
 receive vault and change the material observation during preparation. That is
 a plausible source schedule for a benign refusal, not runtime attribution.
 No observation fence, ancestry check or incoming-transfer behavior was changed
-on that basis. The next physical step awaits the owner's manual .17 update and
-will read pending delivery state with the game stopped, before another Start.
+on that basis.
+
+After the owner confirmed manual .17 installation, the running laptop process
+and local API were independently matched to the published source/hash, same
+Windows account and Production instance. The target stayed Offline, with zero
+native Valheim server processes; this observation issued no Start, Stop,
+preparation, access-check or manual-sync request. At 22:45:31 EDT the recorded
+OriginalHost exchange reported `KnownReceiptAccepted` for publication 6, with
+zero submitted/received payload bytes in that particular 13,305-ms pass. This
+does not establish when the main Host finished receiving the payload or whether
+earlier passes transferred data.
+
+Independent unchanged-observer verification at 22:48:57 EDT passed publication
+6's signatures, branch proof, strict parents, current roster/root and all 315
+payload hashes again. It also verified one exact original-owner-domain receipt
+for 6. The one recently authenticated eligible external peer has acknowledged;
+the other eligible offline peer remains pending. The receiver filesystem was
+not directly inspected. Earlier private proofs were preserved before repeating
+the observation, with no production state writes or key export.
+
+Receipt recovery across the manual app restart is physically demonstrated.
+The earlier delay's cause and actual transfer duration remain unknown.
+
+The owner then reconfirmed an unattended laptop and stopped main world for one
+V1release-only .17 Start/Stop. Fresh authenticated main-world metadata was
+Offline immediately before the single Start. It reused prepared publication 6,
+entered neither Receiving nor PreparingCopy, and did not repeat setup. Its
+response took 26,044 ms: permission 550, latest-save discovery 4,843, verification
+11,192, connection 465 and launch 8,416 ms. Actual Ready was observed 59,207 ms
+after the request, 34,989 ms after the exact native process was created, with a
+fresh trusted ValheimLogReady count of zero. These are separate observations,
+not an inference from process existence or the Start response.
+
+One Stop, after binding the exact local profile, process image, account,
+creation time, world and managed save directory, returned ValheimStopped in
+14,242 ms. Native exit was first observed at 4,470 ms and signed publication 7
+at 17,468 ms. The 12,998-ms interval between those observations includes capture,
+verification, publication and polling; it is not an isolated hashing time.
+Publication 7 has a new PostStopBackup and exact parent 6. Independent read-only
+verification passed its signature, branch, strict parents, current roster/root
+and all 315 file hashes (119,452,903 bytes), with no hash mismatches. The entire
+independent verification observation took 3,061 ms, not payload hashing alone.
+The target is left Offline with no native Valheim server. No Start was retried,
+and no manual sharing operation substituted for background delivery.
+
+Background delivery remained slow: several offer/chunk requests timed out while
+later passes advanced receiver-requested offsets. Submitted bytes describe
+attempts, not verified receipt or an acknowledged percentage. At 03:38:52 UTC,
+roughly 36 minutes after Stop, the unchanged observer verified one exact
+original-owner-domain receipt for 7. Receipts have no completion timestamp, so
+this bounds observation rather than proving delivery duration or its cause.
+The other eligible peer remains pending; this snapshot cannot establish that
+all currently reachable peers acknowledged. The main's authenticated snapshot
+reported .17, but its running EXE was not independently hashed.
+
+At 03:38:50 UTC the laptop's own transfer telemetry also recorded Pulling its
+already-published 7 back from the main Host: 2,773,567 received bytes and two
+completed files in that pass before its caller budget canceled. This is direct
+evidence of a redundant copy across local vaults. The receiver filesystem was
+not directly inspected. Public-safe evidence is under ignored
+`local-data/physical-test-554e795/`; signed private evidence remains outside Git.
+
+### Bounded .18 work in progress
+
+Source review found that a background pull holds its receive writer while
+awaiting chunks, while inbound seed requests previously queued on that writer
+despite a shorter request deadline. Both ordinary and retained-history seed
+gates now return the existing SeedPaused result immediately when busy. The wire
+schema and deadlines are unchanged; no incomplete copy receives a receipt.
+The generated fake-HTTP regression fails with TimeoutException against the old
+waiting behavior, then restores the source. Corrected compilation and all three
+focused groups pass: completed-save distribution (including both busy gates),
+read-only transfer evidence and coalesced background scheduling. Exact-source
+hosted validation remains pending.
+This establishes a source contention schedule, not the physical timeout's cause.
+
+Catalog pulls and initial seed offers now look for an exact authorized local
+inventory pair (branch, including canonical null, and signed version hash)
+before creating a receiving vault. Original numbered publications use the
+existing fenced publisher/authority reader for ancestry; branch and retained
+copies use their signed received history. A full immutable payload lease is held
+through current member, roster, key, consent, ancestry and sender checks. A
+matching damaged copy fails for review rather than being hidden by another
+download. Competing histories are retained. This slice reuses exact inventoried
+heads; it does not introduce an archive-wide discovery or default selection.
+
+An acknowledgement reuses a valid current selfreceipt or creates one immutable
+sidecar bound to world, branch, version, signed roster, device and retained key.
+Legacy receipts and old scopes are preserved; malformed current evidence is
+not overwritten. No received pointer, SaveObservation, working world, prepared
+copy or Start authorization is changed. A confirmed receipt delivery skips a
+new pull hash/transfer; returning a SeedKnown receipt still requires full held
+verification. New inbound seed work yields while explicit preparation is active.
+Already-active passes keep their existing cancellation/budget rules. Listener
+enablement stays separate from permission to receive through an outbound request.
+
+Review caught an inverse consent/world lock order in the initial implementation;
+it was corrected before publication, with Friend consent read before the world
+monitor and final acknowledgement under the existing consent-then-world commit.
+The dedicated generated-files/fake-HTTP group covers original, published branch
+and retained copies, receipt reuse after reopening, exact branch/null identity,
+fork preservation, corruption and current-permission/key changes, malformed
+receipt preservation, outbound-only receiving and a bounded competing-lock
+schedule. Its initial run stopped on an invalid synthetic roster baseline in
+the fixture. The fixture now changes actual pairing grants before confirming
+the signed revision; production roster checks were not relaxed. Corrected
+solution compilation has zero warnings/errors; the corrected focused rerun is
+in progress. No .18 native fixture or production process has been launched.
+
+The actual Host view placed the read-only panel inside a closed Other Hosts &
+connections disclosure. Earlier suggested UI directions were not verified on
+the screen. Both computer-use helpers failed before initialization, with no
+screen observation or UI input. The .18 panel exposes Save sharing status and
+transfer progress directly in Sharing & hosting, keeping permission controls
+and transfer diagnostics collapsed. Component coverage passes 192 tests across
+the three affected suites. Nine populated hosted screenshots are now planned
+alongside the unchanged older access/wizard inventories; capture and visual
+inspection remain pending. No local browser/native fixture was launched.
+
+An initial local compilation overlapped the UI bundle write and failed on a
+missing embedded asset. That was an avoidable build-order error; UI output and
+.NET compilation are serialized for subsequent checks. This failure is not a
+product or native test result. The .18 source has not been published, installed
+or physically tested. The completed .17 cycle does not validate these changes.
 
 ## Current behavior
 

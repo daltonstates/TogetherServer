@@ -2622,9 +2622,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                       onGrantChanged={async () => { await refreshCompanion(); applySnapshot(await readSnapshot()) }}
                       onOpenProtection={() => selectProtectionSection('settings')}
                       onOpenConnectionHelp={() => openHostSettings('network')} />
-                    <details className="protection-help"><summary>Other Hosts & connections</summary>
                     <WorldPeerPanel readOnly visible={section === 'sharing'} profileId={sharingProfile.id} />
-                    </details>
                     </div>}
                     {profile.kind === 'Custom' && section === 'sharing' && <p className="helper-text">Shared hosting needs a built-in game. Use Setup for Custom server controls.</p>}
                   </>}

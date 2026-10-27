@@ -207,6 +207,64 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Review visible sharing delivery on the dedicated hosted runner
+        shell: pwsh
+        run: |
+          # Synthetic UI only, using the same immutable candidate and installed browser.
+          $ErrorActionPreference = 'Stop'
+          $context = Get-Content local-data/ui-redesign-visual-review/candidate-context.json -Raw | ConvertFrom-Json
+          $context | Add-Member -NotePropertyName verificationRevision -NotePropertyValue $env:GITHUB_SHA -Force
+          New-Item -ItemType Directory -Path local-data/sharing-delivery-visual-review -Force | Out-Null
+          $contextPath = 'local-data/sharing-delivery-visual-review/candidate-context.json'
+          $context | ConvertTo-Json -Depth 7 | Set-Content $contextPath -Encoding utf8
+          $env:TOGETHERSERVER_UI_CANDIDATE_CONTEXT = (Resolve-Path $contextPath).Path
+          node scripts/render-ui-redesign.mjs --sharing-delivery-only --allow-isolated-browser-tests --hosted-runner github-actions
+          if ($LASTEXITCODE -ne 0) { throw 'Sharing delivery rendered review failed.' }
+      - name: Verify sharing delivery capture identity and exact coverage
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $context = Get-Content local-data/sharing-delivery-visual-review/candidate-context.json -Raw | ConvertFrom-Json
+          if ($context.sourceRevision -cne $env:GITHUB_SHA -or $context.verificationRevision -cne $env:GITHUB_SHA -or
+              $context.candidateRunId -ne $env:GITHUB_RUN_ID -or
+              (Get-FileHash local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $context.candidateSha256 -or
+              @(Get-ChildItem ui/dist -Recurse -File -Force).Count -ne @($context.uiAssets).Count) { throw 'Candidate changed during sharing delivery review.' }
+          foreach ($asset in $context.uiAssets) {
+            $file = Get-Item -LiteralPath (Join-Path 'ui/dist' $asset.asset)
+            if ($file.Length -ne $asset.sizeBytes -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset.sha256) { throw 'Sharing delivery UI changed.' }
+          }
+          $manifest = Get-Content local-data/sharing-delivery-visual-review/manifest.json -Raw | ConvertFrom-Json
+          $index = @($context.uiAssets | Where-Object asset -ceq 'index.html')
+          $expected = @(foreach ($state in @('sending', 'timeout-metadata', 'historical-receipt')) {
+            foreach ($variant in @('darkdesktop', 'lightnarrow', 'lightnarrow150')) { "sharing-delivery-${state}--${variant}" }
+          })
+          if ($index.Count -ne 1 -or $manifest.build.sourceRevision -cne $env:GITHUB_SHA -or
+              $manifest.build.verificationRevision -cne $env:GITHUB_SHA -or
+              $manifest.build.candidateRunId -ne $context.candidateRunId -or
+              $manifest.build.candidateSha256 -cne $context.candidateSha256 -or
+              $manifest.build.indexSha256 -cne $index[0].sha256 -or $manifest.coverage.scope -cne 'sharing-delivery' -or
+              $manifest.status -cne 'captured-awaiting-visual-inspection' -or $manifest.summary.planned -ne 9 -or
+              $manifest.summary.attempted -ne 9 -or $manifest.summary.failed -ne 0 -or $manifest.summary.skipped -ne 0 -or
+              $manifest.summary.layoutFindings -ne 0 -or @($manifest.fatalErrors).Count -ne 0 -or
+              @($manifest.inventory).Count -ne 9 -or @($manifest.cases).Count -ne 9 -or
+              @(Compare-Object ($expected | Sort-Object) ($manifest.inventory.id | Sort-Object)).Count -ne 0 -or
+              @(Compare-Object ($expected | Sort-Object) ($manifest.cases.id | Sort-Object)).Count -ne 0) { throw 'Sharing delivery capture identity or coverage differs.' }
+          foreach ($case in $manifest.cases) {
+            $proof = @($case.assertions | Where-Object { $_.visibleWithoutPermissions -eq $true -and
+              $_.allSharingDetailsClosed -eq $true -and $_.transferDiagnosticsClosed -eq $true -and $_.observationOnly -eq $true })
+            if ($proof.Count -ne 1) { throw 'Sharing delivery visibility or read-only proof is incomplete.' }
+          }
+      - name: Preserve visible sharing delivery screenshots and identity proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sharing-delivery-visual-review
+          path: local-data/sharing-delivery-visual-review/
+          if-no-files-found: error
+          retention-days: 7
+
   verify:
     needs: candidate
     strategy:

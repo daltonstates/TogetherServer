@@ -217,7 +217,7 @@ const transferPhases: Record<string, string> = { Queued: 'Waiting for background
 const transferStates: Record<string, string> = { Working: 'In progress', Pending: 'Waiting for another background pass',
   Succeeded: 'This pass finished', Failed: 'Needs attention', Canceled: 'Transfer stopped' }
 const transferResults: Record<string, string> = { NoPayload: 'No completed local save was offered in this pass.',
-  SeedPaused: 'Save exchange is paused. Review receiving permission and free space on these PCs.',
+  SeedPaused: 'Save exchange is paused. Wait for active transfers to finish; review receiving permission and free space if it stays paused.',
   SeedHistoryPending: 'Waiting for signed save history. Keep an approved peer reachable.',
   ManifestUnavailable: 'The completed save information is unavailable. Keep an approved source PC reachable and review its save history.',
   ChunkUnavailable: 'Some save files are unavailable. Keep the approved source PC reachable.',
@@ -370,7 +370,7 @@ export function WorldPeerPanel({ visible = true, profileId, readOnly = false, on
   const shown = groups.filter(group => !profileId || group.profileId === profileId)
   const pcName = (deviceId: string, selfDeviceId: string) => deviceId === selfDeviceId ? 'This PC' : `PC ending ${deviceId.slice(-6).toUpperCase()}`
   if (readOnly) return <section className="world-peer-panel" aria-label="Shared hosting details" data-profile-id={profileId}>
-    <header><div><h3>Other Hosts</h3><p>Saved information from approved PCs updates automatically.</p></div>
+    <header><div><h3>Save sharing status</h3><p>Saved information from approved PCs updates automatically.</p></div>
       <Button className="secondary" onClick={() => void refresh()}><Icon name="refresh" />Refresh details</Button></header>
     {!loaded && !error && <p role="status">Checking shared hosting...</p>}
     {error && <p role="alert">{error}</p>}
@@ -380,7 +380,9 @@ export function WorldPeerPanel({ visible = true, profileId, readOnly = false, on
       {group.state.needsChoice && <p role="note">Several saves are recorded. The app checks these copies automatically before hosting.</p>}
       <p>{group.state.replication.lastSuccessfulSyncUtc ? `Last metadata contact ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}.` : 'No completed metadata contact recorded.'}</p>
       <BackgroundTransfers group={group} />
-      <p>{group.state.sessions.filter(item => item.authorized && !item.hasConflict && item.session.state === 'Hosting').length} reported running servers. This does not confirm a game connection.</p>
+      <details><summary>Other Hosts &amp; connections</summary>
+        <p>{group.state.sessions.filter(item => item.authorized && !item.hasConflict && item.session.state === 'Hosting').length} reported running servers. This does not confirm a game connection.</p>
+      </details>
     </article>)}
   </section>
   return <section className="world-peer-panel" aria-label="World groups">
@@ -446,6 +448,7 @@ export function WorldPeerPanel({ visible = true, profileId, readOnly = false, on
               }}>Confirm group default</Button></div>
           </section>}
         </section>
+        <BackgroundTransfers group={group} />
         <details className="world-peer-permissions"><summary><Icon name="settings" />Save sharing &amp; permissions<Icon name="chevronDown" /></summary>
           <div className="world-peer-permissions-body">
             <div className="world-peer-summary">
@@ -456,7 +459,6 @@ export function WorldPeerPanel({ visible = true, profileId, readOnly = false, on
               <p><strong>Save forwarding</strong><span>{group.canReshare ? 'Owner permission granted' : 'Owner permission required'}</span></p>
             </div>
             <p className="helper-text">Get world updates checks approved PCs and may catch up completed save copies with current permission. It does not change your game connection or start or stop a server. Automatic status refresh only reads saved information.</p>
-            <BackgroundTransfers group={group} />
             <label><Input type="checkbox" checked={group.receiveConsented}
               disabled={busy !== null || (!group.receiveConsented && !group.canReceive)}
               onChange={event => void perform(group, 'receiving', { enabled: event.target.checked })} />Allow saves on this PC</label>

@@ -128,6 +128,16 @@ whether another PC has newer progress or is still hosting. Disconnection is
 not evidence that its game stopped. Different histories remain protected for
 review; the app does not merge or overwrite them automatically.
 
+To observe delivery, open the selected world's **Backups**, then **Sharing &
+hosting**. **Save sharing status** shows **Background save transfer** directly.
+Its current step, last result and previous transfer issue are separate from
+metadata contact. **Transfer diagnostics** expands technical details when
+needed. **Refresh details** only reads status; it does not transfer saves,
+repeat preparation or retry Start. Bytes handled in one pass are not a verified
+delivery percentage. A verified receipt names the exact save that PC accepted;
+an older receipt does not acknowledge newer progress. Offline recipients stay
+pending and continue automatically when eligible and reachable.
+
 If this PC's previous stopped progress has not been shared, the save check says
 so and offers **Share stopped progress**. Keep the server stopped. This explicit
 action checks the recorded Stop, every current save file and the complete setup
