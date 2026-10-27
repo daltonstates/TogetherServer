@@ -175,10 +175,31 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             .Single(item => item.RecipientRole == "OriginalHost").LastResult;
         Require(directOwnerTransfer is { ExactReceiptAccepted: true } && directOwnerTransfer.ReceiptPublicationNumber == final.Number,
             "the authenticated owner's own verified receipt was not attributed to that exact recipient and save");
+        // Confirmed exact acknowledgements now intentionally skip every offer.
+        // Model the still-unconfirmed sender state for this adversarial probe:
+        // withhold only its generated owner/final receipt, preserve all signed
+        // evidence, and restore the exact protected bytes after the operation.
+        var senderReceiptName = $"world-peer-receipts-{root.GroupKey}.protected";
+        var senderReceiptPath = Path.Combine(b.RootPath, senderReceiptName);
+        var senderReceiptBytes = File.ReadAllBytes(senderReceiptPath);
+        var unconfirmedReceipts = Receipts(b, root).Where(item =>
+            item.DeviceId != Guid.Empty || item.VersionHash != final.VersionHash).ToArray();
+        Require(!unconfirmedReceipts.Any(item => item.DeviceId == Guid.Empty && item.VersionHash == final.VersionHash) &&
+            unconfirmedReceipts.Contains(observerReceipt), "The generated forwarded-receipt probe did not isolate the missing exact acknowledgement.");
         var forwardedResponses = aHandler.ForwardedSeedResponses;
+        SharedWorldReceipt[] probedReceipts = [];
+        b.SaveProtected(senderReceiptName, JsonSerializer.SerializeToUtf8Bytes(unconfirmedReceipts, Json));
         aHandler.ForwardedSeedReceipt = observerReceipt;
-        try { await SyncExactPeerAsync(source, root, aRoute); }
-        finally { aHandler.ForwardedSeedReceipt = null; }
+        try
+        {
+            await SyncExactPeerAsync(source, root, aRoute);
+            probedReceipts = Receipts(b, root);
+        }
+        finally
+        {
+            aHandler.ForwardedSeedReceipt = null;
+            File.WriteAllBytes(senderReceiptPath, senderReceiptBytes);
+        }
         var ownerTransfer = source.Views().Single(item => item.GroupKey == root.GroupKey).BackgroundTransfers!
             .Single(item => item.RecipientRole == "OriginalHost").LastResult;
         var retainedReceipts = Receipts(b, root);
@@ -190,14 +211,20 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             item.VersionHash == final.VersionHash).SequenceEqual([observerReceipt]);
         var ownerReceiptPreserved = retainedReceipts.Where(item => item.DeviceId == Guid.Empty &&
             item.VersionHash == final.VersionHash).SequenceEqual([ownerReceipt]);
+        var unconfirmedOwnerNotInvented = !probedReceipts.Any(item =>
+            item.DeviceId == Guid.Empty && item.VersionHash == final.VersionHash);
+        var probeReceiptsUnchanged = probedReceipts.SequenceEqual(unconfirmedReceipts);
+        var senderReceiptBytesRestored = File.ReadAllBytes(senderReceiptPath).SequenceEqual(senderReceiptBytes);
         var ownerReceiptFilePreserved = File.ReadAllBytes(Path.Combine(ownerVault, final.VersionHash, "receipt.json")).SequenceEqual(ownerReceiptBytes);
         Require(overrideResponses == 1 && exactReceiptClaimCleared && forwardedResultObserved && exactPublicationObserved &&
-            observerReceiptPreserved && observerSignatureValid && ownerReceiptPreserved && ownerReceiptFilePreserved,
+            observerReceiptPreserved && observerSignatureValid && ownerReceiptPreserved && ownerReceiptFilePreserved &&
+            unconfirmedOwnerNotInvented && probeReceiptsUnchanged && senderReceiptBytesRestored,
             $"Synthetic forwarded receipt checks: overrideResponses={overrideResponses}, observationPresent={ownerTransfer is not null}, " +
             $"exactReceiptClaimCleared={exactReceiptClaimCleared}, forwardedResultObserved={forwardedResultObserved}, " +
             $"exactPublicationObserved={exactPublicationObserved}, observerReceiptPreserved={observerReceiptPreserved}, " +
             $"observerSignatureValid={observerSignatureValid}, ownerReceiptPreserved={ownerReceiptPreserved}, " +
-            $"ownerReceiptFilePreserved={ownerReceiptFilePreserved}.");
+            $"ownerReceiptFilePreserved={ownerReceiptFilePreserved}, unconfirmedOwnerNotInvented={unconfirmedOwnerNotInvented}, " +
+            $"probeReceiptsUnchanged={probeReceiptsUnchanged}, senderReceiptBytesRestored={senderReceiptBytesRestored}.");
         VerifyCopy(ownerVault, final, finalBytes);
         Require(File.ReadAllText(Path.Combine(original.WorldDirectory, "world.dat")) == "original remains unchanged" &&
             publisher.Status(original).Latest?.VersionHash == first.VersionHash,

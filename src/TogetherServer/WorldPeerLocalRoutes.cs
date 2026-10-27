@@ -41,6 +41,8 @@ internal static class WorldPeerLocalRoutes
             finally { modeGate.Release(); }
         }
 
+        app.MapGet("/api/local/world-peers/work", (HttpContext context) =>
+            Fixed(context, true) ? Results.Json(peers.WorkSnapshot()) : Results.StatusCode(403));
         app.MapGet("/api/local/world-peers", (HttpContext context) =>
         {
             if (!Fixed(context, true)) return Results.StatusCode(403);

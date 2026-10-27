@@ -14,8 +14,14 @@ public sealed record WorldPeerCatalog(SharedWorldPeerRoot Root,
 
 internal sealed partial class WorldPeerService
 {
+    private enum LocalSaveOrigin { Published, Received, Separate, ReceivedBranch, History }
     private sealed record LocalSave(WorldPeerSaveDescriptor Descriptor, string? Vault,
-        bool ProducedHere);
+        bool ProducedHere, LocalSaveOrigin Origin);
+    private sealed record ChunkCatalog(Group Scope, IReadOnlyList<LocalSave> Sources);
+    // At most eight capped catalogs (each at most one protocol response) retain
+    // source hints, never authorization or verified payload state. Every use
+    // repeats current access, signed authority and selected-source fences.
+    private readonly Dictionary<string, ChunkCatalog> chunkCatalogs = new(StringComparer.Ordinal);
     private readonly WorldPeerChunkInventory peerChunks = new();
     private readonly Dictionary<string, int> liveTestPositions = new(StringComparer.Ordinal);
     private sealed record ReceiptDelivery(DateTimeOffset AttemptedUtc, bool Confirmed);
@@ -23,10 +29,15 @@ internal sealed partial class WorldPeerService
     // Optional synthetic-check observation of an actual receipt hash attempt.
     // It receives no identity or path and never authorizes a copy or receipt.
     internal Action? ReceiptPayloadHashingForChecks { get; set; }
+    // A normally null synthetic-check observation, after this inventory is
+    // built. It supplies no path/proof and cannot authorize serving a chunk.
+    internal Action? LocalSaveInventoryForChecks { get; set; }
+    internal Action? ChunkPayloadReadForChecks { get; set; }
 
     private WorldPeerVerifiedCopy VerifyReceiptPayload(string vault, SharedWorldVersion version,
         CancellationToken cancellationToken)
     {
+        using var measurement = hostingWork.Measure(HostingWorkStage.PayloadVerification);
         try { ReceiptPayloadHashingForChecks?.Invoke(); }
         catch (Exception) { /* Observations cannot change payload verification. */ }
         return WorldPeerVerifiedCopy.Open(data.RootPath,
@@ -85,18 +96,19 @@ internal sealed partial class WorldPeerService
     private async Task<IReadOnlyList<LocalSave>> LocalSavesAsync(Group group,
         CancellationToken cancellationToken, string? retainedPublicKey = null)
     {
+        using var measurement = hostingWork.Measure(HostingWorkStage.Inventory);
         var result = new List<LocalSave>();
         using var localKey = retainedPublicKey is null ? LocalKey(group) : null;
         var localPublicKey = retainedPublicKey ?? (localKey is null ? null : Convert.ToBase64String(localKey.ExportSubjectPublicKeyInfo()));
         var published = await manager.PeerPublishedVersionAsync(group.Root);
-        if (published is not null && MatchesRoot(group, published)) result.Add(new(new(published), null, true));
+        if (published is not null && MatchesRoot(group, published)) result.Add(new(new(published), null, true, LocalSaveOrigin.Published));
         if (Directory.Exists(ReceivedRoot(data, group)))
         {
             var vault = ReceivedRoot(data, group);
             SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);
             var received = ReadPeerPointer(vault);
             if (received is not null && AuthorizedDescriptor(group, new(received)))
-                result.Add(new(new(received), vault, false));
+                result.Add(new(new(received), vault, false, LocalSaveOrigin.Received));
         }
         var separate = new SharedWorldSeparateCopyStore(data);
         foreach (var branch in separate.Read(group.Root.ProfileId).Where(branch =>
@@ -113,7 +125,8 @@ internal sealed partial class WorldPeerService
                 result.Add(new(new(snapshot, branch),
                     Directory.Exists(Path.Combine(publishedRoot, snapshot.VersionHash)) ? publishedRoot : retainedRoot,
                     snapshot.SigningPublicKey == branch.Offer.Proposal.CandidatePublicKey &&
-                    branch.Offer.Proposal.ProposerDeviceId == group.DeviceId && branch.CandidatePublicKey == localPublicKey));
+                    branch.Offer.Proposal.ProposerDeviceId == group.DeviceId && branch.CandidatePublicKey == localPublicKey,
+                    LocalSaveOrigin.Separate));
         }
         if (Directory.Exists(Path.Combine(data.RootPath, "received-shared-branches", group.Root.GroupKey)))
         {
@@ -132,7 +145,7 @@ internal sealed partial class WorldPeerService
                     if (version is null) continue;
                     var branch = SharedWorldBranchVault.ReadBranch(data, group.Roster, hash);
                     if (AuthorizedDescriptor(group, new(version, branch)))
-                        result.Add(new(new(version, branch), path, false));
+                        result.Add(new(new(version, branch), path, false, LocalSaveOrigin.ReceivedBranch));
                 }
         }
         var histories = RetainedHistoryParent(data, group);
@@ -156,18 +169,24 @@ internal sealed partial class WorldPeerService
                         throw new InvalidDataException("The retained history proof changed.");
                 }
                 if (version is not null && AuthorizedDescriptor(group, new(version, branch)))
-                    result.Add(new(new(version, branch), path, false));
+                    result.Add(new(new(version, branch), path, false, LocalSaveOrigin.History));
             }
-        return result.GroupBy(item => (item.Descriptor.Branch?.BranchHash, item.Descriptor.Version.VersionHash))
+        var inventory = result.GroupBy(item => (item.Descriptor.Branch?.BranchHash, item.Descriptor.Version.VersionHash))
             .Select(items => items.OrderByDescending(item => item.ProducedHere).First()).ToArray();
+        try { LocalSaveInventoryForChecks?.Invoke(); }
+        catch (Exception) { /* Observations cannot authorize a catalog or chunk. */ }
+        return inventory;
     }
 
     private async Task<WorldPeerCatalog> LocalCatalogAsync(Group group, CancellationToken cancellationToken,
-        bool includeTests = true)
+        bool includeTests = true) => (await LocalCatalogWithSourcesAsync(group, cancellationToken, includeTests)).Catalog;
+
+    private async Task<(WorldPeerCatalog Catalog, IReadOnlyList<LocalSave> Sources)> LocalCatalogWithSourcesAsync(
+        Group group, CancellationToken cancellationToken, bool includeTests)
     {
         group = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
         using var key = LocalKey(group);
-        if (key is null || !group.SharingEnabled) return new(group.Root, []);
+        if (key is null || !group.SharingEnabled) return (new(group.Root, []), []);
         var access = Access(group, group.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()));
         var local = await LocalSavesAsync(group, cancellationToken);
         var saves = local.Where(item => item.ProducedHere ||
@@ -178,8 +197,52 @@ internal sealed partial class WorldPeerService
         // a truncated JSON document. Other retained branches remain on disk.
         while (saves.Count > 0 && JsonSerializer.SerializeToUtf8Bytes(new WorldPeerCatalog(group.Root, saves), Json).Length >
             WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Catalog)) saves.RemoveAt(saves.Count - 1);
-        return new(group.Root, saves);
+        var sources = local.Where(item => saves.Any(descriptor => !descriptor.TestOnly &&
+            descriptor.Version.VersionHash == item.Descriptor.Version.VersionHash &&
+            descriptor.Branch?.BranchHash == item.Descriptor.Branch?.BranchHash)).ToArray();
+        lock (stateSync)
+        {
+            if (!peerDisposed)
+            {
+                chunkCatalogs.Remove(group.Root.GroupKey);
+                while (chunkCatalogs.Count >= 8) chunkCatalogs.Remove(chunkCatalogs.Keys.First());
+                chunkCatalogs.Add(group.Root.GroupKey, new(group, sources));
+            }
+        }
+        return (new(group.Root, saves), sources);
     }
+
+    private static bool SameChunkScope(Group expected, Group current) =>
+        current.Root == expected.Root && current.DeviceId == expected.DeviceId &&
+        current.Roster.Signature == expected.Roster.Signature &&
+        current.ReceiveConsented == expected.ReceiveConsented && current.SharingEnabled == expected.SharingEnabled;
+
+    // The caller's current request scope invalidates hints after roster,
+    // membership or consent changes. Selected pointer/registry and authority
+    // changes are checked below; no timestamp or TTL establishes continuity.
+    private async Task<LocalSave?> ChunkSourceAsync(Group group, string versionHash, CancellationToken cancellationToken)
+    {
+        ChunkCatalog? known;
+        lock (stateSync)
+        {
+            chunkCatalogs.TryGetValue(group.Root.GroupKey, out known);
+            if (known is not null && !SameChunkScope(known.Scope, group))
+            {
+                chunkCatalogs.Remove(group.Root.GroupKey);
+                known = null;
+            }
+        }
+        var sources = known?.Sources ?? (await LocalCatalogWithSourcesAsync(group, cancellationToken, includeTests: false)).Sources;
+        return sources.FirstOrDefault(item => item.Descriptor.Version.VersionHash == versionHash);
+    }
+
+    private void InvalidateChunkSources(string groupKey)
+    {
+        lock (stateSync) chunkCatalogs.Remove(groupKey);
+    }
+
+    // Called by service disposal while stateSync is held.
+    private void ClearChunkSources() => chunkCatalogs.Clear();
 
     private async Task<SharedWorldVersion?> FindManifestAsync(Group group, string versionHash,
         long? number, CancellationToken cancellationToken, IReadOnlyList<LocalSave>? retainedInventory = null)
@@ -218,28 +281,109 @@ internal sealed partial class WorldPeerService
     {
         if (KnownLiveTest(group, versionHash) is not null)
             return await ReadLiveTestChunkAsync(group, versionHash, fileIndex, offset, cancellationToken);
-        var catalog = await LocalCatalogAsync(group, cancellationToken, includeTests: false);
-        var descriptor = catalog.Saves.FirstOrDefault(item => item.Version.VersionHash == versionHash);
-        if (descriptor?.TestOnly == true)
-            return await ReadLiveTestChunkAsync(group, versionHash, fileIndex, offset, cancellationToken);
-        if (descriptor is null || fileIndex < 0 || fileIndex >= descriptor.Version.Files.Count ||
-            offset < 0 || offset % SharedWorldService.ChunkBytes != 0) return null;
-        var item = (await LocalSavesAsync(group, cancellationToken)).First(save =>
-            save.Descriptor.Version.VersionHash == versionHash);
-        if (!await MayServeSaveAsync(group, item.ProducedHere, cancellationToken)) return null;
-        byte[]? result;
-        if (item.Vault is null)
-            result = await manager.ReadPeerPublishedChunkAsync(group.Root, versionHash, fileIndex, offset);
-        else
+        try
         {
-            var file = descriptor.Version.Files[fileIndex];
-            var path = SharedWorldService.SafeChild(Path.Combine(item.Vault, versionHash,
-                SharedWorldService.PayloadDirectory), file.Path);
-            if (offset >= file.Length) return null;
-            result = peerChunks.Read(data.RootPath, path, file, offset, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (fileIndex < 0 || offset < 0 || offset % SharedWorldService.ChunkBytes != 0) return null;
+            var item = await ChunkSourceAsync(group, versionHash, cancellationToken);
+            if (item is null || fileIndex >= item.Descriptor.Version.Files.Count) return null;
+            if (!await MayServeSaveAsync(group, item.ProducedHere, cancellationToken) || !ChunkSourceIsCurrent(group, item))
+            {
+                InvalidateChunkSources(group.Root.GroupKey);
+                return null;
+            }
+            byte[]? result;
+            if (item.Vault is null)
+                result = await manager.ReadPeerPublishedChunkAsync(group.Root, versionHash, fileIndex, offset);
+            else
+            {
+                var file = item.Descriptor.Version.Files[fileIndex];
+                var path = SharedWorldService.SafeChild(Path.Combine(item.Vault, versionHash,
+                    SharedWorldService.PayloadDirectory), file.Path);
+                if (offset >= file.Length) return null;
+                result = peerChunks.Read(data.RootPath, path, file, offset, cancellationToken);
+            }
+            try { ChunkPayloadReadForChecks?.Invoke(); }
+            catch (Exception) { /* Observations cannot authorize returned bytes. */ }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (result is not null && await MayServeSaveAsync(group, item.ProducedHere, cancellationToken) && ChunkSourceIsCurrent(group, item))
+                return result;
+            InvalidateChunkSources(group.Root.GroupKey);
+            return null;
         }
-        return await MayServeSaveAsync(group, item.ProducedHere, cancellationToken) ? result : null;
+        catch
+        {
+            InvalidateChunkSources(group.Root.GroupKey);
+            throw;
+        }
     }
+
+    private bool ChunkSourceIsCurrent(Group expected, LocalSave selected)
+    {
+        var current = Find(expected.Root.GroupKey);
+        if (current is null || !SameChunkScope(expected, current) ||
+            !AuthorizedDescriptor(current, selected.Descriptor)) return false;
+        var version = selected.Descriptor.Version;
+        if (selected.Origin == LocalSaveOrigin.Published)
+            // ReadPeerPublishedChunkAsync holds the existing exact current
+            // publication/profile/roster fence on both sides of its byte read.
+            return selected.Vault is null && selected.ProducedHere &&
+                manager.PeerPublishedVersion(current.Root)?.VersionHash == version.VersionHash;
+        if (selected.Vault is not { } vault) return false;
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);
+        switch (selected.Origin)
+        {
+            case LocalSaveOrigin.Received:
+                if (!SameChunkVault(vault, ReceivedRoot(data, current))) return false;
+                break;
+            case LocalSaveOrigin.Separate:
+                var copies = new SharedWorldSeparateCopyStore(data);
+                var branches = copies.Read(current.Root.ProfileId).Where(candidate =>
+                    candidate.BranchHash == selected.Descriptor.Branch?.BranchHash &&
+                    candidate.Offer.Roster.OwnerPublicKey == current.Root.OwnerPublicKey && candidate.Offer.Roster.GroupId == current.Root.GroupId).ToArray();
+                if (branches.Length != 1) return false;
+                var branch = branches[0];
+                var published = copies.PublishedRoot(branch);
+                var retained = copies.RetainedRoot(branch);
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, published);
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, retained);
+                var latest = ReadPeerPointer(published) ?? ReadPeerPointer(retained);
+                if (latest is null || latest.VersionHash != version.VersionHash || !SameChunkVault(vault,
+                    Directory.Exists(Path.Combine(published, version.VersionHash)) ? published : retained)) return false;
+                using (var key = LocalKey(current))
+                {
+                    var producedHere = key is not null && latest.SigningPublicKey == branch.Offer.Proposal.CandidatePublicKey &&
+                        branch.Offer.Proposal.ProposerDeviceId == current.DeviceId &&
+                        branch.CandidatePublicKey == Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+                    if (producedHere != selected.ProducedHere) return false;
+                }
+                break;
+            case LocalSaveOrigin.ReceivedBranch:
+                if (selected.Descriptor.Branch is not { } proof || !SameChunkVault(vault, SharedWorldBranchVault.Root(data, proof)) ||
+                    SharedWorldBranchVault.ReadBranch(data, current.Roster, proof.BranchHash).BranchHash != proof.BranchHash) return false;
+                break;
+            case LocalSaveOrigin.History:
+                if (!SameChunkVault(vault, Path.Combine(RetainedHistoryParent(data, current), version.VersionHash))) return false;
+                var branchPath = Path.Combine(vault, "branch.json");
+                WorldSeparateCopyBranch? history = null;
+                if (File.Exists(branchPath))
+                {
+                    SharedWorldService.EnsureUnlinkedRoot(data.RootPath, branchPath);
+                    if (new FileInfo(branchPath).Length > SharedWorldService.MaximumManifestBytes)
+                        throw new InvalidDataException("The retained history proof is oversized.");
+                    history = JsonSerializer.Deserialize<WorldSeparateCopyBranch>(File.ReadAllBytes(branchPath), Json);
+                    if (!SharedWorldSeparateCopyStore.Verify(history)) return false;
+                }
+                if (history?.BranchHash != selected.Descriptor.Branch?.BranchHash) return false;
+                break;
+            default:
+                return false;
+        }
+        return ReadPeerPointer(vault)?.VersionHash == version.VersionHash;
+    }
+
+    private static bool SameChunkVault(string first, string second) =>
+        Path.GetFullPath(first).Equals(Path.GetFullPath(second), StringComparison.OrdinalIgnoreCase);
 
     private async Task<bool> MayServeSaveAsync(Group group, bool producedHere,
         CancellationToken cancellationToken)
@@ -330,7 +474,11 @@ internal sealed partial class WorldPeerService
                 // returning receiver can advance its ordinary recovery head.
                 if (existing is not null &&
                     !WorldPeerFileTransfer.KnownDescendant(vault, existing, version) &&
-                    !await StagePeerHistoryAsync(group, route, descriptor, vault, cancellationToken)) return;
+                    !await StagePeerHistoryAsync(group, route, descriptor, vault, cancellationToken))
+                {
+                    if (transferAttempt.Value is { } pending) pending.PendingPayload = true;
+                    return;
+                }
                 if (existing is not null && WorldPeerFileTransfer.KnownDescendant(vault, version, existing)) continue;
                 // A peer can preserve another signed history, but cannot silently
                 // replace the current received head with a fork or an older copy.
@@ -393,7 +541,11 @@ internal sealed partial class WorldPeerService
         Directory.CreateDirectory(vault);
         var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
         var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
-        if (!await StagePeerHistoryAsync(group, route, descriptor, vault, cancellationToken)) return;
+        if (!await StagePeerHistoryAsync(group, route, descriptor, vault, cancellationToken))
+        {
+            if (transferAttempt.Value is { } pending) pending.PendingPayload = true;
+            return;
+        }
         if (descriptor.Branch is not null && !WorldPeerFileTransfer.KnownDescendant(vault, existing, version))
             throw new InvalidDataException("The peer branch does not extend the completed local branch; both signed histories were kept.");
         var total = SharedWorldService.BoundedTotalBytes(version.Files);
@@ -428,7 +580,11 @@ internal sealed partial class WorldPeerService
                 if (output.Position == file.Length) observation?.FileCompleted();
                 transferred += chunk.Length;
                 if (transferred >= WorldPeerFileTransfer.MaximumPayloadBytesPerPass &&
-                    (output.Position < file.Length || index < version.Files.Count - 1)) return;
+                    (output.Position < file.Length || index < version.Files.Count - 1))
+                {
+                    if (transferAttempt.Value is { } pending) pending.PendingPayload = true;
+                    return;
+                }
             }
         }
         observation?.Phase(WorldPeerTransferPhase.VerifyingLocal);
@@ -443,6 +599,7 @@ internal sealed partial class WorldPeerService
         string vault, string stage, SharedWorldVersion? anchor, CancellationToken cancellationToken,
         Func<bool>? additionalAuthorization = null)
     {
+        using var measurement = hostingWork.Measure(HostingWorkStage.PayloadVerification);
         var version = descriptor.Version;
         var destination = SharedWorldService.SafeChild(vault, version.VersionHash);
         if (!Directory.Exists(destination))
@@ -457,6 +614,7 @@ internal sealed partial class WorldPeerService
         // Verify existing destinations too, before latest.json can name them.
         // Read leases keep every verified file unchanged through the promotion.
         using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, destination, version, cancellationToken);
+        measurement.Dispose(); // Hash/lease/promotion work; receipt commit is separate.
         SharedWorldReceipt? receipt = null;
         void Commit()
         {
@@ -492,6 +650,7 @@ internal sealed partial class WorldPeerService
             throw new OperationCanceledException("Save consent changed before copy completion.");
         if (receipt is not null)
             File.WriteAllBytes(Path.Combine(destination, "receipt.json"), JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
+        RequestBackgroundSync();
         return receipt;
     }
 
@@ -599,7 +758,7 @@ internal sealed partial class WorldPeerService
         if (key is null) return new([], [], [], []);
         var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
         var access = Access(group, group.DeviceId, publicKey);
-        var snapshot = await manager.SnapshotAsync();
+        var snapshot = await manager.CompanionSnapshotAsync();
         var previous = Store(group).Project();
         var routes = retainedRoutesOnly ? previous.Peers.Where(peer => peer.DeviceId == group.DeviceId && peer.PublicKey == publicKey)
             .SelectMany(peer => peer.Routes).ToList() : new List<SharedWorldPeerRoute>();

@@ -434,6 +434,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
   const [desktopPreferences, setDesktopPreferences] = useState<DesktopPreferences | null>(null)
   const [desktopBusy, setDesktopBusy] = useState(false)
   const [companion, setCompanion] = useState<CompanionInfo | null>(null)
+  const initialCompanionRef = useRef<{ value: CompanionInfo; epoch: number; receivedAtMs: number } | null>(null)
   const [publicIpDetection, setPublicIpDetection] = useState<PublicIpDetection | null>(null)
   const [portDiagnostics, setPortDiagnostics] = useState<PortDiagnostics | null>(null)
   const [checkingPorts, setCheckingPorts] = useState(false)
@@ -792,51 +793,77 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     setNotificationUnread(false)
   }
 
+  const refreshServerDirectory = useCallback(async (signal?: AbortSignal) => {
+    const startedEpoch = snapshotEpochRef.current
+    try {
+      const next = await getLocalJson('/api/local/servers', parseServerDirectory, signal)
+      if (!signal?.aborted && snapshotEpochRef.current === startedEpoch) {
+        setServerDirectory(next); setNowMs(Date.now()); setServerDirectoryError('')
+      }
+    } catch (error) {
+      if (!signal?.aborted && snapshotEpochRef.current === startedEpoch) setServerDirectoryError(errorMessage(error))
+    }
+  }, [])
+
   useSingleFlightPolling(async signal => {
     const startedEpoch = snapshotEpochRef.current
-    const [next, recovery, currentInstance] = await Promise.all([
-      readSnapshot(signal),
-      getJson('/api/local/data-recovery', parseDataRecoveryView, signal),
-      getJson('/api/local/instance', parseAppInstance, signal)
-    ])
-    const hostDetails = next.mode === 'Host'
-      ? await Promise.all([
-        getJson('/api/local/companion', parseCompanionInfo, signal),
-        getJson('/api/local/network/ports', parsePortDiagnostics, signal)
+    const directoryRead = refreshServerDirectory(signal)
+    try {
+      const [next, recovery, currentInstance] = await Promise.all([
+        readSnapshot(signal),
+        getJson('/api/local/data-recovery', parseDataRecoveryView, signal),
+        getJson('/api/local/instance', parseAppInstance, signal)
       ])
-      : null
-    if (signal.aborted || snapshotEpochRef.current !== startedEpoch) return
+      // The first Host view includes its PC/access snapshot so actions do not
+      // briefly present an empty permission list. Later run/player snapshots
+      // never wait on connection diagnostics.
+      const initialCompanion = next.mode === 'Host' && companion === null
+        ? await getJson('/api/local/companion', parseCompanionInfo, signal) : null
+      if (signal.aborted || snapshotEpochRef.current !== startedEpoch) return
 
-    setSnapshot(next)
-    setNowMs(Date.now())
-    setAppInstance(currentInstance)
-    setDataRecovery(recovery)
-    setLoadError('')
-    if (next.mode !== 'Host') return
-
-    synchronizeHostSnapshot(next)
-
-    if (hostDetails) {
-      const [current, ports] = hostDetails
-      setCompanion(current)
-      setPortDiagnostics(ports)
-      setDeviceNames(names => {
-        const updated = { ...names }
-        for (const device of current.devices) if (updated[device.id] === undefined) updated[device.id] = device.name
-        return updated
-      })
+      if (initialCompanion) {
+        setCompanion(initialCompanion)
+        initialCompanionRef.current = { value: initialCompanion, epoch: startedEpoch, receivedAtMs: Date.now() }
+        setDeviceNames(names => {
+          const updated = { ...names }
+          for (const device of initialCompanion.devices) if (updated[device.id] === undefined) updated[device.id] = device.name
+          return updated
+        })
+      }
+      setSnapshot(next)
+      setNowMs(Date.now())
+      setAppInstance(currentInstance)
+      setDataRecovery(recovery)
+      setLoadError('')
+      if (next.mode === 'Host') synchronizeHostSnapshot(next)
+    } finally {
+      // A slow/erroring directory cannot delay publishing canonical counts,
+      // but remains part of this flight before another directory read begins.
+      await directoryRead
     }
   }, 3000, error => setLoadError(errorMessage(error)))
 
-  const refreshServerDirectory = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const next = await getLocalJson('/api/local/servers', parseServerDirectory, signal)
-      if (!signal?.aborted) { setServerDirectory(next); setNowMs(Date.now()); setServerDirectoryError('') }
-    } catch (error) {
-      if (!signal?.aborted) setServerDirectoryError(errorMessage(error))
-    }
-  }, [])
-  useSingleFlightPolling(refreshServerDirectory, 3000)
+  // Connection diagnostics do not delay canonical run/player snapshots. Read
+  // them only for the visible Host workspace; quiet tabs need fewer scans.
+  useSingleFlightPolling(async signal => {
+    const startedEpoch = snapshotEpochRef.current
+    const initial = initialCompanionRef.current
+    initialCompanionRef.current = null
+    const [current, ports] = await Promise.all([
+      initial && initial.epoch === startedEpoch && Date.now() - initial.receivedAtMs < 3000
+        ? Promise.resolve(initial.value) : getJson('/api/local/companion', parseCompanionInfo, signal),
+      getJson('/api/local/network/ports', parsePortDiagnostics, signal)
+    ])
+    if (signal.aborted || snapshotEpochRef.current !== startedEpoch) return
+    setCompanion(current)
+    setPortDiagnostics(ports)
+    setDeviceNames(names => {
+      const updated = { ...names }
+      for (const device of current.devices) if (updated[device.id] === undefined) updated[device.id] = device.name
+      return updated
+    })
+  }, hostScope === 'pc' || hostServerTab === 'overview' ? 3000 : 15000,
+  error => setLoadError(errorMessage(error)), currentMode === 'Host' && workspacePage === 'host')
 
   useEffect(() => {
     if (!directoryAction || !snapshot || pending) return

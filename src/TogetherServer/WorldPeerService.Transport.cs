@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Json;
 using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -42,6 +43,142 @@ internal sealed partial class WorldPeerService : IDisposable
     private bool peerDisposed;
     private Task? syncFlight;
     private Task? membershipRefresh;
+    private PeerClientPool? peerClients;
+
+    // Connection reuse carries no membership or operation authorization. Every
+    // request still performs its own current signed challenge/exchange below.
+    internal sealed class PeerClientPool(Func<string, IEnumerable<string>, HttpClient> factory,
+        TimeProvider? clock = null) : IDisposable
+    {
+        internal const int MaximumClients = 16;
+        internal static readonly TimeSpan IdleLifetime = TimeSpan.FromMinutes(2);
+        private sealed class Entry(string key, HttpClient client, DateTimeOffset touched)
+        {
+            internal readonly string Key = key;
+            internal readonly HttpClient Client = client;
+            internal DateTimeOffset Touched = touched;
+            internal int Users;
+            internal bool Retired;
+        }
+        private readonly object sync = new();
+        private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
+        private readonly TimeProvider time = clock ?? TimeProvider.System;
+        private bool disposed;
+        private int liveClients;
+
+        internal sealed class Lease(HttpClient client, Action release) : IDisposable
+        {
+            internal HttpClient Client { get; } = client;
+            private Action? finish = release;
+            public void Dispose() => Interlocked.Exchange(ref finish, null)?.Invoke();
+        }
+
+        internal Lease Rent(SharedWorldPeerRoute route)
+        {
+            if (!SharedWorldPeerTrust.ValidRoute(route)) throw new AuthenticationException("A pinned direct peer origin is required.");
+            lock (sync)
+            {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                var now = time.GetUtcNow();
+                foreach (var old in entries.Values.Where(item => item.Users == 0 && now - item.Touched >= IdleLifetime).ToArray()) Retire(old);
+                var key = RouteKey(route);
+                if (!entries.TryGetValue(key, out var entry))
+                {
+                    if (liveClients >= MaximumClients)
+                    {
+                        var oldest = entries.Values.Where(item => item.Users == 0).MinBy(item => item.Touched);
+                        if (oldest is null) throw new HttpRequestException("The pinned peer connection budget is busy.");
+                        Retire(oldest);
+                    }
+                    entry = new(key, factory(route.Address, [route.CertificateSha256]), now);
+                    entries.Add(key, entry);
+                    liveClients++;
+                }
+                entry.Users++;
+                entry.Touched = now;
+                return new(entry.Client, () =>
+                {
+                    lock (sync)
+                    {
+                        entry.Users--;
+                        entry.Touched = time.GetUtcNow();
+                        if (entry.Retired && entry.Users == 0) Close(entry);
+                    }
+                });
+            }
+        }
+
+        internal void Invalidate(SharedWorldPeerRoute route)
+        {
+            lock (sync)
+                if (entries.TryGetValue(RouteKey(route), out var entry)) Retire(entry);
+        }
+
+        private void Retire(Entry entry)
+        {
+            entries.Remove(entry.Key);
+            entry.Retired = true;
+            if (entry.Users == 0) Close(entry);
+        }
+
+        private void Close(Entry entry) { entry.Client.Dispose(); liveClients--; }
+
+        public void Dispose()
+        {
+            lock (sync)
+            {
+                if (disposed) return;
+                disposed = true;
+                foreach (var entry in entries.Values.ToArray()) Retire(entry);
+            }
+        }
+    }
+
+    // A pooled TLS session must not make an expired certificate usable until
+    // its next handshake. Exact pins fix certificate contents; conservatively
+    // intersect observed validity windows when more than one pin is allowed.
+    internal sealed class PeerCertificateWindow(byte[][] pins, TimeProvider? clock = null)
+    {
+        private readonly object sync = new();
+        private readonly TimeProvider time = clock ?? TimeProvider.System;
+        private DateTimeOffset? validAfter, validBefore;
+
+        internal bool Accept(X509Certificate2? certificate)
+        {
+            if (certificate is null) return false;
+            var start = new DateTimeOffset(certificate.NotBefore.ToUniversalTime());
+            var end = new DateTimeOffset(certificate.NotAfter.ToUniversalTime());
+            var now = time.GetUtcNow();
+            if (now < start || now > end || !pins.Any(pin =>
+                CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin))) return false;
+            lock (sync)
+            {
+                validAfter = validAfter is null || start > validAfter ? start : validAfter;
+                validBefore = validBefore is null || end < validBefore ? end : validBefore;
+            }
+            return true;
+        }
+
+        internal void EnsureCurrent()
+        {
+            lock (sync)
+                if (validAfter is { } start && validBefore is { } end &&
+                    (time.GetUtcNow() < start || time.GetUtcNow() > end))
+                    throw new HttpRequestException("The pinned peer certificate is outside its validity period.",
+                        new AuthenticationException("The pinned peer certificate expired or is not yet valid."));
+        }
+    }
+
+    private sealed class PinnedPeerHandler(PeerCertificateWindow window, HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            window.EnsureCurrent();
+            var response = await base.SendAsync(request, cancellationToken);
+            try { window.EnsureCurrent(); return response; }
+            catch { response.Dispose(); throw; }
+        }
+    }
 
     // Direct, fixed-origin TLS only: no redirects, system HTTP proxy, bearer
     // credential sharing, DNS search or arbitrary caller-selected path.
@@ -50,16 +187,16 @@ internal sealed partial class WorldPeerService : IDisposable
         var pins = fingerprints.Where(SharedWorldPeerTrust.ValidHash).Select(Convert.FromHexString).ToArray();
         if (pins.Length == 0 || !SharedWorldPeerTrust.ValidRoute(new(endpoint, Convert.ToHexString(pins[0]))))
             throw new AuthenticationException("A pinned direct peer origin is required.");
+        var validity = new PeerCertificateWindow(pins);
         var handler = new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseProxy = false,
-            ServerCertificateCustomValidationCallback = (_, certificate, _, _) => certificate is not null &&
-                DateTimeOffset.UtcNow >= certificate.NotBefore.ToUniversalTime() &&
-                DateTimeOffset.UtcNow <= certificate.NotAfter.ToUniversalTime() &&
-                pins.Any(pin => CryptographicOperations.FixedTimeEquals(SHA256.HashData(certificate.RawData), pin))
+            UseCookies = false,
+            MaxConnectionsPerServer = 4,
+            ServerCertificateCustomValidationCallback = (_, certificate, _, _) => validity.Accept(certificate)
         };
-        return new HttpClient(handler)
+        return new HttpClient(new PinnedPeerHandler(validity, handler))
         {
             BaseAddress = new Uri(endpoint.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(6)
@@ -359,6 +496,10 @@ internal sealed partial class WorldPeerService : IDisposable
             throw new InvalidDataException("World peer access changed during the request.");
         if (result.Length > WorldPeerProtocol.ResponseLimit(request.Operation))
             throw new InvalidDataException("The world peer response is oversized.");
+        if (request.Operation == WorldPeerOperations.Chunk)
+            inboundPulls.Served(groupKey, request.VersionHash!, request.Challenge.PublicKey);
+        if (request.Operation == WorldPeerOperations.Metadata)
+            ObserveInboundContact(groupKey, request.Challenge.PublicKey);
         return result;
     }
 
@@ -369,6 +510,7 @@ internal sealed partial class WorldPeerService : IDisposable
         if (request.Page is not null)
         {
             var imported = store.ImportPage(request.Page);
+            if (imported.Changed) RequestBackgroundSync();
             acceptedOffset = imported.Code == "PeerCatchUpRequired" || UnknownMembers(group, request.Page) ? 0 : request.Page.NextOffset;
         }
         ImportDefaultSelections(group, request.DefaultSelections ?? []);
@@ -550,11 +692,17 @@ internal sealed partial class WorldPeerService : IDisposable
         // A responder retains one challenge per requester/world. Do not let a
         // foreground metadata handshake invalidate a background payload proof.
         var wireGate = ExchangeGatesFor(group.Root).Wire;
-        await wireGate.WaitAsync(cancellationToken);
+        using (hostingWork.Measure(HostingWorkStage.PeerWait))
+            await wireGate.WaitAsync(cancellationToken);
         try
         {
             return await SendPeerCoreAsync(group, route, operation, cancellationToken,
                 payload, offset, versionHash, fileIndex, chunkOffset);
+        }
+        catch (Exception error) when (error is HttpRequestException or AuthenticationException or IOException)
+        {
+            lock (stateSync) peerClients?.Invalidate(route);
+            throw;
         }
         finally { wireGate.Release(); }
     }
@@ -563,6 +711,7 @@ internal sealed partial class WorldPeerService : IDisposable
         CancellationToken cancellationToken, byte[]? payload, int offset,
         string? versionHash, int? fileIndex, long? chunkOffset)
     {
+        using var measurement = hostingWork.Measure(HostingWorkStage.PeerRequest);
         ObjectDisposedException.ThrowIf(peerDisposed, this);
         if (!SharedWorldPeerTrust.ValidRoute(route)) throw new InvalidDataException("The direct peer route is invalid.");
         group = Find(group.Root.GroupKey) ?? throw new InvalidDataException("The world membership changed.");
@@ -575,9 +724,14 @@ internal sealed partial class WorldPeerService : IDisposable
         var manualIdentity = AdditionalRoutePublicKey(group, route);
         if (announced.Length > 1 || announced.Length == 0 && !bootstrap && manualIdentity is null)
             throw new InvalidDataException("The peer route has no unambiguous signed identity.");
-        using var client = makeClient(route.Address, [route.CertificateSha256]);
-        client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString(CultureInfo.InvariantCulture));
-        client.DefaultRequestHeaders.Add("X-TogetherServer-Capability", CompanionProtocol.SharedWorldPeersCapability);
+        PeerClientPool.Lease connection;
+        lock (stateSync)
+        {
+            ObjectDisposedException.ThrowIf(peerDisposed, this);
+            connection = (peerClients ??= new(makeClient)).Rent(route);
+        }
+        using var heldConnection = connection;
+        var client = connection.Client;
         var prefix = $"api/companion/world-peers/{group.Root.GroupKey}/";
         var observationContext = transferAttempt.Value;
         var observation = observationContext?.Attempt;
@@ -594,6 +748,7 @@ internal sealed partial class WorldPeerService : IDisposable
                     ? ChallengeRosters(group, cursor.KnownRemoteRosterRevision) : []);
             using var challengeRequest = new HttpRequestMessage(HttpMethod.Post, prefix + "challenge")
             { Content = JsonContent.Create(hello, options: SharedWorldPeerTrust.Json) };
+            AddPeerHeaders(challengeRequest);
             observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Challenge);
             using var challengeResponse = await client.SendAsync(challengeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             observation?.Response((int)challengeResponse.StatusCode);
@@ -620,7 +775,8 @@ internal sealed partial class WorldPeerService : IDisposable
                 if (reply.Challenge is not null && (!maySendRosters || known != reply.KnownRosterRevision ||
                     Access(group, group.DeviceId, publicKey) is null))
                     throw new InvalidDataException("Both current memberships must be proved before a peer challenge is accepted.");
-                SaveCursor(group, route, currentCursor with { KnownRemoteRosterRevision = reply.KnownRosterRevision });
+                if (currentCursor.KnownRemoteRosterRevision != reply.KnownRosterRevision)
+                    SaveCursor(group, route, currentCursor with { KnownRemoteRosterRevision = reply.KnownRosterRevision });
             }
             expectedIdentity ??= reply.ResponderPublicKey;
             challenge = reply.Challenge;
@@ -644,6 +800,7 @@ internal sealed partial class WorldPeerService : IDisposable
         var request = WorldPeerProtocol.Sign(challenge, operation, key, offset, versionHash, fileIndex, chunkOffset, body);
         using var exchange = new HttpRequestMessage(HttpMethod.Post, prefix + "exchange")
         { Content = JsonContent.Create(new WorldPeerExchangeRequest(request, body), options: SharedWorldPeerTrust.Json) };
+        AddPeerHeaders(exchange);
         observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Exchange);
         using var response = await client.SendAsync(exchange, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         observation?.Response((int)response.StatusCode);
@@ -658,6 +815,12 @@ internal sealed partial class WorldPeerService : IDisposable
             Access(current, challenge.ResponderDeviceId, challenge.ResponderPublicKey) is null)
             throw new InvalidDataException("World membership changed during the peer request.");
         return bytes;
+    }
+
+    private static void AddPeerHeaders(HttpRequestMessage request)
+    {
+        request.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString(CultureInfo.InvariantCulture));
+        request.Headers.Add("X-TogetherServer-Capability", CompanionProtocol.SharedWorldPeersCapability);
     }
 
     private bool CurrentPeerKey(Group group, string publicKey)
@@ -702,7 +865,10 @@ internal sealed partial class WorldPeerService : IDisposable
                             observation.Phase(WorldPeerTransferPhase.Pulling);
                             await PullCatalogAsync(current, route, cancellationToken);
                             observation.Phase(WorldPeerTransferPhase.Offering);
-                            observation.Complete(await SeedPeerAsync(current, route, cancellationToken));
+                            var outcome = await SeedPeerAsync(current, route, cancellationToken);
+                            observation.Complete(transferAttempt.Value.PendingPayload && outcome is not
+                                (WorldPeerTransferResult.SeedPaused or WorldPeerTransferResult.SeedHistoryPending or
+                                 WorldPeerTransferResult.ByteBudget) ? WorldPeerTransferResult.WorkBudget : outcome);
                         }
                         catch (Exception error)
                         {
@@ -805,11 +971,23 @@ internal sealed partial class WorldPeerService : IDisposable
         lock (stateSync)
         {
             if (peerDisposed || cancellationToken.IsCancellationRequested || backgroundSync is { IsCompleted: false }) return;
+            var generation = Interlocked.Read(ref requestedSyncGeneration);
+            if (generation == scheduledSyncGeneration && DateTimeOffset.UtcNow < nextBackgroundSyncUtc) return;
+            if (scheduledSyncGeneration != generation) remainingGroupSweep = -1;
+            scheduledSyncGeneration = generation;
+            nextBackgroundSyncUtc = DateTimeOffset.UtcNow.AddSeconds(60);
             backgroundSync = Task.Run(async () =>
             {
-                try { await SyncNowAsync(cancellationToken); }
+                try { await SyncNowAsync(cancellationToken, scheduled: true); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
                 catch (Exception ex) when (PeerFailure(ex)) { /* Per-group detail is projected by SyncNowAsync. */ }
+                finally
+                {
+                    lock (stateSync)
+                        nextBackgroundSyncUtc = DateTimeOffset.UtcNow.Add(remainingGroupSweep > 0
+                            ? TimeSpan.FromSeconds(1) : replicationSchedule.NextDelay(DateTimeOffset.UtcNow,
+                                Interlocked.Read(ref requestedSyncGeneration)));
+                }
             }, cancellationToken);
         }
     }
@@ -860,14 +1038,14 @@ internal sealed partial class WorldPeerService : IDisposable
         }
     }
 
-    internal Task SyncNowAsync(CancellationToken cancellationToken)
+    internal Task SyncNowAsync(CancellationToken cancellationToken, bool scheduled = false)
     {
         lock (stateSync)
         {
             ObjectDisposedException.ThrowIf(peerDisposed, this);
             cancellationToken.ThrowIfCancellationRequested();
             if (syncFlight is not { IsCompleted: false })
-                syncFlight = Task.Run(() => SyncNowCoreAsync(cancellationToken), CancellationToken.None);
+                syncFlight = Task.Run(() => SyncNowCoreAsync(cancellationToken, scheduled), CancellationToken.None);
             // A joining caller can cancel its own wait without canceling the
             // already running pass owned by the original caller/shutdown.
             return syncFlight.WaitAsync(cancellationToken);
@@ -896,7 +1074,7 @@ internal sealed partial class WorldPeerService : IDisposable
         return new(false, "WorldPeerSyncInconclusive", "Fresh signed information could not be confirmed. Existing signed history and copies were kept; retry when an approved peer is reachable.");
     }
 
-    private async Task SyncNowCoreAsync(CancellationToken cancellationToken)
+    private async Task SyncNowCoreAsync(CancellationToken cancellationToken, bool scheduled)
     {
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(TimeSpan.FromSeconds(45));
@@ -916,16 +1094,22 @@ internal sealed partial class WorldPeerService : IDisposable
         lock (stateSync)
         {
             var groups = Groups();
+            replicationSchedule.RetainWorlds(groups.Select(group => group.Root.GroupKey).ToHashSet(StringComparer.Ordinal));
             if (groups.Length == 0) return;
             known = groups;
             selected = Enumerable.Range(0, Math.Min(4, groups.Length))
                 .Select(index => groups[(groupPosition + index) % groups.Length]).ToArray();
             groupPosition = (groupPosition + selected.Length) % groups.Length;
+            if (scheduled)
+            {
+                if (remainingGroupSweep < 0) remainingGroupSweep = groups.Length;
+                remainingGroupSweep = Math.Max(0, remainingGroupSweep - selected.Length);
+            }
         }
         foreach (var initial in selected)
         {
             if (bounded.IsCancellationRequested) break;
-            await SyncScheduledGroupAsync(initial, bounded.Token, cancellationToken);
+            await SyncScheduledGroupAsync(initial, bounded.Token, cancellationToken, scheduled);
         }
         await registration;
         // Registration may rebind a retained world to a freshly paired member
@@ -939,7 +1123,7 @@ internal sealed partial class WorldPeerService : IDisposable
         foreach (var current in changed)
         {
             if (bounded.IsCancellationRequested) break;
-            await SyncScheduledGroupAsync(current, bounded.Token, cancellationToken);
+            await SyncScheduledGroupAsync(current, bounded.Token, cancellationToken, scheduled);
         }
     }
 
@@ -947,7 +1131,7 @@ internal sealed partial class WorldPeerService : IDisposable
         before.Root == after.Root && before.DeviceId == after.DeviceId &&
         before.Bootstrap == after.Bootstrap;
 
-    private async Task SyncScheduledGroupAsync(Group group, CancellationToken budget, CancellationToken caller)
+    private async Task SyncScheduledGroupAsync(Group group, CancellationToken budget, CancellationToken caller, bool scheduled)
     {
         try
         {
@@ -962,7 +1146,13 @@ internal sealed partial class WorldPeerService : IDisposable
                 .SelectMany(value => value.Routes);
             var routes = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
                 .GroupBy(RouteKey).Select(values => values.First()).Take(SharedWorldPeerStore.MaximumPeers).ToArray();
+            lock (stateSync)
+                replicationSchedule.RetainRoutes(group.Root.GroupKey, routes.Select(route => ScheduleKey(group, route)).ToHashSet(StringComparer.Ordinal));
             if (routes.Length == 0) return;
+            if (scheduled)
+                lock (stateSync)
+                    foreach (var route in routes)
+                        replicationSchedule.Track(ScheduleKey(group, route), Interlocked.Read(ref requestedSyncGeneration), DateTimeOffset.UtcNow);
             var start = routePositions.GetValueOrDefault(group.Root.GroupKey) % routes.Length;
             routePositions[group.Root.GroupKey] = (start + Math.Min(2, routes.Length)) % routes.Length;
             SetPeerWarning(group.Root.GroupKey, null);
@@ -970,13 +1160,18 @@ internal sealed partial class WorldPeerService : IDisposable
             {
                 if (budget.IsCancellationRequested) break;
                 var route = routes[(start + index) % routes.Length];
+                var generation = Interlocked.Read(ref requestedSyncGeneration);
+                lock (stateSync)
+                    if (scheduled && !replicationSchedule.Due(ScheduleKey(group, route), generation, DateTimeOffset.UtcNow)) continue;
                 try
                 {
                     await SyncPeerAsync(group, route, budget, background: true);
+                    RecordScheduledResult(group, route, generation, failed: false);
                     group = Find(group.Root.GroupKey) ?? group;
                 }
                 catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
                 {
+                    RecordScheduledResult(group, route, generation, failed: true);
                     var peer = Store(group).Project().Peers.SingleOrDefault(value => value.Routes.Contains(route));
                     if (peer is not null) Store(group).RecordSync(peer.DeviceId, peer.PublicKey, false);
                     SetPeerWarning(group.Root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept.");
@@ -1008,9 +1203,12 @@ internal sealed partial class WorldPeerService : IDisposable
         {
             if (peerDisposed) return;
             peerDisposed = true;
+            manager.SharedSavePublished -= RequestBackgroundSync;
+            peerClients?.Dispose();
             foreach (var state in peerProtocols.Values) state.Key.Dispose();
             peerProtocols.Clear();
             rosterRequestNonces.Clear();
+            ClearChunkSources();
         }
     }
 

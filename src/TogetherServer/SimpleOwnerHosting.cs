@@ -38,11 +38,13 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                     heldSource.RequireCurrent(data, retainedRoot, profileId, directBranch, cancellationToken);
                 }
                 RequireScope();
-                var current = await manager.VerifiedLocalContinuationAsync(sourceId, profileId, cancellationToken);
+                using var working = await manager.VerifyLocalContinuationForStartAsync(sourceId, profileId, cancellationToken);
+                if (working is null)
+                    return await Refused("LocalHostingBusy", "Start is already being checked for this server. Check its current result before another instruction.");
                 RequireScope();
-                if (current?.VersionHash != newest.Source.Descriptor.Version.VersionHash)
+                if (working.VersionHash != newest.Source.Descriptor.Version.VersionHash)
                     return await Refused("LatestSaveChanged", "A newer save is available. Use Host locally on the joined server to continue from it.");
-                await manager.RecordHostingObservationAsync(profileId, newest, RequireScope, cancellationToken);
+                await manager.RecordHostingObservationAsync(profileId, newest, RequireScope, cancellationToken, working);
                 return await manager.StartSeparateCopyAsync(profileId, directBranch, cancellationToken);
             }
             // A completed planned successor retains the original profile ID.

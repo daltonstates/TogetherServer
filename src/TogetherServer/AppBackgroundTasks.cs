@@ -13,11 +13,20 @@ internal sealed class AppBackgroundTasks(
     private Task[] tasks = [];
     private DateTimeOffset notificationStartedUtc;
     private Task freshness = Task.CompletedTask;
+    private readonly SemaphoreSlim replicationWake = new(0, 1);
+
+    private void WakeReplication()
+    {
+        try { replicationWake.Release(); }
+        catch (SemaphoreFullException) { /* One pending wake already covers it. */ }
+        catch (ObjectDisposedException) { /* A publisher can race app shutdown. */ }
+    }
 
     public void Start()
     {
         if (tasks.Length != 0) throw new InvalidOperationException("Background work is already running.");
         notificationStartedUtc = clock.GetUtcNow();
+        if (worldPeers is not null) worldPeers.BackgroundSyncRequested += WakeReplication;
         tasks = [Task.Run(RunFriendPollAsync), Task.Run(RunSharedCatchUpAsync), Task.Run(RunLifecycleAsync),
             Task.Run(RunUpdateChecksAsync), Task.Run(RunNotificationsAsync)];
     }
@@ -25,6 +34,7 @@ internal sealed class AppBackgroundTasks(
     public async ValueTask DisposeAsync()
     {
         stop.Cancel();
+        if (worldPeers is not null) worldPeers.BackgroundSyncRequested -= WakeReplication;
         try
         {
             await Task.WhenAll(tasks);
@@ -32,7 +42,7 @@ internal sealed class AppBackgroundTasks(
                 worldPeers?.WaitForSyncAsync() ?? Task.CompletedTask, freshness);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
-        finally { stop.Dispose(); }
+        finally { replicationWake.Dispose(); stop.Dispose(); }
     }
 
     private async Task RunFriendPollAsync()
@@ -54,11 +64,19 @@ internal sealed class AppBackgroundTasks(
         {
             // Save discovery/delivery must keep running while a saved Host's
             // heartbeat is slow or unavailable, including after a local Stop.
-            try { friend.ScheduleSharedCatchUp(stop.Token); }
-            catch (Exception ex) { DiagnosticOutput.WriteError("Shared catch-up scheduling failed: " + ex.GetType().Name); }
             try { worldPeers?.ScheduleSync(stop.Token); }
             catch (Exception ex) { DiagnosticOutput.WriteError("Peer scheduling failed: " + ex.GetType().Name); }
-            if (!await Delay(TimeSpan.FromSeconds(5))) break;
+            try { friend.ScheduleSharedCatchUp(stop.Token, worldPeers is null ? null : worldPeers.OwnsReplication); }
+            catch (Exception ex) { DiagnosticOutput.WriteError("Shared catch-up scheduling failed: " + ex.GetType().Name); }
+            // Legacy links have their own due times; this tick does no network
+            // work for idle peers. Publication wakes the same owner immediately.
+            try
+            {
+                var delay = worldPeers?.NextBackgroundSyncDelay ?? TimeSpan.FromSeconds(5);
+                if (delay > TimeSpan.FromSeconds(5)) delay = TimeSpan.FromSeconds(5);
+                await replicationWake.WaitAsync(delay, stop.Token);
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
         }
     }
 
@@ -120,7 +138,7 @@ internal sealed class AppBackgroundTasks(
                         .ToList();
                     foreach (var item in visible.Where(item => notifiedActivity.Add(item.Id)))
                         desktop.Notify(item, friendMode(), friendMode() ? friend.View().ConnectionId : null);
-                    var hostSnapshot = await manager.SnapshotAsync();
+                    var hostSnapshot = await manager.CompanionSnapshotAsync();
                     desktop.SetTraySummary(new DesktopTraySummary(
                         hostSnapshot.Runs.Count(run => run.State is "Ready" or "Starting" or "Process running" or "Listening" or "Stopping"),
                         hostSnapshot.Runs.Count(run => run.State == "Failed" || run.State == "Unknown" &&

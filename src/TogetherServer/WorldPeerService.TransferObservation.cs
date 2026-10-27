@@ -11,6 +11,7 @@ internal sealed partial class WorldPeerService
         internal WorldPeerTransferObservationStore.Attempt Attempt { get; } = attempt;
         internal Guid? ResponderDeviceId;
         internal string? ResponderPublicKey;
+        internal bool PendingPayload;
 
         internal bool ReceiptFromResponder(Group current, SharedWorldReceipt receipt) =>
             receipt.DeviceId == ResponderDeviceId && ResponderPublicKey is not null && (receipt.DeviceId == Guid.Empty

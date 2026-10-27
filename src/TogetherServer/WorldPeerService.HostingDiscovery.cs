@@ -2,6 +2,18 @@ namespace TogetherServer;
 
 internal sealed partial class WorldPeerService
 {
+    private bool RetainedHostingPermission(Group group, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // Inspect existing key material without the protected-load recovery or
+        // quarantine path. A denied/corrupt identity must not mutate discovery.
+        using var key = RetainedAdvertisementKey(group);
+        return key is not null && group.SharingEnabled && group.ReceiveConsented &&
+            Access(group, group.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is
+            { Receive: true, EligibleHost: true } &&
+            (group.DeviceId == Guid.Empty || friend.HasRetainedWorldReceiveConsent(group.Root, group.DeviceId));
+    }
+
     // Start verifies an already prepared local source without retaining another
     // payload. A different or missing newest save requires explicit preparation.
     internal async Task<WorldPeerPreparedStartResult> ResolveLatestPreparedStartSourceAsync(
@@ -12,6 +24,9 @@ internal sealed partial class WorldPeerService
         var code = "LocalHostingPreparationRequired";
         try
         {
+            var permitted = Find(root.GroupKey);
+            if (permitted is null || permitted.Root != root || !RetainedHostingPermission(permitted, cancellationToken))
+                return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
             await DiscoverHostingMetadataAsync(root, cancellationToken);
             var group = Find(root.GroupKey);
             if (group is null || group.Root != root || !await RecoveryAllowedAsync(group, cancellationToken))
@@ -123,6 +138,9 @@ internal sealed partial class WorldPeerService
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
+            var permitted = Find(root.GroupKey);
+            if (permitted is null || permitted.Root != root || !RetainedHostingPermission(permitted, cancellationToken))
+                return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before using this save.");
             WorldPeerSourceProgress.Report(progress,
                 new("PeerSync", "Checking this server's signed save information before using its prepared copy."));
             await DiscoverHostingMetadataAsync(root, cancellationToken);

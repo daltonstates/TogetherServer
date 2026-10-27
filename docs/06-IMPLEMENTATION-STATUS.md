@@ -7,6 +7,85 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## Integrated hosting correction, 2026-10-27 EDT (validation in progress)
+
+The architecture-reset handoff and all pre-existing changes were reviewed before
+reuse. This candidate builds on .18 rather than replacing its trust, retention or
+common HostManager launch boundary. Prepared Start first checks current scoped
+signed permission, discovers only the requested world's signed metadata within
+the existing budget, then holds the selected immutable source. Host and Join now
+reuse one operation-owned full working-save verification through the final launch
+fence. Working handles are released immediately before the game needs write
+access; the signed source remains held. Current scope, source, complete layout,
+setup, ancestry, process identity and ports remain final guards. Readiness and
+player evidence are observed afresh for every run. There is no permanent setup
+or authorization cache and no original-Host round-trip requirement.
+
+Peer replication retains its existing single-flight boundaries. One background
+owner wakes after verified publication, new completed receive, changed signed
+metadata/contact and an authenticated reconnect after inactivity. It discovers
+unchanged routes about once a minute and backs off failed routes with bounded
+jitter toward five minutes. Resumable work remains due promptly, bounded group
+and route rotations stay fair, and removed routes are pruned. Heartbeats and
+lifecycle/player observation intervals are unchanged. The legacy background
+receiver yields for the same enrolled world only when that Host advertises the
+peer protocol; older companion versions retain their receiver.
+
+Serving an authenticated Chunk records only a bounded scheduling hint for that
+exact world/save/recipient, deferring a competing Seed while that pull progresses.
+It grants neither access nor receipt. Current exact responder receipts suppress
+repeat offers. Publication, active bytes and exact receipts remain separate;
+offline recipients stay pending. No wire schema changes and no relaxation of
+planned-move final-save/authority/receipt rules are introduced.
+
+Chunks retain bounded capped-catalog source hints instead of scanning all vaults
+and history on each chunk. Every use rechecks current signed scope, protected
+provenance, authority, consent and source pointer, before and after bytes. Existing
+full signed-file/per-chunk digests and final whole-payload verification remain.
+Registry parsing/signature results are reused only for identical protected bytes;
+current expiry, trust floors, revocation and consent are still evaluated per
+operation. Protected no-op challenge-cursor writes are skipped. Pinned clients
+are bounded by exact origin+pin, with idle eviction, active leases, no shared
+mutable headers/cookies/proxy/redirects, certificate-validity checks and fresh
+single-use signed challenges on every request.
+
+Hidden-document UI polls suspend and resume without overlapping ignored-abort
+requests. Directory reads share the snapshot cycle, while later companion/port
+diagnostics cannot delay run/player snapshots. All polls remain read-only.
+The fixed local-header-only GET `/api/local/world-peers/work` returns process
+CPU time/uptime plus counts and elapsed wall time for inventory, registry
+verification, signed peer requests, peer-gate waits, received-copy verification
+and working-save verification. Verification includes hash/lease/path overhead,
+and received-copy timing includes promotion; it is not pure hash CPU time.
+CPU utilization needs two sample deltas; wall
+durations can overlap. Existing hosting phases and transfer byte/elapsed records
+separate preparation/discovery/verification/launch-request work; exact native
+creation-to-Ready still requires fresh process/readiness observation. These
+counters do not establish the physical bottleneck or a measured speedup.
+
+The focused UI checks pass 126 tests, and strict solution compilation passes with
+zero warnings/errors. The initial source run passed eight of ten selected groups;
+the two older fixtures were updated for exact-acknowledgement skips and the new
+scheduler parameter. Follow-up caught a new permission precheck using a protected
+load that could quarantine a malformed key; it now inspects the retained key
+without recovery/mutation before discovering peers. A flaky synthetic registry
+mutation used string replacement against JSON-escaped base64; it now changes the
+parsed signature and proves equal-length bytes actually differ. These failures
+are preserved. Corrected focused runs pass all ten distinct selected groups,
+including exact owner/online delivery, forwarded-receipt isolation, prepared
+source reuse, held working proof/concurrent refusal, chunk provenance, pinned
+connection reuse, scheduling invalidation and nonmutating bounded discovery.
+The separate native namespace-substitution case is registered for hosted Windows
+CI and was not run locally. Exact-source hosted Windows CI remains pending.
+No new app was
+installed, replaced or launched, and no production data was inspected by this
+implementation work. Manual owner installation and fresh confirmation of an
+unattended V1release-only session plus stopped main world are required before
+physical acceptance: unchanged prepared save with no copy/transfer/setup repeat,
+real Ready, graceful Stop, new fully verified save, exact current reachable-peer
+receipts and saved restart. The .18 evidence below remains incomplete, and its
+last sampled delivery state is historical rather than current telemetry.
+
 ## Exact .16 candidate and laptop test, 2026-10-26 EDT
 
 The reviewed .16 preview is published at tag `v0.3.3.16`, pointing to
@@ -396,12 +475,8 @@ was published at 05:51:11 UTC, release 425078208, annotated tag
 All four public assets were anonymously downloaded and rehashed against the
 reviewed files, manifest and checksum sidecars. All 32 older release IDs remain
 present (33 total); stable/latest stays `v0.3.3`. No app was installed or replaced
-by the agent. Current `.18` physical acceptance remains NotRun: both PCs need
-owner-controlled manual updates, followed by a freshly confirmed unattended
-V1release-only session with the main world stopped. Prompt automatic delivery,
-exact reachable-recipient acknowledgements and saved restart remain that test's
-acceptance target. Offline recipients remain pending. Public-safe evidence and
-both Existing attempts are retained under ignored `local-data/simplified-hosting-8aae312/`.
+by the agent. Public-safe release evidence and both Existing attempts are retained
+under ignored `local-data/simplified-hosting-8aae312/`.
 
 The actual Host view placed the read-only panel inside a closed Other Hosts &
 connections disclosure. Earlier suggested UI directions were not verified on
@@ -409,16 +484,64 @@ the screen. Both computer-use helpers failed before initialization, with no
 screen observation or UI input. The .18 panel exposes Save sharing status and
 transfer progress directly in Sharing & hosting, keeping permission controls
 and transfer diagnostics collapsed. Component coverage passes 192 tests across
-the three affected suites. Nine populated hosted screenshots are now planned
-alongside the unchanged older access/wizard inventories; capture and visual
-inspection remain pending. No local browser/native fixture was launched.
+the three affected suites. Nine populated hosted screenshots passed alongside
+the unchanged older access/wizard inventories, with actual visual inspection
+recorded above. No local browser/native fixture was launched.
 
 An initial local compilation overlapped the UI bundle write and failed on a
 missing embedded asset. That was an avoidable build-order error; UI output and
 .NET compilation are serialized for subsequent checks. This failure is not a
-product or native test result. The published .18 has hosted and synthetic
-verification only; it has not been physically tested by the agent. The completed
-.17 laptop cycle remains separate evidence and does not validate these changes.
+product or native test result. The completed .17 laptop cycle remains separate
+evidence from the .18 physical test below.
+
+### Physical .18 laptop test, 2026-10-27 EDT, incomplete
+
+The owner confirmed manual updates on both PCs, an unattended laptop, a stopped
+main world and a V1release-only Start/Stop plus saved-restart scope. The one
+running laptop process independently matched the published .18 portable hash and
+source, current Windows account, Production instance and owned loopback listener.
+No Valheim process was running. The main's authenticated snapshot reported .18
+and fresh Offline state; its executable was not independently inspected.
+
+One Start at 02:43:18 EDT reused prepared publication 7. It returned success in
+36,054 ms: permission 1,509, latest-save discovery 6,650, verification 15,743,
+connection 742 and launch 11,393 ms. It entered neither Receiving nor PreparingCopy.
+Actual Ready was observed 75,599 ms after the request and 41,098 ms after native
+process creation, with fresh trusted zero occupancy from ValheimLogReady. These
+figures are slower than the preceding .17 run; no speedup or client-join claim
+is inferred from them.
+
+One local graceful Stop at 02:46:37 EDT followed exact profile/run/PID, native
+image, account, creation time, world and managed save-directory binding and a
+fresh trusted zero-player check. It returned ValheimStopped in 18,016 ms. Exit
+was first observed at 5,656 ms and publication 8 at 25,731 ms. The 20,075-ms
+post-exit observation interval includes capture, verification, publication and
+polling rather than an isolated hashing time. Publication 8 is an exact child of
+7 with a new PostStopBackup; all 315 files total 119,452,903 bytes. Independent
+non-mutating verification passed signature, branch, strict parents, current
+roster/root and every payload hash. The entire independent observation took
+3,410 ms, not payload hashing alone. At that observation the target was Offline
+with no Valheim process. No Start, Stop, preparation, access check or manual sync was replayed.
+
+Automatic delivery was slow in these observations and was not accepted as repaired. The exact
+main-Host receipt for 8 was absent at the first 02:49 verification. Receiver
+requests subsequently advanced through file indices 19, 69 and 142; these are
+resumption hints, not verified byte acknowledgements or a delivery percentage.
+Current busy offers return SeedPaused while a receiving writer is occupied.
+The retained canceled pass near Stop still names receipt 7, not receipt 8.
+The authorized saved-restart step was not issued before testing stopped. Last
+sampling at 07:21:44 UTC showed publication 8 sending at requested file 286/315,
+offset 524288, with no accepted exact receipt 8 in that sample. This is a resume
+hint, not a verified percentage or a statement of present delivery status.
+Ordinary Start does not require an owner receipt. Offline recipients were pending.
+Safe measurements are in ignored `local-data/physical-test-8aae312/`.
+
+Read-only source review identified two full local inventory builds per chunk and
+an identical protected cursor rewrite after unchanged roster challenges. A
+bounded next optimization is being implemented separately with current-source,
+role/consent/authority, digest, cancellation and publisher fences retained. That
+source finding does not attribute the physical transfer delay. No new candidate
+has replaced either running app.
 
 ## Current behavior
 

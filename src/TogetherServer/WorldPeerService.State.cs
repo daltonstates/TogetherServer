@@ -33,6 +33,8 @@ internal sealed partial class WorldPeerService
     private readonly WorldPeerTransferObservationStore transferObservations = new();
     private readonly AsyncLocal<PeerTransferObservation?> transferAttempt = new();
     private Task? backgroundSync;
+    private byte[]? verifiedRegistryBytes;
+    private Registry? verifiedRegistry;
 
     internal WorldPeerService(LocalData data, HostManager manager, FriendService friend,
         PairingService pairing, Func<string, IEnumerable<string>, HttpClient>? makeClient = null,
@@ -42,6 +44,7 @@ internal sealed partial class WorldPeerService
         this.makeClient = makeClient ?? MakePinnedClient;
         this.seedDelay = seedDelay ?? ((duration, token) => Task.Delay(duration, token));
         stateSync = SharedWorldMutationGate.For(data.RootPath);
+        manager.SharedSavePublished += RequestBackgroundSync;
     }
 
     private Group[] Groups()
@@ -52,20 +55,37 @@ internal sealed partial class WorldPeerService
             var bytes = data.LoadProtected(RegistryName);
             if (bytes is null)
             {
+                verifiedRegistryBytes = null;
+                verifiedRegistry = null;
+                Volatile.Write(ref replicationOwnedRoots, []);
                 if (existed || data.Recovery.Notices.Any(notice => notice.StateFile == RegistryName))
                     throw new InvalidDataException("World membership needs review.");
                 return [];
             }
             if (bytes.Length > 8 * 1024 * 1024) throw new InvalidDataException("World membership is oversized.");
-            var registry = JsonSerializer.Deserialize<Registry>(bytes, Json);
-            if (registry is not { Schema: 1 } || registry.Groups is null || registry.Groups.Count > 128 ||
+            // Reuse only the parsing/signature result for these exact protected
+            // bytes. Current consent, roster floors, expiry and device access
+            // are evaluated separately on every operation; no TTL grants access.
+            var registry = verifiedRegistry;
+            if (registry is null || verifiedRegistryBytes is null || !bytes.AsSpan().SequenceEqual(verifiedRegistryBytes))
+            {
+                verifiedRegistry = null;
+                verifiedRegistryBytes = null;
+                Volatile.Write(ref replicationOwnedRoots, []);
+                using var measurement = hostingWork.Measure(HostingWorkStage.SignedRegistry);
+                registry = JsonSerializer.Deserialize<Registry>(bytes, Json);
+                if (registry is not { Schema: 1 } || registry.Groups is null || registry.Groups.Count > 128 ||
                 registry.Groups.Any(group => !SharedWorldPeerTrust.ValidRoot(group.Root) ||
                     !SharedWorldRosterTrust.Verify(group.Roster) ||
                     group.Roster.ProfileId != group.Root.ProfileId || group.Roster.GroupId != group.Root.GroupId ||
                     group.Roster.OwnerPublicKey != group.Root.OwnerPublicKey || group.Name.Length > 100 ||
                     group.Bootstrap is not null && !SharedWorldPeerTrust.ValidRoute(group.Bootstrap)) ||
                 registry.Groups.Select(group => group.Root.GroupKey).Distinct().Count() != registry.Groups.Count)
-                throw new InvalidDataException("World membership failed verification.");
+                    throw new InvalidDataException("World membership failed verification.");
+                verifiedRegistry = registry;
+                verifiedRegistryBytes = bytes;
+                Volatile.Write(ref replicationOwnedRoots, registry.Groups.Select(group => group.Root).ToArray());
+            }
             var consent = new WorldPeerReceiveConsentStore(data);
             return registry.Groups.Select(group => group with
             {
@@ -78,9 +98,17 @@ internal sealed partial class WorldPeerService
     {
         lock (stateSync)
         {
-            var groups = Groups().Where(item => item.Root != group.Root).Append(group).ToArray();
+            var previous = Groups();
+            var groups = previous.Any(item => item.Root == group.Root)
+                ? previous.Select(item => item.Root == group.Root ? group : item).ToArray()
+                : previous.Append(group).ToArray();
             if (groups.Length > 128) throw new InvalidDataException("The world membership capacity is full.");
-            data.SaveProtected(RegistryName, JsonSerializer.SerializeToUtf8Bytes(new Registry(1, groups), Json));
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(new Registry(1, groups), Json);
+            if (verifiedRegistryBytes is null || !bytes.AsSpan().SequenceEqual(verifiedRegistryBytes))
+            {
+                data.SaveProtected(RegistryName, bytes);
+                RequestBackgroundSync();
+            }
         }
     }
 

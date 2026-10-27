@@ -122,6 +122,7 @@ public sealed partial class HostManager
             if (!result.Ok || result.Version is null || result.Version.BackupId != backup.Id ||
                 result.Version.CaptureKind != SharedWorldCaptureKinds.PostStopBackup)
                 return Result(false, "StoppedProgressPublicationFailed", "The verified stopped backup remains local. Sharing was not confirmed; review and retry this explicit action.");
+            NotifySharedSavePublished();
             return Result(true, published?.BackupId == backup.Id ? "StoppedProgressUnchanged" : "StoppedProgressShared",
                 StoppedProgressSharedMessage);
         }

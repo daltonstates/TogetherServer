@@ -56,8 +56,8 @@ internal sealed partial class WorldPeerService
         {
             return new(false, "HostingPermissionChanged", "Current sharing permission or local save consent could not be verified. Recheck this server before starting.");
         }
-        // The normal five-second background sync advertises this registration
-        // and, after Start, the exact managed session. Delivery needs reachable peers;
+        // Coalesced background work advertises this registration and wakes for
+        // material managed-session changes. Delivery needs reachable peers;
         // this result claims no network round trip, game join or save test.
         return new(true, "HostingAddressPrepared", "Approved PCs can discover this PC through signed peer exchange when they can reach it. Game connections still need testing.");
     }

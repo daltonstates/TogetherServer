@@ -136,7 +136,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             barrierReleased = release.Wait(TimeSpan.FromSeconds(5));
         }));
         var background = Task.Run(async () => await (Task)typeof(WorldPeerService).GetMethod("SyncScheduledGroupAsync", flags)!
-            .Invoke(fixture.Peers, [group, CancellationToken.None, CancellationToken.None])!);
+            .Invoke(fixture.Peers, [group, CancellationToken.None, CancellationToken.None, false])!);
         try
         {
             await built.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -149,7 +149,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             var builds = 0;
             barrier.SetValue(fixture.Peers, (Action)(() => builds++));
             await (Task)typeof(WorldPeerService).GetMethod("SyncScheduledGroupAsync", flags)!
-                .Invoke(fixture.Peers, [group, CancellationToken.None, CancellationToken.None])!;
+                .Invoke(fixture.Peers, [group, CancellationToken.None, CancellationToken.None, false])!;
             Require(builds == 0 && fixture.Peers.LatestObservationHash(fixture.Root) == before && fixture.Base.Target.Handler.Challenges == 0,
                 "a new background publisher did not yield before snapshot/network work during preparation");
             fixture.RequireNoCopyOrTransfer();

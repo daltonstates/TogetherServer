@@ -144,6 +144,7 @@ internal sealed partial class FriendLocalHostingService
         if (!friend.CurrentLocalHostingConnection(connection))
             return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
         WorldPeerPreparedStartSource? heldPreparedSource = null;
+        WorkingSaveStartProof? heldWorkingSource = null;
         try
         {
             if (input.RequestId is null && (HasLatestSource || preparedStartSource is not null))
@@ -174,15 +175,17 @@ internal sealed partial class FriendLocalHostingService
                         sourceProof.RequireCurrent(data, root, input.LocalProfileId, input.BranchHash!, cancellationToken);
                     }
                     RequireScope();
-                    var current = await manager.VerifiedLocalContinuationAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
+                    heldWorkingSource = await manager.VerifyLocalContinuationForStartAsync(sourceProfileId, input.LocalProfileId, cancellationToken);
+                    if (heldWorkingSource is null)
+                        return Refused("LocalHostingBusy", "Start is already being checked for this server. Check its current result before another instruction.");
                     RequireScope();
-                    if (current?.VersionHash != sourceProof.Descriptor.Version.VersionHash)
+                    if (heldWorkingSource.VersionHash != sourceProof.Descriptor.Version.VersionHash)
                     {
                         if (status.BranchHash is { } changedBranch)
                             await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, changedBranch, cancellationToken);
                         return Refused("LatestSaveChanged", "A newer save arrived. Continue hosting to check the latest copy before starting.");
                     }
-                    await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, RequireScope, cancellationToken);
+                    await manager.RecordHostingObservationAsync(input.LocalProfileId, latest, RequireScope, cancellationToken, heldWorkingSource);
                 }
                 catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
                 {
@@ -210,6 +213,6 @@ internal sealed partial class FriendLocalHostingService
                 await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refused, cancellationToken);
             return Basic(started);
         }
-        finally { heldPreparedSource?.Dispose(); }
+        finally { heldWorkingSource?.Dispose(); heldPreparedSource?.Dispose(); }
     }
 }

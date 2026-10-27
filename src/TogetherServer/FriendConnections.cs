@@ -114,11 +114,11 @@ public sealed partial class FriendService : IDisposable
         return link?.PostChatAsync(profileId, text) ?? Task.FromResult(ChatRoom(profileId));
     }
 
-    public void ScheduleSharedCatchUp(CancellationToken shutdown)
+    public void ScheduleSharedCatchUp(CancellationToken shutdown, Func<SharedWorldPeerRoot, bool>? peerOwns = null)
     {
         (Guid Id, FriendLink Link)[] current;
         lock (sync) current = disposed ? [] : [.. links];
-        foreach (var (_, link) in current) link.ScheduleSharedCatchUp(shutdown);
+        foreach (var (_, link) in current) link.ScheduleSharedCatchUp(shutdown, peerOwns);
     }
 
     public Task<RemoteRehearsalReport> RunRemoteRehearsalAsync(Guid profileId,

@@ -105,6 +105,7 @@ internal sealed partial class WorldPeerService
                 var stored = JsonSerializer.SerializeToUtf8Bytes(cards, Json);
                 if (stored.Length > 256 * 1024) return new(false, "PeerContactCapacity", "Peer contact capacity needs review.");
                 data.SaveProtected(name, stored);
+                RequestBackgroundSync();
             }
             return new(true, "PeerContactStored", "The signed peer address was saved. Sync verifies its current membership and pinned connection.");
         }

@@ -1225,7 +1225,7 @@ internal sealed partial class FriendLink
         finally { ReleaseRetained(); }
     }
 
-    internal void ScheduleSharedCatchUp(CancellationToken shutdown)
+    internal void ScheduleSharedCatchUp(CancellationToken shutdown, Func<SharedWorldPeerRoot, bool>? peerOwns = null)
     {
         lock (sharedScheduleSync)
         {
@@ -1240,6 +1240,10 @@ internal sealed partial class FriendLink
                 next = config is null ? Guid.Empty : config.ConsentedSharedWorldProfiles
                     .Concat(config.ApprovedSharedWorldGroups.Keys).Distinct().FirstOrDefault(id =>
                         HasSharedWorldReceiveConsent(id) &&
+                        !(view.HostCapabilities.Contains(CompanionProtocol.SharedWorldPeersCapability, StringComparer.Ordinal) &&
+                            config.SharedWorldSigningKeys.TryGetValue(id, out var owner) &&
+                            config.ApprovedSharedWorldGroups.TryGetValue(id, out var groupId) &&
+                            peerOwns?.Invoke(new(owner, id, groupId)) == true) &&
                         view.Profiles.Any(profile => profile.Id == id && profile.Kind != GameKinds.Custom) &&
                         (!sharedRetryAfter.TryGetValue(id, out var after) || after <= DateTimeOffset.UtcNow));
             }
@@ -1268,7 +1272,7 @@ internal sealed partial class FriendLink
                     Math.Min(6, sharedFailures.GetValueOrDefault(profileId) + 1);
                 sharedFailures[profileId] = failures;
                 sharedRetryAfter[profileId] = DateTimeOffset.UtcNow.AddSeconds(catchUpPending ? 2 :
-                    reviewRequired ? 300 : failures == 0 ? 30 :
+                    reviewRequired ? 300 : failures == 0 ? 60 :
                     Math.Min(300, 5 * (1 << failures)));
             }
         }

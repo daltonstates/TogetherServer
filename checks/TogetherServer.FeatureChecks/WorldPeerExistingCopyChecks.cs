@@ -285,7 +285,7 @@ internal static class WorldPeerExistingCopyChecks
     private static string Public(ECDsa key) => Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
     private static SharedWorldFile Fact(byte[] bytes) => new("world.dat", bytes.Length, Convert.ToHexString(SHA256.HashData(bytes)));
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         internal LocalData A { get; }
         internal LocalData B { get; }
@@ -307,6 +307,11 @@ internal static class WorldPeerExistingCopyChecks
         internal string DuplicateVault { get; }
         internal LocalData Target => original ? A : B;
         internal WorldPeerService TargetService => original ? aService : bService;
+        internal WorldPeerService RequesterService => Sender;
+        internal LocalData RequesterData => original ? B : A;
+        internal SharedWorldPeerRoute SourceRoute => TargetRoute;
+        internal Handler SourceHandler => original ? aHandler : bHandler;
+        internal WorldPeerSaveDescriptor Descriptor => descriptor;
         private WorldPeerService Sender => original ? bService : aService;
         private SharedWorldPeerRoute TargetRoute => original ? aRoute : bRoute;
         internal Handler RemoteHandler => original ? bHandler : aHandler;
@@ -409,6 +414,12 @@ internal static class WorldPeerExistingCopyChecks
             if (original) { aService = NewService(A, aFriends, pairing); aHandler.Service = aService; }
             else { bService = NewService(B, bFriends, new(B)); bHandler.Service = bService; }
         }
+        internal void ReopenRequester()
+        {
+            Sender.Dispose();
+            if (original) { bService = NewService(B, bFriends, new(B)); bHandler.Service = bService; }
+            else { aService = NewService(A, aFriends, pairing); aHandler.Service = aService; }
+        }
         private object Group(WorldPeerService service) => typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(service, [Root.GroupKey])!;
         internal Task PullAsync() => (Task)typeof(WorldPeerService).GetMethod("PullCatalogAsync", Private)!
             .Invoke(TargetService, [Group(TargetService), original ? bRoute : aRoute, CancellationToken.None])!;
@@ -483,10 +494,11 @@ internal static class WorldPeerExistingCopyChecks
                 data.SaveProtected($"shared-world-roster-{id:N}-{Root.ProfileId:N}.protected", JsonSerializer.SerializeToUtf8Bytes(roster, Json));
             }
         }
-        internal void AdvanceRoster(bool receive)
+        internal void AdvanceRoster(bool receive, bool? reshare = null)
         {
+            var current = roster.Members.Single(item => item.DeviceId == credential.DeviceId).Grants;
             Require(pairing.SetSharedWorldGrants(credential.DeviceId, Root.ProfileId,
-                roster.Members.Single(item => item.DeviceId == credential.DeviceId).Grants with { Receive = receive }).Ok,
+                current with { Receive = receive, Reshare = reshare ?? current.Reshare }).Ok,
                 "The synthetic owner's current receiving grant did not change.");
             var members = pairing.SharedRosterMembers(Root.ProfileId).OrderBy(item => item.DeviceId).ToArray();
             var draft = roster with

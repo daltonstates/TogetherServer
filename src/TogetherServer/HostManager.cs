@@ -1126,7 +1126,7 @@ public sealed partial class HostManager
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
         if (SharedHostingStartIssue(profile) is { } sharedHostingIssue)
             return Result(false, "NewerSharedSaveAvailable", sharedHostingIssue);
-        if (SharedContinuationStartIssue(profile, out var requireOriginalSource) is { } continuationIssue)
+        if (SharedContinuationStartIssue(profile, out var requireOriginalSource, out var workingSource) is { } continuationIssue)
             return Result(false, "LatestSaveChanged", continuationIssue);
         if (profile.WorldLoadRehearsalId is not null && !worldLoadTrial)
             return Result(false, "WorldLoadFixedStartRequired", "Start this disposable copy from its world-load rehearsal.");
@@ -1140,7 +1140,7 @@ public sealed partial class HostManager
                 return Result(false, "SeparateCopyManualStartRequired",
                     "This warned separate copy needs its own manual Start after the Host-loss and route checks.");
             string? issue;
-            try { issue = SeparateCopyStartIssue(profileId, profile, separateBranchHash); }
+            try { issue = SeparateCopyStartIssue(profileId, profile, separateBranchHash, workingSource); }
             catch (Exception ex) when (ex is IOException or InvalidDataException or
                 System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or
                 UnauthorizedAccessException or ArgumentException)
@@ -2034,6 +2034,8 @@ public sealed partial class HostManager
             ArchiveCompletedRun(run, ServerSessionEndReason.GracefulStop,
                 ServerSessionOutcome.GracefulStop, backupResult, false, endedUtc: endedUtc,
                 completedBackupId: backup is { Ok: true, Backup: { } completedBackup } ? completedBackup.Id : null);
+            if (profile?.SharedSavesEnabled == true || profile?.SeparateCopySourceProfileId is not null)
+                NotifySharedSavePublished();
             Activity("Lifecycle", "Stopped", $"{profile?.Name ?? "Server"} stopped gracefully.",
                 ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
             if (backup is { Ok: false })
@@ -2160,6 +2162,7 @@ public sealed partial class HostManager
     {
         var snapshot = BuildSnapshot(includeOwnerData: false, advance: true);
         Volatile.Write(ref lastCompanionSnapshot, snapshot);
+        NotifySharedRunChanges(snapshot);
     }
 
     private HostSnapshot BuildSnapshot(bool includeOwnerData, bool advance)

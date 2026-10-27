@@ -463,7 +463,8 @@ public sealed partial class HostManager
     }
 
     private string? SeparateCopyPreStartIssue(SeparateCopyHostState state,
-        WorldSeparateCopyBranch branch, ServerProfile profile, TakeoverLocalSetup setup)
+        WorldSeparateCopyBranch branch, ServerProfile profile, TakeoverLocalSetup setup,
+        WorkingSaveStartProof? workingSource = null)
     {
         var version = branch.Offer.Version;
         if (state.Schema != 1 || state.SourceProfileId != branch.Offer.Proposal.ProfileId ||
@@ -516,7 +517,9 @@ public sealed partial class HostManager
             return "A new game password is missing.";
         if (!state.Started)
         {
-            if (!VerifiedSuccessorCopy(SuccessorPayloadRoot(state.WorldDirectory, version), version))
+            if (workingSource is not null)
+                workingSource.RequireCurrent(data.RootPath, SuccessorPayloadRoot(state.WorldDirectory, version), version);
+            else if (!VerifiedSuccessorCopy(SuccessorPayloadRoot(state.WorldDirectory, version), version))
                 return "The restored files no longer match the exact signed save.";
         }
         else
@@ -575,7 +578,7 @@ public sealed partial class HostManager
     }
 
     private string? SeparateCopyStartIssue(Guid localProfileId, ServerProfile profile,
-        string branchHash)
+        string branchHash, WorkingSaveStartProof? workingSource = null)
     {
         var state = ReadSeparateHost(localProfileId);
         var branch = profile.SeparateCopySourceProfileId is { } source ?
@@ -590,7 +593,7 @@ public sealed partial class HostManager
             settings.CompanionPort, profile.GamePort);
         if (state.SetupHash != SeparateSetupHash(profile, setup))
             return "The local setup changed after review. Finish separate-copy checks again.";
-        return SeparateCopyPreStartIssue(state, branch, profile, setup);
+        return SeparateCopyPreStartIssue(state, branch, profile, setup, workingSource);
     }
 
     public Task<ActionResult> StartSeparateCopyAsync(Guid localProfileId, string branchHash) =>

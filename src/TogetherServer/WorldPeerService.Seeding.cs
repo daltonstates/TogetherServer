@@ -11,6 +11,22 @@ internal sealed record WorldPeerSeedResponse(string Code, string VersionHash,
 
 internal sealed partial class WorldPeerService
 {
+    private readonly PeerPullOwnership inboundPulls = new();
+
+    private HashSet<string> AcknowledgedByResponder(Group group)
+    {
+        var responder = transferAttempt.Value;
+        var current = Find(group.Root.GroupKey);
+        if (current is null || responder?.ResponderPublicKey is null) return [];
+        var bytes = data.LoadProtected(ReceiptName(current));
+        if (bytes is null) return [];
+        if (bytes.Length > 8 * 1024 * 1024) throw new InvalidDataException("Peer receipts need review.");
+        var receipts = JsonSerializer.Deserialize<List<SharedWorldReceipt>>(bytes, Json) ?? [];
+        if (receipts.Count > 4096) throw new InvalidDataException("Peer receipt capacity needs review.");
+        return receipts.Where(receipt => AuthorizedCopyReceipt(current, receipt) &&
+            responder.ReceiptFromResponder(current, receipt)).Select(receipt => receipt.VersionHash).ToHashSet(StringComparer.Ordinal);
+    }
+
     // A receiver does not need an incoming listener to forward its verified
     // copy. It connects outward to an already enabled member's pinned listener.
     // The receiving PC chooses each exact missing signed manifest/chunk; the
@@ -24,11 +40,20 @@ internal sealed partial class WorldPeerService
         var catalog = await LocalCatalogAsync(group, cancellationToken, includeTests: false);
         var observationContext = transferAttempt.Value;
         var observation = observationContext?.Attempt;
+        var acknowledged = AcknowledgedByResponder(group);
         var outcome = WorldPeerTransferResult.NoPayload;
         // Prefer a continuation before its older original-source copy. This is
         // transfer scheduling only; selection still requires verified ancestry.
         foreach (var descriptor in catalog.Saves.OrderByDescending(item => item.Version.Number))
         {
+            if (acknowledged.Contains(descriptor.Version.VersionHash))
+            {
+                observation?.ReceiptAccepted(descriptor.Version.Number);
+                outcome = WorldPeerTransferResult.KnownReceiptAccepted;
+                continue;
+            }
+            if (observationContext?.ResponderPublicKey is { } recipient &&
+                inboundPulls.Active(group.Root.GroupKey, descriptor.Version.VersionHash, recipient)) continue;
             observation?.Phase(WorldPeerTransferPhase.Offering);
             observation?.Expected(descriptor.Version.Files.Sum(file => file.Length), descriptor.Version.Files.Count,
                 descriptor.Version.Number);
