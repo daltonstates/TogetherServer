@@ -1024,6 +1024,24 @@ internal sealed partial class FriendLink
     private const long ReceiverReserveBytes = 1024L * 1024 * 1024;
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedTransfers = new();
     private readonly SharedWorldTransferHealth sharedTransferHealth = new();
+    private void InvalidateSharedReceiveStatus(Guid profileId)
+    {
+        sharedTransfers.TryRemove(profileId, out _);
+        // Reset advances the existing attempt epoch: a legacy request that
+        // finishes later cannot restore its obsolete NoPublishedSave/failure.
+        sharedTransferHealth.Reset(profileId);
+    }
+    private void PublishSharedTransferStatus(Guid profileId, SharedWorldTransferHealth.Attempt attempt,
+        ReceivedSharedWorldStatus status)
+    {
+        lock (sharedReceiptSync)
+            if (sharedTransferHealth.IsCurrent(profileId, attempt)) sharedTransfers[profileId] = status;
+    }
+    private void ClearSharedTransferStatus(Guid profileId, SharedWorldTransferHealth.Attempt attempt)
+    {
+        lock (sharedReceiptSync)
+            if (sharedTransferHealth.IsCurrent(profileId, attempt)) sharedTransfers.TryRemove(profileId, out _);
+    }
     private readonly ConcurrentDictionary<Guid, byte> withdrawnSharedConsent = new();
     private readonly object sharedReceiptSync = new();
     // The Host keeps only the latest challenge for a device/profile. Hold this
@@ -2190,13 +2208,13 @@ internal sealed partial class FriendLink
                 // full payload, so retry may create the missing exact receipt.
                 var observation = ReadLocalReceiptObservation(root, old, deviceId);
                 var verifiedBytes = SharedWorldService.BoundedTotalBytes(old.Files);
-                sharedTransfers[profileId] = new(true, version.Number, old.Number,
+                PublishSharedTransferStatus(profileId, attempt, new(true, version.Number, old.Number,
                     "Confirming receipt", ReceivedBytes: verifiedBytes, TotalBytes: verifiedBytes,
                     RosterRevision: projectionRosterRevision,
                     Trust: "Owner signature and this PC's Receive grant verified when last checked",
                     CompletedUtc: ReceivedSharedWorldProjection.CompletedUtc(old),
                     ReceivedUtc: observation?.ReceivedUtc, TransferPhase: "Receipt",
-                    ReceiptConfirmed: observation?.HostConfirmed);
+                    ReceiptConfirmed: observation?.HostConfirmed));
                 var alreadyConfirmed = await SendSharedReceiptAsync(profileId, old, deviceId,
                     transferClient, transferToken, verifiedInThisTransfer: true);
                 return new(true, "AlreadyReceived", alreadyConfirmed ?
@@ -2224,7 +2242,7 @@ internal sealed partial class FriendLink
                 CompletedUtc: ReceivedSharedWorldProjection.CompletedUtc(old),
                 ReceivedUtc: priorObservation?.ReceivedUtc, TransferPhase: "Receiving",
                 ReceiptConfirmed: priorObservation?.HostConfirmed);
-            sharedTransfers[profileId] = progressStatus;
+            PublishSharedTransferStatus(profileId, attempt, progressStatus);
             if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), remaining))
                 return SharedFailure("InsufficientSpace", "Keep at least 1 GiB free after receiving this save. Existing verified copies were kept.");
             for (var index = 0; index < version.Files.Count; index++)
@@ -2282,7 +2300,7 @@ internal sealed partial class FriendLink
                     reportProgress?.Invoke(receivedBytes, totalBytes);
                     transferToken.ThrowIfCancellationRequested();
                     progressStatus = progressStatus with { ReceivedBytes = receivedBytes };
-                    sharedTransfers[profileId] = progressStatus;
+                    PublishSharedTransferStatus(profileId, attempt, progressStatus);
                     // Disposable fixture runs can hold a completed chunk open so the
                     // packaged journey exercises cancellation and control concurrency.
                     if (Environment.GetEnvironmentVariable(GameServerRegistry.FixtureOptInEnvironmentVariable) == "1" &&
@@ -2297,12 +2315,12 @@ internal sealed partial class FriendLink
                 if (receivedBytes >= totalBytes)
                 {
                     progressStatus = progressStatus with { State = "Verifying", TransferPhase = "Verifying" };
-                    sharedTransfers[profileId] = progressStatus;
+                    PublishSharedTransferStatus(profileId, attempt, progressStatus);
                 }
                 SharedWorldService.VerifyFile(path, file);
             }
             progressStatus = progressStatus with { State = "Verifying", TransferPhase = "Verifying" };
-            sharedTransfers[profileId] = progressStatus;
+            PublishSharedTransferStatus(profileId, attempt, progressStatus);
             foreach (var file in version.Files)
                 SharedWorldService.VerifyFile(SharedWorldService.SafeChild(payloadStage, file.Path), file);
             using var latestResponse = await transferClient.GetAsync(
@@ -2381,7 +2399,7 @@ internal sealed partial class FriendLink
         catch (Exception ex) when (ex is IOException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException or OverflowException)
         { return SharedFailure("TransferFailed", "The transfer stopped; verified copies were kept. " + ex.Message); }
-        finally { sharedTransfers.TryRemove(profileId, out _); if (entered) gate.Release(); }
+        finally { ClearSharedTransferStatus(profileId, attempt); if (entered) gate.Release(); }
     }
 
     internal static bool HasReceiverReserve(long freeBytes, long remainingBytes) =>
@@ -2694,7 +2712,7 @@ internal sealed partial class FriendLink
         if (!AuthorizedVersionSigner(profileId, version)) return false;
         if (verifiedInThisTransfer && sharedTransfers.TryGetValue(profileId, out var active) &&
             active.HostVersion == version.Number)
-            sharedTransfers[profileId] = active with
+            sharedTransfers.TryUpdate(profileId, active with
             {
                 State = "Confirming receipt",
                 TransferPhase = "Receipt",
@@ -2702,7 +2720,7 @@ internal sealed partial class FriendLink
                 CompletedUtc = ReceivedSharedWorldProjection.CompletedUtc(version),
                 ReceivedUtc = null,
                 ReceiptConfirmed = null
-            };
+            }, active);
         using var key = LoadPcSigningKey(deviceId);
         var receiptFile = Path.Combine(root, version.VersionHash, "receipt.json");
         SharedWorldReceipt? receipt = null;
@@ -2775,11 +2793,11 @@ internal sealed partial class FriendLink
     {
         if (sharedTransfers.TryGetValue(profileId, out var active) && active.HostVersion == version.Number &&
             active.ThisPcVersion == version.Number && active.TransferPhase == "Receipt")
-            sharedTransfers[profileId] = active with
+            sharedTransfers.TryUpdate(profileId, active with
             {
                 ReceivedUtc = observation.ReceivedUtc,
                 ReceiptConfirmed = observation.HostConfirmed
-            };
+            }, active);
     }
 
     private ReceivedSharedWorldReceiptObservation? ReadLocalReceiptObservation(string root,

@@ -10,7 +10,7 @@ internal sealed record WorldPeerMembership(SharedWorldPeerRoot Root,
 internal sealed partial class FriendLink
 {
     internal async Task<IReadOnlyList<WorldPeerMembership>> PeerMembershipsAsync(
-        bool refresh, CancellationToken cancellationToken)
+        bool refresh, CancellationToken cancellationToken, Action<PeerMembershipRefreshPending>? onPending = null)
     {
         if (!TryRetain()) return [];
         try
@@ -25,7 +25,12 @@ internal sealed partial class FriendLink
                     foreach (var profile in view.Profiles.Where(item => item.Kind != GameKinds.Custom))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        try { _ = await SyncSharingRosterAsync(profile.Id, cancellationToken); }
+                        try
+                        {
+                            var lookup = await SyncSharingRosterAsync(profile.Id, cancellationToken);
+                            if (lookup.View.Code == "RosterCatchUpPending") onPending?.Invoke(PeerMembershipRefreshPending.RosterCatchUpPending);
+                            else if (lookup.View.Code == "RosterUnavailable") onPending?.Invoke(PeerMembershipRefreshPending.RosterUnavailable);
+                        }
                         catch (Exception ex) when (ex is IOException or HttpRequestException or
                             JsonException or CryptographicException or InvalidDataException or
                             UnauthorizedAccessException)
@@ -77,13 +82,13 @@ public sealed partial class FriendService
         Task.FromResult(new WorldSeparateCopyResult(false, "NotPaired", "Choose a saved world connection."));
 
     internal async Task<IReadOnlyList<WorldPeerMembership>> PeerMembershipsAsync(
-        bool refresh, CancellationToken cancellationToken)
+        bool refresh, CancellationToken cancellationToken, Action<PeerMembershipRefreshPending>? onPending = null)
     {
         (Guid Id, FriendLink Link)[] current;
         lock (sync) current = disposed ? [] : [.. links];
         var memberships = new List<WorldPeerMembership>();
         foreach (var (_, link) in current)
-            memberships.AddRange(await link.PeerMembershipsAsync(refresh, cancellationToken));
+            memberships.AddRange(await link.PeerMembershipsAsync(refresh, cancellationToken, onPending));
         return memberships.GroupBy(item => SharedWorldPeerTrust.RootKey(item.Root))
             .Select(group =>
             {
@@ -110,12 +115,20 @@ public sealed partial class FriendService
     }
 
     internal async Task<bool> CommitPeerReceiveAsync(SharedWorldPeerRoot root, Guid deviceId,
-        Action commit, CancellationToken cancellationToken)
+        Action commit, CancellationToken cancellationToken, bool canonicalCopyCompleted = false)
     {
         (Guid Id, FriendLink Link)[] current;
         lock (sync) current = disposed ? [] : [.. links];
         foreach (var (_, link) in current)
-            if (await link.CommitPeerReceiveAsync(root, deviceId, commit, cancellationToken)) return true;
+            if (await link.CommitPeerReceiveAsync(root, deviceId, commit, cancellationToken, canonicalCopyCompleted))
+            {
+                // Every saved alias for the exact source member sees the same
+                // completed vault. Its old legacy failure is no longer current.
+                if (canonicalCopyCompleted)
+                    foreach (var (_, alias) in current)
+                        if (!ReferenceEquals(alias, link)) alias.InvalidatePeerReceiveStatus(root, deviceId);
+                return true;
+            }
         return false;
     }
 }
@@ -206,7 +219,7 @@ internal sealed partial class FriendLink
     }
 
     internal async Task<bool> CommitPeerReceiveAsync(SharedWorldPeerRoot root, Guid deviceId,
-        Action commit, CancellationToken cancellationToken)
+        Action commit, CancellationToken cancellationToken, bool canonicalCopyCompleted = false)
     {
         if (!TryRetain()) return false;
         try
@@ -228,10 +241,29 @@ internal sealed partial class FriendLink
                         // Withdrawal takes receipt -> mutation before waiting for
                         // a link gate, so no fallback alias can revive promotion.
                         commit();
+                        if (canonicalCopyCompleted) InvalidatePeerReceiveStatus(root, deviceId);
                         return true;
                     }
             }
             finally { gate.Release(); }
+        }
+        finally { ReleaseRetained(); }
+    }
+
+    // Display invalidation only, after a successful fenced peer commit. It
+    // changes no consent, signed history, selected source or receiving policy.
+    // No link gate is needed, including when another matching alias is busy.
+    internal void InvalidatePeerReceiveStatus(SharedWorldPeerRoot root, Guid deviceId)
+    {
+        if (!TryRetain()) return;
+        try
+        {
+            lock (sharedReceiptSync)
+            {
+                if (config is null || SharedWorldDeviceId != deviceId || ReceiveConsentRoot(root.ProfileId) != root) return;
+                foreach (var profileId in ReceiveConsentProfileIds(root.ProfileId))
+                    InvalidateSharedReceiveStatus(profileId);
+            }
         }
         finally { ReleaseRetained(); }
     }

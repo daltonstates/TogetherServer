@@ -1,5 +1,32 @@
 namespace TogetherServer;
 
+internal enum PeerMembershipRefreshPending { RosterCatchUpPending, RosterUnavailable }
+
+// A new connection/policy observation may cross another PC's enrollment.
+// Retry that bounded unfinished exchange promptly without turning idle or
+// offline discovery into a permanent fast poll.
+internal sealed class PeerMembershipRetryBurst(TimeProvider? clock = null)
+{
+    private readonly TimeProvider time = clock ?? TimeProvider.System;
+    private readonly object sync = new();
+    private long began;
+    private int retries;
+    private bool active;
+    internal void Begin()
+    {
+        lock (sync) { began = time.GetTimestamp(); retries = 0; active = true; }
+    }
+    internal TimeSpan? NextDelay(bool pending)
+    {
+        lock (sync)
+        {
+            if (!pending || !active || retries >= 8 || time.GetElapsedTime(began) >= TimeSpan.FromSeconds(25)) return null;
+            retries++;
+            return TimeSpan.FromSeconds(2);
+        }
+    }
+}
+
 internal sealed partial class WorldPeerService
 {
     private readonly PeerReplicationSchedule replicationSchedule = new();
@@ -11,6 +38,8 @@ internal sealed partial class WorldPeerService
     private SharedWorldPeerRoot[] replicationOwnedRoots = [];
     private readonly Dictionary<(string World, string Member), long> inboundContacts = [];
     private string? friendMembershipObservation;
+    private readonly PeerMembershipRetryBurst membershipRetry = new();
+    private int membershipRefreshPending;
     internal event Action? BackgroundSyncRequested;
 
     internal HostingWorkSnapshot WorkSnapshot()
@@ -38,14 +67,23 @@ internal sealed partial class WorldPeerService
                 connection.ConnectionCode,
                 Capabilities = connection.HostCapabilities.Order(StringComparer.Ordinal),
                 Profiles = connection.Profiles.OrderBy(profile => profile.Id).Select(profile => new { profile.Id, profile.Kind }),
-                Sharing = (connection.Activity ?? []).Where(activity => activity.Category == "Backup" &&
-                    activity.Action is "SharedSavesEnabled" or "SharedSavesDisabled").Select(activity => activity.Id).Order()
+                Sharing = (connection.Activity ?? []).Where(activity =>
+                    activity.Category == "Backup" && activity.Action is "SharedSavesEnabled" or "SharedSavesDisabled" ||
+                    activity.Category == "Lifecycle" && activity.Action == "Stopped" &&
+                    activity.ProfileId is { } profileId && connection.Profiles.Any(profile => profile.Id == profileId))
+                    .Select(activity => activity.Id).Order()
             }));
         if (material == friendMembershipObservation) return false;
         friendMembershipObservation = material;
+        membershipRetry.Begin();
         RequestBackgroundSync();
         return true;
     }
+
+    // Invoked under the Friend link's gate. Do not acquire stateSync or start
+    // another exchange here; the current registration pass owns this result.
+    private void ObservePendingMembershipRefresh(PeerMembershipRefreshPending _) =>
+        Interlocked.Exchange(ref membershipRefreshPending, 1);
 
     // Suppress only the duplicate legacy background receiver for an enrolled
     // exact world. This published registry snapshot grants no receive access.

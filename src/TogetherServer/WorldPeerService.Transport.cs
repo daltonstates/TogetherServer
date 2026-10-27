@@ -984,9 +984,14 @@ internal sealed partial class WorldPeerService : IDisposable
                 finally
                 {
                     lock (stateSync)
-                        nextBackgroundSyncUtc = DateTimeOffset.UtcNow.Add(remainingGroupSweep > 0
+                    {
+                        var delay = remainingGroupSweep > 0
                             ? TimeSpan.FromSeconds(1) : replicationSchedule.NextDelay(DateTimeOffset.UtcNow,
-                                Interlocked.Read(ref requestedSyncGeneration)));
+                                Interlocked.Read(ref requestedSyncGeneration));
+                        var pending = membershipRetry.NextDelay(Interlocked.Exchange(ref membershipRefreshPending, 0) != 0);
+                        if (pending is { } retry && retry < delay) delay = retry;
+                        nextBackgroundSyncUtc = DateTimeOffset.UtcNow.Add(delay);
+                    }
                 }
             }, cancellationToken);
         }
@@ -1189,7 +1194,11 @@ internal sealed partial class WorldPeerService : IDisposable
         try
         {
             await refreshGate.WaitAsync(bounded.Token);
-            try { await RefreshMembershipsAsync(true, bounded.Token); }
+            try
+            {
+                Interlocked.Exchange(ref membershipRefreshPending, 0);
+                await RefreshMembershipsAsync(true, bounded.Token);
+            }
             finally { refreshGate.Release(); }
         }
         catch (OperationCanceledException) when (bounded.IsCancellationRequested) { }

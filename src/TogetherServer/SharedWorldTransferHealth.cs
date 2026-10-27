@@ -51,6 +51,11 @@ internal sealed class SharedWorldTransferHealth
         lock (sync) return new(State(profileId).Epoch);
     }
 
+    internal bool IsCurrent(Guid profileId, Attempt attempt)
+    {
+        lock (sync) return State(profileId).Epoch == attempt.Epoch;
+    }
+
     internal void Reset(Guid profileId)
     {
         lock (sync)

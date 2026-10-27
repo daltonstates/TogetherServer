@@ -113,6 +113,33 @@ assertions, but recorded one canceled read-only world-peers GET in its narrow
 cause. No network-error guard is relaxed; the unchanged UI will be checked again
 with the corrected backend. Desktop still reports QuietTime. The second Existing
 lane was still running at this observation. Exact final-source CI is required.
+The second Existing lane subsequently passed UI/source/API/core/compatibility
+work through the 4,102-version case, then failed its first Shared Worlds group:
+neither Friend observed the first published save within the bounded wait.
+The third source `81f43ef`, run `40557139684`, passed the unchanged wizard and
+delivery captures, Core, rehearsal, browser and all six mixed-version lanes;
+automatic shared hosting and LAN pairing still missed automatic membership.
+These failures remain blockers and its packaged .19 bytes are not published.
+Source review found discarded incomplete roster-refresh results followed by
+the new idle delay, and a separate missing receive wake: the assigned-Friend
+post-Stop notice was ignored when a receiver had no incoming peer route.
+The old five-second retries had hidden both coordination gaps. Incomplete
+enrollment will retain a bounded prompt retry budget, and a new Stop notice will
+wake signed discovery once. Neither notice nor retry outcome grants permission.
+Peer completion also needs to invalidate the legacy transfer health epoch so
+an old failure cannot cover the current verified copy or return on late completion.
+These corrections pass strict solution compilation with zero warnings/errors and
+four focused generated groups: offline-owner replication, completed owner/online
+delivery, adaptive coordination and canonical peer/legacy status invalidation.
+The enrollment regression actually advances a signed owner roster between this
+PC's current/page reads, retains no first-pass group, then completes through the
+scheduled pending retry without a new heartbeat wake or game process. It also
+checks transient roster publication and retry exhaustion/deadline. The status
+regression performs a signed fake-HTTP canonical receive and rejects late old
+progress/completion, wrong scopes and failed commits; receipt-only commits leave
+newer progress intact. Neither regression establishes physical performance.
+The third Existing lane also failed at the same first-save wait after its prior
+source/UI/core work passed. No earlier candidate assets are approved for release.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an
@@ -121,6 +148,40 @@ physical acceptance: unchanged prepared save with no copy/transfer/setup repeat,
 real Ready, graceful Stop, new fully verified save, exact current reachable-peer
 receipts and saved restart. The .18 evidence below remains incomplete, and its
 last sampled delivery state is historical rather than current telemetry.
+
+For physical acceptance, record one operation at a time with UTC observations
+and elapsed times. Capture the exact installed source and prepared version first;
+do not install, relaunch, Start or Stop until the owner has manually installed
+the reviewed candidate and confirmed the current unattended/stopped conditions.
+Keep permission, discovery/selection, Receiving, PreparingCopy, Verifying and
+Starting phase timings separate. An unchanged prepared save must show no new
+payload receive, copy or setup operation. Phase timing is display observation:
+the first hash-progress callback follows its first chunk, and Verifying includes
+source, working-save and status checks. It is not pure hashing CPU time.
+
+Take local read-only `/api/local/world-peers/work` snapshots before and after an
+idle interval, Start and delivery. Report differences in uptime, process CPU and
+stage counts/wall milliseconds. CPU milliseconds divided by elapsed milliseconds
+is CPU use in logical cores; dividing again by logical processor count gives
+the process share of machine capacity. Counters reset on app restart, overlapping
+wall stages are not additive, and PeerRequest counts logical challenge/exchange
+operations rather than raw HTTP requests. WorkingVerification covers the held
+working-copy proof; PayloadVerification covers received-payload/receipt checks,
+held rehashing and staged-directory promotion, excluding final pointer/receipt
+commit, post-Stop capture and other immutable-source/backup hashing.
+
+Record request-to-response, request-to-real-Ready and exact native creation-to-
+Ready separately, with fresh run identity and player evidence. On Stop record
+graceful request-to-exit, exit-to-new-publication and an independently timed full
+signature/ancestry/layout/file-hash verification. Exit-to-publication includes
+capture and observation overhead. For delivery record the exact version, bytes,
+first/last active observations and each currently eligible recipient's valid
+exact acknowledgement; offline recipients remain pending. Submitted bytes are
+handed to transport and received bytes accepted into staging; neither is link
+throughput or a receipt. Use byte/time rates only with their observed interval
+and routing limitations. Finally restart the newly published save and observe
+real Ready again. Preserve both histories if signed progress competes. Synthetic
+and hosted results must remain separate from every physical observation.
 
 ## Exact .16 candidate and laptop test, 2026-10-26 EDT
 

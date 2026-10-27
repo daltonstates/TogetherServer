@@ -646,7 +646,8 @@ internal sealed partial class WorldPeerService
             }
         }
         if (group.DeviceId == Guid.Empty) Commit();
-        else if (!await friend.CommitPeerReceiveAsync(group.Root, group.DeviceId, Commit, cancellationToken))
+        else if (!await friend.CommitPeerReceiveAsync(group.Root, group.DeviceId, Commit, cancellationToken,
+            canonicalCopyCompleted: descriptor.Branch is null && SameChunkVault(vault, ReceivedRoot(data, group))))
             throw new OperationCanceledException("Save consent changed before copy completion.");
         if (receipt is not null)
             File.WriteAllBytes(Path.Combine(destination, "receipt.json"), JsonSerializer.SerializeToUtf8Bytes(receipt, Json));

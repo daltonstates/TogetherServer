@@ -88,6 +88,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Current chunk provenance and unchanged handshake cursors", () => WorldPeerChunkOperationChecks.RunAsync(root)),
     ("Pinned peer connection reuse and fresh signed requests", () => WorldPeerTransportReuseChecks.RunAsync(root)),
     ("Adaptive hosting replication and exact evidence invalidation", () => HostingCoordinationChecks.RunAsync(root)),
+    ("Completed peer receive invalidates legacy status", () => PeerReceiveStatusInvalidationChecks.RunAsync(root)),
     ("Prepared Start holds working verification through launch", () => LocalHostingChecks.PreparedWorkingProofAsync(root)),
     ("Prepared Start namespace substitution", () => LocalHostingChecks.PreparedWorkingNamespaceAsync(root)),
     ("Read-only background transfer evidence", WorldPeerTransferObservationChecks.RunAsync),
