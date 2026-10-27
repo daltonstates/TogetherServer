@@ -13,7 +13,7 @@ internal static class SharedEnrollmentExchangeChecks
     private static readonly TimeSpan Watchdog = TimeSpan.FromSeconds(5);
     private const string ClientHeader = "X-Synthetic-Enrollment-Client";
     private enum Operation { Check, Pull, Sharing, Review }
-    private enum Fault { None, ChallengeTransport, ProofDenied }
+    private enum Fault { None, ChallengeTransport, ProofDenied, ChallengePublicationPending, ProofPublicationPending }
 
     public static async Task RunAsync(string root)
     {
@@ -38,6 +38,8 @@ internal static class SharedEnrollmentExchangeChecks
         await CheckAutomaticPullAsync(root);
         await CheckProofAndVerificationBoundaryAsync(root);
         await CheckWaitingCancellationAsync(root);
+        await CheckPublicationPendingAsync(root, Fault.ChallengePublicationPending);
+        await CheckPublicationPendingAsync(root, Fault.ProofPublicationPending);
         foreach (var operation in Enum.GetValues<Operation>())
             await CheckHolderCancellationAsync(root, operation);
         foreach (var operation in new[] { Operation.Check, Operation.Sharing, Operation.Review })
@@ -136,6 +138,17 @@ internal static class SharedEnrollmentExchangeChecks
         try { await task.WaitAsync(Watchdog); }
         catch (OperationCanceledException) { return; }
         throw new InvalidOperationException("a cancelled enrollment call still completed");
+    }
+
+    private static async Task CheckPublicationPendingAsync(string root, Fault fault)
+    {
+        await using var fixture = await Fixture.CreateAsync(root);
+        fixture.Host.FirstFault = fault;
+        Require(await fixture.Start(Operation.Sharing).WaitAsync(Watchdog) == "RosterUnavailable",
+            "An authenticated temporary signed-publication fence was reported as an enrollment/key denial: " + fault);
+        Require(await fixture.Start(Operation.Sharing).WaitAsync(Watchdog) == "RosterUnavailable",
+            "A temporary signed-publication fence retained the enrollment exchange gate: " + fault);
+        fixture.Host.AssertCompleted(2, completedProofs: fault == Fault.ChallengePublicationPending ? 1 : 2);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -277,6 +290,11 @@ internal static class SharedEnrollmentExchangeChecks
                 {
                     if (number == 1 && FirstFault == Fault.ChallengeTransport)
                         throw new HttpRequestException("Synthetic challenge transport failure.");
+                    if (number == 1 && FirstFault == Fault.ChallengePublicationPending)
+                    {
+                        lock (sync) exchangeActive = false;
+                        return Reply(new { code = "RosterUnavailable" }, HttpStatusCode.ServiceUnavailable);
+                    }
                     if (number == 1 && HoldChallenge) await ReleaseChallenge.Task.WaitAsync(cancellationToken);
                     return Reply(new SharedWorldEnrollmentChallenge(nonce));
                 }
@@ -303,6 +321,8 @@ internal static class SharedEnrollmentExchangeChecks
                 try
                 {
                     if (number == 1 && HoldProof) await ReleaseProof.Task.WaitAsync(cancellationToken);
+                    if (number == 1 && FirstFault == Fault.ProofPublicationPending)
+                        return Reply(new { code = "RosterUnavailable" }, HttpStatusCode.ServiceUnavailable);
                     return Reply(new { ok = true }, number == 1 && FirstFault == Fault.ProofDenied
                         ? HttpStatusCode.Forbidden : HttpStatusCode.OK);
                 }

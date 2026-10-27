@@ -1567,7 +1567,7 @@ internal static partial class CoreRemoteJourney
                 using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 try
                 {
-                    var friendRead = ReadMembershipDiagnosticAsync<FriendView>(client, "/api/local/friend", bounded.Token);
+                    var friendRead = ReadMembershipDiagnosticAsync<FriendView>(client, "/api/local/snapshot", bounded.Token);
                     var workRead = ReadMembershipDiagnosticAsync<HostingWorkSnapshot>(client, "/api/local/world-peers/work", bounded.Token);
                     await Task.WhenAll(friendRead, workRead);
                     companion = friendRead.Result;

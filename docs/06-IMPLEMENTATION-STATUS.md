@@ -175,6 +175,23 @@ The fixed lookup diagnostic describes sharing-management lookup results; for
 example PermissionDenied with a verified roster can coexist with valid hosting
 roles. It is never authorization. Exact next-source Windows CI is still required.
 No candidate from these runs has been published or installed.
+The fifth source `698cfe5`, run `40565481173`, passed two-ended UX, loopback,
+both automatic-sharing journeys, Core/rehearsal, browser, all compatibility and
+wizard/delivery captures. LAN PC2's new diagnostic captured no registered group
+after 99 reads/25.13 seconds, with one EnrollmentDenied lookup and four completed
+registration passes. Its companion-state diagnostic used a nonexistent read
+route and is now corrected to the canonical read-only Friend snapshot.
+Source inspection found that enrollment GET/POST returned bare 403 for both
+missing assignment and the temporary dirty-roster publication fence. Dirty
+publication now returns fixed RosterUnavailable/503 only after normal
+authentication/assignment checks; nonce consumption, replay, signing-key and
+revocation/expiry checks remain. Publication failure uses the same unavailable
+response. Generic 403 remains denial. Strict compilation and the fake-client
+concurrent-enrollment group pass. A new actual TestServer-route publication-fence
+case is registered for hosted general checks only; it was not run locally.
+The exact LAN cause still requires the next hosted observation. Full fifth-run
+Existing was still running at this note; notification delivery remains blocked
+by hosted Windows QuietTime. Earlier .19 assets remain unpublished.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an

@@ -781,8 +781,9 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId) || pairing.SharedRosterDirty(profileId))
-                return Results.StatusCode(403);
+            if (!pairing.CanAccess(device!, profileId)) return Results.StatusCode(403);
+            if (pairing.SharedRosterDirty(profileId))
+                return Results.Json(new { code = "RosterUnavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
             return Results.Json(new SharedWorldEnrollmentChallenge(sharedEnrollment.Issue(device!.Id, profileId)));
         });
         companion.MapPost("/servers/{profileId:guid}/shared-world/enrollment",
@@ -790,9 +791,10 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
         {
             if (!Authenticate(context, out var device, out var decision))
                 return Results.Json(decision, statusCode: AuthenticationStatus(decision));
-            if (!pairing.CanAccess(device!, profileId) || pairing.SharedRosterDirty(profileId) ||
-                !sharedEnrollment.Consume(device!.Id, profileId, request.Nonce))
-                return Results.StatusCode(403);
+            if (!pairing.CanAccess(device!, profileId)) return Results.StatusCode(403);
+            if (pairing.SharedRosterDirty(profileId))
+                return Results.Json(new { code = "RosterUnavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            if (!sharedEnrollment.Consume(device!.Id, profileId, request.Nonce)) return Results.StatusCode(403);
             if (!await manager.SharedRosterManagementAvailableAsync(profileId))
             {
                 var inherited = await manager.SharedWorldRosterAsync(profileId);
@@ -829,7 +831,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                 return Results.Json(decision);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or CryptographicException)
-            { return Results.Conflict(new { code = "RosterUnavailable" }); }
+            { return Results.Json(new { code = "RosterUnavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
         companion.MapGet("/servers/{profileId:guid}/shared-world/roster", async (HttpContext context, Guid profileId) =>
         {
