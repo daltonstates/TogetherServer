@@ -140,6 +140,41 @@ progress/completion, wrong scopes and failed commits; receipt-only commits leave
 newer progress intact. Neither regression establishes physical performance.
 The third Existing lane also failed at the same first-save wait after its prior
 source/UI/core work passed. No earlier candidate assets are approved for release.
+The fourth source `e075c40`, Windows run `40560884826`, passed both complete
+nine-stage automatic-sharing journeys, including listener-less receive,
+outbound-only returning-owner delivery and latest-save owner Start. UI passed
+1,582 tests, and Core/rehearsal, all six compatibility lanes, wizard/delivery
+captures and source groups passed. LAN pairing still missed automatic membership;
+loopback passed, and the first Shared Worlds save wait still failed. The retained
+LAN report lacks the failed group flags/lookup outcome, so its exact cause is
+not established. A deterministic source gap was separately identified: a fresh
+policy observation could not start registration while an older peer pass was
+active (up to 45 seconds). Registration now retains its one bounded flight and
+generation independently of payload work; a signed held-response regression
+requires enrollment before that response is released. Pending registration
+retries now use that same independent deadline owner. Retry-only wakes do not
+advance transfer generation. The held-response regression covers normal and
+transient roster-unavailable refreshes, preserving one registration flight,
+the 15-second pass budget and the existing eight-attempt/25-second retry cap.
+
+The fourth UX capture reached graceful Stop/publication and displayed an accepted
+peer receipt, then waited for the legacy copy-status receipt flag that the peer
+owner never wrote. An exact original-owner acknowledgement now updates only the
+existing signed display observation after current root/member/roster/consent and
+canonical receipt-identity checks. Forwarded acknowledgements cannot confirm the
+owner, and missing receive time remains unknown. New fixed registration
+pass/lookup observations and identifier-free timeout reports preserve the next
+actual failure's predicates without changing its deadline or invoking sync.
+An initial held-response fixture put the policy notice only on the aggregate
+Friend view, whereas canonical snapshots carry per-connection activity. The
+fixture now uses that actual shape; its corrected run passes. All five focused
+groups pass (lab route boundaries, chunk provenance, pinned reuse, adaptive
+coordination including both held-response variants, and canonical peer receipt
+status/persistence), and strict solution compilation has zero warnings/errors.
+The fixed lookup diagnostic describes sharing-management lookup results; for
+example PermissionDenied with a verified roster can coexist with valid hosting
+roles. It is never authorization. Exact next-source Windows CI is still required.
+No candidate from these runs has been published or installed.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an

@@ -15,9 +15,14 @@ internal static partial class CoreRemoteJourney
     private sealed record PairingLabOperation(string Id, string State, long StartedMs, long DurationMs, long TimeoutMs,
         string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false,
         int? HttpStatus = null, string? HttpContentKind = null, string? JsonExceptionCategory = null,
-        string? JsonPath = null, PairingLabReceivingObservation? Receiving = null);
+        string? JsonPath = null, PairingLabReceivingObservation? Receiving = null,
+        PairingLabMembershipObservation? Membership = null);
     private sealed record PairingLabReceivingObservation(int PcOrdinal, int PollCount, bool? Consented,
         string StateCode, string ErrorCode, long? HostVersion, long? ThisPcVersion, long? RosterRevision);
+    private sealed record PairingLabMembershipObservation(int PcOrdinal, int PollCount, bool GroupPresent,
+        bool ExactRoot, bool SelfMemberMatches, bool? ReceiveConsented, bool? CanReceive, bool? CanHost, bool? CanReshare,
+        string CompanionState, bool? PeerCapability, int? SharingNoticeCount, int? StoppedNoticeCount,
+        HostingMembershipDiagnostic? Registration);
     private sealed record PairingLabHttpBoundary(int? Status, string? ContentKind,
         string? JsonExceptionCategory = null, string? JsonPath = null);
     private sealed record PairingLabDevices(IReadOnlyList<DeviceView> Devices);
@@ -357,7 +362,8 @@ internal static partial class CoreRemoteJourney
                         // The ordinary background pass enrolls this identity;
                         // wait using reads before syncing the registered world.
                         await WaitForAutomaticLabMembershipAsync(pc.Client,
-                            new(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId), pc.Id, "AutomaticMembershipMissing");
+                            new(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId), pc.Id, "AutomaticMembershipMissing",
+                            pc.Ordinal, membershipClock, membershipOperations);
                         if (lanAddress is null)
                             await ExpectLoopbackPeerSyncInconclusiveAsync(pc.Client, pc.Id == deviceA ? "LoopbackFriendA" : "LoopbackFriendB");
                         else await SyncPeersAsync(pc.Client);
@@ -1529,14 +1535,97 @@ internal static partial class CoreRemoteJourney
         }
     }
 
-    private static Task WaitForAutomaticLabMembershipAsync(HttpClient client, SharedWorldPeerRoot root, Guid deviceId, string code) =>
-        PairingLabWaitAsync(async () =>
+    private static async Task WaitForAutomaticLabMembershipAsync(HttpClient client, SharedWorldPeerRoot root, Guid deviceId, string code,
+        int pcOrdinal = 0, Stopwatch? clock = null, List<PairingLabOperation>? observations = null)
+    {
+        var timer = clock ?? Stopwatch.StartNew();
+        var started = timer.ElapsedMilliseconds;
+        var polls = 0;
+        var confirmed = false;
+        WorldPeerGroupView? group = null;
+        try
         {
-            var group = (await PairingLabGetAsync<WorldPeerGroupView[]>(client, "/api/local/world-peers"))
-                .SingleOrDefault(item => item.GroupKey == root.GroupKey);
-            return group is not null && group.ProfileId == root.ProfileId && group.State.Root == root &&
-                group.SelfDeviceId == deviceId && group.ReceiveConsented && group.CanReceive && group.CanHost && group.CanReshare;
-        }, code);
+            await PairingLabWaitAsync(async () =>
+            {
+                polls++;
+                group = (await PairingLabGetAsync<WorldPeerGroupView[]>(client, "/api/local/world-peers"))
+                    .SingleOrDefault(item => item.GroupKey == root.GroupKey);
+                return group is not null && group.ProfileId == root.ProfileId && group.State.Root == root &&
+                    group.SelfDeviceId == deviceId && group.ReceiveConsented && group.CanReceive && group.CanHost && group.CanReshare;
+            }, code);
+            confirmed = true;
+        }
+        finally
+        {
+            // The unchanged 25-second assertion has already passed/failed.
+            // These additional reads have their own two-second ceiling and
+            // cannot sync, enroll, renew access or change that outcome.
+            FriendView? companion = null;
+            HostingMembershipDiagnostic? registration = null;
+            if (!confirmed)
+            {
+                using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                try
+                {
+                    var friendRead = ReadMembershipDiagnosticAsync<FriendView>(client, "/api/local/friend", bounded.Token);
+                    var workRead = ReadMembershipDiagnosticAsync<HostingWorkSnapshot>(client, "/api/local/world-peers/work", bounded.Token);
+                    await Task.WhenAll(friendRead, workRead);
+                    companion = friendRead.Result;
+                    registration = SanitizeMembershipDiagnostic(workRead.Result?.Membership);
+                }
+                catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or IOException or InvalidDataException)
+                { /* Missing diagnostics never replace the original assertion. */ }
+            }
+            var exactConnection = (companion?.Connections ?? (companion is null ? [] : [companion]))
+                .FirstOrDefault(connection => connection.Profiles.Any(profile => profile.Id == root.ProfileId)) ?? companion;
+            var companionState = exactConnection?.State switch
+            {
+                "Connected" => "Connected",
+                "Disabled" => "Disabled",
+                "Awaiting approval" => "AwaitingApproval",
+                "Access expired" => "AccessExpired",
+                "Revoked" => "Revoked",
+                "Update required" => "UpdateRequired",
+                "Disconnected/Unknown" => "DisconnectedUnknown",
+                "Not connected" => "NotConnected",
+                null => "Unavailable",
+                _ => "Other"
+            };
+            var activity = exactConnection?.Activity;
+            var membership = new PairingLabMembershipObservation(pcOrdinal, polls, group is not null,
+                group is not null && group.ProfileId == root.ProfileId && group.State.Root == root,
+                group?.SelfDeviceId == deviceId, group?.ReceiveConsented, group?.CanReceive, group?.CanHost, group?.CanReshare,
+                companionState, exactConnection?.HostCapabilities.Contains(CompanionProtocol.SharedWorldPeersCapability),
+                activity?.Count(item => item.ProfileId == root.ProfileId && item.Category == "Backup" &&
+                    item.Action is "SharedSavesEnabled" or "SharedSavesDisabled"),
+                activity?.Count(item => item.ProfileId == root.ProfileId && item.Category == "Lifecycle" && item.Action == "Stopped"),
+                registration);
+            var operation = new PairingLabOperation("AutomaticMembershipPc" + pcOrdinal, confirmed ? "Returned" : "Failed",
+                started, timer.ElapsedMilliseconds - started, 25000, confirmed ? "AutomaticMembershipConfirmed" : code,
+                Membership: membership);
+            if (observations is not null) lock (observations) observations.Add(operation);
+            Console.WriteLine("LOCAL_PAIRING_MEMBERSHIP_OPERATION " + JsonSerializer.Serialize(operation, Json));
+        }
+    }
+
+    private static async Task<T?> ReadMembershipDiagnosticAsync<T>(HttpClient client, string path, CancellationToken token) where T : class
+    {
+        using var response = await client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, token);
+        if (!response.IsSuccessStatusCode) return null;
+        var bytes = await FriendLink.ReadBoundedSharedAsync(response.Content, 256 * 1024, token);
+        return bytes is null ? null : JsonSerializer.Deserialize<T>(bytes, Json);
+    }
+
+    private static HostingMembershipDiagnostic? SanitizeMembershipDiagnostic(HostingMembershipDiagnostic? value)
+    {
+        if (value is null) return null;
+        return new(Math.Clamp(value.PassesStarted, 0, 1_000_000), Math.Clamp(value.PassesCompleted, 0, 1_000_000),
+            Enum.TryParse<PeerMembershipPassOutcome>(value.PassOutcome, out var pass) && Enum.IsDefined(pass) ? pass.ToString() : "Other",
+            Math.Clamp(value.PassElapsedMilliseconds, 0, 86_400_000), Math.Clamp(value.LookupsStarted, 0, 1_000_000),
+            Math.Clamp(value.LookupsCompleted, 0, 1_000_000),
+            Enum.TryParse<PeerMembershipLookupOutcome>(value.LookupOutcome, out var lookup) && Enum.IsDefined(lookup) ? lookup.ToString() : "Other",
+            value.LookupReturnedRoster);
+    }
 
     private static async Task PairingLabWaitAsync(Func<Task<bool>> check, string code, TimeSpan? timeout = null)
     {

@@ -685,9 +685,15 @@ internal sealed partial class WorldPeerService : IDisposable
         return true;
     }
 
-    private async Task<byte[]> SendPeerAsync(Group group, SharedWorldPeerRoute route, string operation,
+    private Task<byte[]> SendPeerAsync(Group group, SharedWorldPeerRoute route, string operation,
         CancellationToken cancellationToken, byte[]? payload = null, int offset = 0,
         string? versionHash = null, int? fileIndex = null, long? chunkOffset = null)
+        => SendPeerWithResponderAsync(group, route, operation, cancellationToken,
+            payload, offset, versionHash, fileIndex, chunkOffset, null);
+
+    private async Task<byte[]> SendPeerWithResponderAsync(Group group, SharedWorldPeerRoute route, string operation,
+        CancellationToken cancellationToken, byte[]? payload, int offset,
+        string? versionHash, int? fileIndex, long? chunkOffset, Action<Guid, string>? validatedResponder)
     {
         // A responder retains one challenge per requester/world. Do not let a
         // foreground metadata handshake invalidate a background payload proof.
@@ -697,7 +703,7 @@ internal sealed partial class WorldPeerService : IDisposable
         try
         {
             return await SendPeerCoreAsync(group, route, operation, cancellationToken,
-                payload, offset, versionHash, fileIndex, chunkOffset);
+                payload, offset, versionHash, fileIndex, chunkOffset, validatedResponder);
         }
         catch (Exception error) when (error is HttpRequestException or AuthenticationException or IOException)
         {
@@ -709,7 +715,7 @@ internal sealed partial class WorldPeerService : IDisposable
 
     private async Task<byte[]> SendPeerCoreAsync(Group group, SharedWorldPeerRoute route, string operation,
         CancellationToken cancellationToken, byte[]? payload, int offset,
-        string? versionHash, int? fileIndex, long? chunkOffset)
+        string? versionHash, int? fileIndex, long? chunkOffset, Action<Guid, string>? validatedResponder)
     {
         using var measurement = hostingWork.Measure(HostingWorkStage.PeerRequest);
         ObjectDisposedException.ThrowIf(peerDisposed, this);
@@ -814,6 +820,10 @@ internal sealed partial class WorldPeerService : IDisposable
             Access(current, group.DeviceId, publicKey) is null ||
             Access(current, challenge.ResponderDeviceId, challenge.ResponderPublicKey) is null)
             throw new InvalidDataException("World membership changed during the peer request.");
+        // This identity belongs to this request's nonce-bound, signed challenge
+        // and pinned TLS response, after current access was rechecked. Display
+        // projection must never infer it from a route or transfer telemetry.
+        validatedResponder?.Invoke(challenge.ResponderDeviceId, challenge.ResponderPublicKey);
         return bytes;
     }
 
@@ -970,9 +980,15 @@ internal sealed partial class WorldPeerService : IDisposable
     {
         lock (stateSync)
         {
-            if (peerDisposed || cancellationToken.IsCancellationRequested || backgroundSync is { IsCompleted: false }) return;
+            if (peerDisposed || cancellationToken.IsCancellationRequested) return;
             var generation = Interlocked.Read(ref requestedSyncGeneration);
-            if (generation == scheduledSyncGeneration && DateTimeOffset.UtcNow < nextBackgroundSyncUtc) return;
+            var backgroundActive = backgroundSync is { IsCompleted: false };
+            var due = generation != scheduledSyncGeneration || DateTimeOffset.UtcNow >= nextBackgroundSyncUtc;
+            // A material Friend policy/reconnect observation must not wait for
+            // an older peer wire/payload pass. Keep registration in its same
+            // bounded/coalesced flight, with its own consumed generation.
+            _ = ScheduleMembershipRefreshLocked(cancellationToken, force: !backgroundActive && due);
+            if (backgroundActive || !due) return;
             if (scheduledSyncGeneration != generation) remainingGroupSweep = -1;
             scheduledSyncGeneration = generation;
             nextBackgroundSyncUtc = DateTimeOffset.UtcNow.AddSeconds(60);
@@ -988,13 +1004,40 @@ internal sealed partial class WorldPeerService : IDisposable
                         var delay = remainingGroupSweep > 0
                             ? TimeSpan.FromSeconds(1) : replicationSchedule.NextDelay(DateTimeOffset.UtcNow,
                                 Interlocked.Read(ref requestedSyncGeneration));
-                        var pending = membershipRetry.NextDelay(Interlocked.Exchange(ref membershipRefreshPending, 0) != 0);
-                        if (pending is { } retry && retry < delay) delay = retry;
                         nextBackgroundSyncUtc = DateTimeOffset.UtcNow.Add(delay);
                     }
                 }
             }, cancellationToken);
         }
+    }
+
+    // Call under stateSync. Explicit full syncs and periodic idle passes may
+    // request one fresh registration; material generations can do so while
+    // payload work is active. They never create overlapping registration work.
+    private Task ScheduleMembershipRefreshLocked(CancellationToken cancellationToken, bool force)
+    {
+        if (membershipRefresh is { IsCompleted: false }) return membershipRefresh;
+        var generation = Interlocked.Read(ref requestedMembershipGeneration);
+        if (!force && startedMembershipGeneration == generation && DateTimeOffset.UtcNow < nextMembershipRetryUtc)
+            return membershipRefresh ?? Task.CompletedTask;
+        startedMembershipGeneration = generation;
+        nextMembershipRetryUtc = DateTimeOffset.MaxValue;
+        membershipRefresh = Task.Run(async () =>
+        {
+            try { await RefreshScheduledMembershipsAsync(cancellationToken); }
+            finally
+            {
+                var retry = membershipRetry.NextDelay(Interlocked.Exchange(ref membershipRefreshPending, 0) != 0);
+                lock (stateSync)
+                    nextMembershipRetryUtc = retry is { } delay ? DateTimeOffset.UtcNow.Add(delay) : DateTimeOffset.MaxValue;
+                // A newer observation arriving during this flight remains due.
+                // Pending membership owns its retry clock, independently of
+                // the old wire flight. Neither wake replays payload work.
+                if (retry is not null || generation != Interlocked.Read(ref requestedMembershipGeneration))
+                    WakeBackgroundScheduler();
+            }
+        }, CancellationToken.None);
+        return membershipRefresh;
     }
 
     internal Task WaitForSyncAsync(CancellationToken cancellationToken = default)
@@ -1086,9 +1129,7 @@ internal sealed partial class WorldPeerService : IDisposable
         Task registration;
         lock (stateSync)
         {
-            if (membershipRefresh is not { IsCompleted: false })
-                membershipRefresh = Task.Run(() => RefreshScheduledMembershipsAsync(cancellationToken), CancellationToken.None);
-            registration = membershipRefresh;
+            registration = ScheduleMembershipRefreshLocked(cancellationToken, force: !scheduled);
         }
         // Existing worlds exchange against their signed registry immediately.
         // A slow original-Host poll/roster refresh cannot hold their delivery.
@@ -1189,6 +1230,10 @@ internal sealed partial class WorldPeerService : IDisposable
 
     private async Task RefreshScheduledMembershipsAsync(CancellationToken cancellationToken)
     {
+        Interlocked.Exchange(ref membershipPassBegan, System.Diagnostics.Stopwatch.GetTimestamp());
+        Interlocked.Increment(ref membershipPassesStarted);
+        Volatile.Write(ref membershipPassOutcome, (int)PeerMembershipPassOutcome.WaitingForGate);
+        var outcome = PeerMembershipPassOutcome.Failed;
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         bounded.CancelAfter(TimeSpan.FromSeconds(15));
         try
@@ -1196,14 +1241,24 @@ internal sealed partial class WorldPeerService : IDisposable
             await refreshGate.WaitAsync(bounded.Token);
             try
             {
+                Volatile.Write(ref membershipPassOutcome, (int)PeerMembershipPassOutcome.Refreshing);
                 Interlocked.Exchange(ref membershipRefreshPending, 0);
                 await RefreshMembershipsAsync(true, bounded.Token);
+                outcome = PeerMembershipPassOutcome.Completed;
             }
             finally { refreshGate.Release(); }
         }
-        catch (OperationCanceledException) when (bounded.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (bounded.IsCancellationRequested)
+        { outcome = cancellationToken.IsCancellationRequested ? PeerMembershipPassOutcome.Canceled : PeerMembershipPassOutcome.TimedOut; }
         catch (Exception error) when (PeerFailure(error))
         { /* Retain the verified registry; the next bounded refresh retries. */ }
+        finally
+        {
+            Interlocked.Exchange(ref membershipPassElapsed,
+                (long)System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref membershipPassBegan)).TotalMilliseconds);
+            Volatile.Write(ref membershipPassOutcome, (int)outcome);
+            Interlocked.Increment(ref membershipPassesCompleted);
+        }
     }
 
     public void Dispose()

@@ -149,9 +149,11 @@ internal static class LocalPairingLabChecks
                 "hosting access check admitted an unreviewed method");
         var group = new string('A', 64);
         Require(LocalPairingLabMode.AllowsRequest("GET", "/api/local/world-peers") &&
+            LocalPairingLabMode.AllowsRequest("GET", "/api/local/world-peers/work") &&
             LocalPairingLabMode.AllowsRequest("PUT", $"/api/local/world-peers/{group}/sharing") &&
             LocalPairingLabMode.AllowsRequest("POST", $"/api/local/world-peers/{group}/connect"), "fixed peer routes blocked");
         Require(!LocalPairingLabMode.AllowsRequest("POST", $"/api/local/world-peers/{group}/sharing") &&
+            !LocalPairingLabMode.AllowsRequest("POST", "/api/local/world-peers/work") &&
             !LocalPairingLabMode.AllowsRequest("PUT", $"/api/local/world-peers/{group}/connect") &&
             !LocalPairingLabMode.AllowsRequest("POST", "/api/local/world-peers/not-a-group/connect"), "noncanonical peer route admitted");
         foreach (var suffix in new[] { "", "/restore", "/finish" })

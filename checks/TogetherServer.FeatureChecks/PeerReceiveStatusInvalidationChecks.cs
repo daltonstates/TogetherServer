@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using TogetherServer;
 using Fixture = TogetherServer.FeatureChecks.WorldPeerExistingCopyChecks.Fixture;
@@ -85,6 +86,7 @@ internal static class PeerReceiveStatusInvalidationChecks
                 item.Link.SharedWorldStatus(fixture.Root.ProfileId).ThisPcVersion == exact.Number,
                 "A late legacy progress/completion restored its pre-peer-commit observation.");
         }
+        await OwnerAcknowledgementAsync(fixture, friends, original, sourceDevice, exact, bounded.Token);
 
         // Receipt-only existing-copy callbacks cannot erase a genuinely newer
         // current legacy transfer or its later observations.
@@ -104,6 +106,62 @@ internal static class PeerReceiveStatusInvalidationChecks
             original.SharedWorldStatus(fixture.Root.ProfileId) is { State: "Transfer unavailable" } latest &&
             latest.ThisPcVersion == exact.Number && fixture.A.LoadRuns().Count == 0 && fixture.B.LoadRuns().Count == 0,
             "A genuinely new legacy result was suppressed or lost the verified received copy.");
+    }
+
+    private static async Task OwnerAcknowledgementAsync(Fixture fixture, FriendService friends,
+        FriendLink original, Guid sourceDevice, SharedWorldVersion version, CancellationToken cancellationToken)
+    {
+        var vault = Path.GetDirectoryName(fixture.CanonicalReceivedPointer)!;
+        var directory = Path.Combine(vault, version.VersionHash);
+        var receiptPath = Path.Combine(directory, "receipt.json");
+        var receiptBytes = File.ReadAllBytes(receiptPath);
+        var receipt = JsonSerializer.Deserialize<SharedWorldReceipt>(receiptBytes, Json)!;
+        Require(original.SharedWorldStatus(fixture.Root.ProfileId) is { ReceiptConfirmed: true, ReceivedUtc: null },
+            "The actual original-owner peer acknowledgement did not reach the signed legacy receipt projection, or invented a receive time.");
+        var display = Path.Combine(directory, "receipt-display.json");
+        File.Delete(display); // Generated display evidence only; receipt/payload stay intact.
+        using var member = ECDsa.Create();
+        member.ImportPkcs8PrivateKey(fixture.RequesterData.LoadProtected($"shared-world-pc-signing-{sourceDevice:N}.protected")!, out _);
+        var memberPublic = Convert.ToBase64String(member.ExportSubjectPublicKeyInfo());
+        await friends.RecordPeerOwnerReceiptAcknowledgedAsync(fixture.Root, receipt, sourceDevice, memberPublic, cancellationToken);
+        await friends.RecordPeerOwnerReceiptAcknowledgedAsync(fixture.Root, receipt, Guid.Empty, memberPublic, cancellationToken);
+        Require(!File.Exists(display), "A forwarded/member acknowledgement became original-owner confirmation.");
+        var other = receipt with { ReceiptId = Guid.NewGuid(), Signature = "" };
+        other = other with { Signature = Convert.ToBase64String(member.SignData(SharedWorldReceiptTrust.Basis(other), HashAlgorithmName.SHA256)) };
+        await friends.RecordPeerOwnerReceiptAcknowledgedAsync(fixture.Root, other, Guid.Empty, fixture.Root.OwnerPublicKey, cancellationToken);
+        await friends.RecordPeerOwnerReceiptAcknowledgedAsync(fixture.Root with { GroupId = Guid.NewGuid() }, receipt,
+            Guid.Empty, fixture.Root.OwnerPublicKey, cancellationToken);
+        Require(!File.Exists(display) && File.ReadAllBytes(receiptPath).SequenceEqual(receiptBytes),
+            "A different exact receipt/world replaced the canonical receipt's acknowledgement.");
+        Require((await fixture.RequesterService.SetReceivingAsync(fixture.Root.GroupKey, false, cancellationToken)).Ok,
+            "The generated receiver did not withdraw consent.");
+        await friends.RecordPeerOwnerReceiptAcknowledgedAsync(fixture.Root, receipt, Guid.Empty, fixture.Root.OwnerPublicKey, cancellationToken);
+        Require(!File.Exists(display), "Withdrawn consent acquired a new receipt confirmation observation.");
+        Require((await fixture.RequesterService.SetReceivingAsync(fixture.Root.GroupKey, true, cancellationToken)).Ok,
+            "The generated receiver did not restore its explicit consent.");
+        using (var canceled = new CancellationTokenSource())
+        {
+            canceled.Cancel();
+            await friends.RecordPeerOwnerReceiptAcknowledgedAsync(fixture.Root, receipt, Guid.Empty,
+                fixture.Root.OwnerPublicKey, canceled.Token);
+            Require(!File.Exists(display), "Canceled acknowledgement persistence wrote new display evidence.");
+        }
+        var deliveries = (System.Collections.IDictionary)typeof(WorldPeerService).GetField("receiptDeliveries", Private)!
+            .GetValue(fixture.RequesterService)!;
+        deliveries.Clear(); // Force the actual signed Receipt retry, not a UI/status replay.
+        var group = typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(fixture.RequesterService, [fixture.Root.GroupKey]);
+        await ((Task)typeof(WorldPeerService).GetMethod("DeliverReceiptAsync", Private)!.Invoke(fixture.RequesterService,
+            [group, fixture.SourceRoute, receipt, receiptBytes, cancellationToken])!);
+        var observed = FriendLink.ReadLocalReceiptObservationFiles(vault, version, sourceDevice, memberPublic);
+        Require(observed is { HostConfirmed: true, ReceivedUtc: null } && observed.ReceiptId == receipt.ReceiptId &&
+            ReceivedSharedWorldProjection.Verify(receipt, observed, memberPublic) &&
+            original.SharedWorldStatus(fixture.Root.ProfileId).ReceiptConfirmed == true &&
+            File.ReadAllBytes(receiptPath).SequenceEqual(receiptBytes),
+            "The exact typed original-owner acknowledgement retry lacked a valid persisted observation or changed its receipt.");
+        using var reopened = new FriendLink(fixture.RequesterData, "friend.protected",
+            (_, _) => throw new HttpRequestException("Synthetic owner is offline."));
+        Require(reopened.SharedWorldStatus(fixture.Root.ProfileId) is { ReceiptConfirmed: true, ReceivedUtc: null },
+            "A reopened connection lost its signed exact original-owner acknowledgement.");
     }
 
     private static SharedWorldTransferHealth Health(FriendLink link) =>

@@ -10,7 +10,8 @@ internal sealed record WorldPeerMembership(SharedWorldPeerRoot Root,
 internal sealed partial class FriendLink
 {
     internal async Task<IReadOnlyList<WorldPeerMembership>> PeerMembershipsAsync(
-        bool refresh, CancellationToken cancellationToken, Action<PeerMembershipRefreshPending>? onPending = null)
+        bool refresh, CancellationToken cancellationToken, Action<PeerMembershipRefreshPending>? onPending = null,
+        Action<PeerMembershipLookupOutcome, bool>? onLookup = null)
     {
         if (!TryRetain()) return [];
         try
@@ -27,14 +28,25 @@ internal sealed partial class FriendLink
                         cancellationToken.ThrowIfCancellationRequested();
                         try
                         {
+                            ObserveMembershipLookup(onLookup, PeerMembershipLookupOutcome.Started, false);
                             var lookup = await SyncSharingRosterAsync(profile.Id, cancellationToken);
+                            ObserveMembershipLookup(onLookup, MembershipLookupOutcome(lookup.View.Code), lookup.Roster is not null);
                             if (lookup.View.Code == "RosterCatchUpPending") onPending?.Invoke(PeerMembershipRefreshPending.RosterCatchUpPending);
                             else if (lookup.View.Code == "RosterUnavailable") onPending?.Invoke(PeerMembershipRefreshPending.RosterUnavailable);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            ObserveMembershipLookup(onLookup, PeerMembershipLookupOutcome.Canceled, false);
+                            throw;
                         }
                         catch (Exception ex) when (ex is IOException or HttpRequestException or
                             JsonException or CryptographicException or InvalidDataException or
                             UnauthorizedAccessException)
-                        { /* Keep the last verified membership. */ }
+                        {
+                            ObserveMembershipLookup(onLookup, ex is HttpRequestException
+                                ? PeerMembershipLookupOutcome.TransportFailure : PeerMembershipLookupOutcome.InvalidData, false);
+                            /* Keep the last verified membership. */
+                        }
                     }
                 }
                 var result = new List<WorldPeerMembership>();
@@ -63,6 +75,31 @@ internal sealed partial class FriendLink
         }
         finally { ReleaseRetained(); }
     }
+
+    private static void ObserveMembershipLookup(Action<PeerMembershipLookupOutcome, bool>? observer,
+        PeerMembershipLookupOutcome outcome, bool hasRoster)
+    {
+        try { observer?.Invoke(outcome, hasRoster); }
+        catch (Exception) { /* A diagnostic observation cannot change enrollment. */ }
+    }
+
+    private static PeerMembershipLookupOutcome MembershipLookupOutcome(string code) => code switch
+    {
+        "NotPaired" => PeerMembershipLookupOutcome.NotPaired,
+        "UnknownProfile" => PeerMembershipLookupOutcome.UnknownProfile,
+        "UpdateRequired" => PeerMembershipLookupOutcome.UpdateRequired,
+        "RosterUnavailable" => PeerMembershipLookupOutcome.RosterUnavailable,
+        "EnrollmentDenied" => PeerMembershipLookupOutcome.EnrollmentDenied,
+        "InvalidChallenge" => PeerMembershipLookupOutcome.InvalidChallenge,
+        "KeyReviewRequired" => PeerMembershipLookupOutcome.KeyReviewRequired,
+        "SigningIdentityChanged" => PeerMembershipLookupOutcome.SigningIdentityChanged,
+        "RosterCatchUpPending" => PeerMembershipLookupOutcome.RosterCatchUpPending,
+        "RosterRollback" => PeerMembershipLookupOutcome.RosterRollback,
+        "RosterRejected" => PeerMembershipLookupOutcome.RosterRejected,
+        "CanManage" => PeerMembershipLookupOutcome.CanManage,
+        "PermissionDenied" => PeerMembershipLookupOutcome.PermissionDenied,
+        _ => PeerMembershipLookupOutcome.Other
+    };
 }
 
 public sealed partial class FriendService
@@ -82,13 +119,14 @@ public sealed partial class FriendService
         Task.FromResult(new WorldSeparateCopyResult(false, "NotPaired", "Choose a saved world connection."));
 
     internal async Task<IReadOnlyList<WorldPeerMembership>> PeerMembershipsAsync(
-        bool refresh, CancellationToken cancellationToken, Action<PeerMembershipRefreshPending>? onPending = null)
+        bool refresh, CancellationToken cancellationToken, Action<PeerMembershipRefreshPending>? onPending = null,
+        Action<PeerMembershipLookupOutcome, bool>? onLookup = null)
     {
         (Guid Id, FriendLink Link)[] current;
         lock (sync) current = disposed ? [] : [.. links];
         var memberships = new List<WorldPeerMembership>();
         foreach (var (_, link) in current)
-            memberships.AddRange(await link.PeerMembershipsAsync(refresh, cancellationToken, onPending));
+            memberships.AddRange(await link.PeerMembershipsAsync(refresh, cancellationToken, onPending, onLookup));
         return memberships.GroupBy(item => SharedWorldPeerTrust.RootKey(item.Root))
             .Select(group =>
             {
@@ -130,6 +168,17 @@ public sealed partial class FriendService
                 return true;
             }
         return false;
+    }
+
+    internal async Task RecordPeerOwnerReceiptAcknowledgedAsync(SharedWorldPeerRoot root, SharedWorldReceipt receipt,
+        Guid responderDeviceId, string responderPublicKey, CancellationToken cancellationToken)
+    {
+        if (responderDeviceId != Guid.Empty || responderPublicKey != root.OwnerPublicKey) return;
+        (Guid Id, FriendLink Link)[] current;
+        lock (sync) current = disposed ? [] : [.. links];
+        foreach (var (_, link) in current)
+            if (await link.RecordPeerOwnerReceiptAcknowledgedAsync(root, receipt, responderDeviceId,
+                responderPublicKey, cancellationToken)) return;
     }
 }
 

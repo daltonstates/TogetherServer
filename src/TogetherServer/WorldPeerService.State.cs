@@ -201,7 +201,8 @@ internal sealed partial class WorldPeerService
     internal async Task RefreshMembershipsAsync(bool refreshFriends, CancellationToken cancellationToken)
     {
         foreach (var saved in Groups()) await friend.ApplyPeerRosterAsync(saved.Roster, cancellationToken);
-        var memberships = await friend.PeerMembershipsAsync(refreshFriends, cancellationToken, ObservePendingMembershipRefresh);
+        var memberships = await friend.PeerMembershipsAsync(refreshFriends, cancellationToken,
+            ObservePendingMembershipRefresh, ObserveMembershipLookup);
         foreach (var membership in memberships)
         {
             lock (stateSync)

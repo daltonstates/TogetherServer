@@ -1187,6 +1187,43 @@ internal static partial class SharedWorldJourney
             if (attempt % 10 == 9) await PollAsync(friend);
             await Task.Delay(250);
         }
+        // Retain identifier-free observations after the original assertion has
+        // failed. These reads cannot enroll, sync, receive or change its result.
+        using var observationDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            var work = await friend.GetFromJsonAsync<HostingWorkSnapshot>("/api/local/world-peers/work", Json,
+                observationDeadline.Token);
+            var groups = await friend.GetFromJsonAsync<WorldPeerGroupView[]>("/api/local/world-peers", Json,
+                observationDeadline.Token);
+            var group = groups?.SingleOrDefault(item => item.ProfileId == profileId);
+            Console.WriteLine("SHARED_VERSION_TIMEOUT " + JsonSerializer.Serialize(new
+            {
+                ExpectedVersion = expected,
+                Consented = latest?.Consented,
+                HostVersion = latest?.HostVersion,
+                ThisPcVersion = latest?.ThisPcVersion,
+                ReceiptConfirmed = latest?.ReceiptConfirmed,
+                GroupPresent = group is not null,
+                SharingEnabled = group?.SharingEnabled,
+                ReceiveConsented = group?.ReceiveConsented,
+                CanReceive = group?.CanReceive,
+                CanHost = group?.CanHost,
+                CanReshare = group?.CanReshare,
+                Work = work,
+                Transfers = group?.BackgroundTransfers?.Select(item => new
+                {
+                    State = item.Current?.State,
+                    Phase = item.Current?.Phase,
+                    LastResult = item.LastResult?.Result,
+                    LastError = item.LastResult?.Error,
+                    SubmittedBytes = item.LastResult?.SubmittedBytes,
+                    ReceivedBytes = item.LastResult?.ReceivedBytes
+                })
+            }, Json));
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException)
+        { Console.WriteLine("SHARED_VERSION_TIMEOUT_OBSERVATION_UNAVAILABLE " + error.GetType().Name); }
         throw new Exception($"Friend did not verify version {expected}: {latest?.State} {latest?.Error}");
     }
 

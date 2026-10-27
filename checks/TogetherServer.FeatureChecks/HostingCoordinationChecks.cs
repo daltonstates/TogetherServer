@@ -102,6 +102,7 @@ internal static class HostingCoordinationChecks
         MembershipRetryBounds();
         await EnrollmentRaceAsync(parent, unavailable: false);
         await EnrollmentRaceAsync(parent, unavailable: true);
+        await PeerMembershipIndependentRefreshChecks.RunAsync(parent);
     }
 
     private static void MembershipRetryBounds()
@@ -150,6 +151,14 @@ internal static class HostingCoordinationChecks
         await peers.WaitForSyncAsync().WaitAsync(TimeSpan.FromSeconds(5));
         Require(host.Advanced && host.Proofs == 1 && peers.Views().Count == 0,
             "the first enrollment did not cross the actual signed roster advance/transient publication boundary");
+        var firstDiagnostic = peers.WorkSnapshot().Membership;
+        Require(firstDiagnostic is
+        {
+            PassesStarted: 1, PassesCompleted: 1, PassOutcome: "Completed",
+            LookupsStarted: 1, LookupsCompleted: 1, LookupReturnedRoster: false
+        } &&
+            firstDiagnostic.LookupOutcome == (unavailable ? "RosterUnavailable" : "RosterCatchUpPending"),
+            "the read-only registration diagnostic lost the actual incomplete lookup outcome or pass boundary");
         var delay = peers.NextBackgroundSyncDelay;
         Require(delay <= TimeSpan.FromSeconds(2) && delay > TimeSpan.Zero,
             "a typed incomplete enrollment was discarded into the one-minute idle deadline");
@@ -165,6 +174,12 @@ internal static class HostingCoordinationChecks
             new SharedWorldRosterChainStore(data).Heads(profile).Single().Signature == host.Latest.Signature &&
             data.LoadRuns().Count == 0 && hostData.LoadRuns().Count == 0,
             "the bounded retry did not complete current signed enrollment/automatic consent without a game or another instruction");
+        Require(peers.WorkSnapshot().Membership is
+        {
+            PassesStarted: 2, PassesCompleted: 2, PassOutcome: "Completed",
+            LookupsStarted: 2, LookupsCompleted: 2, LookupOutcome: "PermissionDenied", LookupReturnedRoster: true
+        },
+            "the diagnostic confused a management-only denial with a missing verified hosting roster");
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

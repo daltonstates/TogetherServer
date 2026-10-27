@@ -155,7 +155,7 @@ internal sealed class LocalPairingLabMode
     {
         if (method == "GET") return path is "/" or "/index.html" or "/favicon.svg" or
             "/api/local/snapshot" or "/api/local/instance" or "/api/local/data-recovery" or "/api/local/window" or
-            "/api/local/companion" or "/api/local/friend" or "/api/local/friend/connections" or "/api/local/servers" or "/api/local/world-peers" or
+            "/api/local/companion" or "/api/local/friend" or "/api/local/friend/connections" or "/api/local/servers" or "/api/local/world-peers" or "/api/local/world-peers/work" or
             "/api/local/profile" or "/api/local/required-setup" or "/api/local/getting-started" or
             "/api/local/desktop/notifications" or "/api/local/desktop/preferences" or
             "/api/local/network/ports" or "/api/local/network/routes" or "/api/local/game-types" or

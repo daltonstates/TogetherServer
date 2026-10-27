@@ -33,6 +33,9 @@ internal sealed partial class WorldPeerService
     private readonly HostingWorkCounters hostingWork = new();
     private long requestedSyncGeneration;
     private long scheduledSyncGeneration = -1;
+    private long requestedMembershipGeneration;
+    private long startedMembershipGeneration = -1;
+    private DateTimeOffset nextMembershipRetryUtc = DateTimeOffset.MaxValue;
     private DateTimeOffset nextBackgroundSyncUtc;
     private int remainingGroupSweep = -1;
     private SharedWorldPeerRoot[] replicationOwnedRoots = [];
@@ -40,6 +43,9 @@ internal sealed partial class WorldPeerService
     private string? friendMembershipObservation;
     private readonly PeerMembershipRetryBurst membershipRetry = new();
     private int membershipRefreshPending;
+    private long membershipPassesStarted, membershipPassesCompleted, membershipPassBegan, membershipPassElapsed;
+    private long membershipLookupsStarted, membershipLookupsCompleted;
+    private int membershipPassOutcome, membershipLookupOutcome, membershipLookupReturnedRoster;
     internal event Action? BackgroundSyncRequested;
 
     internal HostingWorkSnapshot WorkSnapshot()
@@ -47,6 +53,14 @@ internal sealed partial class WorldPeerService
         var peer = hostingWork.Snapshot();
         return peer with
         {
+            Membership = new(Interlocked.Read(ref membershipPassesStarted), Interlocked.Read(ref membershipPassesCompleted),
+                ((PeerMembershipPassOutcome)Volatile.Read(ref membershipPassOutcome)).ToString(),
+                Interlocked.Read(ref membershipPassesStarted) > Interlocked.Read(ref membershipPassesCompleted)
+                    ? (long)System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref membershipPassBegan)).TotalMilliseconds
+                    : Interlocked.Read(ref membershipPassElapsed),
+                Interlocked.Read(ref membershipLookupsStarted), Interlocked.Read(ref membershipLookupsCompleted),
+                ((PeerMembershipLookupOutcome)Volatile.Read(ref membershipLookupOutcome)).ToString(),
+                Volatile.Read(ref membershipLookupReturnedRoster) != 0),
             Work = peer.Work.Where(item => item.Stage != nameof(HostingWorkStage.WorkingVerification))
             .Append(manager.WorkingVerificationMeasurement()).ToArray()
         };
@@ -75,6 +89,7 @@ internal sealed partial class WorldPeerService
             }));
         if (material == friendMembershipObservation) return false;
         friendMembershipObservation = material;
+        Interlocked.Increment(ref requestedMembershipGeneration);
         membershipRetry.Begin();
         RequestBackgroundSync();
         return true;
@@ -84,6 +99,16 @@ internal sealed partial class WorldPeerService
     // another exchange here; the current registration pass owns this result.
     private void ObservePendingMembershipRefresh(PeerMembershipRefreshPending _) =>
         Interlocked.Exchange(ref membershipRefreshPending, 1);
+
+    // Identifier-free observations only. These run under a Friend link gate
+    // and must neither wait for world state nor authorize/retry an operation.
+    private void ObserveMembershipLookup(PeerMembershipLookupOutcome outcome, bool returnedRoster)
+    {
+        if (outcome == PeerMembershipLookupOutcome.Started) Interlocked.Increment(ref membershipLookupsStarted);
+        else Interlocked.Increment(ref membershipLookupsCompleted);
+        Volatile.Write(ref membershipLookupReturnedRoster, returnedRoster ? 1 : 0);
+        Volatile.Write(ref membershipLookupOutcome, (int)outcome);
+    }
 
     // Suppress only the duplicate legacy background receiver for an enrolled
     // exact world. This published registry snapshot grants no receive access.
@@ -95,6 +120,11 @@ internal sealed partial class WorldPeerService
     private void RequestBackgroundSync()
     {
         Interlocked.Increment(ref requestedSyncGeneration);
+        WakeBackgroundScheduler();
+    }
+
+    private void WakeBackgroundScheduler()
+    {
         try { BackgroundSyncRequested?.Invoke(); }
         catch (Exception) { /* A wake cannot fail a committed publication/membership change. */ }
     }
@@ -119,9 +149,13 @@ internal sealed partial class WorldPeerService
         get
         {
             lock (stateSync)
-                return scheduledSyncGeneration != Interlocked.Read(ref requestedSyncGeneration)
-                    ? TimeSpan.FromSeconds(1)
-                    : TimeSpan.FromSeconds(Math.Clamp((nextBackgroundSyncUtc - DateTimeOffset.UtcNow).TotalSeconds, 1, 60));
+            {
+                var now = DateTimeOffset.UtcNow;
+                var due = scheduledSyncGeneration != Interlocked.Read(ref requestedSyncGeneration)
+                    ? now.AddSeconds(1) : nextBackgroundSyncUtc;
+                if (nextMembershipRetryUtc < due) due = nextMembershipRetryUtc;
+                return TimeSpan.FromSeconds(Math.Clamp((due - now).TotalSeconds, 1, 60));
+            }
         }
     }
 

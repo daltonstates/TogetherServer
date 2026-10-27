@@ -739,11 +739,17 @@ internal sealed partial class WorldPeerService
                 receiptDeliveries.Remove(receiptDeliveries.MinBy(item => item.Value.AttemptedUtc).Key);
             receiptDeliveries[id] = new(DateTimeOffset.UtcNow, false);
         }
-        var reply = await SendPeerAsync(group, route, WorldPeerOperations.Receipt, cancellationToken, bytes,
-            versionHash: receipt.VersionHash);
+        (Guid DeviceId, string PublicKey)? responder = null;
+        var reply = await SendPeerWithResponderAsync(group, route, WorldPeerOperations.Receipt, cancellationToken,
+            bytes, 0, receipt.VersionHash, null, null, (deviceId, publicKey) => responder = (deviceId, publicKey));
         var result = JsonSerializer.Deserialize<WorldPeerActionResult>(reply, Json);
         if (result is { Ok: true, Code: "PeerReceiptStored" or "PeerReceiptKnown" })
+        {
             lock (stateSync) receiptDeliveries[id] = new(DateTimeOffset.UtcNow, true);
+            if (responder is { } exact)
+                await friend.RecordPeerOwnerReceiptAcknowledgedAsync(group.Root, receipt,
+                    exact.DeviceId, exact.PublicKey, cancellationToken);
+        }
     }
 
     private static string SessionBranchHash(Group group, WorldPeerSaveDescriptor descriptor) =>

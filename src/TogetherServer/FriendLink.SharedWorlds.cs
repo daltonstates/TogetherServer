@@ -2788,6 +2788,73 @@ internal sealed partial class FriendLink
         { return null; } // Display signing failure cannot interrupt the public signed receipt.
     }
 
+    // Called only after this exact peer Receipt request received its typed
+    // acknowledgement over the validated original-owner challenge/TLS scope.
+    // This is a signed display fact; it grants no transfer or hosting authority.
+    internal async Task<bool> RecordPeerOwnerReceiptAcknowledgedAsync(SharedWorldPeerRoot world,
+        SharedWorldReceipt receipt, Guid responderDeviceId, string responderPublicKey,
+        CancellationToken cancellationToken)
+    {
+        if (responderDeviceId != Guid.Empty || responderPublicKey != world.OwnerPublicKey || !TryRetain()) return false;
+        var entered = false;
+        try
+        {
+            await gate.WaitAsync(cancellationToken);
+            entered = true;
+            lock (sharedReceiptSync)
+                lock (SharedWorldMutationGate.For(data.RootPath))
+                {
+                    if (config is null || config.KnownRevoked || receipt.Schema != 1 ||
+                        receipt.DeviceId != SharedWorldDeviceId || receipt.ProfileId != world.ProfileId ||
+                        receipt.GroupId != world.GroupId || ReceiveConsentRoot(world.ProfileId) != world ||
+                        !HasSharedWorldReceiveConsent(world.ProfileId) ||
+                        config.PendingSharedWorldGroups.ContainsKey(world.ProfileId) ||
+                        config.SharedWorldConflicts.Contains(world.ProfileId)) return false;
+                    var floor = config.SharedRosterFloors.GetValueOrDefault(world.ProfileId);
+                    if (floor is null || floor.GroupId != world.GroupId || floor.Epoch != receipt.RosterEpoch ||
+                        floor.Revision != receipt.RosterRevision) return false;
+                    using var key = LoadExistingSharingKey();
+                    if (key is null) return false;
+                    var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+                    if (!SharedWorldReceiptTrust.Verify(receipt, publicKey)) return false;
+                    var rosterBytes = data.LoadProtected($"shared-world-roster-{SharedWorldDeviceId:N}-{world.ProfileId:N}.protected");
+                    var roster = rosterBytes is { Length: > 0 } && rosterBytes.Length <= SharedWorldService.MaximumManifestBytes
+                        ? JsonSerializer.Deserialize<SharedWorldRoster>(rosterBytes, Json) : null;
+                    if (roster is null || roster.OwnerPublicKey != world.OwnerPublicKey || roster.GroupId != world.GroupId ||
+                        roster.ProfileId != world.ProfileId || roster.Epoch != floor.Epoch || roster.Revision != floor.Revision ||
+                        roster.Signature != floor.Signature || !SharedWorldRosterTrust.Verify(roster) ||
+                        !new WorldAuthorityStore(data).TrustsCurrentRoster(roster) ||
+                        !SharedWorldRosterTrust.HasRole(roster, receipt.DeviceId, publicKey, grants => grants.Receive)) return false;
+                    var root = ReceivedRoot(world.ProfileId);
+                    var pointer = Path.Combine(root, "latest.json");
+                    SharedWorldService.EnsureUnlinkedRoot(data.RootPath, pointer);
+                    var pointerBytes = ReadLocalReceiptDisplayFile(pointer, SharedWorldService.MaximumManifestBytes);
+                    var version = pointerBytes is null ? null : JsonSerializer.Deserialize<SharedWorldVersion>(pointerBytes, Json);
+                    if (version is null || version.VersionHash != receipt.VersionHash || version.ProfileId != world.ProfileId ||
+                        version.GroupId != world.GroupId || !SharedWorldService.VerifySignature(version) ||
+                        !AuthorizedVersionSigner(world.ProfileId, version)) return false;
+                    var receiptPath = SharedWorldService.SafeChild(Path.Combine(root, version.VersionHash), "receipt.json");
+                    SharedWorldService.EnsureUnlinkedRoot(data.RootPath, receiptPath);
+                    var receiptBytes = ReadLocalReceiptDisplayFile(receiptPath);
+                    if (receiptBytes is null || JsonSerializer.Deserialize<SharedWorldReceipt>(receiptBytes, Json) != receipt) return false;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var old = ReadLocalReceiptObservationFiles(root, version, receipt.DeviceId, publicKey);
+                    // Peer protocol receipts carry no receive timestamp. Preserve
+                    // a previously recorded time, otherwise leave it unknown.
+                    var observation = TrySignReceiptObservation(receipt, old?.ReceivedUtc, true, key);
+                    if (observation is null) return false;
+                    TryWriteLocalReceiptObservation(root, version, observation);
+                    UpdateReceiptProjection(world.ProfileId, version, observation);
+                    return true;
+                }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or
+            InvalidDataException or CryptographicException or ArgumentException or OperationCanceledException or
+            System.Security.SecurityException or NotSupportedException)
+        { return false; } // Optional display persistence cannot fail an accepted receipt.
+        finally { if (entered) gate.Release(); ReleaseRetained(); }
+    }
+
     private void UpdateReceiptProjection(Guid profileId, SharedWorldVersion version,
         ReceivedSharedWorldReceiptObservation observation)
     {
@@ -2857,11 +2924,11 @@ internal sealed partial class FriendLink
         { return null; }
     }
 
-    private static byte[]? ReadLocalReceiptDisplayFile(string path)
+    private static byte[]? ReadLocalReceiptDisplayFile(string path, long maximum = SharedWorldReceiptTrust.MaximumRequestBytes)
     {
         SetupImportSourceFacts.EnsurePlainFile(path);
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (input.Length > SharedWorldReceiptTrust.MaximumRequestBytes) return null;
+        if (input.Length > maximum) return null;
         var bytes = new byte[(int)input.Length];
         input.ReadExactly(bytes);
         return bytes;
