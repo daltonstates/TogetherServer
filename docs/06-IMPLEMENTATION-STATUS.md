@@ -7,6 +7,134 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## Physical .19 V1release cycle, 2026-10-27 EDT (not accepted: delivery)
+
+The owner reported both PCs updated to .19, confirmed the laptop unattended and
+the main world stopped, and authorized this V1release-only cycle. The running
+laptop EXE independently matched public SHA-256
+`e4b6cde759eb770f2fd7553ae94f22b75f0f025ef4bd5aa1b3030ebff86d1bea`
+and source `36c4be272ace4da0c9ae2ad379d9e77430c94698`. Authenticated main-PC
+metadata reported .19; its EXE/filesystem were not independently inspected.
+Initial C: space was about 589 MiB, below the app's reserve. Automatic approval
+review rejected the owner's subsequently authorized obsolete-artifact deletion
+command as `blocked by policy` before it ran; no files were deleted by that
+command. The owner freed space manually. Recheck before Start found about
+50.7 GiB free, both relevant world rows Offline and no native Valheim server.
+The unchanged existing private observer was reviewed and hash-matched; older
+observer outputs were preserved before its normal proof writes. No production
+LocalData inspector was constructed and no signing/pairing state was reset.
+
+Exactly two Start and two graceful Stop requests were issued, each with a
+CreateNew sentinel. Both Starts selected the exact prepared branch and entered
+the common local pipeline. Neither recorded Receiving, PreparingCopy or
+ServerSetup. Each reached real Ready with a separately matched recorded native
+executable/start identity and fresh trusted zero players. Each Stop was preceded
+by two distinct fresh zero-player observations plus exact native/world identity.
+The second Start loaded newly verified publication 9, so saved restart passed
+without an owner receipt prerequisite. The final Stop left V1release Offline.
+
+| Observed Start timing, seconds | First, input 8 | Saved restart, input 9 |
+| --- | ---: | ---: |
+| Permission | 1.048 | 1.141 |
+| Signed discovery/selection | 6.507 | 5.955 |
+| Verifying phase | 16.585 | 12.751 |
+| Connection announcement | 0.402 | 0.204 |
+| Launch-request phase | 10.993 | 4.236 |
+| Response first observed | 37.806 | 26.630 |
+| Request to first real Ready observation | 81.313 | 52.442 |
+| Exact native creation to first Ready observation | 46.738 | 28.303 |
+
+The held working-copy proof ran once per Start: 3.238 s initially and 0.392 s on
+restart. It is only part of Verifying. Phase timings end at the launch result;
+they are not game startup time. Response/Ready observations use two-second
+polling plus read latency; native creation timestamps are exact. These are
+physical observations under current desktop/background load, not a controlled
+before/after speed benchmark. No setup, Prepare, manual Sync or Start replay
+was used to advance the operation.
+
+| Observed Stop/verification timing, seconds | First, 8 to 9 | Final, 9 to 10 |
+| --- | ---: | ---: |
+| Response first observed | 20.313 | 16.244 |
+| Request to native exit first observed | 5.126 | 4.081 |
+| Request to new publication first observed | 20.380 | 16.281 |
+| Exit to publication first observed | 15.254 | 12.199 |
+| Independent full verification observation | 3.609 | 4.436 |
+
+Both new publications contain 315 files / 119,452,903 bytes and pass all payload
+hashes, signature, branch, current root/roster and strict ancestry checks. Exact
+parents form 8 -> 9 -> 10. Five file hashes changed at each Stop. Exit-to-
+publication combines capture, verification, publication and observation; it is
+not pure hashing. The independent verification observations also include
+metadata/roster checks and proof overhead. Stop exit observations use one-second
+polling plus reads. Actual game joining/gameplay was not tested.
+
+| TogetherServer process CPU window | Wall s | CPU s | Average machine capacity (16 logical processors) |
+| --- | ---: | ---: | ---: |
+| Stopped preflight, before disk cleanup | 61.262 | 9.203 | 0.94% |
+| First Start through Ready | 81.344 | 41.406 | 3.18% |
+| First Stop through publication | 20.401 | 15.765 | 4.83% |
+| Post-Stop automatic replication observation | 352.253 | 194.016 | 3.44% |
+| Saved restart through Ready | 52.464 | 29.313 | 3.49% |
+| Final Stop through publication | 16.293 | 11.782 | 4.52% |
+
+CPU percentages are process CPU/wall deltas divided by 16; game and WebView
+child CPU are excluded. Windows task-group CPU may therefore differ. The windows
+include normal background work and diagnostic reads, are not per-world CPU
+attribution, and overlapping stage wall times cannot be added as CPU time. The
+preflight sample occurred with low space, not in a fully synchronized healthy
+idle state. No prior physical CPU baseline exists for a reduction claim.
+Native game CPU from creation to the Ready observation was 34.625 CPU-seconds
+initially and 25.516 CPU-seconds on restart. Those game windows differ from the
+app windows, so their percentages should not be added directly.
+
+**Automatic delivery failed acceptance.** Publication 9 had zero exact signed
+recipient receipts after 352 seconds despite a reachable authenticated owner.
+At the final 17:51:07 EDT observation, both 9 and 10 still had zero valid exact
+recipient/owner receipts under the current roster. The owner's connection was
+fresh at the 17:46 observation (4.38 s), and its route was still serving
+authenticated chunks in the final sample; the other eligible peer had no current reachability evidence and
+remains pending. Input publication 8 now has a valid exact owner-domain receipt;
+its completion time is unknown and that receipt does not cover 9 or 10.
+
+The concrete coordination problem is unnecessary historical receive work.
+After local publication advanced to 9, the OriginalHost route repeatedly pulled
+publication 8 in canceled/resumed passes. Its same-branch signed staging history
+matches the local historical 8's exact version, signature, parent, scope and all
+file identities. The complete local historical 8 was rehashed independently:
+315 files, zero mismatches (1.080 s enumeration/hash observation). The matching
+partial had 44 staged files totaling 18,736,954 bytes after 352 s, including an
+incomplete file; this is not a percent-complete or link-throughput measure.
+The active requested file was share-locked in that exact partial and its writes
+were current. The final route sample was still pulling 8 at requested index 135
+and offset 524,288; this cursor is not a completion percentage.
+
+During that 352-second window, process-wide counters added 122 signed peer
+operations / 233.925 s peer-request wall time, 34 inventories / 11.917 s,
+zero wire-gate wait and zero completed received-payload verification scopes.
+This identifies redundant historical replication and repeated signed exchanges
+as the observed obstruction. Per-exchange remote CPU, network latency and link
+throughput were not isolated. In particular, zero client-offer submitted bytes
+does not prove zero bytes served to incoming pulls; an earlier commentary claim
+that the new save had not been sent was narrowed accordingly. Exact receipt
+absence, rather than that byte counter, determines the failed delivery stage.
+
+Read-only source review explains the reuse coverage gap: LocalSavesAsync includes
+only a separate branch's published head (or retained base fallback). Once head 9
+exists, complete historical 8 is omitted before ExistingCopy's exact identity
+lookup. The downstream 32-entry catalog cap is not the cause of that omission.
+A bounded exact historical-copy lookup with all existing provenance, signature,
+ancestry, consent and commit fences needs coverage before another acceptance
+candidate. No code or installed app was changed during this physical cycle.
+
+Safe evidence is in `local-data/physical-test-36c4be2/`: runtime/prepared proofs,
+two Start/Stop sentinels and results, phase/work samples, full save proofs,
+historical-copy comparison and final exact-receipt/state verification. No IDs,
+keys, private routes/paths or payload contents were exported. Final state:
+V1release Offline, main world Offline, zero native Valheim servers, Host mode
+restored. Delivery continues under the app's existing policy; no sharing policy,
+listener, port or permission was changed to force progress. The .19 CI results
+below remain synthetic/hosted evidence and do not override this physical failure.
+
 ## Integrated hosting correction, 2026-10-27 EDT (physical acceptance pending)
 
 Current candidate source is `36c4be272ace4da0c9ae2ad379d9e77430c94698`, version
@@ -29,9 +157,10 @@ The [v0.3.3.19 review preview](https://github.com/daltonstates/TogetherServer/re
 is published at the source above (annotated tag
 `cfb207335b4bdd891b3a2fcd6f406e24c5968ba6`, release `425975041`). Both EXEs and
 both sidecars were independently downloaded anonymously and hashed. All 33 older
-release IDs remain; stable is still `v0.3.3`. This work has not installed .19,
-and no .19 physical test has run. CPU usage and the physical transfer bottleneck
-remain unmeasured.
+release IDs remain; stable is still `v0.3.3`. Owner installation and subsequent
+physical measurements are recorded above. Full acceptance remains false because
+automatic delivery is still incomplete; the earlier unmeasured physical claims
+below are historical observations before that cycle.
 The paragraphs below retain the earlier integrated-candidate attempts and fixes;
 their intermediate packages are not separate releases.
 
