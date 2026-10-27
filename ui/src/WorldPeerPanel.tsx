@@ -4,7 +4,7 @@ import { Button, Input, TextArea } from './Controls'
 import { DismissibleNotice } from './DismissibleNotice'
 import { Icon } from './Icon'
 import { parseBasicResult } from './contracts'
-import { sharedSaveAge } from './sharedWorldUx'
+import { formatSharedBytes, sharedSaveAge } from './sharedWorldUx'
 import { PeerLiveTestCopies } from './PeerLiveTestCopies'
 import './SharedWorld.css'
 import './WorldPeerPresentation.css'
@@ -24,9 +24,16 @@ type GroupSelection = { canChoose: boolean; needsChoice: boolean;
   heads: { selectionHash: string; deviceId: string; publicKey: string; sessionId: string;
     branchHash: string; authorized: boolean; targetKnown: boolean }[] }
 type DefaultReview = { groupKey: string; deviceId: string; publicKey: string; sessionId: string; branchHash: string }
+type TransferProgress = { state: string; phase: string; operation: string; httpStep: string; result: string; error: string;
+  httpStatus: number | null; startedUtc: string; updatedUtc: string; elapsedMilliseconds: number;
+  submittedBytes: number; receivedBytes: number; completedFiles: number; requestedFileIndex: number | null;
+  requestedOffset: number | null; exactReceiptAccepted: boolean; totalBytes: number | null; totalFiles: number | null;
+  publicationNumber: number | null; receiptPublicationNumber: number | null }
+type BackgroundTransfer = { routeOrdinal: number; recipientRole: string; current: TransferProgress | null;
+  lastResult: TransferProgress | null; lastFailure: TransferProgress | null }
 export type WorldPeerGroup = { groupKey: string; name: string; profileId: string; selfDeviceId: string;
   sharingEnabled: boolean; receiveConsented: boolean; canReceive: boolean; canReshare: boolean; canHost: boolean;
-  warning: string | null; selection: GroupSelection | null;
+  warning: string | null; selection: GroupSelection | null; backgroundTransfers: BackgroundTransfer[];
   state: { groupKey: string; peers: Peer[]; branches: BranchView[]; sessions: SessionView[];
     defaultChoices: { authorityHash: string; versionHash: string }[]; needsChoice: boolean;
     knownSessions: number; announcementCount: number;
@@ -71,6 +78,58 @@ function date(value: unknown): string | null {
 function list<T>(value: unknown, maximum: number, decode: (item: unknown) => T): T[] {
   if (!Array.isArray(value) || value.length > maximum) throw new Error('World group list is invalid.')
   return value.map(decode)
+}
+const transferCodes = {
+  state: ['Working', 'Pending', 'Succeeded', 'Failed', 'Canceled'],
+  phase: ['Queued', 'Metadata', 'Pulling', 'Offering', 'Sending', 'VerifyingLocal', 'VerifyingRemote', 'Receipt'],
+  operation: ['None', 'Metadata', 'Catalog', 'Manifest', 'Chunk', 'Seed', 'Receipt'],
+  httpStep: ['None', 'Challenge', 'Exchange'],
+  result: ['None', 'NoPayload', 'PassComplete', 'SeedPaused', 'SeedHistoryPending', 'ManifestUnavailable', 'ChunkUnavailable',
+    'WorkBudget', 'ByteBudget', 'CompleteReceiptAccepted', 'KnownReceiptAccepted', 'KnownWithoutReceipt', 'Canceled', 'Interrupted', 'Failed'],
+  error: ['None', 'Timeout', 'Unreachable', 'HttpRejected', 'Unauthorized', 'PeerRejected', 'InvalidResponse', 'InvalidHistory',
+    'SourceUnavailable', 'VerificationFailed', 'Capacity', 'Canceled', 'Unexpected'],
+  recipientRole: ['Unknown', 'OriginalHost', 'ApprovedPeer']
+}
+function transferCode(value: unknown, codes: string[]): string {
+  if (typeof value !== 'string') throw new Error('Background transfer information is invalid.')
+  return codes.includes(value) ? value : 'Unknown'
+}
+function transferCount(value: unknown, maximum: number, minimum = 0): number {
+  const result = count(value)
+  if (result < minimum || result > maximum) throw new Error('Background transfer count is invalid.')
+  return result
+}
+function optionalTransferCount(value: unknown, maximum: number, minimum = 0): number | null {
+  return value == null ? null : transferCount(value, maximum, minimum)
+}
+function parseTransferProgress(value: unknown): TransferProgress | null {
+  if (value == null) return null
+  const source = object(value)
+  const startedUtc = date(source.startedUtc), updatedUtc = date(source.updatedUtc)
+  if (!startedUtc || !updatedUtc) throw new Error('Background transfer time is invalid.')
+  return { state: transferCode(source.state, transferCodes.state), phase: transferCode(source.phase, transferCodes.phase),
+    operation: transferCode(source.operation, transferCodes.operation), httpStep: transferCode(source.httpStep, transferCodes.httpStep),
+    result: transferCode(source.result, transferCodes.result), error: transferCode(source.error, transferCodes.error),
+    httpStatus: optionalTransferCount(source.httpStatus, 599, 100), startedUtc, updatedUtc,
+    elapsedMilliseconds: transferCount(source.elapsedMilliseconds, 86400000),
+    submittedBytes: transferCount(source.submittedBytes, 2 ** 50), receivedBytes: transferCount(source.receivedBytes, 2 ** 50),
+    completedFiles: transferCount(source.completedFiles, 100000),
+    requestedFileIndex: optionalTransferCount(source.requestedFileIndex, 100000), requestedOffset: optionalTransferCount(source.requestedOffset, 2 ** 50),
+    exactReceiptAccepted: flag(source.exactReceiptAccepted), totalBytes: optionalTransferCount(source.totalBytes, 2 ** 50),
+    totalFiles: optionalTransferCount(source.totalFiles, 100000),
+    publicationNumber: optionalTransferCount(source.publicationNumber, Number.MAX_SAFE_INTEGER, 1),
+    receiptPublicationNumber: optionalTransferCount(source.receiptPublicationNumber, Number.MAX_SAFE_INTEGER, 1) }
+}
+function parseBackgroundTransfers(value: unknown): BackgroundTransfer[] {
+  if (value == null) return []
+  const result = list(value, 256, item => {
+    const source = object(item)
+    return { routeOrdinal: transferCount(source.routeOrdinal, 256, 1),
+      recipientRole: transferCode(source.recipientRole, transferCodes.recipientRole), current: parseTransferProgress(source.current),
+      lastResult: parseTransferProgress(source.lastResult), lastFailure: parseTransferProgress(source.lastFailure) }
+  })
+  if (new Set(result.map(item => item.routeOrdinal)).size !== result.length) throw new Error('A background transfer contact was repeated.')
+  return result
 }
 function parsePeer(value: unknown): Peer {
   const source = object(value)
@@ -135,7 +194,8 @@ export function parseWorldPeerGroups(value: unknown): WorldPeerGroup[] {
     return { groupKey, profileId, name: text(source.name, 100), selfDeviceId: identity(source.selfDeviceId),
       sharingEnabled: flag(source.sharingEnabled), receiveConsented: flag(source.receiveConsented),
       canReceive: flag(source.canReceive), canReshare: flag(source.canReshare), canHost: flag(source.canHost),
-      warning: source.warning == null ? null : text(source.warning, 1000), selection: parseSelection(source.selection), state: { groupKey,
+      warning: source.warning == null ? null : text(source.warning, 1000), selection: parseSelection(source.selection),
+      backgroundTransfers: parseBackgroundTransfers(source.backgroundTransfers), state: { groupKey,
         peers: list(state.peers, 256, parsePeer), branches: list(state.branches, 8192, parseBranch),
         sessions: list(state.sessions, 128, parseSession), needsChoice: flag(state.needsChoice),
         knownSessions: count(state.knownSessions), announcementCount: count(state.announcementCount),
@@ -149,6 +209,68 @@ export function parseWorldPeerGroups(value: unknown): WorldPeerGroup[] {
   })
   if (new Set(result.map(group => group.groupKey)).size !== result.length) throw new Error('A world group was repeated.')
   return result
+}
+
+const transferPhases: Record<string, string> = { Queued: 'Waiting for background transfer', Metadata: 'Checking world metadata',
+  Pulling: 'Checking and receiving completed saves', Offering: 'Offering a completed save', Sending: 'Sending save files',
+  VerifyingLocal: 'Checking received files', VerifyingRemote: 'Waiting for the other PC to check files', Receipt: 'Exchanging exact copy receipts' }
+const transferStates: Record<string, string> = { Working: 'In progress', Pending: 'Waiting for another background pass',
+  Succeeded: 'This pass finished', Failed: 'Needs attention', Canceled: 'Transfer stopped' }
+const transferResults: Record<string, string> = { NoPayload: 'No completed local save was offered in this pass.',
+  SeedPaused: 'Save exchange is paused. Review receiving permission and free space on these PCs.',
+  SeedHistoryPending: 'Waiting for signed save history. Keep an approved peer reachable.',
+  ManifestUnavailable: 'The completed save information is unavailable. Keep an approved source PC reachable and review its save history.',
+  ChunkUnavailable: 'Some save files are unavailable. Keep the approved source PC reachable.',
+  WorkBudget: 'More work remains for another background pass.', ByteBudget: 'More bytes remain for another background pass.',
+  KnownWithoutReceipt: 'The other PC reports this save, but its exact copy receipt is not confirmed.',
+  Interrupted: 'The pass was interrupted. Keep the approved PCs reachable.', Canceled: 'The transfer was canceled.' }
+const transferErrors: Record<string, string> = {
+  Timeout: 'The approved PC did not respond in time. Keep it online and check its connection.',
+  Unreachable: 'The approved PC could not be reached. Keep it online and check its connection.',
+  HttpRejected: 'The approved PC could not accept the request. Keep it online and review Connection help.',
+  Unauthorized: 'Current sharing permission could not be confirmed. Review access with the owner.',
+  PeerRejected: 'The approved PC declined this request. Review current sharing permission.',
+  InvalidResponse: 'The approved PC response could not be verified. Existing copies are kept.',
+  InvalidHistory: 'The signed save history needs review. Existing copies are kept.',
+  SourceUnavailable: 'The completed source save is unavailable. Keep an approved source PC reachable.',
+  VerificationFailed: 'Save file verification needs review. Existing copies are kept.',
+  Capacity: 'Save storage needs review. Check free space on the receiving PC.',
+  Canceled: 'The transfer was canceled. Existing copies are kept.', Unexpected: 'The transfer could not finish. Existing copies are kept.'
+}
+function BackgroundTransfers({ group }: { group: WorldPeerGroup }) {
+  return <section aria-label={`Background save transfer for ${group.name}`}>
+    <h5>Background save transfer</h5>
+    <p className="helper-text">Metadata contact, local save publication and verified copy receipts are separate results.</p>
+    {group.backgroundTransfers.length === 0 && <p>No background save transfer has been reported for this app session.</p>}
+    {group.backgroundTransfers.map(transfer => {
+      const progress = transfer.current ?? transfer.lastResult
+      const receipt = [transfer.current, transfer.lastResult, transfer.lastFailure].find(item => item?.exactReceiptAccepted && item.receiptPublicationNumber !== null)
+      const role = transfer.recipientRole === 'OriginalHost' ? 'Original Host' : transfer.recipientRole === 'ApprovedPeer' ? 'Approved PC' : 'Contact'
+      return <div key={transfer.routeOrdinal}>
+        <h6>{role} · contact {transfer.routeOrdinal}</h6>
+        {progress ? <>
+          <p>{transferPhases[progress.phase] ?? 'Transfer step unavailable'}{progress.publicationNumber !== null && ` · Save ${progress.publicationNumber}`} — {transferStates[progress.state] ?? 'Progress unavailable'}.</p>
+          <p>This pass: {formatSharedBytes(progress.submittedBytes)} submitted · {formatSharedBytes(progress.receivedBytes)} received · {progress.completedFiles} {progress.completedFiles === 1 ? 'file' : 'files'} completed.</p>
+          {transferResults[progress.result] && <p>{transferResults[progress.result]}</p>}
+        </> : <p>Current transfer progress is unavailable.</p>}
+        {transfer.current && transfer.lastResult && <p>Previous pass: {transferPhases[transfer.lastResult.phase] ?? 'Transfer step unavailable'} — {transferResults[transfer.lastResult.result] ?? transferStates[transfer.lastResult.state] ?? 'Result unavailable'}.</p>}
+        {transfer.lastFailure && <p role="alert"><strong>Previous save transfer issue:</strong> {transferErrors[transfer.lastFailure.error] ?? 'The transfer could not be confirmed. Existing copies are kept.'}{' '}
+          Recorded {sharedSaveAge(transfer.lastFailure.updatedUtc)}.</p>}
+        <p>{receipt ? `Verified receipt for save ${receipt.receiptPublicationNumber} accepted.` : 'No verified copy receipt is confirmed in these transfer results.'}</p>
+        <p className="helper-text">A receipt applies to that completed save. It does not confirm the newest save, a game join or a successful game load.</p>
+        {(progress || transfer.lastFailure) && <details><summary>Transfer diagnostics</summary>{progress && <dl>
+          <dt>Phase / operation</dt><dd>{progress.phase} / {progress.operation}</dd>
+          <dt>Result / error</dt><dd>{progress.result} / {progress.error}</dd>
+          <dt>HTTP step / status</dt><dd>{progress.httpStep} / {progress.httpStatus ?? 'No response recorded'}</dd>
+          <dt>Elapsed</dt><dd>{progress.elapsedMilliseconds} ms</dd>
+          <dt>Requested file / offset</dt><dd>{progress.requestedFileIndex ?? 'Unavailable'} / {progress.requestedOffset ?? 'Unavailable'}</dd>
+        </dl>}{transfer.lastFailure && <dl>
+          <dt>Previous issue phase / operation</dt><dd>{transfer.lastFailure.phase} / {transfer.lastFailure.operation}</dd>
+          <dt>Previous issue error / HTTP status</dt><dd>{transfer.lastFailure.error} / {transfer.lastFailure.httpStatus ?? 'No response recorded'}</dd>
+        </dl>}</details>}
+      </div>
+    })}
+  </section>
 }
 
 export type WorldPeerPanelProps = { visible?: boolean; profileId?: string; readOnly?: boolean;
@@ -256,7 +378,8 @@ export function WorldPeerPanel({ visible = true, profileId, readOnly = false, on
     {shown.map(group => <article className="world-peer-group" key={group.groupKey} aria-label={group.name}>
       <h4>{group.name}</h4>
       {group.state.needsChoice && <p role="note">Several saves are recorded. The app checks these copies automatically before hosting.</p>}
-      <p>{group.state.replication.lastSuccessfulSyncUtc ? `Last updated ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}.` : 'Waiting for an approved PC to share an update.'}</p>
+      <p>{group.state.replication.lastSuccessfulSyncUtc ? `Last metadata contact ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}.` : 'No completed metadata contact recorded.'}</p>
+      <BackgroundTransfers group={group} />
       <p>{group.state.sessions.filter(item => item.authorized && !item.hasConflict && item.session.state === 'Hosting').length} reported running servers. This does not confirm a game connection.</p>
     </article>)}
   </section>
@@ -326,13 +449,14 @@ export function WorldPeerPanel({ visible = true, profileId, readOnly = false, on
         <details className="world-peer-permissions"><summary><Icon name="settings" />Save sharing &amp; permissions<Icon name="chevronDown" /></summary>
           <div className="world-peer-permissions-body">
             <div className="world-peer-summary">
-              <p><strong>World updates</strong><span>{group.state.replication.lastSuccessfulSyncUtc ?
-                `Last completed ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}` : 'No completed update from another PC'}</span></p>
+              <p><strong>World metadata</strong><span>{group.state.replication.lastSuccessfulSyncUtc ?
+                `Last metadata contact ${sharedSaveAge(group.state.replication.lastSuccessfulSyncUtc)}` : 'No completed metadata contact recorded'}</span></p>
               <p><strong>Receive saves</strong><span>{!group.canReceive ? 'Owner permission required' :
                 !group.receiveConsented ? 'Off — allow saves on this PC first' : 'Allowed on this PC'}</span></p>
               <p><strong>Save forwarding</strong><span>{group.canReshare ? 'Owner permission granted' : 'Owner permission required'}</span></p>
             </div>
-            <p className="helper-text">World updates do not download saves, change your game connection, or start or stop a server.</p>
+            <p className="helper-text">Get world updates checks approved PCs and may catch up completed save copies with current permission. It does not change your game connection or start or stop a server. Automatic status refresh only reads saved information.</p>
+            <BackgroundTransfers group={group} />
             <label><Input type="checkbox" checked={group.receiveConsented}
               disabled={busy !== null || (!group.receiveConsented && !group.canReceive)}
               onChange={event => void perform(group, 'receiving', { enabled: event.target.checked })} />Allow saves on this PC</label>

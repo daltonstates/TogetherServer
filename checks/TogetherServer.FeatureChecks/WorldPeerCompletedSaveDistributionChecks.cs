@@ -17,6 +17,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
     internal static async Task RunAsync(string parent)
     {
         ReceiptBoundaries();
+        await CatalogFailureObservationAsync(parent);
         await TerminalHeadBoundariesAsync(parent);
         await LatePublicationAfterClosedSessionAsync(parent);
         var folder = Path.Combine(parent, "completed-save-distribution-" + Guid.NewGuid().ToString("N"));
@@ -135,7 +136,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                 "distribution changed a recipient origin or TLS pin");
             if (route == dRoute && !lateOnline) return Offline(endpoint, pins);
             var handler = route == aRoute ? aHandler : route == cRoute ? cHandler : dHandler;
-            return new(handler, disposeHandler: false) { BaseAddress = new Uri(route.Address + "/") };
+            return new(handler, disposeHandler: false) { BaseAddress = new Uri(route.Address + "/"), Timeout = TimeSpan.FromSeconds(6) };
         }
         using var source = new WorldPeerService(b, new HostManager(b), bFriends, new PairingService(b), Client);
         for (var pass = 0; pass < 8; pass++) await source.SyncNowAsync(default);
@@ -166,6 +167,41 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         Require(File.ReadAllText(Path.Combine(original.WorldDirectory, "world.dat")) == "original remains unchanged" &&
             publisher.Status(original).Latest?.VersionHash == first.VersionHash,
             "returning-owner receipt or storage changed the original world/publication");
+
+        // A peer can forward another approved recipient's authentic receipt.
+        // Retaining it must not certify this HTTPS route's authenticated owner.
+        var ownerReceiptBytes = File.ReadAllBytes(Path.Combine(ownerVault, final.VersionHash, "receipt.json"));
+        var directOwnerTransfer = source.Views().Single(item => item.GroupKey == root.GroupKey).BackgroundTransfers!
+            .Single(item => item.RecipientRole == "OriginalHost").LastResult;
+        Require(directOwnerTransfer is { ExactReceiptAccepted: true } && directOwnerTransfer.ReceiptPublicationNumber == final.Number,
+            "the authenticated owner's own verified receipt was not attributed to that exact recipient and save");
+        var forwardedResponses = aHandler.ForwardedSeedResponses;
+        aHandler.ForwardedSeedReceipt = observerReceipt;
+        try { await SyncExactPeerAsync(source, root, aRoute); }
+        finally { aHandler.ForwardedSeedReceipt = null; }
+        var ownerTransfer = source.Views().Single(item => item.GroupKey == root.GroupKey).BackgroundTransfers!
+            .Single(item => item.RecipientRole == "OriginalHost").LastResult;
+        var retainedReceipts = Receipts(b, root);
+        var overrideResponses = aHandler.ForwardedSeedResponses - forwardedResponses;
+        var exactReceiptClaimCleared = ownerTransfer is { ExactReceiptAccepted: false, ReceiptPublicationNumber: null };
+        var forwardedResultObserved = ownerTransfer?.Result == "KnownWithoutReceipt";
+        var exactPublicationObserved = ownerTransfer?.PublicationNumber == final.Number;
+        var observerReceiptPreserved = retainedReceipts.Where(item => item.DeviceId == cCredential.DeviceId &&
+            item.VersionHash == final.VersionHash).SequenceEqual([observerReceipt]);
+        var ownerReceiptPreserved = retainedReceipts.Where(item => item.DeviceId == Guid.Empty &&
+            item.VersionHash == final.VersionHash).SequenceEqual([ownerReceipt]);
+        var ownerReceiptFilePreserved = File.ReadAllBytes(Path.Combine(ownerVault, final.VersionHash, "receipt.json")).SequenceEqual(ownerReceiptBytes);
+        Require(overrideResponses == 1 && exactReceiptClaimCleared && forwardedResultObserved && exactPublicationObserved &&
+            observerReceiptPreserved && observerSignatureValid && ownerReceiptPreserved && ownerReceiptFilePreserved,
+            $"Synthetic forwarded receipt checks: overrideResponses={overrideResponses}, observationPresent={ownerTransfer is not null}, " +
+            $"exactReceiptClaimCleared={exactReceiptClaimCleared}, forwardedResultObserved={forwardedResultObserved}, " +
+            $"exactPublicationObserved={exactPublicationObserved}, observerReceiptPreserved={observerReceiptPreserved}, " +
+            $"observerSignatureValid={observerSignatureValid}, ownerReceiptPreserved={ownerReceiptPreserved}, " +
+            $"ownerReceiptFilePreserved={ownerReceiptFilePreserved}.");
+        VerifyCopy(ownerVault, final, finalBytes);
+        Require(File.ReadAllText(Path.Combine(original.WorldDirectory, "world.dat")) == "original remains unchanged" &&
+            publisher.Status(original).Latest?.VersionHash == first.VersionHash,
+            "forwarded-receipt observation changed owner world/publication data");
 
         // Signed current revocation and a deadline already reached at real UTC
         // deny payloads even when the old signed contacts remain cached/online.
@@ -251,6 +287,171 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             "deduplicating the current advertisement changed received own-lane copies or older signed journal claims");
         Require(bStore.Project().Sessions.Single(item => item.Session.SessionId == runId).Session == terminal,
             "a later backup rewrote an already closed session's final save");
+    }
+
+    private static async Task CatalogFailureObservationAsync(string parent)
+    {
+        var folder = Path.Combine(parent, "catalog-failure-observation-" + Guid.NewGuid().ToString("N"));
+        using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var member = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var a = new LocalData(Path.Combine(folder, "owner"));
+        using var b = new LocalData(Path.Combine(folder, "source"));
+        var original = new ServerProfile
+        {
+            Kind = GameKinds.Fixture,
+            WorldId = "CatalogFailureFilesOnly",
+            SharedSavesEnabled = true,
+            WorldDirectory = Path.Combine(a.RootPath, "original-synthetic-world")
+        };
+        Directory.CreateDirectory(original.WorldDirectory);
+        File.WriteAllText(Path.Combine(original.WorldDirectory, "world.dat"), "synthetic original remains unchanged");
+        Configure(a, "https://192.0.2.180:5131", [original]);
+        Configure(b, "https://192.0.2.181:5131", []);
+        a.SaveProtected("shared-world-signing-key.protected", owner.ExportPkcs8PrivateKey());
+        var aRoute = Route(a); var bRoute = Route(b);
+        var pairing = new PairingService(a);
+        var invite = pairing.IssueServer(original.Id, false, false, aRoute.Address, aRoute.CertificateSha256, false);
+        var credential = pairing.Activate(new(original.Id, invite.Code, ServerScope: true))!;
+        Bind(pairing, credential.DeviceId, member);
+        var capture = new CompletedFiles(a.RootPath);
+        var publisher = new SharedWorldService(a, capture);
+        var roster = publisher.PublishRoster(original, pairing.SharedRosterMembers(original.Id));
+        pairing.ConfirmSharedRosterPublished(original.Id, roster);
+        var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, original.Id, roster.GroupId);
+        var firstBytes = Encoding.UTF8.GetBytes("synthetic catalog observation base");
+        capture.Set(firstBytes);
+        var first = publisher.PublishAfterStop(original, Guid.NewGuid());
+        Require(first is { Ok: true, Version: not null }, "the catalog observation lacked its completed original save");
+        Initialize(a, root, roster, Guid.Empty, owner, bRoute, null);
+        Initialize(b, root, roster, credential.DeviceId, member, aRoute, credential);
+        var received = Vault(b, credential.DeviceId, original.Id);
+        WriteCopy(received, first.Version, firstBytes);
+        var copies = new SharedWorldSeparateCopyStore(b);
+        var offer = SharedWorldSeparateCopyStore.PrepareSoloOffer(received, roster,
+            new(root.GroupId, roster.Epoch, roster.Revision, roster.Signature), credential.DeviceId, member,
+            bRoute.Address, bRoute.CertificateSha256, new WorldAuthorityStore(b));
+        var branch = copies.Declare(offer, received, member, true);
+        var localId = SharedWorldBranchLiveSource.LocalProfileId(branch.BranchHash);
+        var local = new ServerProfile
+        {
+            Id = localId,
+            Kind = GameKinds.Fixture,
+            WorldId = first.Version.WorldId,
+            GamePort = first.Version.PortableSetup.GamePort,
+            WorldDirectory = SharedWorldBranchLiveSource.WorldRoot(b, first.Version, localId),
+            SeparateCopySourceProfileId = root.ProfileId,
+            SeparateCopyBranchHash = branch.BranchHash,
+            Backups = new() { Enabled = true, MinimumFreeSpaceMb = 0 }
+        };
+        var settings = b.LoadSettings(); settings.Profiles = [local]; b.SaveSettings(settings);
+        Directory.CreateDirectory(local.WorldDirectory);
+        File.WriteAllText(Path.Combine(local.WorldDirectory, "world.dat"), "synthetic newer complete stopped progress");
+        var backups = new WorldBackupService(b, TimeProvider.System, games: new GameServerRegistry(b, true, PortProbeMode.ObserveOnly));
+        var backup = backups.Create(local, BackupKinds.Rolling);
+        Require(backup is { Ok: true, Backup: not null }, "the catalog observation's generated rolling backup failed");
+        var publication = copies.PublishAfterStop(branch, local, backup.Backup.Id, backups);
+        Require(publication is { Ok: true, Version: not null } && publication.Version.Number > first.Version.Number,
+            "the catalog observation did not retain newer produced-here progress");
+        Store(a, root, roster).Publish(Guid.Empty, owner, [aRoute], [], [], [first.Version.VersionHash]);
+        HttpClient Offline(string _, IEnumerable<string> __) => throw new HttpRequestException("Synthetic route is offline.");
+        using var aFriends = new FriendService(a, Offline);
+        using var bFriends = new FriendService(b, Offline);
+        using var receiver = new WorldPeerService(a, new HostManager(a), aFriends, pairing, Offline);
+        using var handler = new Handler(receiver, root, aRoute) { RejectCatalog = true };
+        HttpClient Client(string endpoint, IEnumerable<string> pins)
+        {
+            Require(endpoint.TrimEnd('/') == aRoute.Address && pins.SequenceEqual([aRoute.CertificateSha256]),
+                "the catalog observation changed its pinned fake peer");
+            return new(handler, disposeHandler: false) { BaseAddress = new Uri(aRoute.Address + "/"), Timeout = TimeSpan.FromSeconds(6) };
+        }
+        using var source = new WorldPeerService(b, new HostManager(b), bFriends, new PairingService(b), Client);
+        var seedRequests = handler.SeedRequests;
+        for (var pass = 0; pass < 2; pass++)
+        {
+            var metadataResponses = handler.SuccessfulMetadataResponses;
+            var rejectedCatalogs = handler.RejectedCatalogs;
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            handler.BeforeExchange = async exchange =>
+            {
+                if (exchange.Request.Operation != WorldPeerOperations.Catalog) return;
+                entered.TrySetResult(true);
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            };
+            using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var sync = source.SyncNowAsync(bounded.Token);
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var metadataContact = source.Views().Single(item => item.GroupKey == root.GroupKey).State.Peers
+                    .Single(item => item.PublicKey == root.OwnerPublicKey).Contact;
+                Require(handler.SuccessfulMetadataResponses > metadataResponses && metadataContact is { LastAttemptSucceeded: true, LastSuccessUtc: not null } &&
+                    handler.SeedRequests == seedRequests,
+                    "a pending Catalog failure did not expose fresh signed metadata before the blocked outbound seed");
+            }
+            finally { release.TrySetResult(true); await sync.WaitAsync(TimeSpan.FromSeconds(10)); handler.BeforeExchange = null; }
+            var view = source.Views().Single(item => item.GroupKey == root.GroupKey);
+            var failure = view.BackgroundTransfers!.Single(item => item.RecipientRole == "OriginalHost").LastFailure;
+            Require(handler.RejectedCatalogs == rejectedCatalogs + 1 && handler.SeedRequests == seedRequests &&
+                failure is { Phase: "Pulling", Operation: "Catalog", Error: "HttpRejected", HttpStatus: 503 },
+                "Catalog HTTP503 lost its exact failed phase or allowed the newer outbound seed to run");
+            var unchangedFailure = failure.UpdatedUtc;
+            var afterFailureMetadata = handler.SuccessfulMetadataResponses;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var discovery = (Task<bool>)typeof(WorldPeerService).GetMethod("DiscoverHostingMetadataAsync", flags)!
+                .Invoke(source, [root, CancellationToken.None])!;
+            Require(await discovery.WaitAsync(TimeSpan.FromSeconds(10)) && handler.SuccessfulMetadataResponses > afterFailureMetadata &&
+                source.Views().Single(item => item.GroupKey == root.GroupKey).State.Peers
+                    .Single(item => item.PublicKey == root.OwnerPublicKey).Contact is { LastAttemptSucceeded: true },
+                "the post-failure discovery did not check fresh signed metadata independently");
+            var retainedFailure = source.Views().Single(item => item.GroupKey == root.GroupKey).BackgroundTransfers!
+                .Single(item => item.RecipientRole == "OriginalHost").LastFailure;
+            Require(retainedFailure is { Phase: "Pulling", Operation: "Catalog", Error: "HttpRejected", HttpStatus: 503 } &&
+                retainedFailure.UpdatedUtc == unchangedFailure && handler.SeedRequests == seedRequests,
+                "successful metadata-only discovery erased or replaced the payload-transfer failure");
+        }
+        Require(!Directory.Exists(SharedWorldBranchVault.Root(a, branch)) &&
+            !Receipts(b, root).Any(item => item.VersionHash == publication.Version.VersionHash) &&
+            FriendLink.ReadReceivedLatest(copies.PublishedRoot(branch))?.VersionHash == publication.Version.VersionHash &&
+            a.LoadRuns().Count == 0 && b.LoadRuns().Count == 0,
+            "the failed-Catalog observation copied progress, accepted a receipt, changed the publication or created a process");
+
+        // Cancellation must win before hash validation can reset an unfinished
+        // file. Use a real signed descriptor with deliberately wrong staged
+        // bytes, so omitting the verification token would truncate this file.
+        var version = publication.Version;
+        var vault = SharedWorldBranchVault.Root(a, branch);
+        var stage = Path.Combine(vault, ".partial-" + version.VersionHash);
+        var payload = Path.Combine(stage, SharedWorldService.PayloadDirectory);
+        Directory.CreateDirectory(payload);
+        var wrongBytes = File.ReadAllBytes(Path.Combine(copies.PublishedRoot(branch), version.VersionHash,
+            SharedWorldService.PayloadDirectory, "world.dat"));
+        wrongBytes[0] ^= 0x7F;
+        Require(version.Files is [{ Path: "world.dat" } file] && wrongBytes.Length == file.Length &&
+            Convert.ToHexString(SHA256.HashData(wrongBytes)) != file.Sha256,
+            "the canceled completion fixture did not contain an exact-length hash mismatch");
+        var partialFile = Path.Combine(payload, "world.dat");
+        File.WriteAllBytes(partialFile, wrongBytes);
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        const System.Reflection.BindingFlags privateInstance = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var group = typeof(WorldPeerService).GetMethod("Find", privateInstance)!.Invoke(receiver, [root.GroupKey]);
+        Require(group is not null, "the canceled completion fixture lost its current authorized group");
+        var completionCanceled = false;
+        try
+        {
+            var completion = (Task<SharedWorldReceipt?>)typeof(WorldPeerService).GetMethod("CompletePeerSaveAsync", privateInstance)!
+                .Invoke(receiver, [group, new WorldPeerSaveDescriptor(version, branch), vault, stage,
+                    branch.Offer.Version, canceled.Token, null])!;
+            await completion.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (OperationCanceledException) when (canceled.IsCancellationRequested) { completionCanceled = true; }
+        Require(completionCanceled && File.ReadAllBytes(partialFile).SequenceEqual(wrongBytes) &&
+            !Directory.Exists(Path.Combine(vault, version.VersionHash)) && !File.Exists(Path.Combine(vault, "latest.json")) &&
+            !File.Exists(Path.Combine(stage, "version.json")) && !File.Exists(Path.Combine(stage, "receipt.json")) &&
+            Receipts(a, root).Length == 0 && !Receipts(b, root).Any(item => item.VersionHash == version.VersionHash) &&
+            a.LoadRuns().Count == 0 && b.LoadRuns().Count == 0,
+            "canceled completion hashed/reset staged progress, promoted a pointer/receipt or created a process");
     }
 
     private static async Task LatePublicationAfterClosedSessionAsync(string parent)
@@ -360,7 +561,8 @@ internal static class WorldPeerCompletedSaveDistributionChecks
             var route = endpoint.TrimEnd('/') == aRoute.Address ? aRoute : cRoute;
             Require(endpoint.TrimEnd('/') == route.Address && pins.SequenceEqual([route.CertificateSha256]),
                 "late publication changed a pinned recipient origin");
-            return new(route == aRoute ? aHandler : cHandler, disposeHandler: false) { BaseAddress = new Uri(route.Address + "/") };
+            return new(route == aRoute ? aHandler : cHandler, disposeHandler: false)
+            { BaseAddress = new Uri(route.Address + "/"), Timeout = TimeSpan.FromSeconds(6) };
         }
         using var source = new WorldPeerService(b, new HostManager(b), bFriends, new PairingService(b), Client);
         for (var pass = 0; pass < 6; pass++) await source.SyncNowAsync(default);
@@ -562,6 +764,18 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         data.LoadProtected($"world-peer-receipts-{root.GroupKey}.protected") is { } bytes
             ? JsonSerializer.Deserialize<SharedWorldReceipt[]>(bytes, Json)! : [];
     private static string Public(ECDsa key) => Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+    private static async Task SyncExactPeerAsync(WorldPeerService service, SharedWorldPeerRoot root, SharedWorldPeerRoute route)
+    {
+        // Exercise the same full metadata/pull/seed flight without depending on
+        // the background scheduler's two-of-three recipient rotation.
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var group = typeof(WorldPeerService).GetMethod("Find", flags)!.Invoke(service, [root.GroupKey]);
+        Require(group is not null, "the exact fake-peer sync lost its registered group");
+        using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var sync = (Task)typeof(WorldPeerService).GetMethod("SyncPeerAsync", flags)!
+            .Invoke(service, [group, route, bounded.Token, true, false])!;
+        await sync.WaitAsync(TimeSpan.FromSeconds(15));
+    }
     private static string Vault(LocalData data, Guid id, Guid profile) => Path.Combine(data.RootPath,
         "received-shared-worlds", id.ToString("N"), profile.ToString("N"));
     private static SharedWorldFile Fact(byte[] bytes) => new("world.dat", bytes.Length, Convert.ToHexString(SHA256.HashData(bytes)));
@@ -597,6 +811,11 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         private string? droppedVersionHash;
         internal int SeedChunksAfterDroppedCompletion { get; private set; }
         internal int SeedRequests { get; private set; }
+        internal bool RejectCatalog { get; set; }
+        internal int RejectedCatalogs { get; private set; }
+        internal int SuccessfulMetadataResponses { get; private set; }
+        internal SharedWorldReceipt? ForwardedSeedReceipt { get; set; }
+        internal int ForwardedSeedResponses { get; private set; }
         internal Func<WorldPeerExchangeRequest, Task>? BeforeExchange { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
@@ -620,7 +839,23 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                     SeedChunksAfterDroppedCompletion++;
             }
             if (BeforeExchange is not null) await BeforeExchange(exchange);
+            if (RejectCatalog && exchange.Request.Operation == WorldPeerOperations.Catalog)
+            {
+                RejectedCatalogs++;
+                return new(HttpStatusCode.ServiceUnavailable) { Content = JsonContent.Create(new { code = "PeerUnavailable" }) };
+            }
             var result = await service.ExchangeAsync(root.GroupKey, exchange.Request, exchange.Payload, token, route.CertificateSha256);
+            if (exchange.Request.Operation == WorldPeerOperations.Metadata) SuccessfulMetadataResponses++;
+            if (ForwardedSeedReceipt is { } forwarded && exchange.Request.Operation == WorldPeerOperations.Seed &&
+                WorldPeerProtocol.DecodeEnvelope<WorldPeerSeedResponse>(result, WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Seed)) is
+                { Code: "SeedKnown" or "SeedComplete" } accepted && accepted.VersionHash == forwarded.VersionHash)
+            {
+                // The real receiver already accepted/verified the exact save.
+                // A completion acknowledgement keeps this pass on that save,
+                // rather than subsequently offering an older catalog entry.
+                result = JsonSerializer.SerializeToUtf8Bytes(accepted with { Code = "SeedComplete", Receipt = forwarded }, Json);
+                ForwardedSeedResponses++;
+            }
             if (DropFirstCompletedSeed && exchange.Request.Operation == WorldPeerOperations.Seed &&
                 WorldPeerProtocol.DecodeEnvelope<WorldPeerSeedResponse>(result, WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Seed)) is
                 { Code: "SeedComplete", Receipt: { } receipt })

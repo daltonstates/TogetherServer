@@ -15,16 +15,24 @@ internal sealed partial class WorldPeerService
     // copy. It connects outward to an already enabled member's pinned listener.
     // The receiving PC chooses each exact missing signed manifest/chunk; the
     // sender never submits a path, command, live world or installation setting.
-    private async Task SeedPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken)
+    private async Task<WorldPeerTransferResult> SeedPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken)
     {
         using var key = LocalKey(group);
         if (key is null || !await ReceiveAllowedAsync(group, cancellationToken) ||
-            Access(group, group.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is not { Receive: true, Reshare: true }) return;
+            Access(group, group.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is not { Receive: true, Reshare: true })
+            return WorldPeerTransferResult.SeedPaused;
         var catalog = await LocalCatalogAsync(group, cancellationToken, includeTests: false);
+        var observationContext = transferAttempt.Value;
+        var observation = observationContext?.Attempt;
+        var outcome = WorldPeerTransferResult.NoPayload;
         // Prefer a continuation before its older original-source copy. This is
         // transfer scheduling only; selection still requires verified ancestry.
         foreach (var descriptor in catalog.Saves.OrderByDescending(item => item.Version.Number))
         {
+            observation?.Phase(WorldPeerTransferPhase.Offering);
+            observation?.Expected(descriptor.Version.Files.Sum(file => file.Length), descriptor.Version.Files.Count,
+                descriptor.Version.Number);
+            observation?.Requested(null, null);
             var response = await SendSeedAsync(group, route, descriptor, null, null, null, null, cancellationToken);
             long sent = 0;
             for (var work = 0; work < 256; work++)
@@ -40,28 +48,46 @@ internal sealed partial class WorldPeerService
                         var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
                         var accepted = AcceptReceipt(current, JsonSerializer.SerializeToUtf8Bytes(receipt, Json));
                         if (!accepted.Ok) throw new InvalidDataException("The seeded-copy receipt did not verify.");
+                        // A valid forwarded receipt remains useful, but is not
+                        // proof that this route's authenticated recipient has it.
+                        if (observationContext?.ReceiptFromResponder(current, receipt) == true)
+                        {
+                            observation?.ReceiptAccepted(descriptor.Version.Number);
+                            outcome = response.Code == "SeedKnown" ? WorldPeerTransferResult.KnownReceiptAccepted :
+                                WorldPeerTransferResult.CompleteReceiptAccepted;
+                        }
+                        else if (outcome == WorldPeerTransferResult.NoPayload) outcome = WorldPeerTransferResult.KnownWithoutReceipt;
                     }
+                    else if (outcome == WorldPeerTransferResult.NoPayload) outcome = WorldPeerTransferResult.KnownWithoutReceipt;
                     if (response.Code == "SeedKnown") break;
-                    return; // One completed payload per peer/pass.
+                    return outcome; // One completed payload per peer/pass.
                 }
                 if (response.Code == "SeedManifest" && response.ManifestHash is { } hash && response.ManifestNumber is { } number)
                 {
                     var manifest = await FindManifestAsync(group, hash, number, cancellationToken);
-                    if (manifest is null) return;
+                    if (manifest is null) return WorldPeerTransferResult.ManifestUnavailable;
                     response = await SendSeedAsync(group, route, descriptor, manifest, null, null, null, cancellationToken);
                 }
                 else if (response.Code == "SeedChunk" && response.FileIndex is { } file && response.ChunkOffset is { } offset)
                 {
+                    observation?.Phase(WorldPeerTransferPhase.Sending);
+                    observation?.Requested(file, offset);
                     var bytes = await ReadChunkAsync(group, descriptor.Version.VersionHash, file, offset, cancellationToken);
-                    if (bytes is null) return;
+                    if (bytes is null) return WorldPeerTransferResult.ChunkUnavailable;
+                    observation?.Submitted(bytes.Length);
+                    if (file == descriptor.Version.Files.Count - 1 && offset + bytes.Length == descriptor.Version.Files[file].Length)
+                        observation?.Phase(WorldPeerTransferPhase.VerifyingRemote);
                     response = await SendSeedAsync(group, route, descriptor, null, bytes, file, offset, cancellationToken);
                     sent += bytes.Length;
-                    if (sent >= WorldPeerFileTransfer.MaximumPayloadBytesPerPass) return;
+                    if (sent >= WorldPeerFileTransfer.MaximumPayloadBytesPerPass) return WorldPeerTransferResult.ByteBudget;
                 }
-                else if (response.Code is "SeedPaused" or "SeedHistoryPending") return;
+                else if (response.Code == "SeedPaused") return WorldPeerTransferResult.SeedPaused;
+                else if (response.Code == "SeedHistoryPending") return WorldPeerTransferResult.SeedHistoryPending;
                 else throw new InvalidDataException("The peer returned an invalid fixed seed request.");
+                if (work == 255) outcome = WorldPeerTransferResult.WorkBudget;
             }
         }
+        return outcome;
     }
 
     private async Task<WorldPeerSeedResponse> SendSeedAsync(Group group, SharedWorldPeerRoute route,

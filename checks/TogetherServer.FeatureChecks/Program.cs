@@ -84,6 +84,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Recovery branch live-save integration", () => BranchLiveIntegrationChecks.RunAsync(root)),
     ("Offline-owner save replication", () => WorldPeerReplicationChecks.RunAsync(root)),
     ("Completed save delivery to owner and online peers", () => WorldPeerCompletedSaveDistributionChecks.RunAsync(root)),
+    ("Read-only background transfer evidence", WorldPeerTransferObservationChecks.RunAsync),
     ("Bounded prepared hosting discovery", () => WorldPeerHostingDiscoveryChecks.RunAsync(root)),
     ("Independent coalesced completed-save background sharing", () => WorldPeerHostingDiscoveryChecks.RunBackgroundSchedulingAsync(root)),
     ("Prepared Start reuses exact published progress", () => LocalHostingChecks.PreparedPublicationReuseAsync(root)),

@@ -6,7 +6,8 @@ namespace TogetherServer;
 public sealed record WorldPeerGroupView(string GroupKey, string Name, Guid ProfileId,
     Guid SelfDeviceId, bool SharingEnabled, bool ReceiveConsented, bool CanReceive,
     bool CanReshare, bool CanHost, SharedWorldPeerGroupState State, string? Warning = null,
-    WorldPeerDefaultView? Selection = null);
+    WorldPeerDefaultView? Selection = null,
+    IReadOnlyList<WorldPeerTransferView>? BackgroundTransfers = null);
 public sealed record WorldPeerActionResult(bool Ok, string Code, string Message);
 public sealed record WorldPeerSharingRequest(bool Enabled);
 
@@ -29,6 +30,8 @@ internal sealed partial class WorldPeerService
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private readonly object stateSync;
     private readonly Dictionary<string, string> warnings = new(StringComparer.Ordinal);
+    private readonly WorldPeerTransferObservationStore transferObservations = new();
+    private readonly AsyncLocal<PeerTransferObservation?> transferAttempt = new();
     private Task? backgroundSync;
 
     internal WorldPeerService(LocalData data, HostManager manager, FriendService friend,
@@ -230,7 +233,8 @@ internal sealed partial class WorldPeerService
             result.Add(new(group.Root.GroupKey, group.Name, group.Root.ProfileId, group.DeviceId,
                 group.SharingEnabled, group.ReceiveConsented, access?.Receive == true,
                 access?.Reshare == true, access is { Receive: true, EligibleHost: true }, state,
-                warnings.GetValueOrDefault(group.Root.GroupKey), DefaultView(group, state)));
+                warnings.GetValueOrDefault(group.Root.GroupKey), DefaultView(group, state),
+                transferObservations.ReadWorld(group.Root.GroupKey)));
         }
         return result;
     }

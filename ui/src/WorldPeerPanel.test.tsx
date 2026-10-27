@@ -38,6 +38,131 @@ function group() {
 }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
+function transferProgress(patch: Record<string, unknown> = {}) {
+  return { state: 'Working', phase: 'Pulling', operation: 'Catalog', httpStep: 'Exchange', result: 'None', error: 'None',
+    httpStatus: null, startedUtc: stamp, updatedUtc: stamp, elapsedMilliseconds: 1000,
+    submittedBytes: 1024, receivedBytes: 1024, completedFiles: 1, requestedFileIndex: null, requestedOffset: null,
+    exactReceiptAccepted: false, totalBytes: 1024, totalFiles: 1, publicationNumber: 6, receiptPublicationNumber: null, ...patch }
+}
+function transferGroup(current: ReturnType<typeof transferProgress> | null,
+  lastResult: ReturnType<typeof transferProgress> | null = null, lastFailure: ReturnType<typeof transferProgress> | null = null) {
+  const value = group()
+  return { ...value, state: { ...value.state, replication: { ...value.state.replication,
+    lastSuccessfulSyncUtc: new Date().toISOString(), claimedCopyPeers: 3 } },
+    backgroundTransfers: [{ routeOrdinal: 1, recipientRole: 'OriginalHost', current, lastResult, lastFailure }] }
+}
+
+describe('Background save transfer observation', () => {
+  it('keeps fresh metadata, full byte counters and a successful HTTP response separate from a verified receipt', async () => {
+    const value = transferGroup(null, transferProgress({ state: 'Succeeded', result: 'PassComplete', httpStatus: 200 }))
+    vi.stubGlobal('fetch', vi.fn(async () => reply([value])))
+    render(<WorldPeerPanel readOnly profileId={profileId} />)
+    const world = await screen.findByRole('article', { name: 'Weekend world' })
+    expect(within(world).getByText(/Last metadata contact/)).toBeInTheDocument()
+    const progress = within(world).getByRole('region', { name: 'Background save transfer for Weekend world' })
+    expect(progress).toHaveTextContent('This pass finished')
+    expect(progress).toHaveTextContent(/This pass:.*submitted.*received.*1 file completed/)
+    expect(progress).toHaveTextContent('No verified copy receipt is confirmed')
+    expect(within(progress).queryByText(/Verified receipt for save .* accepted/)).not.toBeInTheDocument()
+    expect(within(progress).queryByRole('progressbar')).not.toBeInTheDocument()
+  })
+
+  it('retains a payload failure through later metadata contact and read-only status polling', async () => {
+    vi.useFakeTimers()
+    const failure = transferProgress({ state: 'Failed', phase: 'Pulling', operation: 'Catalog', error: 'HttpRejected', httpStatus: 503 })
+    const metadata = transferProgress({ phase: 'Metadata', operation: 'Metadata', submittedBytes: 0, receivedBytes: 0 })
+    let value = transferGroup(metadata, transferProgress({ ...metadata, state: 'Succeeded', result: 'NoPayload' }), failure)
+    const calls: { url: string; method?: string }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { calls.push({ url, method: init?.method }); return reply([value]) }))
+    render(<WorldPeerPanel readOnly profileId={profileId} />)
+    await act(async () => {})
+    const progress = within(screen.getByRole('region', { name: 'Background save transfer for Weekend world' }))
+    expect(progress.getByRole('alert')).toHaveTextContent('Previous save transfer issue')
+    expect(progress.getByRole('alert')).toHaveTextContent('approved PC could not accept the request')
+    value = transferGroup({ ...metadata, updatedUtc: '2026-10-27T00:00:00Z' }, transferProgress({ ...metadata, state: 'Succeeded', result: 'NoPayload' }), failure)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh details' }))
+    await act(async () => {})
+    expect(progress.getByRole('alert')).toHaveTextContent('Previous save transfer issue')
+    expect(progress.getAllByText(/Checking world metadata/).length).toBeGreaterThan(0)
+    fireEvent.click(progress.getByText('Transfer diagnostics'))
+    expect(progress.getByText('Pulling / Catalog')).toBeVisible()
+    expect(progress.getByText('HttpRejected / 503')).toBeVisible()
+    expect(calls.length).toBeGreaterThanOrEqual(3)
+    expect(calls.every(call => call.url === '/api/local/world-peers' && call.method === undefined)).toBe(true)
+    expect(progress.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('shows the explicitly accepted historical receipt even during a later failed pass', async () => {
+    const observed = transferProgress({ state: 'Failed', result: 'Failed', error: 'HttpRejected', httpStatus: 503,
+      publicationNumber: 6, receiptPublicationNumber: 5, exactReceiptAccepted: true })
+    vi.stubGlobal('fetch', vi.fn(async () => reply([transferGroup(null, observed, observed)])))
+    render(<WorldPeerPanel readOnly />)
+    const progress = await screen.findByRole('region', { name: 'Background save transfer for Weekend world' })
+    expect(progress).toHaveTextContent('Verified receipt for save 5 accepted.')
+    expect(progress).toHaveTextContent('Save 6')
+    expect(progress).toHaveTextContent('A receipt applies to that completed save.')
+    expect(progress).not.toHaveTextContent('Verified receipt for save 6 accepted.')
+  })
+
+  it.each([{ exactReceiptAccepted: false, receiptPublicationNumber: 5 }, { exactReceiptAccepted: true, receiptPublicationNumber: null }])(
+    'does not invent a receipt from incomplete evidence %j', async patch => {
+      vi.stubGlobal('fetch', vi.fn(async () => reply([transferGroup(null, transferProgress({ state: 'Succeeded', result: 'CompleteReceiptAccepted', ...patch }))])))
+      render(<WorldPeerPanel readOnly />)
+      const progress = await screen.findByRole('region', { name: 'Background save transfer for Weekend world' })
+      expect(progress).toHaveTextContent('No verified copy receipt is confirmed')
+      expect(within(progress).queryByText(/Verified receipt for save .* accepted/)).not.toBeInTheDocument()
+    })
+
+  it('normalizes unknown telemetry codes without displaying input strings or private errors', async () => {
+    const unsafe = 'untrusted private-path token=secret'
+    const untrusted = transferProgress(Object.fromEntries(['state', 'phase', 'operation', 'httpStep', 'result', 'error'].map(key => [key, unsafe])))
+    const value = transferGroup(untrusted, null, untrusted)
+    value.backgroundTransfers[0].recipientRole = unsafe
+    vi.stubGlobal('fetch', vi.fn(async () => reply([value])))
+    render(<WorldPeerPanel readOnly />)
+    const progress = await screen.findByRole('region', { name: 'Background save transfer for Weekend world' })
+    fireEvent.click(within(progress).getByText('Transfer diagnostics'))
+    expect(progress).toHaveTextContent('Transfer step unavailable')
+    expect(progress).not.toHaveTextContent(unsafe)
+    expect(progress).not.toHaveTextContent('secret')
+    expect(parseWorldPeerGroups([value])[0].backgroundTransfers[0].current?.error).toBe('Unknown')
+  })
+
+  it('keeps automatic status reads separate from the explicit save catch-up action', async () => {
+    vi.useFakeTimers()
+    const calls: { url: string; method?: string; body?: BodyInit | null }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      return reply(init?.method ? { ok: true, code: 'WorldPeersChecked', message: 'Checked approved PCs.' } : [group()])
+    }))
+    render(<WorldPeerPanel />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    fireEvent.click(screen.getByText('Save sharing & permissions'))
+    expect(screen.getByText(/Get world updates checks approved PCs/)).toHaveTextContent('may catch up completed save copies with current permission')
+    expect(calls.every(call => call.method === undefined)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Get world updates' }))
+    await act(async () => {})
+    expect(calls.filter(call => call.method)).toEqual([{ url: `/api/local/world-peers/${groupKey}/sync`, method: 'POST', body: '{}' }])
+  })
+
+  it.each([
+    { submittedBytes: -1 }, { receivedBytes: 2 ** 50 + 1 }, { completedFiles: 100001 }, { elapsedMilliseconds: 86400001 },
+    { requestedFileIndex: 100001 }, { requestedOffset: -1 }, { httpStatus: 99 }, { httpStatus: 600 },
+    { publicationNumber: 0 }, { receiptPublicationNumber: Number.MAX_SAFE_INTEGER + 1 }, { totalBytes: '1024' },
+    { exactReceiptAccepted: 'true' }, { startedUtc: 'yesterday' }
+  ])('refuses malformed transfer evidence %j', patch => {
+    expect(() => parseWorldPeerGroups([transferGroup(transferProgress(patch))])).toThrow()
+  })
+
+  it('accepts missing telemetry and refuses duplicate or unbounded route ordinals', () => {
+    expect(parseWorldPeerGroups([group()])[0].backgroundTransfers).toEqual([])
+    const value = transferGroup(null)
+    expect(() => parseWorldPeerGroups([{ ...value, backgroundTransfers: [value.backgroundTransfers[0], value.backgroundTransfers[0]] }])).toThrow()
+    expect(() => parseWorldPeerGroups([{ ...value, backgroundTransfers: [{ ...value.backgroundTransfers[0], routeOrdinal: 257 }] }])).toThrow()
+  })
+})
+
 describe('World groups', () => {
   it('provides read-only diagnostics without receiving, forwarding, default or branch settings', async () => {
     const writes: string[] = []

@@ -579,6 +579,8 @@ internal sealed partial class WorldPeerService : IDisposable
         client.DefaultRequestHeaders.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString(CultureInfo.InvariantCulture));
         client.DefaultRequestHeaders.Add("X-TogetherServer-Capability", CompanionProtocol.SharedWorldPeersCapability);
         var prefix = $"api/companion/world-peers/{group.Root.GroupKey}/";
+        var observationContext = transferAttempt.Value;
+        var observation = observationContext?.Attempt;
         WorldPeerChallenge? challenge = null;
         var expectedIdentity = announced.Length == 1 ? announced[0] : manualIdentity;
         var maySendRosters = expectedIdentity is not null && CurrentPeerKey(group, expectedIdentity);
@@ -592,11 +594,15 @@ internal sealed partial class WorldPeerService : IDisposable
                     ? ChallengeRosters(group, cursor.KnownRemoteRosterRevision) : []);
             using var challengeRequest = new HttpRequestMessage(HttpMethod.Post, prefix + "challenge")
             { Content = JsonContent.Create(hello, options: SharedWorldPeerTrust.Json) };
+            observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Challenge);
             using var challengeResponse = await client.SendAsync(challengeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            observation?.Response((int)challengeResponse.StatusCode);
             var challengeBytes = await FriendLink.ReadBoundedSharedAsync(challengeResponse.Content,
                 MaximumRosterHandshakeBytes, cancellationToken);
-            if (!challengeResponse.IsSuccessStatusCode || challengeBytes is null)
-                throw new HttpRequestException("The pinned peer did not return a bounded challenge.");
+            if (!challengeResponse.IsSuccessStatusCode)
+                throw new HttpRequestException("The pinned peer did not return a bounded challenge.", null,
+                    challengeResponse.StatusCode);
+            if (challengeBytes is null) throw new InvalidDataException("The pinned peer challenge exceeded its fixed limit.");
             var reply = WorldPeerProtocol.DecodeEnvelope<WorldPeerChallengeResponse>(challengeBytes, MaximumRosterHandshakeBytes);
             if (!VerifyChallengeResponse(group, route, hello, reply, expectedIdentity))
                 throw new InvalidDataException("The peer roster acknowledgement did not verify.");
@@ -627,14 +633,25 @@ internal sealed partial class WorldPeerService : IDisposable
         if (!WorldPeerProtocol.VerifyChallenge(challenge, group.Root, expectedKey, route.CertificateSha256,
             group.DeviceId, publicKey, Trust(group)))
             throw new InvalidDataException("The peer challenge identity did not match this route and world.");
+        observation?.AuthenticatedRole(expectedKey == group.Root.OwnerPublicKey
+            ? WorldPeerTransferRecipientRole.OriginalHost : WorldPeerTransferRecipientRole.ApprovedPeer);
+        if (observationContext is not null)
+        {
+            observationContext.ResponderDeviceId = challenge.ResponderDeviceId;
+            observationContext.ResponderPublicKey = challenge.ResponderPublicKey;
+        }
         var body = payload ?? [];
         var request = WorldPeerProtocol.Sign(challenge, operation, key, offset, versionHash, fileIndex, chunkOffset, body);
         using var exchange = new HttpRequestMessage(HttpMethod.Post, prefix + "exchange")
         { Content = JsonContent.Create(new WorldPeerExchangeRequest(request, body), options: SharedWorldPeerTrust.Json) };
+        observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Exchange);
         using var response = await client.SendAsync(exchange, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        observation?.Response((int)response.StatusCode);
         var bytes = await FriendLink.ReadBoundedSharedAsync(response.Content, WorldPeerProtocol.ResponseLimit(operation), cancellationToken);
-        if (!response.IsSuccessStatusCode || bytes is null)
-            throw new HttpRequestException("The pinned peer did not return a bounded world response.");
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException("The pinned peer did not return a bounded world response.", null,
+                response.StatusCode);
+        if (bytes is null) throw new InvalidDataException("The pinned peer response exceeded its fixed limit.");
         var current = Find(group.Root.GroupKey);
         if (current is null || KnownRosterRevision(current) < current.Roster.Revision ||
             Access(current, group.DeviceId, publicKey) is null ||
@@ -675,10 +692,24 @@ internal sealed partial class WorldPeerService : IDisposable
                     await gates.Transfer.WaitAsync(cancellationToken);
                     try
                     {
-                        await SyncPeerMetadataAsync(group, route, cancellationToken);
-                        var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
-                        await PullCatalogAsync(current, route, cancellationToken);
-                        await SeedPeerAsync(current, route, cancellationToken);
+                        using var observation = transferObservations.Begin(group.Root.GroupKey, routeKey);
+                        transferAttempt.Value = new(observation);
+                        try
+                        {
+                            observation.Phase(WorldPeerTransferPhase.Metadata);
+                            await SyncPeerMetadataAsync(group, route, cancellationToken);
+                            var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
+                            observation.Phase(WorldPeerTransferPhase.Pulling);
+                            await PullCatalogAsync(current, route, cancellationToken);
+                            observation.Phase(WorldPeerTransferPhase.Offering);
+                            observation.Complete(await SeedPeerAsync(current, route, cancellationToken));
+                        }
+                        catch (Exception error)
+                        {
+                            ObserveTransferFailure(observation, error, cancellationToken);
+                            throw;
+                        }
+                        finally { transferAttempt.Value = null; }
                     }
                     finally { gates.Transfer.Release(); }
                 }

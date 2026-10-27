@@ -385,6 +385,9 @@ internal sealed partial class WorldPeerService
         CancellationToken cancellationToken)
     {
         var version = descriptor.Version;
+        var observation = transferAttempt.Value?.Attempt;
+        observation?.Phase(WorldPeerTransferPhase.Pulling);
+        observation?.Expected(version.Files.Sum(file => file.Length), version.Files.Count, version.Number);
         Directory.CreateDirectory(vault);
         var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
         var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
@@ -412,17 +415,21 @@ internal sealed partial class WorldPeerService
             while (output.Position < file.Length)
             {
                 if (!await ReceiveAllowedAsync(group, cancellationToken)) throw new OperationCanceledException("Save consent changed.");
+                observation?.Requested(index, output.Position);
                 var chunk = await SendPeerAsync(group, route, WorldPeerOperations.Chunk, cancellationToken,
                     versionHash: version.VersionHash, fileIndex: index, chunkOffset: output.Position);
                 if (!await ReceiveAllowedAsync(group, cancellationToken)) throw new OperationCanceledException("Save consent changed.");
                 if (chunk.Length != Math.Min(SharedWorldService.ChunkBytes, file.Length - output.Position))
                     throw new InvalidDataException("The peer save chunk length changed.");
                 await output.WriteAsync(chunk, cancellationToken);
+                observation?.Received(chunk.Length);
+                if (output.Position == file.Length) observation?.FileCompleted();
                 transferred += chunk.Length;
                 if (transferred >= WorldPeerFileTransfer.MaximumPayloadBytesPerPass &&
                     (output.Position < file.Length || index < version.Files.Count - 1)) return;
             }
         }
+        observation?.Phase(WorldPeerTransferPhase.VerifyingLocal);
         var receipt = await CompletePeerSaveAsync(group, descriptor, vault, stage, anchor, cancellationToken);
         if (receipt is not null)
             await DeliverReceiptAsync(group, route, receipt, JsonSerializer.SerializeToUtf8Bytes(receipt, Json), cancellationToken);
@@ -437,7 +444,7 @@ internal sealed partial class WorldPeerService
         var version = descriptor.Version;
         var destination = SharedWorldService.SafeChild(vault, version.VersionHash);
         if (!Directory.Exists(destination))
-            WorldPeerFileTransfer.VerifyStage(data.RootPath, Path.Combine(stage, SharedWorldService.PayloadDirectory), version);
+            WorldPeerFileTransfer.VerifyStage(data.RootPath, Path.Combine(stage, SharedWorldService.PayloadDirectory), version, cancellationToken);
         if (!await ReceiveAllowedAsync(group, cancellationToken))
             throw new OperationCanceledException("World access changed before copy completion.");
         if (!Directory.Exists(destination))
@@ -562,6 +569,7 @@ internal sealed partial class WorldPeerService
         byte[] bytes, CancellationToken cancellationToken)
     {
         if (!ReceiptDeliveryDue(group, route, receipt) || !await ReceiveAllowedAsync(group, cancellationToken)) return;
+        transferAttempt.Value?.Attempt.Phase(WorldPeerTransferPhase.Receipt);
         var id = (group.Root.GroupKey, route.Address, route.CertificateSha256, receipt.ReceiptId);
         lock (stateSync)
         {
