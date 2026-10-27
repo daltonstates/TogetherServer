@@ -7,125 +7,112 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## Integrated .20 historical reuse and idle correction (validation in progress)
+## Integrated .20 historical reuse, delivery and idle correction
 
-This is one unpublished candidate based on the measured .19 failure below.
-No installed app, production save or pairing state was changed during this work.
-The exact offered descriptor can now locate retained historical payloads in
-deterministic separate, received, received-branch and original-publication
-storage without enumerating all old payloads or advertising every old save.
-Current protected source provenance/head, root, signature, strict parent chain,
-authority, expiry/revocation and consent remain required. The complete payload
-is held and hash-verified before a new receipt; final receipt commit repeats
-current scope/source and bounded ancestry checks. A damaged or ambiguous exact
-copy fails closed instead of being hidden by a new download. Reuse does not
-move a head, prepare a world or produce a duplicate payload. An already confirmed
-exact receipt poll returns no new proof and skips repeated hash/write/delivery.
+One integrated `0.3.3.20` candidate contains the historical-copy correction,
+new-publication delivery priority and bounded idle work. Packaged app source:
+`fcfa7b6972c1722e9356941e7b743d7c92c850f2`.
+Release: Unpublished pending completion of the final fixture lane..
+CI: [40601918559](https://github.com/daltonstates/TogetherServer/actions/runs/40601918559).
+Current review: 15 successful lanes; Verify Existing remains running. Desktop reports the explicit notification block below.
 
-The same per-world transfer flight gives one local publication a bounded
-ten-second outgoing opportunity before incoming catch-up, inside the existing
-route/pass budgets. A paused/stalled offer yields the remaining budget to legal
-incoming work. Accepted outgoing progress remains visible to scheduling even
-after incoming observations. Priority and fallback forwarding share one
-operation-owned catalog; source/access checks remain fresh at use. Only an exact
-current authenticated-recipient receipt establishes delivery. Ordering numbered
-work does not select a history or resolve competing progress.
+An exact offered signed descriptor now finds a retained complete local save in
+the known separate-copy, received, received-branch, retained-history or numbered
+original-publication locations. This does not enumerate every historical
+payload or advertise old saves. Current protected source/head, root, key, roster,
+authority, expiry, revocation and receiving consent remain required. A new exact
+receipt follows held full-payload hashing and strict bounded signed ancestry;
+the commit repeats current scope/source and ancestry checks. A damaged or
+ambiguous historical source fails closed. Reuse neither moves the current head
+back nor creates another payload copy. Missing receive pointers use normal
+fully verified completion; present invalid pointers remain refused. An already
+confirmed exact receipt poll produces no new Start proof and skips repeated
+payload hashing, receipt writes and delivery.
 
-Idle scheduling now compares a compact material Friend projection rather than
-serializing/sorting unchanged heartbeat snapshots. Assigned Stop notices wake
-replication without re-enrollment. Peer-owned legacy receivers and not-yet-due
-legacy work skip unnecessary protected consent reads; actual operations still
-validate consent. Stalled pauses/history requests get two prompt opportunities,
-then use the existing adaptive backoff toward five minutes. Accepted bytes or
-advancing outgoing cursors remain prompt. Unchanged tray summaries no longer
-queue repeated desktop dispatch. Heartbeat five-second and lifecycle/player
-three-second observation intervals, current safety guards and planned-move
-requirements remain unchanged. Existing-copy hashing now uses the same measured
-payload-verification scope as other receipt checks, excluding network delivery.
+The existing per-world transfer flight gives the newest locally produced
+publication a bounded ten-second outgoing opportunity before incoming catch-up.
+Paused/stalled recipients yield the remaining budget to legal incoming work.
+One operation-owned outgoing catalog serves priority and fallback work; current
+source/access fences remain fresh at use. Only the exact authenticated
+recipient's current signed receipt establishes delivery. Forwarded receipts and
+same-number other-hash receipts cannot stand in for it. Accepted outgoing
+progress survives later incoming observations. Numbers order delivery work;
+signed ancestry selects a history. Competing histories and stricter planned-move
+requirements remain protected, and offline recipients stay pending.
 
-The .20 UI bundle/typecheck and strict solution compilation pass with zero
-compiler warnings/errors. Initial formatting differences were whitespace and
-have been corrected. The new priority and idle groups passed their first local
-generated/fake-HTTP run. Historical reuse refused revocation, but its assertion
-incorrectly revoked the other fake PC without teaching the receiver; the test
-now uses the receiving owner with a locally known revoked sender. All original
-refusal assertions remain, and swallowed observation-hook exceptions are now
-reported explicitly by the test. Combined checks then caught an actual orphan
-completion regression: an absent received pointer must use normal fully verified
-completion, while an invalid present pointer and damaged historical source still
-fail closed. That distinction is corrected and covered for canonical/branch
-orphans. Existing catalog-failure, discovery and local-hash telemetry assertions
-now account for legitimate priority delivery while retaining exact receipt,
-failure visibility, target metadata-only behavior and original timing limits.
-The new priority test's initial timeout waited through deep incoming ancestry
-after exact receipt9 had already succeeded; its barrier now holds the first
-incoming Catalog, and competing-history parents are pre-staged as verified
-metadata only. Its eight/eighteen-second bounds remain unchanged.
+Idle scheduling compares a compact material heartbeat projection rather than
+serializing and sorting unchanged snapshots. Stop notices wake replication
+without repeating enrollment. Peer-owned and not-yet-due legacy work avoid
+redundant protected consent reads; actual operations still validate consent.
+Two prompt stalled opportunities lead to existing adaptive backoff up to five
+minutes; accepted bytes or an advancing outgoing cursor remain prompt. Replayed
+cursors do not renew fast retries. Equal tray summaries avoid repeated desktop
+dispatch. Existing pinned connection reuse and certificate/current-request
+checks remain intact. Heartbeat and lifecycle/player observation intervals
+remain five and three seconds. Receipt payload-verification measurements now
+use one scope that excludes network delivery. Physical CPU savings and the
+dominant transfer bottleneck have not been established.
 
-The final three-group run passes new priority, current-copy and historical-copy
-coverage, including the final ancestry mutation race. Across retained integration
-runs, all 12 selected replication/provenance/idle/discovery groups have passed;
-the failed setup/order assertions and their fixes remain recorded in local logs.
-The repaired focused build is clean with zero warnings/errors. Full exact-source
-Windows CI is still required. Safe logs and release baseline are under
-`local-data/hosting-history-reuse-20/`. Read-only cross-review found no remaining
-safety blocker. The redundant middle historical ancestry walk was removed while
-the pre-hash and final in-gate checks remain.
-There are 94 source groups, including three new groups for historical8/head9,
-outgoing priority/exact receipt/fairness and bounded idle work. General fixtures,
-native, browser, installer and full candidate verification belong in hosted
-Windows CI; no .20 physical benefit or delivery acceptance is claimed here.
+Local evidence is code-only: UI typecheck/bundle, strict compilation with zero
+warnings/errors, formatting/lint, and selected generated-files/fake-HTTP groups.
+All general process/native/browser/installer tests ran on hosted Windows CI.
+The exact packaged candidate passes all 94 source groups and eight packaged
+API journeys. Automatic sharing passes both ordinary journeys with exactly one
+Friend Start and one returning-owner Start each; both first preparations return
+`LocalHostingPrepared`. Pairing/both-ended UX, six compatibility baselines, core,
+rehearsal, UI review and installer/package lanes pass. Browser passes 14 journeys
+and explicitly leaves three external/native scopes unexercised. Its first Start
+returns `ValheimStarting`, then the exact synthetic profile reaches real Ready.
+Desktop passes all 12 independent required cases. QuietTime blocks actual OS
+notification delivery/click; development staging explicitly defers Windows
+startup to the separate production-mode gate. This is not fully green or full
+physical acceptance.
 
-The first exact-source Windows run, source `154fdd131354a9f73f6569e03ee9640746d91a60`,
-[40597526187](https://github.com/daltonstates/TogetherServer/actions/runs/40597526187),
-passed 93 of 94 source groups, including all new reuse, priority and idle groups.
-The coalesced-background group still expected one aggregate payload request at
-the held incoming Catalog. The new priority Seed offer legitimately precedes it;
-this fixture lacks remote retained receiving consent, so the offer pauses and
-must not certify a receipt. Its corrected assertions require exactly one incoming
-Catalog, zero incoming chunks, no completed Catalog while held, no receipt or
-submitted payload, and unchanged payload/challenge counts when preparation joins
-or cancels. Existing timing, proof, copy-integrity and no-run checks remain.
-The same old assertion in the blocked-Host-poll case is corrected. No application
-code or consent was changed to accommodate this test finding.
-The corrected discovery and background-coalescing groups both pass locally
-using generated files/fake HTTP; their strict focused build has zero compiler
-warnings/errors. Full final-source hosted verification remains required.
+Earlier failures remain recorded, separately from the final candidate results:
 
-First-run automatic sharing, pairing/both-ended UX, browser, compatibility,
-core/rehearsal, UI review and installer/package lanes passed. Desktop retained
-eight native passes, a separate QuietTime notification block, a disposable-process
-identity mismatch before maximized cold-start API/window readiness, and four
-later skipped cases. Read-only review found no concrete mismatch cause; it is
-not evidence of a placement defect. Both failed artifacts and the 93/94 source
-log are preserved in `local-data/hosting-history-reuse-20/`. Final integrated
-verification will use fresh hosted runners with every identity guard retained;
-there is still no .20 physical or full-acceptance claim.
+- Source `154fdd1`, run 40597526187: 93/94 source groups passed. The coalescing
+  test's aggregate count omitted the new paused priority Seed before its held
+  Catalog. Corrected checks retain consent denial, one Catalog, zero incoming
+  chunks, unchanged request/challenge counts for joined/canceled preparation,
+  original deadlines, proof freshness and cached-copy integrity. Desktop also
+  rejected a disposable process identity before maximized API/window readiness;
+  four later cases were skipped. Its exact cause is unestablished and it did not
+  repeat in the following two native runs.
+- Source `9449d13`, run 40600312679: 94 source groups and eight API journeys
+  passed. Browser's saved screenshot showed a pre-launch port refusal, which its
+  old harness mislabeled a Ready timeout. The exact port owner/socket refusal
+  cause remains unknown. Both ordinary and diagnostic automatic-sharing runs
+  rejected first Friend preparation; their returned preparation codes were not
+  retained. Two original publications succeeded and no Friend/returning-owner
+  Start was attempted. Host-only selection diagnostics do not explain that
+  refusal. Fresh-run passes do not establish these failures' root causes.
 
-Source `9449d136d839e24e0e799b51b2188627e2fc07bb`,
-[run 40600312679](https://github.com/daltonstates/TogetherServer/actions/runs/40600312679),
-passes all 94 source groups and eight packaged API journeys. Its Desktop report
-passes all 12 independent required cases, including the previously unreached
-maximized restart and Explorer tray Quit, with no repeated identity mismatch.
-Windows startup is explicitly deferred by development staging to the separate
-production-mode gate; QuietTime still blocks actual notification delivery/click.
-Browser passed eight journeys, then its screenshot shows a port-guard refusal
-before native launch while the old harness reports a Ready timeout. The exact
-port owner/socket refusal cause is unknown. Automatic sharing failed both its
-ordinary and diagnostic run at first Friend preparation, after two successful
-original publications, with zero Friend/returning-owner Starts. The old report
-omits that returned preparation status, so its cause cannot be inferred from
-host-only selection diagnostics. All failed artifacts and exact source identity
-are retained. No product behavior change is justified by these reports alone.
+Safe first-Prepare and first-Start diagnostics now preserve fixed returned codes
+and status flags without retries or weaker readiness/permission/port guards.
+Waiting for the Start acknowledgement does not extend the original Ready
+budget. A subsequent diagnostic-only field correction uses `runOperationId`;
+the final CI report's older `operationRecorded=false` queried `operationId` and
+must not be interpreted as an absent run identity. Existing archived-run
+identity assertions passed independently. That one-line correction passes local
+syntax/lint and does not change the packaged application or functional tests.
 
-Narrow CI diagnostics now retain the first Prepare's safe fixed status fields,
-and the browser awaits/records the actual first Start acknowledgement before
-claiming a readiness attempt. Snapshot polls retain only state/count/identity
-presence flags. The Ready budget still starts at the original click completion;
-waiting for its response does not extend that budget. Neither action is retried,
-and permissions, port checks, readiness, fixture setup and transfer guards are
-unchanged. These harness changes require hosted validation; local checks remain
-syntax/lint, formatting and strict compilation only.
+Portable: 66,267,081 bytes, SHA-256
+`156f095d3529cacd545cc2dc37e9bc149fc71b2c6036b95d9fb338f6f322b457`.
+Installer: 60,731,353 bytes, SHA-256
+`6e147b3c983a0ec3125a53e037d02984b271085e5b6b88cf0dfb5458da0a1fd0`.
+Both EXEs are unsigned. Package provenance and six installer smoke cases plus
+all three wizard choices are verified. Public assets will be checked after publication; all 34 previously published releases are retained at the reviewed baseline.
+Evidence: `local-data/hosting-history-reuse-20/`, with final candidate artifacts
+under `candidate-fcfa7b6/`; all earlier failed logs/artifacts are preserved.
+
+No production data, installed app, pairing state or real world was modified by
+this code task. Owner manual installation on both PCs is required. Before a
+new physical V1release-only cycle, obtain current unattended conditions and
+fresh main-world stopped evidence. Acceptance still needs unchanged prepared
+save reuse without transfer/copy/setup repetition, real Ready, graceful Stop,
+new verified publication, exact reachable-recipient receipts and saved restart,
+with preparation/transfer/verification/native-start timings and CPU measured
+separately. The .19 physical cycle and delivery failure remain distinct below.
 
 ## Physical .19 V1release cycle, 2026-10-27 EDT (not accepted: delivery)
 

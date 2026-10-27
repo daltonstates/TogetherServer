@@ -1432,7 +1432,7 @@ async function lifecycleLogsAndSessions(page, host, profiles) {
       observation.lastState = run && typeof run.state === 'string' && /^[A-Za-z ]{1,48}$/u.test(run.state)
         ? run.state : matches.length === 0 ? 'Missing' : 'Unclassified'
       observation.processRecorded = Number.isInteger(run?.processId) && run.processId > 0
-      observation.operationRecorded = typeof run?.operationId === 'string' && /^[\da-f-]{36}$/iu.test(run.operationId)
+      observation.operationRecorded = typeof run?.runOperationId === 'string' && /^[\da-f-]{36}$/iu.test(run.runOperationId)
       return snapshot
     }, value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'),
     'synthetic Valheim readiness', Math.max(0, 30_000 - (Date.now() - clickedAt)))
