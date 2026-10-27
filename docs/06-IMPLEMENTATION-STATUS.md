@@ -7,7 +7,33 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## Integrated hosting correction, 2026-10-27 EDT (validation in progress)
+## Integrated hosting correction, 2026-10-27 EDT (physical acceptance pending)
+
+Current candidate source is `36c4be272ace4da0c9ae2ad379d9e77430c94698`, version
+`0.3.3.19`, in [Windows run 40576795814](https://github.com/daltonstates/TogetherServer/actions/runs/40576795814).
+Strict local compilation is clean. Hosted Windows has passed all 91 source groups,
+eight packaged API journeys, pairing/two-ended UX, automatic sharing, Core,
+rehearsal, six compatibility lanes, UI/access captures and installer packaging.
+The full Existing lane passed 1,582 UI tests, 115 general checks, all eleven
+Shared Worlds groups with zero recovery skips, all 46 companion groups and the
+remaining packaging/isolation/update gates. Its earlier quota failure did not
+recur. Browser timed out waiting for synthetic Valheim readiness with no captured
+browser/request error; its cause is unknown. One fresh-runner rerun of the exact
+same EXE passed (job `122461937111`, attempt 2), including synthetic lifecycle,
+logs, sessions and Friend signed delivery. Attempt 1 retains 15 successful lanes
+and the Browser/Desktop failures; across the retained attempts 16 of 17 lanes
+pass, while Windows QuietTime still blocks Desktop notification acceptance.
+Both EXEs and their
+checksum sidecars were statically verified against the exact-source package.
+The [v0.3.3.19 review preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.19)
+is published at the source above (annotated tag
+`cfb207335b4bdd891b3a2fcd6f406e24c5968ba6`, release `425975041`). Both EXEs and
+both sidecars were independently downloaded anonymously and hashed. All 33 older
+release IDs remain; stable is still `v0.3.3`. This work has not installed .19,
+and no .19 physical test has run. CPU usage and the physical transfer bottleneck
+remain unmeasured.
+The paragraphs below retain the earlier integrated-candidate attempts and fixes;
+their intermediate packages are not separate releases.
 
 The architecture-reset handoff and all pre-existing changes were reviewed before
 reuse. This candidate builds on .18 rather than replacing its trust, retention or
@@ -234,7 +260,26 @@ compilation passes with zero warnings/errors. The focused runtime attempt stoppe
 at the 1 GiB storage-reserve guard (C: had 0.83 GiB free), before the new cases ran;
 hosted validation is required. Automatic approval review rejected deletion of
 superseded task-generated CI package downloads as blocked by policy; no files
-were deleted and the reserve was not bypassed. No .19 has been published.
+were deleted and the reserve was not bypassed. At that observation .19 was still
+unpublished; the final review and publication are recorded above.
+
+Final exact-source CI for `36c4be2` passed the new membership-call counters,
+actual native namespace substitution and actual TestHost enrollment publication
+fence, in addition to the complete source/API/Existing/pairing/automatic-sharing
+journeys. The old quota failure did not recur with the unchanged 180/minute quota.
+The initial Browser artifact (SHA-256
+`5ec95dec6c8195a23c8dbc4c35cb594861c4f7390d6c6213bcba4643981e22d4`)
+and both attempts remain retained; a passing rerun does not establish its cause.
+The final portable is 66,257,956 bytes, SHA-256
+`e4b6cde759eb770f2fd7553ae94f22b75f0f025ef4bd5aa1b3030ebff86d1bea`;
+installer is 60,720,073 bytes, SHA-256
+`b0cdd2397994950cdc021926616773b105b416cf367daf925edfa13d76e2e63e`.
+Both remain unsigned and review-only, with `fullyAccepted=false`. Safe source,
+CI, artifact, static and public-download proofs are under
+`local-data/hosting-integration-36c4be2/`. The C: volume remains below the
+generated-fixture 1 GiB reserve; further local runtime work needs adequate free
+space. No rejected cleanup or reserve bypass was retried.
+
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an
