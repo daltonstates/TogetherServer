@@ -1192,9 +1192,9 @@ internal static partial class SharedWorldJourney
         using var observationDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         try
         {
-            var work = await friend.GetFromJsonAsync<HostingWorkSnapshot>("/api/local/world-peers/work", Json,
+            var work = await GetAsync<HostingWorkSnapshot>(friend, "/api/local/world-peers/work",
                 observationDeadline.Token);
-            var groups = await friend.GetFromJsonAsync<WorldPeerGroupView[]>("/api/local/world-peers", Json,
+            var groups = await GetAsync<WorldPeerGroupView[]>(friend, "/api/local/world-peers",
                 observationDeadline.Token);
             var group = groups?.SingleOrDefault(item => item.ProfileId == profileId);
             Console.WriteLine("SHARED_VERSION_TIMEOUT " + JsonSerializer.Serialize(new

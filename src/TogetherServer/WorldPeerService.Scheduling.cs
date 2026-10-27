@@ -39,6 +39,8 @@ internal sealed partial class WorldPeerService
     private DateTimeOffset nextBackgroundSyncUtc;
     private int remainingGroupSweep = -1;
     private SharedWorldPeerRoot[] replicationOwnedRoots = [];
+    private sealed record ReplicationRouteScope(SharedWorldPeerRoot Root, Guid DeviceId, string RosterSignature);
+    private readonly Dictionary<string, ReplicationRouteScope> learnedReplicationRoutes = new(StringComparer.Ordinal);
     private readonly Dictionary<(string World, string Member), long> inboundContacts = [];
     private string? friendMembershipObservation;
     private readonly PeerMembershipRetryBurst membershipRetry = new();
@@ -110,11 +112,63 @@ internal sealed partial class WorldPeerService
         Volatile.Write(ref membershipLookupOutcome, (int)outcome);
     }
 
-    // Suppress only the duplicate legacy background receiver for an enrolled
-    // exact world. This published registry snapshot grants no receive access.
+    // Suppress a duplicate receiver only when an enrolled exact world has a
+    // legal peer transport route. Registration alone cannot replace a legacy
+    // loopback connection. This memory-only hint grants no receiving access.
     internal bool OwnsReplication(SharedWorldPeerRoot root)
     {
-        return Volatile.Read(ref replicationOwnedRoots).Contains(root);
+        return !Volatile.Read(ref peerDisposed) && Volatile.Read(ref replicationOwnedRoots).Contains(root);
+    }
+
+    // Called under stateSync after registry validation or a route projection.
+    // Registry/source/roster changes invalidate learned-route hints explicitly;
+    // a retained bootstrap is already pinned by its enrollment boundary.
+    private void PublishReplicationOwnership(IReadOnlyList<Group> groups)
+    {
+        foreach (var pair in learnedReplicationRoutes.ToArray())
+            if (!groups.Any(group => group.Root == pair.Value.Root && group.DeviceId == pair.Value.DeviceId &&
+                group.Roster.Signature == pair.Value.RosterSignature)) learnedReplicationRoutes.Remove(pair.Key);
+        Volatile.Write(ref replicationOwnedRoots, groups.Where(group =>
+            group.Bootstrap is { } bootstrap && SharedWorldPeerTrust.ValidRoute(bootstrap) ||
+            learnedReplicationRoutes.ContainsKey(group.Root.GroupKey)).Select(group => group.Root).ToArray());
+    }
+
+    private void ObserveReplicationRoutes(Group expected, bool hasApprovedLearnedRoute)
+    {
+        lock (stateSync)
+        {
+            var current = Find(expected.Root.GroupKey);
+            if (hasApprovedLearnedRoute && current is not null && current.Root == expected.Root &&
+                current.DeviceId == expected.DeviceId && current.Roster.Signature == expected.Roster.Signature)
+                learnedReplicationRoutes[expected.Root.GroupKey] = new(expected.Root, expected.DeviceId, expected.Roster.Signature);
+            else learnedReplicationRoutes.Remove(expected.Root.GroupKey);
+            PublishReplicationOwnership(verifiedRegistry?.Groups ?? []);
+        }
+    }
+
+    private void ForgetReplicationRoutes(SharedWorldPeerRoot root)
+    {
+        lock (stateSync)
+        {
+            learnedReplicationRoutes.Remove(root.GroupKey);
+            PublishReplicationOwnership(verifiedRegistry?.Groups ?? []);
+        }
+    }
+
+    // Preserve the existing signed-contact discovery behavior, while only a
+    // currently approved non-self contact may replace the legacy receiver.
+    // Read/verify the bounded contact set once per scheduled route projection.
+    private (SharedWorldPeerRoute[] All, SharedWorldPeerRoute[] Approved) ReplicationContactRoutes(Group group, string localKey)
+    {
+        var bytes = data.LoadProtected($"world-peer-contacts-{group.Root.GroupKey}.protected");
+        if (bytes is null) return ([], []);
+        if (bytes.Length > 256 * 1024) throw new InvalidDataException("Peer contacts need review.");
+        var cards = System.Text.Json.JsonSerializer.Deserialize<WorldPeerContactCard[]>(bytes, Json);
+        if (cards is null || cards.Length > 128) throw new InvalidDataException("Peer contacts need review.");
+        var verified = cards.Where(card => ValidContact(group, card)).ToArray();
+        return (verified.SelectMany(card => card.Routes).Distinct().ToArray(),
+            verified.Where(card => card.PublicKey != localKey && Access(group, card.DeviceId, card.PublicKey) is not null)
+                .SelectMany(card => card.Routes).Distinct().ToArray());
     }
 
     private void RequestBackgroundSync()

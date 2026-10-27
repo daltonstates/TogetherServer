@@ -192,6 +192,26 @@ case is registered for hosted general checks only; it was not run locally.
 The exact LAN cause still requires the next hosted observation. Full fifth-run
 Existing was still running at this note; notification delivery remains blocked
 by hosted Windows QuietTime. Earlier .19 assets remain unpublished.
+The sixth source `8d1fb9b`, run `40568091438`, passed the full pairing lane:
+three UX, eleven loopback and eighteen LAN API stages, with PC2 membership now
+confirmed. Both automatic-sharing journeys and the other completed functional
+lanes passed; Existing was still running at this observation. The repeated
+first-save failure exposed a separate deterministic ownership bug: the full
+Shared Worlds fixture uses a loopback companion address, which is not a legal
+peer route, yet registry presence alone suppressed its legacy receiver.
+
+Ownership now requires a valid enrolled bootstrap or an explicitly published
+current approved peer/contact route snapshot. Zero routes retain the legacy
+receiver; approved peer-only routes can own without the original Host reachable.
+Learned hints bind root/device/roster signature and clear on changed source,
+empty/failed route projections or registry invalidation. Ownership reads stay
+memory-only and grant no access. The new generated group proves actual fallback
+scheduling, valid-route suppression, offline/absent-owner peer routes, 100 probe-
+free snapshot reads, route removal, contact approval and source invalidation.
+It and adaptive coordination pass locally; strict solution compilation is clean.
+There are now 91 source groups. The failed first-save diagnostic also omitted
+its required local GET header; it now reuses the existing fixed read helper.
+Exact corrected-source CI is required; no intermediate .19 bytes are released.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an

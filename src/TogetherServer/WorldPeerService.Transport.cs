@@ -1189,9 +1189,11 @@ internal sealed partial class WorldPeerService : IDisposable
                 await PublishLocalAdvertisementAsync(group, budget, background: true);
             }
             var peers = Store(group).Project().Peers.Where(value => value.Authorized && !value.HasConflict && value.PublicKey != publicKey)
-                .SelectMany(value => value.Routes);
-            var routes = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
+                .SelectMany(value => value.Routes).Where(SharedWorldPeerTrust.ValidRoute).ToArray();
+            var contacts = ReplicationContactRoutes(group, publicKey);
+            var routes = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(contacts.All)
                 .GroupBy(RouteKey).Select(values => values.First()).Take(SharedWorldPeerStore.MaximumPeers).ToArray();
+            ObserveReplicationRoutes(group, peers.Length > 0 || contacts.Approved.Length > 0);
             lock (stateSync)
                 replicationSchedule.RetainRoutes(group.Root.GroupKey, routes.Select(route => ScheduleKey(group, route)).ToHashSet(StringComparer.Ordinal));
             if (routes.Length == 0) return;
@@ -1225,7 +1227,10 @@ internal sealed partial class WorldPeerService : IDisposable
             }
         }
         catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
-        { SetPeerWarning(group.Root.GroupKey, "This world's signed peer information needs review; existing histories were kept."); }
+        {
+            ForgetReplicationRoutes(group.Root);
+            SetPeerWarning(group.Root.GroupKey, "This world's signed peer information needs review; existing histories were kept.");
+        }
     }
 
     private async Task RefreshScheduledMembershipsAsync(CancellationToken cancellationToken)

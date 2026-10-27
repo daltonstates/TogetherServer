@@ -57,6 +57,7 @@ internal sealed partial class WorldPeerService
             {
                 verifiedRegistryBytes = null;
                 verifiedRegistry = null;
+                learnedReplicationRoutes.Clear();
                 Volatile.Write(ref replicationOwnedRoots, []);
                 if (existed || data.Recovery.Notices.Any(notice => notice.StateFile == RegistryName))
                     throw new InvalidDataException("World membership needs review.");
@@ -84,7 +85,7 @@ internal sealed partial class WorldPeerService
                     throw new InvalidDataException("World membership failed verification.");
                 verifiedRegistry = registry;
                 verifiedRegistryBytes = bytes;
-                Volatile.Write(ref replicationOwnedRoots, registry.Groups.Select(group => group.Root).ToArray());
+                PublishReplicationOwnership(registry.Groups);
             }
             var consent = new WorldPeerReceiveConsentStore(data);
             return registry.Groups.Select(group => group with
@@ -107,6 +108,7 @@ internal sealed partial class WorldPeerService
             if (verifiedRegistryBytes is null || !bytes.AsSpan().SequenceEqual(verifiedRegistryBytes))
             {
                 data.SaveProtected(RegistryName, bytes);
+                PublishReplicationOwnership(groups);
                 RequestBackgroundSync();
             }
         }
