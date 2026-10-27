@@ -86,6 +86,7 @@ public sealed partial class HostManager
                 var roster = sharedWorlds.PublishRoster(currentProfile, members,
                     reviewSourceChange: false, ownerEdit: edit);
                 pairing.ConfirmSharedRosterPublished(profileId, roster);
+                if (preparedSharing) AnnounceSharingPolicy(profileId, true);
                 return result.Ok && preparedSharing
                     ? result with { Message = "This PC can host this save. Backups after Stop and save sharing are enabled. Your friend still approves storage and prepares their server." }
                     : result;

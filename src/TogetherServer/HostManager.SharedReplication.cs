@@ -9,6 +9,14 @@ public sealed partial class HostManager
     private readonly HostingWorkCounters sharedHostingWork = new();
     internal HostingWorkMeasurement WorkingVerificationMeasurement() => sharedHostingWork.Read(HostingWorkStage.WorkingVerification);
 
+    private void AnnounceSharingPolicy(Guid profileId, bool enabled)
+    {
+        Activity("Backup", enabled ? "SharedSavesEnabled" : "SharedSavesDisabled",
+            enabled ? "The owner enabled post-Stop save sharing." : "The owner disabled post-Stop save sharing.",
+            ActivitySeverity.Important, profileId, visibility: ActivityVisibility.AssignedFriends);
+        NotifySharedSavePublished();
+    }
+
     private void NotifySharedRunChanges(HostSnapshot snapshot)
     {
         var shared = settings.Profiles.Where(profile => profile.SharedSavesEnabled || profile.SeparateCopySourceProfileId is not null)

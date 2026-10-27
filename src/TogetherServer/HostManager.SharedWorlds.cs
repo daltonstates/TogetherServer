@@ -331,10 +331,7 @@ public sealed partial class HostManager
             catch { profile.SharedSavesEnabled = previous; throw; }
             AdvanceReadModel();
             Volatile.Write(ref lastOwnerSnapshot, Snapshot());
-            Activity("Backup", enabled ? "SharedSavesEnabled" : "SharedSavesDisabled",
-                enabled ? "The owner enabled post-Stop save sharing." :
-                    "The owner disabled post-Stop save sharing.", ActivitySeverity.Important, profileId,
-                visibility: ActivityVisibility.AssignedFriends);
+            AnnounceSharingPolicy(profileId, enabled);
             return new(true, "SharedSavesSaved", enabled ?
                 "Completed post-Stop backups can be shared with approved PCs." :
                 "New shared save reads are disabled.");

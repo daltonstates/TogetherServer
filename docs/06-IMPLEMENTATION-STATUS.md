@@ -99,6 +99,20 @@ the same pending reader. Tests require eventual current data and reject old
 errors/content after settlement. The corrected three UI suites pass 115 tests,
 the enrollment-wake regression passes, and strict solution rebuild is clean.
 The independent Desktop lane retained the OS QuietTime notification block.
+The second integrated source `8250c1a` is retained in Windows run `40554881714`.
+Core, rehearsal, automatic shared hosting and browser journeys passed. Pairing
+still exposed a missed invalidation: the simple hosting toggle committed its
+signed roster through a different setter than the older save-sharing action.
+All three policy setters now publish the same assigned-Friend notice and local
+wake only after their signed policy commit. The focused hosting-policy and
+scheduling groups pass, with zero-warning strict compilation. This remains one
+unpublished .19 candidate; no earlier integrated build is being released.
+The second hosting-wizard capture passed its functional timeout/navigation
+assertions, but recorded one canceled read-only world-peers GET in its narrow
+150% text case (107/108 captures). The artifact does not establish the abort's
+cause. No network-error guard is relaxed; the unchanged UI will be checked again
+with the corrected backend. Desktop still reports QuietTime. The second Existing
+lane was still running at this observation. Exact final-source CI is required.
 No new app was
 installed, replaced or launched, and no production data was inspected by this
 implementation work. Manual owner installation and fresh confirmation of an

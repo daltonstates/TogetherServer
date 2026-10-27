@@ -478,6 +478,9 @@ internal static class SharedHostingPermissionChecks
                 new(RecoveryVoter: true)).Ok, "could not retain an earlier independent voting grant");
             var before = fixture.Current();
             var enabled = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, true, CancellationToken.None);
+            Require(fixture.Data.LoadActivity(100).Any(activity => activity.ProfileId == fixture.ProfileId &&
+                activity.Action == "SharedSavesEnabled" && activity.Visibility == ActivityVisibility.AssignedFriends),
+                "the shared-hosting switch did not publish its scoped enrollment invalidation after signed policy commit");
             var expected = Clone(before);
             expected.Profiles[0].SharedSavesEnabled = true;
             expected.Profiles[0].Backups.Enabled = true;
@@ -510,6 +513,9 @@ internal static class SharedHostingPermissionChecks
                 "later signing enrollment did not automatically complete each PC's hosting membership");
 
             var disabled = await fixture.Manager.SetSimpleSharedHostingAsync(fixture.ProfileId, false, CancellationToken.None);
+            Require(fixture.Data.LoadActivity(100).Any(activity => activity.ProfileId == fixture.ProfileId &&
+                activity.Action == "SharedSavesDisabled" && activity.Visibility == ActivityVisibility.AssignedFriends),
+                "disabling shared hosting did not publish its scoped policy invalidation");
             var withdrawn = await fixture.Manager.SharedWorldRosterAsync(fixture.ProfileId);
             Require(disabled.Ok && !fixture.Current().Profiles[0].SharedSavesEnabled && fixture.Current().Profiles[0].Backups.Enabled &&
                 withdrawn is not null && withdrawn.GroupId == roster!.GroupId && withdrawn.Revision > enrolled!.Revision &&

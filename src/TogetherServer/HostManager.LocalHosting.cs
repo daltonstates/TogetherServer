@@ -47,6 +47,7 @@ public sealed partial class HostManager
                 pairing.ReconcileSimpleSharedHosting(profileId);
                 var roster = PublishSimpleSharedHostingRosterUnderGate(profileId);
                 pairing.ConfirmSharedRosterPublished(profileId, roster);
+                AnnounceSharingPolicy(profileId, enabled);
                 return new(true, "SharedHostingSaved", enabled ?
                     "Friends assigned to this server can receive, share and host its verified saves. Backups after safe Stop are on." :
                     "Shared hosting is off. Friends can no longer receive, share or start hosting this server's saves.");
