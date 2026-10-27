@@ -84,6 +84,7 @@ const requiredSetup = pureDecoders('RequiredFeatureSetup.tsx', ['parseRequiredSe
 const gettingStarted = pureDecoders('useGettingStarted.ts', ['parseGettingStarted'], { ContractError: contracts.ContractError });
 const successor = pureDecoders('SharedHostingIdentity.tsx', ['record', 'validHash', 'parseSharedSuccessorIdentity'], { normalizedDirectIpHttpsEndpoint });
 const peers = pureDecoders('WorldPeerPanel.tsx', ['object', 'text', 'flag', 'count', 'identity', 'date', 'list',
+  'transferCodes', 'transferCode', 'transferCount', 'optionalTransferCount', 'parseTransferProgress', 'parseBackgroundTransfers',
   'parsePeer', 'parseBranch', 'parseSession', 'parseSelection', 'parseWorldPeerGroups'], {
   guidPattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   hashPattern: /^[0-9a-f]{64}$/i
@@ -142,6 +143,29 @@ test('every world-group preset passes the current strict peer decoder and stays 
         body: { deviceId: fixtureIds.otherDevice, sessionId: fixtureIds.session } }).status, 503);
     }
   }
+});
+
+test('standalone peer fixtures decode pending transfer failures and historical receipts independently', () => {
+  const state = createFixtureState('friend-peers');
+  const groups = get(state, '/api/local/world-peers');
+  const progress = { state: 'Working', phase: 'Metadata', operation: 'Metadata', httpStep: 'Exchange', httpStatus: 200,
+    result: 'None', error: 'None', startedUtc: new Date(FIXED_NOW).toISOString(), updatedUtc: new Date(FIXED_NOW).toISOString(),
+    elapsedMilliseconds: 1000, submittedBytes: 100, receivedBytes: 100, completedFiles: 1,
+    requestedFileIndex: null, requestedOffset: null, exactReceiptAccepted: false, totalBytes: 100, totalFiles: 1,
+    publicationNumber: 6, receiptPublicationNumber: null };
+  groups[0].backgroundTransfers = [{ routeOrdinal: 1, recipientRole: 'OriginalHost', current: progress,
+    lastResult: { ...progress, state: 'Succeeded', result: 'KnownReceiptAccepted', exactReceiptAccepted: true, receiptPublicationNumber: 5 },
+    lastFailure: { ...progress, state: 'Failed', phase: 'Pulling', operation: 'Catalog', result: 'Failed', error: 'HttpRejected', httpStatus: 503 } }];
+  const [decoded] = peers.parseWorldPeerGroups(groups);
+  const [transfer] = decoded.backgroundTransfers;
+  assert.equal(transfer.current.exactReceiptAccepted, false, 'metadata success and all byte counters do not certify a receipt');
+  assert.equal(transfer.lastResult.receiptPublicationNumber, 5, 'the signed receipt applies to its historical publication');
+  assert.equal(transfer.lastResult.publicationNumber, 6, 'the currently described save can be newer');
+  assert.equal(transfer.lastFailure.operation, 'Catalog');
+  assert.equal(transfer.lastFailure.httpStatus, 503, 'a later metadata result retains the payload failure');
+  const baseline = createFixtureState('friend-peers');
+  assert.equal(peers.parseWorldPeerGroups(get(baseline, '/api/local/world-peers'))[0].backgroundTransfers.length, 0,
+    'older fixtures and app sessions without observations remain valid');
 });
 
 test('installation and transfer-progress variants decode without accepting a real game', () => {

@@ -134,6 +134,23 @@ skip the owner because only two of three contacts are visited. That probe now
 uses the same full exchange flight for the exact fake owner route, with bounded
 typed assertion fields. The ordinary distribution journeys remain unchanged;
 the initial failed assertion is not evidence of a product receipt failure.
+The corrected exact-route regression and pure observation group pass, including
+positive owner attribution, forwarded-member refusal and cancellation. The
+coalesced-background group passed the preceding focused run. Strict solution
+compilation reports zero warnings/errors; the current 72 focused UI tests,
+type check, targeted lint, production bundle and formatting pass. No native
+fixture, installer, browser or new app was launched on the laptop for this slice.
+
+The first .17 source `0aedd37d9acde2ba8e818ac70e4b941e49dfe7ee` ran in
+[Windows CI 40434779406](https://github.com/daltonstates/TogetherServer/actions/runs/40434779406).
+Its candidate passed static source/version/hash/GUI bundle checks. The access/UI
+review stopped before rendering: 57 of 59 pure fixture checks passed, with two
+`ReferenceError` failures because the standalone decoder extractor omitted the
+new background parser and its dependencies. This is a harness dependency error,
+not a browser success or product-delivery diagnosis. The extractor now includes
+those actual functions/constants and has a populated failure/historical-receipt
+case; all 60 pure checks pass locally. Product source remains unchanged from
+0aedd37; a fresh exact-source Windows run is required for the corrected harness.
 
 ## Current behavior
 
