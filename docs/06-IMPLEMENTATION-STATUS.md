@@ -7,6 +7,134 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## Exact .16 candidate and laptop test, 2026-10-26 EDT
+
+The reviewed .16 preview is published at tag `v0.3.3.16`, pointing to
+`73dd922df717141ba0d3c2b3601fe78f179660fe`. This replaces the proposed historical
+candidate; it does not publish f768c23. The portable SHA-256 is
+`598bca8979f57cac09dc7bffbfde1cebbe26edca039f8045125cef438443c66a`
+(66,217,097 bytes), and installer SHA-256 is
+`bff36a4a9b0612fd14d3b0fad190f9af37d8e6fc4d8ca687d38e1d00269d50c0`
+(60,681,665 bytes). Anonymous downloads verified all four public assets. The
+30 older releases remain present and stable/latest remains `v0.3.3`.
+
+[Windows run 40422036891](https://github.com/daltonstates/TogetherServer/actions/runs/40422036891)
+finished with 16 successful lanes and the Desktop QuietTime notification block.
+Existing passed all 27 gates with zero NotRun: UI 1,552 tests, 114 core checks,
+all 12 Minecraft fixture checks, the 4,102-version history case, Shared Worlds
+11 groups with zero recovery skips, Shared LiveSave five groups and Companion
+46 groups. Pairing passed all 32 stages, source/API 82/eight groups, Core 14 and
+rehearsal two groups. Both ordinary nine-stage automatic-sharing journeys passed.
+The retained returning-owner observations show two Start requests in the first
+journey: `LatestSaveChanged` after 19,705 ms with zero active runs, then success
+after 21,059 ms with one matching run. The other journey succeeded with one
+request after 21,288 ms. The first refusal's boundary remains unclassified;
+these results do not prove reliable single-action returning-owner adoption.
+The previous composite failure did not recur; its cause remains unknown, and
+the new failure diagnostics did not fire. Hosted success is separate from the
+physical result below.
+
+The owner reconfirmed the unattended target-world-only session and stopped main
+world, then manually installed the preview. The one running laptop process was
+independently matched to the exact published portable hash/source, same account,
+production root and local API listener. The authenticated main snapshot reported
+.16 and the exact source world Offline immediately before each Start; its
+running EXE hash was not independently accessible. No app replacement/relaunch,
+pairing reset, key regeneration or protected-record reconstruction was performed.
+
+Two explicit local Starts each reached actual Ready with a fresh trusted
+ValheimLogReady count of zero. Both native processes were bound to the selected
+profile, exact installed image, process creation time, world and managed save
+directory before issuing one graceful local Stop per run. No Start was retried.
+
+| Physical measurement | First prepared Start | Saved restart from publication 5 |
+| --- | ---: | ---: |
+| Start response | 18,285 ms | 20,211 ms |
+| Permission phase | 332 ms | 802 ms |
+| Signed latest-save discovery | 3,803 ms | 6,372 ms |
+| Save verification phase | 6,014 ms | 7,242 ms |
+| Connection phase | 297 ms | 323 ms |
+| Launch phase | 7,108 ms | 5,279 ms |
+| Receiving / protected-copy preparation phases | Neither entered | Neither entered |
+| Request to first observed actual Ready | At most 82,064 ms | 42,619 ms |
+| Native process creation to observed Ready | At most 65,175 ms | 23,554 ms |
+| Graceful Stop response | 14,750 ms | 13,021 ms |
+
+Both Starts reused the verified 315-file, 119,452,903-byte save without another
+transfer or setup wizard. Ready observations are distinct from launch completion;
+the first observation has a coarser upper bound. This was an idle real server
+test, not client-join or recognizable-player-change acceptance.
+
+Stops published new backups and signed publications 5 and 6, each an exact child
+of the previous head with `PostStopBackup`. Independent non-mutating verification
+passed signatures, branch proof, strict parents, current roster/root and all
+315 file hashes for each. All five completed backups remain visible, including
+the original Rolling/Manual pair and the earlier recapture, and historical
+publication-failure activity remains. Read-only observers initially rejected
+incorrect argument/schema assumptions before Stop; no Stop was issued by those
+failed observations. The two intended Stop requests both succeeded.
+
+**Automatic delivery has not passed.** Publication 5 still had no exact main-Host
+receipt after more than 20 minutes despite fresh authenticated metadata contact.
+Publication 6 also had zero exact receipts at 01:11 UTC, one recently authenticated
+eligible external peer and one offline/unreachable eligible peer. At 01:17 UTC
+the metadata-only follow-up still had zero receipts and both external contacts
+were stale; this does not establish either game's process state. The main did
+not claim the current save. The laptop's incoming own-branch vault still named
+publication 4 with no partial directory, while its published vault named 6.
+Those are local observations; the receiver filesystem was not directly inspected.
+An offer for this actual branch is 110,372 JSON bytes, approximately 459,898 with
+a maximum chunk, below the 1 MiB payload bound. This is not proof of the complete
+wire catalog or of the failing transfer boundary. Metadata success alone is not
+payload success, and no manual Sync/share action was used to substitute for
+automatic delivery. The world is left Offline with no Valheim server process.
+At 01:43 UTC, a further non-mutating signed-metadata check still found zero
+receipts for 6, now with freshly authenticated main-Host contact again. Earlier
+private observations were preserved before that repeat check. A separate GET
+confirmed the target Offline and zero native Valheim server processes.
+
+Public-safe measurements are under ignored `local-data/physical-test-73dd922/`;
+private signed metadata remains outside Git. The unchanged previously reviewed
+private observer was used for verification, without LocalData constructors,
+LoadProtected, chain recovery, signing-key export or live-state writes. A proposed
+new observer/ACL setup was rejected by automatic approval review and never ran;
+it was not retried. The existing observer provided the safe alternative.
+The laptop is improved for prepared Start and saved restart, but is not accepted
+as fully repaired while automatic exact acknowledgement remains unresolved.
+
+The next .17 slice adds read-only transfer observations to the existing shared
+world panel: active phase, fixed request/HTTP result, elapsed time, bytes handled
+in that pass, and retained failures. Metadata-only discovery cannot erase a
+failed payload operation. The memory store is bounded to 256 routes; snapshots
+contain no endpoint, identity, key, signed bytes, path or exception text. Receipt
+display records the historical publication number only after existing receipt
+verification and binding its signer to that route's authenticated responder.
+A valid forwarded receipt remains stored without becoming main-Host receipt
+proof. Polling never schedules work, reauthorizes Start or retries a transfer.
+Explicit Get world updates text now accurately describes its existing catch-up
+behavior. Publication, metadata contact, byte progress and receipt proof stay
+separate.
+
+This is visibility for the unresolved physical failure, not a claimed delivery
+repair. Transfer order, request deadlines, signatures, ancestry, trust floors,
+permissions and planned-move requirements are unchanged. One cancellation bug
+is repaired independently: completed-copy staging now passes its existing
+cancellation token into full payload verification. Generated fake-HTTP checks
+use the production six-second request timeout rather than HttpClient's default
+100 seconds. Regressions retain a real Catalog HTTP503 after fresh authenticated
+metadata, show that seeding was never reached, and preserve the failed phase
+through later successful metadata discovery. Another case cancels verification
+of a deliberately corrupt partial file before it can be hashed/reset, promoted
+or acknowledged. These characterize possible boundaries without attributing
+either to the laptop. The published .16 assets/tag remain unchanged and .17
+requires its own hosted validation and owner-installed physical evidence.
+The first forwarded-receipt regression assertion failed without retaining its
+individual values. Source review found that its one extra background pass could
+skip the owner because only two of three contacts are visited. That probe now
+uses the same full exchange flight for the exact fake owner route, with bounded
+typed assertion fields. The ordinary distribution journeys remain unchanged;
+the initial failed assertion is not evidence of a product receipt failure.
+
 ## Current behavior
 
 - One Windows app hosts local servers and connects to Friends, with separate
