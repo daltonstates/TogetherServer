@@ -44,7 +44,10 @@ internal sealed partial class WorldPeerService
     private sealed record ReplicationRouteScope(SharedWorldPeerRoot Root, Guid DeviceId, string RosterSignature);
     private readonly Dictionary<string, ReplicationRouteScope> learnedReplicationRoutes = new(StringComparer.Ordinal);
     private readonly Dictionary<(string World, string Member), long> inboundContacts = [];
-    private string? friendMembershipObservation;
+    private sealed record FriendSchedulingObservation(Guid HostId, string Endpoint, string State, string? Code,
+        HashSet<string> Capabilities, HashSet<(Guid Id, string Kind)> Profiles, HashSet<Guid> Sharing, HashSet<Guid> Stops);
+    private Dictionary<Guid, FriendSchedulingObservation>? friendSchedulingObservation;
+    private readonly PeerPendingProgress pendingProgress = new();
     private readonly PeerMembershipRetryBurst membershipRetry = new();
     private int membershipRefreshPending;
     private long membershipPassesStarted, membershipPassesCompleted, membershipPassBegan, membershipPassElapsed;
@@ -75,29 +78,47 @@ internal sealed partial class WorldPeerService
     // invalidate enrollment scheduling; player/time/progress polls do not.
     internal bool ObserveFriendSnapshot(FriendView snapshot)
     {
-        var material = System.Text.Json.JsonSerializer.Serialize((snapshot.Connections ?? [snapshot])
-            .OrderBy(connection => connection.ConnectionId).Select(connection => new
-            {
-                connection.ConnectionId,
-                connection.HostId,
-                connection.Endpoint,
-                connection.State,
-                connection.ConnectionCode,
-                Capabilities = connection.HostCapabilities.Order(StringComparer.Ordinal),
-                Profiles = connection.Profiles.OrderBy(profile => profile.Id).Select(profile => new { profile.Id, profile.Kind }),
-                Sharing = (connection.Activity ?? []).Where(activity =>
-                    activity.Category == "Backup" && activity.Action is "SharedSavesEnabled" or "SharedSavesDisabled" ||
-                    activity.Category == "Lifecycle" && activity.Action == "Stopped" &&
-                    activity.ProfileId is { } profileId && connection.Profiles.Any(profile => profile.Id == profileId))
-                    .Select(activity => activity.Id).Order()
-            }));
-        if (material == friendMembershipObservation) return false;
-        friendMembershipObservation = material;
-        Interlocked.Increment(ref requestedMembershipGeneration);
-        membershipRetry.Begin();
+        var connections = snapshot.Connections ?? [snapshot];
+        var previous = friendSchedulingObservation;
+        var membershipChanged = previous is null || previous.Count != connections.Count;
+        var stopsChanged = membershipChanged;
+        foreach (var connection in connections)
+        {
+            if (previous is null || !previous.TryGetValue(connection.ConnectionId, out var old))
+            { membershipChanged = true; stopsChanged = true; continue; }
+            membershipChanged |= old.HostId != connection.HostId || old.Endpoint != connection.Endpoint ||
+                old.State != connection.State || old.Code != connection.ConnectionCode ||
+                !old.Capabilities.SetEquals(connection.HostCapabilities) ||
+                !old.Profiles.SetEquals(connection.Profiles.Select(profile => (profile.Id, profile.Kind))) ||
+                !old.Sharing.SetEquals(SharingNotices(connection));
+            stopsChanged |= !old.Stops.SetEquals(StoppedNotices(connection));
+        }
+        if (!membershipChanged && !stopsChanged) return false;
+        // Retain only the material scheduling projection. Ordinary heartbeat,
+        // player and timestamp changes do no JSON serialization or sorting.
+        friendSchedulingObservation = connections.ToDictionary(connection => connection.ConnectionId, connection =>
+            new FriendSchedulingObservation(connection.HostId, connection.Endpoint, connection.State, connection.ConnectionCode,
+                connection.HostCapabilities.ToHashSet(StringComparer.Ordinal), connection.Profiles.Select(profile => (profile.Id, profile.Kind)).ToHashSet(),
+                SharingNotices(connection).ToHashSet(), StoppedNotices(connection).ToHashSet()));
+        if (membershipChanged)
+        {
+            Interlocked.Increment(ref requestedMembershipGeneration);
+            membershipRetry.Begin();
+        }
+        // A newly stopped assigned world needs save discovery/delivery, not
+        // another four-request companion identity enrollment.
         RequestBackgroundSync();
         return true;
     }
+
+    private static IEnumerable<Guid> SharingNotices(FriendView connection) => (connection.Activity ?? [])
+        .Where(activity => activity.Category == "Backup" && activity.Action is "SharedSavesEnabled" or "SharedSavesDisabled")
+        .Select(activity => activity.Id);
+
+    private static IEnumerable<Guid> StoppedNotices(FriendView connection) => (connection.Activity ?? [])
+        .Where(activity => activity.Category == "Lifecycle" && activity.Action == "Stopped" &&
+            activity.ProfileId is { } profileId && connection.Profiles.Any(profile => profile.Id == profileId))
+        .Select(activity => activity.Id);
 
     // Invoked under the Friend link's gate. Do not acquire stateSync or start
     // another exchange here; the current registration pass owns this result.
@@ -221,10 +242,47 @@ internal sealed partial class WorldPeerService
     private void RecordScheduledResult(Group group, SharedWorldPeerRoute route, long generation, bool failed)
     {
         var result = transferObservations.Read(group.Root.GroupKey, RouteKey(route))?.LastResult;
-        var pending = result?.Result is "ByteBudget" or "WorkBudget" or "SeedHistoryPending" or "SeedPaused" ||
+        var incomplete = result?.Result is "ByteBudget" or "WorkBudget" or "SeedHistoryPending" or "SeedPaused" ||
             result is { Error: "Canceled" } && (result.SubmittedBytes > 0 || result.ReceivedBytes > 0);
         lock (stateSync)
+        {
+            var pending = incomplete && pendingProgress.Prompt(ScheduleKey(group, route), generation, result!);
             replicationSchedule.Completed(ScheduleKey(group, route), generation, DateTimeOffset.UtcNow,
-                failed && !pending, pending, Random.Shared.NextDouble());
+                (failed || incomplete && !pending) && !pending, pending, Random.Shared.NextDouble());
+        }
+    }
+}
+
+// Scheduling only: an unchanged pause/history request may retry briefly, then
+// uses the existing offline backoff. Accepted incoming bytes or an advancing
+// outgoing cursor keep resumable work prompt; none of these hints is a receipt.
+internal sealed class PeerPendingProgress
+{
+    private sealed record Entry(long Generation, DateTimeOffset Attempt, long? Publication,
+        int? File, long? Offset, int Stalls);
+    private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
+
+    internal bool Prompt(string route, long generation, WorldPeerTransferProgress result)
+    {
+        entries.TryGetValue(route, out var old);
+        var sameGeneration = old?.Generation == generation;
+        var newAttempt = !sameGeneration || old!.Attempt != result.StartedUtc;
+        var publicationAdvanced = result.PublicationNumber is { } publication &&
+            (old?.Publication is not { } priorPublication || publication > priorPublication);
+        var cursorAdvanced = result.SubmittedBytes > 0 && result.RequestedFileIndex is { } file && result.RequestedOffset is { } offset &&
+            (!sameGeneration || publicationAdvanced || old!.Publication == result.PublicationNumber &&
+                (old is not { File: { } priorFile, Offset: { } priorOffset } ||
+                    file > priorFile || file == priorFile && offset > priorOffset));
+        var progressed = newAttempt && (result.ReceivedBytes > 0 || cursorAdvanced);
+        var stalls = progressed ? 0 : Math.Min(3, (sameGeneration ? old!.Stalls : 0) + 1);
+        if (!entries.ContainsKey(route) && entries.Count >= PeerReplicationSchedule.MaximumRoutes)
+            entries.Remove(entries.MinBy(pair => pair.Value.Attempt).Key);
+        // Preserve an outgoing high-water mark through incoming observations,
+        // pauses and regressed/replayed requests. Numbers order work here only.
+        entries[route] = new(generation, result.StartedUtc,
+            cursorAdvanced ? result.PublicationNumber : sameGeneration ? old!.Publication : null,
+            cursorAdvanced ? result.RequestedFileIndex : sameGeneration ? old!.File : null,
+            cursorAdvanced ? result.RequestedOffset : sameGeneration ? old!.Offset : null, stalls);
+        return progressed || stalls <= 2;
     }
 }

@@ -872,10 +872,35 @@ internal sealed partial class WorldPeerService : IDisposable
                             observation.Phase(WorldPeerTransferPhase.Metadata);
                             await SyncPeerMetadataAsync(group, route, cancellationToken);
                             var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
+                            // This flight owns one bounded catalog for both its
+                            // priority turn and fallback forwarding. Each wire
+                            // request still rechecks current access/source fences.
+                            var localCatalog = await LocalCatalogWithSourcesAsync(current, cancellationToken, includeTests: false);
+                            var publication = await SeedNewestLocalPublicationAsync(current, route, localCatalog.Sources, cancellationToken);
+                            if (publication?.PendingProgress == true) transferAttempt.Value.PendingPayload = true;
                             observation.Phase(WorldPeerTransferPhase.Pulling);
-                            await PullCatalogAsync(current, route, cancellationToken);
+                            try { await PullCatalogAsync(current, route, cancellationToken); }
+                            finally
+                            {
+                                if (publication is
+                                    {
+                                        PendingProgress: true, Descriptor: { } pendingPublication,
+                                        File: { } acceptedFile, Offset: { } acceptedOffset
+                                    })
+                                {
+                                    // Even a canceled incoming request must not
+                                    // hide an acknowledged outgoing cursor.
+                                    observation.Expected(pendingPublication.Version.Files.Sum(file => file.Length),
+                                        pendingPublication.Version.Files.Count, pendingPublication.Version.Number);
+                                    observation.Requested(acceptedFile, acceptedOffset);
+                                }
+                            }
                             observation.Phase(WorldPeerTransferPhase.Offering);
-                            var outcome = await SeedPeerAsync(current, route, cancellationToken);
+                            // Do not begin a second conversation for the local
+                            // head already offered in this pass. Even a paused
+                            // offer yielded its remaining budget to incoming work.
+                            var outcome = publication?.Result ?? await SeedDescriptorsAsync(current, route,
+                                localCatalog.Catalog.Saves, cancellationToken);
                             observation.Complete(transferAttempt.Value.PendingPayload && outcome is not
                                 (WorldPeerTransferResult.SeedPaused or WorldPeerTransferResult.SeedHistoryPending or
                                  WorldPeerTransferResult.ByteBudget) ? WorldPeerTransferResult.WorkBudget : outcome);

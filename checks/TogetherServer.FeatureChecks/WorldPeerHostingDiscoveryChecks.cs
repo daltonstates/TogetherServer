@@ -137,6 +137,14 @@ internal static partial class WorldPeerHostingDiscoveryChecks
 
             fixture.Other.Handler.ReleaseMetadata.TrySetResult(true);
             await fixture.Other.Handler.CatalogEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // The background flight may legally offer its own completed save
+            // before Catalog. Snapshot that world's held flight; target
+            // prepared discovery must neither add payload here nor send any
+            // payload to its own per-root handler.
+            var heldOtherPayload = fixture.Other.Handler.PayloadRequests;
+            var heldOtherCatalogs = fixture.Other.Handler.CatalogRequests;
+            Require(heldOtherCatalogs == 1 && heldOtherPayload >= heldOtherCatalogs,
+                "the independent-world fixture did not hold its first background Catalog");
             var challenges = fixture.Other.Handler.Challenges;
             using (var cancel = new CancellationTokenSource())
             {
@@ -148,7 +156,9 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 "prepared metadata replaced the pending same-world payload challenge while its exchange was in flight");
             var unrelated = await fixture.Service.ResolveLatestPreparedSourceAsync(fixture.Target.Root, default)
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            Require(unrelated.Ok && fixture.Target.Handler.OnlyMetadata && fixture.Other.Handler.PayloadRequests == 1,
+            Require(unrelated.Ok && fixture.Target.Handler.OnlyMetadata && fixture.Target.Handler.PayloadRequests == 0 &&
+                fixture.Other.Handler.PayloadRequests == heldOtherPayload && fixture.Other.Handler.CatalogRequests == heldOtherCatalogs &&
+                fixture.Other.Handler.Challenges == challenges,
                 "a blocked other-world catalog held target metadata or prepared discovery sent payload operations");
         }
         finally
@@ -392,6 +402,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         internal int ProofFailures { get; private set; }
         internal bool OnlyMetadata => operations.Count > 0 && operations.Keys.All(item => item == WorldPeerOperations.Metadata);
         internal int PayloadRequests => operations.Where(item => item.Key is WorldPeerOperations.Catalog or WorldPeerOperations.Chunk or WorldPeerOperations.Seed).Sum(item => item.Value);
+        internal int CatalogRequests => operations.GetValueOrDefault(WorldPeerOperations.Catalog);
         internal int MetadataRequests => operations.GetValueOrDefault(WorldPeerOperations.Metadata);
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {

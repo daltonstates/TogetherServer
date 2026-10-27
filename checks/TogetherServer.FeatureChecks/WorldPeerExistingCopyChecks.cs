@@ -261,16 +261,20 @@ internal static class WorldPeerExistingCopyChecks
     private static async Task VerificationProgressAsync(string parent)
     {
         using var fixture = new Fixture(parent, "Original");
+        var expected = SharedWorldService.BoundedTotalBytes(fixture.Descriptor.Version.Files);
         WorldPeerTransferProgress? hashing = null;
         fixture.TargetService.ReceiptPayloadHashingForChecks = () => hashing = fixture.TargetService.Views().Single()
             .BackgroundTransfers!.Single().Current;
         await fixture.SyncExactAsync();
         Require(hashing is
         {
-            Phase: "VerifyingLocal", TotalBytes: > 0, TotalFiles: 1, PublicationNumber: 2,
-            ReceivedBytes: 0, SubmittedBytes: 0
-        },
-            "The actual transfer flight presented a held local-copy hash as a download or omitted its exact descriptor totals.");
+            Phase: "VerifyingLocal", TotalFiles: 1, PublicationNumber: 2, ReceivedBytes: 0,
+            ExactReceiptAccepted: true, ReceiptPublicationNumber: 2
+        } && expected > 0 && hashing.TotalBytes == expected && hashing.SubmittedBytes == expected &&
+            fixture.RemoteHandler.Operations.Contains(WorldPeerOperations.Seed) &&
+            fixture.RemoteHandler.Operations.Contains(WorldPeerOperations.Catalog) &&
+            !fixture.RemoteHandler.Operations.Contains(WorldPeerOperations.Chunk),
+            "The local-copy hash lost its exact totals/phase, counted incoming bytes, or hid/repeated the exactly acknowledged priority publication.");
     }
 
     private static async Task RejectAsync(Func<Task> action, string message)

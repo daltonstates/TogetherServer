@@ -1257,13 +1257,13 @@ internal sealed partial class FriendLink
                 if (config?.PeerWorld is not null) return;
                 next = config is null ? Guid.Empty : config.ConsentedSharedWorldProfiles
                     .Concat(config.ApprovedSharedWorldGroups.Keys).Distinct().FirstOrDefault(id =>
-                        HasSharedWorldReceiveConsent(id) &&
                         !(view.HostCapabilities.Contains(CompanionProtocol.SharedWorldPeersCapability, StringComparer.Ordinal) &&
                             config.SharedWorldSigningKeys.TryGetValue(id, out var owner) &&
                             config.ApprovedSharedWorldGroups.TryGetValue(id, out var groupId) &&
                             peerOwns?.Invoke(new(owner, id, groupId)) == true) &&
                         view.Profiles.Any(profile => profile.Id == id && profile.Kind != GameKinds.Custom) &&
-                        (!sharedRetryAfter.TryGetValue(id, out var after) || after <= DateTimeOffset.UtcNow));
+                        (!sharedRetryAfter.TryGetValue(id, out var after) || after <= DateTimeOffset.UtcNow) &&
+                        HasSharedWorldReceiveConsent(id));
             }
             finally { gate.Release(); }
             if (next == Guid.Empty) return;
@@ -3215,6 +3215,11 @@ internal sealed partial class FriendLink
                 System.Globalization.CultureInfo.InvariantCulture, out var number) &&
             number > 0 && (number / 1024).ToString("x16") == bucket;
     }
+
+    // Exact metadata lookup only. The caller still verifies current authority,
+    // strict ancestry and a held complete payload before acknowledging a copy.
+    internal static SharedWorldVersion? ReadRetainedSignedManifest(string root, long number, string hash) =>
+        ReadSignedManifest(root, number, hash);
 
     private static SharedWorldVersion? ReadSignedManifest(string root, long number, string hash)
     {

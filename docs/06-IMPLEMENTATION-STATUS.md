@@ -7,6 +7,75 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## Integrated .20 historical reuse and idle correction (validation in progress)
+
+This is one unpublished candidate based on the measured .19 failure below.
+No installed app, production save or pairing state was changed during this work.
+The exact offered descriptor can now locate retained historical payloads in
+deterministic separate, received, received-branch and original-publication
+storage without enumerating all old payloads or advertising every old save.
+Current protected source provenance/head, root, signature, strict parent chain,
+authority, expiry/revocation and consent remain required. The complete payload
+is held and hash-verified before a new receipt; final receipt commit repeats
+current scope/source and bounded ancestry checks. A damaged or ambiguous exact
+copy fails closed instead of being hidden by a new download. Reuse does not
+move a head, prepare a world or produce a duplicate payload. An already confirmed
+exact receipt poll returns no new proof and skips repeated hash/write/delivery.
+
+The same per-world transfer flight gives one local publication a bounded
+ten-second outgoing opportunity before incoming catch-up, inside the existing
+route/pass budgets. A paused/stalled offer yields the remaining budget to legal
+incoming work. Accepted outgoing progress remains visible to scheduling even
+after incoming observations. Priority and fallback forwarding share one
+operation-owned catalog; source/access checks remain fresh at use. Only an exact
+current authenticated-recipient receipt establishes delivery. Ordering numbered
+work does not select a history or resolve competing progress.
+
+Idle scheduling now compares a compact material Friend projection rather than
+serializing/sorting unchanged heartbeat snapshots. Assigned Stop notices wake
+replication without re-enrollment. Peer-owned legacy receivers and not-yet-due
+legacy work skip unnecessary protected consent reads; actual operations still
+validate consent. Stalled pauses/history requests get two prompt opportunities,
+then use the existing adaptive backoff toward five minutes. Accepted bytes or
+advancing outgoing cursors remain prompt. Unchanged tray summaries no longer
+queue repeated desktop dispatch. Heartbeat five-second and lifecycle/player
+three-second observation intervals, current safety guards and planned-move
+requirements remain unchanged. Existing-copy hashing now uses the same measured
+payload-verification scope as other receipt checks, excluding network delivery.
+
+The .20 UI bundle/typecheck and strict solution compilation pass with zero
+compiler warnings/errors. Initial formatting differences were whitespace and
+have been corrected. The new priority and idle groups passed their first local
+generated/fake-HTTP run. Historical reuse refused revocation, but its assertion
+incorrectly revoked the other fake PC without teaching the receiver; the test
+now uses the receiving owner with a locally known revoked sender. All original
+refusal assertions remain, and swallowed observation-hook exceptions are now
+reported explicitly by the test. Combined checks then caught an actual orphan
+completion regression: an absent received pointer must use normal fully verified
+completion, while an invalid present pointer and damaged historical source still
+fail closed. That distinction is corrected and covered for canonical/branch
+orphans. Existing catalog-failure, discovery and local-hash telemetry assertions
+now account for legitimate priority delivery while retaining exact receipt,
+failure visibility, target metadata-only behavior and original timing limits.
+The new priority test's initial timeout waited through deep incoming ancestry
+after exact receipt9 had already succeeded; its barrier now holds the first
+incoming Catalog, and competing-history parents are pre-staged as verified
+metadata only. Its eight/eighteen-second bounds remain unchanged.
+
+The final three-group run passes new priority, current-copy and historical-copy
+coverage, including the final ancestry mutation race. Across retained integration
+runs, all 12 selected replication/provenance/idle/discovery groups have passed;
+the failed setup/order assertions and their fixes remain recorded in local logs.
+The repaired focused build is clean with zero warnings/errors. Full exact-source
+Windows CI is still required. Safe logs and release baseline are under
+`local-data/hosting-history-reuse-20/`. Read-only cross-review found no remaining
+safety blocker. The redundant middle historical ancestry walk was removed while
+the pre-hash and final in-gate checks remain.
+There are 94 source groups, including three new groups for historical8/head9,
+outgoing priority/exact receipt/fairness and bounded idle work. General fixtures,
+native, browser, installer and full candidate verification belong in hosted
+Windows CI; no .20 physical benefit or delivery acceptance is claimed here.
+
 ## Physical .19 V1release cycle, 2026-10-27 EDT (not accepted: delivery)
 
 The owner reported both PCs updated to .19, confirmed the laptop unattended and

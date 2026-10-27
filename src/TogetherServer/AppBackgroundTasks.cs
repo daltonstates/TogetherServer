@@ -13,6 +13,7 @@ internal sealed class AppBackgroundTasks(
     private Task[] tasks = [];
     private DateTimeOffset notificationStartedUtc;
     private Task freshness = Task.CompletedTask;
+    private readonly DesktopTraySummaryCoalescer traySummaries = new();
     private readonly SemaphoreSlim replicationWake = new(0, 1);
 
     private void WakeReplication()
@@ -140,11 +141,12 @@ internal sealed class AppBackgroundTasks(
                     foreach (var item in visible.Where(item => notifiedActivity.Add(item.Id)))
                         desktop.Notify(item, friendMode(), friendMode() ? friend.View().ConnectionId : null);
                     var hostSnapshot = await manager.CompanionSnapshotAsync();
-                    desktop.SetTraySummary(new DesktopTraySummary(
+                    var summary = new DesktopTraySummary(
                         hostSnapshot.Runs.Count(run => run.State is "Ready" or "Starting" or "Process running" or "Listening" or "Stopping"),
                         hostSnapshot.Runs.Count(run => run.State == "Failed" || run.State == "Unknown" &&
                             !PlayerCountRefreshState.IsCountObservationUnavailable(run.State, run.PlayerObservationSource)),
-                        friend.View().State));
+                        friend.View().State);
+                    traySummaries.Publish(summary, desktop.SetTraySummary);
                     if (notifiedActivity.Count > 1000)
                         notifiedActivity.IntersectWith(visible.Select(item => item.Id));
                 }
@@ -158,5 +160,18 @@ internal sealed class AppBackgroundTasks(
     {
         try { await Task.Delay(interval, clock, stop.Token); return true; }
         catch (OperationCanceledException) { return false; }
+    }
+}
+
+// The desktop retains the latest value before dispatch and reapplies it when
+// the tray is created. Failed publication is not marked delivered here.
+internal sealed class DesktopTraySummaryCoalescer
+{
+    private DesktopTraySummary? last;
+    internal void Publish(DesktopTraySummary summary, Action<DesktopTraySummary> publish)
+    {
+        if (summary == last) return;
+        publish(summary);
+        last = summary;
     }
 }

@@ -407,6 +407,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         }
         using var source = new WorldPeerService(b, new HostManager(b), bFriends, new PairingService(b), Client);
         var seedRequests = handler.SeedRequests;
+        SharedWorldReceipt? exactReceipt = null;
         for (var pass = 0; pass < 2; pass++)
         {
             var metadataResponses = handler.SuccessfulMetadataResponses;
@@ -426,16 +427,27 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                 await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 var metadataContact = source.Views().Single(item => item.GroupKey == root.GroupKey).State.Peers
                     .Single(item => item.PublicKey == root.OwnerPublicKey).Contact;
+                var accepted = Receipts(b, root).SingleOrDefault(item => item.VersionHash == publication.Version.VersionHash &&
+                    item.RosterEpoch == roster.Epoch && item.RosterRevision == roster.Revision &&
+                    SharedWorldReceiptTrust.VerifyPeerOwner(item, root));
+                var transfer = source.Views().Single(item => item.GroupKey == root.GroupKey).BackgroundTransfers!
+                    .Single(item => item.RecipientRole == "OriginalHost").Current;
                 Require(handler.SuccessfulMetadataResponses > metadataResponses && metadataContact is { LastAttemptSucceeded: true, LastSuccessUtc: not null } &&
-                    handler.SeedRequests == seedRequests,
-                    "a pending Catalog failure did not expose fresh signed metadata before the blocked outbound seed");
+                    accepted is not null && transfer is { ExactReceiptAccepted: true } &&
+                    transfer.ReceiptPublicationNumber == publication.Version.Number &&
+                    (pass == 0 ? handler.SeedRequests > seedRequests : handler.SeedRequests == seedRequests && accepted == exactReceipt) &&
+                    (pass == 0 || transfer.SubmittedBytes == 0),
+                    "fresh metadata and the exact newest delivery receipt were not visible before the later held Catalog failure");
+                exactReceipt = accepted;
+                seedRequests = handler.SeedRequests;
             }
             finally { release.TrySetResult(true); await sync.WaitAsync(TimeSpan.FromSeconds(10)); handler.BeforeExchange = null; }
             var view = source.Views().Single(item => item.GroupKey == root.GroupKey);
             var failure = view.BackgroundTransfers!.Single(item => item.RecipientRole == "OriginalHost").LastFailure;
             Require(handler.RejectedCatalogs == rejectedCatalogs + 1 && handler.SeedRequests == seedRequests &&
-                failure is { Phase: "Pulling", Operation: "Catalog", Error: "HttpRejected", HttpStatus: 503 },
-                "Catalog HTTP503 lost its exact failed phase or allowed the newer outbound seed to run");
+                failure is { Phase: "Pulling", Operation: "Catalog", Error: "HttpRejected", HttpStatus: 503, ExactReceiptAccepted: true } &&
+                failure.ReceiptPublicationNumber == publication.Version.Number && Receipts(b, root).Contains(exactReceipt!),
+                "later Catalog HTTP503 lost its exact failure or the already accepted newest-publication receipt");
             var unchangedFailure = failure.UpdatedUtc;
             var afterFailureMetadata = handler.SuccessfulMetadataResponses;
             const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
@@ -451,17 +463,31 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                 retainedFailure.UpdatedUtc == unchangedFailure && handler.SeedRequests == seedRequests,
                 "successful metadata-only discovery erased or replaced the payload-transfer failure");
         }
-        Require(!Directory.Exists(SharedWorldBranchVault.Root(a, branch)) &&
-            !Receipts(b, root).Any(item => item.VersionHash == publication.Version.VersionHash) &&
+        Require(FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(a, branch))?.VersionHash == publication.Version.VersionHash &&
+            exactReceipt is not null && Receipts(b, root).Contains(exactReceipt) &&
             FriendLink.ReadReceivedLatest(copies.PublishedRoot(branch))?.VersionHash == publication.Version.VersionHash &&
             a.LoadRuns().Count == 0 && b.LoadRuns().Count == 0,
-            "the failed-Catalog observation copied progress, accepted a receipt, changed the publication or created a process");
+            "the later failed Catalog lost the delivered exact copy/receipt, changed source publication or created a process");
 
         // Cancellation must win before hash validation can reset an unfinished
         // file. Use a real signed descriptor with deliberately wrong staged
         // bytes, so omitting the verification token would truncate this file.
-        var version = publication.Version;
+        // The priority delivery already completed the preceding publication.
+        // Make a real next stopped backup so cancellation still guards a new,
+        // incomplete destination rather than reusing that completed copy.
+        File.WriteAllText(Path.Combine(local.WorldDirectory, "world.dat"), "synthetic next stopped progress for canceled completion");
+        var nextBackup = backups.Create(local, BackupKinds.Rolling);
+        Require(nextBackup is { Ok: true, Backup: not null }, "the canceled-completion fixture lacked its next stopped backup");
+        var nextPublication = copies.PublishAfterStop(branch, local, nextBackup.Backup.Id, backups);
+        Require(nextPublication is { Ok: true, Version: not null } &&
+            nextPublication.Version.Number == publication.Version.Number + 1 &&
+            nextPublication.Version.ParentHash == publication.Version.VersionHash,
+            "the canceled-completion fixture did not extend its exact already delivered publication");
+        var version = nextPublication.Version;
         var vault = SharedWorldBranchVault.Root(a, branch);
+        var previousPointer = File.ReadAllBytes(Path.Combine(vault, "latest.json"));
+        var previousReceipts = Receipts(a, root);
+        var previousSourceReceipts = Receipts(b, root);
         var stage = Path.Combine(vault, ".partial-" + version.VersionHash);
         var payload = Path.Combine(stage, SharedWorldService.PayloadDirectory);
         Directory.CreateDirectory(payload);
@@ -488,9 +514,10 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         }
         catch (OperationCanceledException) when (canceled.IsCancellationRequested) { completionCanceled = true; }
         Require(completionCanceled && File.ReadAllBytes(partialFile).SequenceEqual(wrongBytes) &&
-            !Directory.Exists(Path.Combine(vault, version.VersionHash)) && !File.Exists(Path.Combine(vault, "latest.json")) &&
+            !Directory.Exists(Path.Combine(vault, version.VersionHash)) &&
+            File.ReadAllBytes(Path.Combine(vault, "latest.json")).SequenceEqual(previousPointer) &&
             !File.Exists(Path.Combine(stage, "version.json")) && !File.Exists(Path.Combine(stage, "receipt.json")) &&
-            Receipts(a, root).Length == 0 && !Receipts(b, root).Any(item => item.VersionHash == version.VersionHash) &&
+            Receipts(a, root).SequenceEqual(previousReceipts) && Receipts(b, root).SequenceEqual(previousSourceReceipts) &&
             a.LoadRuns().Count == 0 && b.LoadRuns().Count == 0,
             "canceled completion hashed/reset staged progress, promoted a pointer/receipt or created a process");
         File.Delete(partialFile); // Only the disposable corrupt cancellation fixture is reset.
@@ -518,6 +545,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         var vault = SharedWorldBranchVault.Root(main, branch);
         var stage = Path.Combine(vault, ".partial-" + version.VersionHash);
         var partialFile = Path.Combine(stage, SharedWorldService.PayloadDirectory, "world.dat");
+        var previousPointer = File.ReadAllBytes(Path.Combine(vault, "latest.json"));
         var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         laptopHandler.BeforeExchange = async exchange =>
@@ -553,7 +581,8 @@ internal static class WorldPeerCompletedSaveDistributionChecks
                 exactSeedOffers == 1 && exactSeedChunks == 0 && !pull.IsCompleted &&
                 new FileInfo(partialFile).Length == partialLength && File.GetLastWriteTimeUtc(partialFile) == partialWrittenUtc &&
                 Directory.EnumerateFiles(stage, "*", SearchOption.AllDirectories).Count() == stagedFiles &&
-                !Directory.Exists(Path.Combine(vault, version.VersionHash)) && !File.Exists(Path.Combine(vault, "latest.json")) &&
+                !Directory.Exists(Path.Combine(vault, version.VersionHash)) &&
+                File.ReadAllBytes(Path.Combine(vault, "latest.json")).SequenceEqual(previousPointer) &&
                 !File.Exists(Path.Combine(stage, "version.json")) && !File.Exists(Path.Combine(stage, "receipt.json")) &&
                 pullingMain.LatestObservationHash(root) == observation &&
                 !Receipts(laptop, root).Any(item => item.VersionHash == version.VersionHash),
@@ -595,9 +624,10 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         // primary. Contention on that second gate must also release the first.
         using var hosting = ECDsa.Create();
         hosting.ImportPkcs8PrivateKey(laptop.LoadProtected(WorldAuthorityStore.HostingKeyName(root.ProfileId))!, out _);
-        Require(Public(hosting) == primary.SigningPublicKey && primary.Number == 2 &&
-            primary.ParentHash == branch.Offer.Version.VersionHash,
-            "the retained-contention fixture did not have its generated signed second publication");
+        Require(Public(hosting) == primary.SigningPublicKey && primary.Number > branch.Offer.Version.Number &&
+            primary.ParentHash is not null && SharedWorldSeparateCopyStore.VerifyReceivedBranch(
+                new SharedWorldSeparateCopyStore(laptop).PublishedRoot(branch), branch, primary),
+            "the retained-contention fixture did not have its exact verified signed continuation");
         var forkBytes = Encoding.UTF8.GetBytes("synthetic independent signed sibling progress");
         var fork = SharedWorldService.SignVersion(primary with { BackupId = Guid.NewGuid(), Files = [Fact(forkBytes)] }, hosting);
         Require(fork.VersionHash != primary.VersionHash && fork.ParentHash == primary.ParentHash &&

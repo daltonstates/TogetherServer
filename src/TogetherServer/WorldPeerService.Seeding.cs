@@ -12,6 +12,9 @@ internal sealed record WorldPeerSeedResponse(string Code, string VersionHash,
 internal sealed partial class WorldPeerService
 {
     private readonly PeerPullOwnership inboundPulls = new();
+    private static readonly TimeSpan PublicationOfferBudget = TimeSpan.FromSeconds(10);
+    private sealed record LocalPublicationDelivery(WorldPeerTransferResult Result, bool PendingProgress,
+        WorldPeerSaveDescriptor? Descriptor = null, int? File = null, long? Offset = null);
 
     private HashSet<string> AcknowledgedByResponder(Group group)
     {
@@ -33,18 +36,70 @@ internal sealed partial class WorldPeerService
     // sender never submits a path, command, live world or installation setting.
     private async Task<WorldPeerTransferResult> SeedPeerAsync(Group group, SharedWorldPeerRoute route, CancellationToken cancellationToken)
     {
+        var catalog = await LocalCatalogAsync(group, cancellationToken, includeTests: false);
+        return await SeedDescriptorsAsync(group, route, catalog.Saves, cancellationToken);
+    }
+
+    // One local publication gets a bounded outgoing turn before incoming
+    // catch-up. The same flight, exact source fences and receiver-driven Seed
+    // conversation still own all bytes; an incoming pull of that exact save
+    // keeps its ownership. A stalled offer leaves time for competing history.
+    private async Task<LocalPublicationDelivery?> SeedNewestLocalPublicationAsync(Group group,
+        SharedWorldPeerRoute route, IReadOnlyList<LocalSave> sources, CancellationToken cancellationToken)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(PublicationOfferBudget);
+        var progressed = false;
+        WorldPeerSaveDescriptor? offered = null;
+        int? acceptedFile = null;
+        long? acceptedOffset = null;
+        try
+        {
+            // Numbers order transfer work only, never resolve competing histories.
+            var publication = sources.Where(item => item.ProducedHere)
+                .OrderByDescending(item => item.Descriptor.Version.Number)
+                .ThenByDescending(item => item.Descriptor.Version.CreatedUtc).FirstOrDefault();
+            if (publication is null) return null;
+            var descriptor = publication.Descriptor;
+            if (AcknowledgedByResponder(group).Contains(descriptor.Version.VersionHash))
+            {
+                transferAttempt.Value?.Attempt.ReceiptAccepted(descriptor.Version.Number);
+                return null;
+            }
+            if (transferAttempt.Value?.ResponderPublicKey is { } recipient &&
+                inboundPulls.Active(group.Root.GroupKey, descriptor.Version.VersionHash, recipient)) return null;
+            offered = descriptor;
+            var result = await SeedDescriptorsAsync(group, route, [descriptor], bounded.Token, (file, offset) =>
+            {
+                progressed = true;
+                if (file is not null) { acceptedFile = file; acceptedOffset = offset; }
+            });
+            var pending = progressed && result is WorldPeerTransferResult.WorkBudget or
+                WorldPeerTransferResult.ByteBudget or WorldPeerTransferResult.SeedHistoryPending;
+            return new(result, pending, pending ? descriptor : null, acceptedFile, acceptedOffset);
+        }
+        catch (OperationCanceledException) when (bounded.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            return new(progressed ? WorldPeerTransferResult.WorkBudget : WorldPeerTransferResult.SeedPaused,
+                progressed, offered, acceptedFile, acceptedOffset);
+        }
+    }
+
+    private async Task<WorldPeerTransferResult> SeedDescriptorsAsync(Group group, SharedWorldPeerRoute route,
+        IReadOnlyList<WorldPeerSaveDescriptor> descriptors, CancellationToken cancellationToken,
+        Action<int?, long?>? progress = null)
+    {
         using var key = LocalKey(group);
         if (key is null || !await ReceiveAllowedAsync(group, cancellationToken) ||
             Access(group, group.DeviceId, Convert.ToBase64String(key.ExportSubjectPublicKeyInfo())) is not { Receive: true, Reshare: true })
             return WorldPeerTransferResult.SeedPaused;
-        var catalog = await LocalCatalogAsync(group, cancellationToken, includeTests: false);
         var observationContext = transferAttempt.Value;
         var observation = observationContext?.Attempt;
         var acknowledged = AcknowledgedByResponder(group);
         var outcome = WorldPeerTransferResult.NoPayload;
         // Prefer a continuation before its older original-source copy. This is
         // transfer scheduling only; selection still requires verified ancestry.
-        foreach (var descriptor in catalog.Saves.OrderByDescending(item => item.Version.Number))
+        foreach (var descriptor in descriptors.OrderByDescending(item => item.Version.Number))
         {
             if (acknowledged.Contains(descriptor.Version.VersionHash))
             {
@@ -92,6 +147,8 @@ internal sealed partial class WorldPeerService
                     var manifest = await FindManifestAsync(group, hash, number, cancellationToken);
                     if (manifest is null) return WorldPeerTransferResult.ManifestUnavailable;
                     response = await SendSeedAsync(group, route, descriptor, manifest, null, null, null, cancellationToken);
+                    if (response.Code != "SeedPaused" && !(response.Code == "SeedManifest" &&
+                        response.ManifestHash == hash && response.ManifestNumber == number)) progress?.Invoke(null, null);
                 }
                 else if (response.Code == "SeedChunk" && response.FileIndex is { } file && response.ChunkOffset is { } offset)
                 {
@@ -103,6 +160,9 @@ internal sealed partial class WorldPeerService
                     if (file == descriptor.Version.Files.Count - 1 && offset + bytes.Length == descriptor.Version.Files[file].Length)
                         observation?.Phase(WorldPeerTransferPhase.VerifyingRemote);
                     response = await SendSeedAsync(group, route, descriptor, null, bytes, file, offset, cancellationToken);
+                    if (response.Code is "SeedComplete" or "SeedKnown" || response.Code == "SeedChunk" &&
+                        response.FileIndex is { } nextFile && response.ChunkOffset is { } nextOffset &&
+                        (nextFile > file || nextFile == file && nextOffset > offset)) progress?.Invoke(file, offset + bytes.Length);
                     sent += bytes.Length;
                     if (sent >= WorldPeerFileTransfer.MaximumPayloadBytesPerPass) return WorldPeerTransferResult.ByteBudget;
                 }

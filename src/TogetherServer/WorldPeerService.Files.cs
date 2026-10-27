@@ -35,13 +35,16 @@ internal sealed partial class WorldPeerService
     internal Action? ChunkPayloadReadForChecks { get; set; }
 
     private WorldPeerVerifiedCopy VerifyReceiptPayload(string vault, SharedWorldVersion version,
+        CancellationToken cancellationToken) => VerifyReceiptPayloadDirectory(
+            SharedWorldService.SafeChild(vault, version.VersionHash), version, cancellationToken);
+
+    private WorldPeerVerifiedCopy VerifyReceiptPayloadDirectory(string directory, SharedWorldVersion version,
         CancellationToken cancellationToken)
     {
         using var measurement = hostingWork.Measure(HostingWorkStage.PayloadVerification);
         try { ReceiptPayloadHashingForChecks?.Invoke(); }
         catch (Exception) { /* Observations cannot change payload verification. */ }
-        return WorldPeerVerifiedCopy.Open(data.RootPath,
-            SharedWorldService.SafeChild(vault, version.VersionHash), version, cancellationToken);
+        return WorldPeerVerifiedCopy.Open(data.RootPath, directory, version, cancellationToken);
     }
 
     private static string RetainedHistoryParent(LocalData data, Group group) => Path.Combine(
@@ -191,6 +194,11 @@ internal sealed partial class WorldPeerService
         var local = await LocalSavesAsync(group, cancellationToken);
         var saves = local.Where(item => item.ProducedHere ||
             group.ReceiveConsented && access is { Receive: true, Reshare: true })
+            // This is bounded advertisement priority, not ancestry selection.
+            // Keep the newest local publication available to the delivery owner.
+            .OrderByDescending(item => item.ProducedHere).ThenByDescending(item => item.Descriptor.Version.Number)
+            .ThenBy(item => item.Descriptor.Branch?.BranchHash ?? "", StringComparer.Ordinal)
+            .ThenBy(item => item.Descriptor.Version.VersionHash, StringComparer.Ordinal)
             .Select(item => item.Descriptor).Take(32).ToList();
         if (includeTests) saves.AddRange((await LocalLiveTestDescriptorsAsync(group, cancellationToken)).Take(32 - saves.Count));
         // Bounded catalogs advertise fewer complete entries rather than emitting
