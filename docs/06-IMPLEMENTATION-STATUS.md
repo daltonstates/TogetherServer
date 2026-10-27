@@ -164,7 +164,8 @@ The corrected exact-source
 for `554e795225e81932286775c94e9dfd76c44f01fe` finished with 16 successful lanes
 and only Desktop QuietTime blocked. Existing passed all 27 gates with zero
 NotRun: 109 UI files/1,573 tests, Checks 114, Minecraft 12 and every later gate.
-Source checks pass 83 groups and packaged API checks nine. Pairing passes all
+Source checks pass 83 groups, eight packaged API journeys and the final
+unchanged-candidate hash check. Pairing passes all
 32 stages; both ordinary nine-stage automatic-sharing journeys pass, each
 returning owner using one Start request. The final candidate hash is unchanged;
 hosted cleanup completed without orphan termination entries. All six installer
@@ -256,7 +257,7 @@ evidence of a redundant copy across local vaults. The receiver filesystem was
 not directly inspected. Public-safe evidence is under ignored
 `local-data/physical-test-554e795/`; signed private evidence remains outside Git.
 
-### Bounded .18 work in progress
+### Bounded .18 sharing changes, 2026-10-27 UTC
 
 Source review found that a background pull holds its receive writer while
 awaiting chunks, while inbound seed requests previously queued on that writer
@@ -309,7 +310,10 @@ old duplicate-head regression; the corrected group passes. No .18 native fixture
 or production process has been launched on the laptop.
 
 The initial .18 [Windows run 40449701230](https://github.com/daltonstates/TogetherServer/actions/runs/40449701230)
-uses source `8b4f28d727466e76bde867b6bf938221dea89694`; it is not published.
+uses source `8b4f28d727466e76bde867b6bf938221dea89694`; that source was not published.
+It finished with 13 successful jobs and four failures. Existing passed all 27
+gates with zero NotRun, including 1,575 UI tests; its source suite passed 82/84
+groups and left the packaged API journey unrun after those two failures.
 Its source suite also exposed the older replication receipt boundary: a forged
 legacy record was ignored before creating a new valid selfreceipt. Legacy and
 current-scope records now all require the exact self/world/save, retained-key
@@ -348,6 +352,57 @@ consent plus a final exact world/device/role read. It does not retry the prior
 sync, prepare or Start. This harness correction is not a claimed product consent
 race repair. The existing QuietTime notification boundary is also retained.
 
+The corrected .18 candidate is
+`8aae31299bea9e5b29599d17d456f6ea756f8086`, in
+[Windows run 40452218883](https://github.com/daltonstates/TogetherServer/actions/runs/40452218883).
+All 84 source groups pass; the packaged API output contains eight journey groups
+plus its final unchanged-candidate hash check. Both ordinary nine-stage sharing
+journeys pass with one Friend Start and one returning-owner Start each. Pairing
+passes UX three, loopback 11 and LAN 18 stages. Both LAN receiving observations
+passed on their first GET (161/105 ms) with true consent and final exact world,
+device and role checks. This does not identify the earlier consent failure's cause.
+
+All nine populated transfer captures pass with zero layout findings; all nine
+primary PNGs and three 150-percent bottom views were actually inspected. The
+seven rendered UI files match the reviewed candidate ZIP and embedded bundle.
+These are synthetic screenshots; neither failed computer-use helper observed the
+laptop screen. Six installer cases and three actual wizard choices also pass.
+The portable is 66,230,798 bytes, SHA-256
+`97e12384d4d4e18c2c1d02107836dcd02ac24e1f156a01771f9259f20ce47a24`;
+installer 60,687,387 bytes, SHA-256
+`8824eebc0d5df5341eb2a9c9bc1b3097273429a8e0066d302e4a3a2f4d1d9f77`.
+Manifest, sidecars, versions and source/run identity were checked without loading
+or launching either binary. Installer resource strings have ordinary fixed-width
+padding, trimmed for exact numeric-version comparison. Both assets remain unsigned.
+
+Attempt 1 finished with 15 successful jobs and two failures. QuietTime remains
+blocked (61 polls/15,240 ms). Existing passed 15 gates, failed Core remote Start
+with typed `PortInUse` before process creation, and left 11 later gates NotRun.
+Its UI 109 files/1,575 tests, Checks 114 and Minecraft 12 had passed. The diagnostic
+does not retain the chosen UDP pair or failed bind error, so its resource conflict
+is unclassified. The conflict check and Start behavior were not weakened. Only
+that CI job was rerun once on a fresh hosted runner with the same candidate.
+Attempt 2's Existing job passed all 27 gates with zero failures/NotRun, including
+the later Core 14/rehearsal two, World load, Shared Worlds 11 with zero recovery
+skips, Live/Shared LiveSave, Companion 46, formatting and all five smoke gates.
+Final bytes still match `97e12384...ce47a24`; cleanup contains no orphan game/app
+termination entries. This was a new isolated test session, not a product Start
+retry, and does not identify or repair the earlier port refusal's cause. Latest
+checks report 16 successful jobs and only the preserved QuietTime failure.
+
+The reviewed [v0.3.3.18 preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.18)
+was published at 05:51:11 UTC, release 425078208, annotated tag
+`935b62cd213f4cbe9acbf6e5be8e10136c6f11ba` pointing to exact source 8aae312.
+All four public assets were anonymously downloaded and rehashed against the
+reviewed files, manifest and checksum sidecars. All 32 older release IDs remain
+present (33 total); stable/latest stays `v0.3.3`. No app was installed or replaced
+by the agent. Current `.18` physical acceptance remains NotRun: both PCs need
+owner-controlled manual updates, followed by a freshly confirmed unattended
+V1release-only session with the main world stopped. Prompt automatic delivery,
+exact reachable-recipient acknowledgements and saved restart remain that test's
+acceptance target. Offline recipients remain pending. Public-safe evidence and
+both Existing attempts are retained under ignored `local-data/simplified-hosting-8aae312/`.
+
 The actual Host view placed the read-only panel inside a closed Other Hosts &
 connections disclosure. Earlier suggested UI directions were not verified on
 the screen. Both computer-use helpers failed before initialization, with no
@@ -361,8 +416,9 @@ inspection remain pending. No local browser/native fixture was launched.
 An initial local compilation overlapped the UI bundle write and failed on a
 missing embedded asset. That was an avoidable build-order error; UI output and
 .NET compilation are serialized for subsequent checks. This failure is not a
-product or native test result. The .18 source has not been published, installed
-or physically tested. The completed .17 cycle does not validate these changes.
+product or native test result. The published .18 has hosted and synthetic
+verification only; it has not been physically tested by the agent. The completed
+.17 laptop cycle remains separate evidence and does not validate these changes.
 
 ## Current behavior
 
