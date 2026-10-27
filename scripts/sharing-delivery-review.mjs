@@ -45,7 +45,8 @@ export function assertSharingDeliveryEvidence(testCase, evidence) {
   if (!evidence.visible || evidence.permissionsOpen || evidence.diagnosticsOpen || evidence.detailsOpen ||
       !/Background save transfer/u.test(evidence.text) || !/Original Host/u.test(evidence.text) ||
       !/This pass:/u.test(evidence.text) || /\b100\s*%/u.test(evidence.text) ||
-      evidence.apiRequests.some(request => request.method !== 'GET'))
+      evidence.apiRequests.some(request => request.method !== 'GET' &&
+        (request.method !== 'POST' || request.path !== '/api/local/ui-drafts/read')))
     throw new Error('Sharing delivery must be visible without permissions or diagnostics and must remain read-only.');
   const accepted = /Verified receipt for save \d+ accepted/u.test(evidence.text);
   if (testCase.sharingDelivery === 'sending' &&

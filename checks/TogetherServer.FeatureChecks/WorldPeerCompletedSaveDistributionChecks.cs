@@ -218,6 +218,20 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         Initialize(c, root, current, cCredential.DeviceId, observerKey, aRoute, cCredential);
         Initialize(d, root, current, dCredential.DeviceId, lateKey, aRoute, dCredential);
         lateOnline = true;
+
+        // Exact-copy reuse must not create an unnecessary incoming echo of this
+        // PC's own publication. Deliberately retain the old storage shape next
+        // so projection still handles a complete cache left by earlier builds.
+        var ownReceivedVault = SharedWorldBranchVault.Root(b, branch);
+        Require(!Directory.Exists(ownReceivedVault),
+            "automatic sharing created a duplicate received vault for the exact locally published branch");
+        WriteCopy(ownReceivedVault, first, initialBytes);
+        WriteCopy(ownReceivedVault, final, finalBytes);
+        File.WriteAllBytes(Path.Combine(ownReceivedVault, "branch.json"), JsonSerializer.SerializeToUtf8Bytes(branch, Json));
+        Require(SharedWorldSeparateCopyStore.VerifyReceivedBranch(ownReceivedVault, branch, final),
+            "the disposable old-style duplicate cache lacked its exact signed parent and branch proof");
+        VerifyCopy(ownReceivedVault, final, finalBytes);
+
         var changedBytes = finalBytes.ToArray(); changedBytes[0] ^= 0x7F;
         File.WriteAllBytes(Path.Combine(local.WorldDirectory, "world.dat"), changedBytes);
         var changedBackup = backups.Create(local, BackupKinds.Rolling);
@@ -225,7 +239,7 @@ internal static class WorldPeerCompletedSaveDistributionChecks
         var changedResult = copies.PublishAfterStop(branch, local, changedBackup.Backup!.Id, backups);
         Require(changedResult is { Ok: true, Version: not null }, "synthetic next completed publication failed");
         var changed = changedResult.Version!;
-        var receivedOwnLane = FriendLink.ReadReceivedLatest(SharedWorldBranchVault.Root(b, branch));
+        var receivedOwnLane = FriendLink.ReadReceivedLatest(ownReceivedVault);
         var duplicateOwnLanePresent = receivedOwnLane?.VersionHash == final.VersionHash &&
             branch.Offer.Proposal.ProposerDeviceId == bCredential.DeviceId && branch.CandidatePublicKey == Public(sourceKey);
         var currentHeader = SharedWorldPeerTrust.Sign(new(1, root, bCredential.DeviceId, Public(sourceKey), 1, null,

@@ -6,9 +6,10 @@
 }
 .world-peer-panel > header,
 .world-peer-panel .world-peer-group > header { gap: 8px 12px; }
-.world-peer-panel :is(h3, h4, h5) { color: var(--color-text); }
+.world-peer-panel :is(h3, h4, h5, h6) { color: var(--color-text); }
 .world-peer-panel h3 { font-size: .94rem; }
 .world-peer-panel :is(h4, h5) { font-size: .85rem; }
+.world-peer-panel h6 { margin: 12px 0 6px; font-size: .78rem; }
 .world-peer-panel p { font-size: .78rem; line-height: 1.5; }
 .world-peer-panel .helper-text,
 .world-peer-panel > header p,

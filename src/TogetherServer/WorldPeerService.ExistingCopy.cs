@@ -71,6 +71,10 @@ internal sealed partial class WorldPeerService
             lock (stateSync) RequireExistingCopyScope(scope, descriptor, cancellationToken);
             return new(null);
         }
+        var observation = transferAttempt.Value?.Attempt;
+        observation?.Phase(WorldPeerTransferPhase.VerifyingLocal);
+        observation?.Expected(SharedWorldService.BoundedTotalBytes(descriptor.Version.Files),
+            descriptor.Version.Files.Count, descriptor.Version.Number);
         try { ReceiptPayloadHashingForChecks?.Invoke(); }
         catch (Exception) { /* Observations cannot authorize the existing copy. */ }
         using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, directory, descriptor.Version, cancellationToken);
@@ -136,6 +140,7 @@ internal sealed partial class WorldPeerService
     {
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, directory);
         var scoped = ExistingCopyReceiptPath(scope, descriptor, directory);
+        SharedWorldReceipt? currentReceipt = null;
         foreach (var path in new[] { scoped, Path.Combine(directory, "receipt.json") })
         {
             SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
@@ -146,13 +151,18 @@ internal sealed partial class WorldPeerService
                 throw new InvalidDataException("The retained copy receipt is linked or oversized.");
             var receipt = SharedWorldReceiptTrust.Parse(ReadReceiptBytes(input));
             if (receipt is null) throw new InvalidDataException("The retained copy receipt is malformed.");
-            if (receipt.DeviceId == scope.Group.DeviceId && receipt.VersionHash == descriptor.Version.VersionHash &&
-                AuthorizedCopyReceipt(scope.Group, receipt)) return receipt;
+            if (receipt.GroupId != scope.Group.Root.GroupId || receipt.ProfileId != scope.Group.Root.ProfileId ||
+                receipt.VersionHash != descriptor.Version.VersionHash || receipt.DeviceId != scope.Group.DeviceId ||
+                receipt.RosterEpoch > scope.Group.Roster.Epoch || receipt.RosterRevision > scope.Group.Roster.Revision ||
+                !(scope.Group.DeviceId == Guid.Empty ? SharedWorldReceiptTrust.VerifyPeerOwner(receipt, scope.Group.Root) :
+                    SharedWorldReceiptTrust.Verify(receipt, scope.PublicKey)))
+                throw new InvalidDataException("The retained selfreceipt has an inconsistent identity, signature or roster.");
+            if (AuthorizedCopyReceipt(scope.Group, receipt)) { currentReceipt ??= receipt; continue; }
             if (path == scoped) throw new InvalidDataException("The immutable current-scope receipt is inconsistent.");
-            // Old-revision or former-identity legacy evidence is preserved.
-            // Only a new full verification may create a current-scope receipt.
+            // Only a genuine same-self older-roster receipt is preserved here.
+            // A new full verification may create a current-scope receipt.
         }
-        return null;
+        return currentReceipt;
     }
 
     private static byte[] ReadReceiptBytes(Stream input)

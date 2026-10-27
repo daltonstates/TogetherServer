@@ -300,8 +300,53 @@ receipt preservation, outbound-only receiving and a bounded competing-lock
 schedule. Its initial run stopped on an invalid synthetic roster baseline in
 the fixture. The fixture now changes actual pairing grants before confirming
 the signed revision; production roster checks were not relaxed. Corrected
-solution compilation has zero warnings/errors; the corrected focused rerun is
-in progress. No .18 native fixture or production process has been launched.
+solution compilation has zero warnings/errors. Exact-copy reuse, read-only
+transfer evidence, coalesced background scheduling and prepared Start groups
+pass. The distribution group's older projection fixture initially required the
+unnecessary automatic echo this slice removes. It now first asserts no echo,
+then explicitly creates a fully verified disposable legacy cache to retain the
+old duplicate-head regression; the corrected group passes. No .18 native fixture
+or production process has been launched on the laptop.
+
+The initial .18 [Windows run 40449701230](https://github.com/daltonstates/TogetherServer/actions/runs/40449701230)
+uses source `8b4f28d727466e76bde867b6bf938221dea89694`; it is not published.
+Its source suite also exposed the older replication receipt boundary: a forged
+legacy record was ignored before creating a new valid selfreceipt. Legacy and
+current-scope records now all require the exact self/world/save, retained-key
+signature and no future roster revision before hashing. A valid scoped record
+cannot hide a forged legacy record. Invalid records remain unchanged. A genuinely
+missing record can earn one new current-scope acknowledgement after full proof;
+the missing file is not recreated and the new receipt ID persists after reopening.
+Dedicated negatives cover foreign identity, bad signature, future roster and
+wrong save/world, and the replication case retains its corrupted-payload refusal.
+The corrected offline-owner replication and exact-copy receipt groups pass after
+a clean strict build, including the original foreign-identity refusal. Local
+copy hashing now reports the existing VerifyingLocal phase and exact save totals,
+after the cheap confirmed-receipt skip. Its actual fake-flight progress assertion
+passes. Final targeted formatting, UI type/bundle checks and the 64 corrected
+pure capture checks also pass; full hosted validation of the next source remains
+required before publication.
+
+The initial hosted UI job passed its older access/wizard captures, then all nine
+new states failed the observation audit on the existing POST `/api/local/ui-drafts/read`.
+That endpoint is a protected draft read; the guard now permits only that exact
+method/path alongside GET and still refuses writes, clear, query variants,
+sync, preparation and Start. All 64 pure fixture checks pass. The retained
+failed PNGs were actually inspected for sending, timeout and historical receipt
+states across desktop/narrow/150-percent examples. The status is visible outside
+disclosures; a tiny recipient heading found in those images now uses body-size
+text. This is a synthetic rendered UI review, not an observation of the laptop's
+screen or a passing capture manifest. Exact-source recapture remains required.
+
+The same run's LAN lab failed `AutomaticReceivingMissing` after verified peer
+membership and signed role checks; loopback and two-ended UX passed. The failing
+predicate was an immediate Friend-status Consented read, independent of duplicate
+vault presence. Its actual failure cause is unknown. The harness now observes
+that asynchronous projection using GET only for at most 25 seconds, retains fixed
+PC-ordinal/state/error/number/poll-count diagnostics, and still requires true
+consent plus a final exact world/device/role read. It does not retry the prior
+sync, prepare or Start. This harness correction is not a claimed product consent
+race repair. The existing QuietTime notification boundary is also retained.
 
 The actual Host view placed the read-only panel inside a closed Other Hosts &
 connections disclosure. Earlier suggested UI directions were not verified on

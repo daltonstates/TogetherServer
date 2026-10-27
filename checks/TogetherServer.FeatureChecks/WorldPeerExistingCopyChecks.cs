@@ -23,10 +23,12 @@ internal static class WorldPeerExistingCopyChecks
             await RefusalAsync(parent, mutation);
         await CurrentReceiptScopeAsync(parent);
         await LegacyReceiptAsync(parent);
+        await InvalidLegacyReceiptAsync(parent);
         await ExactPairAsync(parent);
         await ForkAsync(parent);
         await OutboundOnlyAsync(parent);
         await ConsentLockOrderAsync(parent);
+        await VerificationProgressAsync(parent);
     }
 
     private static async Task ReuseAsync(string parent, string shape)
@@ -174,6 +176,38 @@ internal static class WorldPeerExistingCopyChecks
             "A fresh roster did not retain the protected legacy receipt while creating one current receipt.");
     }
 
+    private static async Task InvalidLegacyReceiptAsync(string parent)
+    {
+        foreach (var mutation in new[] { "Foreign", "Signature", "FutureEpoch", "FutureRevision", "World", "Version", "ForeignWithScoped" })
+        {
+            using var fixture = new Fixture(parent, "Branch");
+            var created = await fixture.SeedAsync();
+            Require(created.Receipt is not null, "The synthetic invalid-legacy receipt basis was absent.");
+            var legacy = Path.Combine(fixture.DirectoryPath, "receipt.json");
+            var scoped = fixture.Sidecars().Single();
+            if (mutation != "ForeignWithScoped") File.Move(scoped, legacy);
+            var changed = mutation switch
+            {
+                "Foreign" or "ForeignWithScoped" => fixture.SignSelfReceipt(created.Receipt with { DeviceId = Guid.NewGuid() }),
+                "Signature" => created.Receipt with { Signature = Convert.ToBase64String(new byte[64]) },
+                "FutureEpoch" => fixture.SignSelfReceipt(created.Receipt with { RosterEpoch = created.Receipt.RosterEpoch + 1 }),
+                "FutureRevision" => fixture.SignSelfReceipt(created.Receipt with { RosterRevision = created.Receipt.RosterRevision + 1 }),
+                "World" => fixture.SignSelfReceipt(created.Receipt with { GroupId = Guid.NewGuid() }),
+                "Version" => fixture.SignSelfReceipt(created.Receipt with { VersionHash = new string('C', 64) }),
+                _ => throw new InvalidOperationException("Choose a fixed receipt mutation.")
+            };
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(changed, Json);
+            File.WriteAllBytes(legacy, bytes);
+            var before = fixture.Pointers();
+            var hashes = 0;
+            fixture.TargetService.ReceiptPayloadHashingForChecks = () => hashes++;
+            await RejectAsync(fixture.SeedAsync, "An invalid legacy selfreceipt was replaced/replayed: " + mutation);
+            Require(hashes == 0 && File.ReadAllBytes(legacy).SequenceEqual(bytes) && fixture.Pointers() == before &&
+                !Directory.Exists(fixture.DuplicateVault) && fixture.Sidecars().Length == (mutation == "ForeignWithScoped" ? 1 : 0),
+                "Legacy receipt refusal hashed/refilled payload or rewrote/created receipt evidence: " + mutation);
+        }
+    }
+
     private static async Task ForkAsync(string parent)
     {
         using var fixture = new Fixture(parent, "Branch");
@@ -222,6 +256,21 @@ internal static class WorldPeerExistingCopyChecks
             !fixture.RemoteHandler.Operations.Contains(WorldPeerOperations.Chunk),
             "Turning incoming sharing off blocked an otherwise authorized outward-only exact-copy reuse.");
         await RejectAsync(fixture.SeedAsync, "Turning incoming sharing off still allowed an inbound seed.");
+    }
+
+    private static async Task VerificationProgressAsync(string parent)
+    {
+        using var fixture = new Fixture(parent, "Original");
+        WorldPeerTransferProgress? hashing = null;
+        fixture.TargetService.ReceiptPayloadHashingForChecks = () => hashing = fixture.TargetService.Views().Single()
+            .BackgroundTransfers!.Single().Current;
+        await fixture.SyncExactAsync();
+        Require(hashing is
+        {
+            Phase: "VerifyingLocal", TotalBytes: > 0, TotalFiles: 1, PublicationNumber: 2,
+            ReceivedBytes: 0, SubmittedBytes: 0
+        },
+            "The actual transfer flight presented a held local-copy hash as a download or omitted its exact descriptor totals.");
     }
 
     private static async Task RejectAsync(Func<Task> action, string message)
@@ -363,6 +412,8 @@ internal static class WorldPeerExistingCopyChecks
         private object Group(WorldPeerService service) => typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(service, [Root.GroupKey])!;
         internal Task PullAsync() => (Task)typeof(WorldPeerService).GetMethod("PullCatalogAsync", Private)!
             .Invoke(TargetService, [Group(TargetService), original ? bRoute : aRoute, CancellationToken.None])!;
+        internal Task SyncExactAsync() => (Task)typeof(WorldPeerService).GetMethod("SyncPeerAsync", Private)!
+            .Invoke(TargetService, [Group(TargetService), original ? bRoute : aRoute, CancellationToken.None, true, false])!;
         internal Task<WorldPeerSeedResponse> SeedAsync() => (Task<WorldPeerSeedResponse>)typeof(WorldPeerService).GetMethod("SendSeedAsync", Private)!
             .Invoke(Sender, [Group(Sender), TargetRoute, descriptor, null, null, null, null, CancellationToken.None])!;
         internal Task<WorldPeerSeedResponse> SeedCanonicalAsync() => (Task<WorldPeerSeedResponse>)typeof(WorldPeerService).GetMethod("SendSeedAsync", Private)!
@@ -388,6 +439,11 @@ internal static class WorldPeerExistingCopyChecks
             }
         });
         internal void RevokeSender() => Require(pairing.Revoke(credential.DeviceId).Ok, "The synthetic sender could not be revoked.");
+        internal SharedWorldReceipt SignSelfReceipt(SharedWorldReceipt receipt) => receipt with
+        {
+            Signature = Convert.ToBase64String((original ? owner : member).SignData(original
+                ? SharedWorldReceiptTrust.PeerOwnerBasis(receipt, Root) : SharedWorldReceiptTrust.Basis(receipt), HashAlgorithmName.SHA256))
+        };
         internal string[] Sidecars() => Directory.EnumerateFiles(DirectoryPath, "self-receipt-*.json").ToArray();
         internal string Pointers() => string.Join('|', new[] { A, B }.SelectMany(data => Directory.EnumerateFiles(data.RootPath, "*", SearchOption.AllDirectories)
                 .Where(path => Path.GetFileName(path) is "latest.json" or "branch.json" || Path.GetFileName(path).StartsWith("world-peer-save-observation-", StringComparison.Ordinal)))

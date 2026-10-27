@@ -172,11 +172,18 @@ test('sharing-delivery acceptance requires visible closed-details status and ref
   };
   for (const item of sharingDeliveryCases) {
     const good = { visible: true, permissionsOpen: false, diagnosticsOpen: false, detailsOpen: false,
-      text: snapshots[item.sharingDelivery], apiRequests: [{ method: 'GET', path: '/api/local/world-peers' }] };
+      text: snapshots[item.sharingDelivery], apiRequests: [{ method: 'GET', path: '/api/local/world-peers' },
+        { method: 'POST', path: '/api/local/ui-drafts/read' }] };
     assert.doesNotThrow(() => assertSharingDeliveryEvidence(item, good));
     for (const patch of [{ visible: false }, { permissionsOpen: true }, { diagnosticsOpen: true }, { detailsOpen: true },
       { apiRequests: [{ method: 'POST', path: '/api/local/world-peers/known/sync' }] }, { text: good.text + ' 100%' }])
       assert.throws(() => assertSharingDeliveryEvidence(item, { ...good, ...patch }));
+    for (const [method, path] of [['PUT', '/api/local/ui-drafts'], ['POST', '/api/local/ui-drafts/clear'],
+      ['PUT', '/api/local/ui-drafts/read'], ['DELETE', '/api/local/ui-drafts/read'],
+      ['POST', '/api/local/ui-drafts/read?write=true'], ['POST', '/api/local/ui-drafts/read/'],
+      ['POST', '/api/local/world-peers/known/start'], ['POST', '/api/local/world-peers/known/prepare']])
+      assert.throws(() => assertSharingDeliveryEvidence(item, { ...good, apiRequests: [{ method, path }] }),
+        `${method} ${path} cannot count as an observation`);
     assert.throws(() => assertSharingDeliveryEvidence(item, { ...good,
       text: item.sharingDelivery === 'historical-receipt' ? good.text.replace('save 5 accepted', 'save 6 accepted')
         : good.text + ' Verified receipt for save 6 accepted' }));

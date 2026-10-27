@@ -15,7 +15,9 @@ internal static partial class CoreRemoteJourney
     private sealed record PairingLabOperation(string Id, string State, long StartedMs, long DurationMs, long TimeoutMs,
         string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false,
         int? HttpStatus = null, string? HttpContentKind = null, string? JsonExceptionCategory = null,
-        string? JsonPath = null);
+        string? JsonPath = null, PairingLabReceivingObservation? Receiving = null);
+    private sealed record PairingLabReceivingObservation(int PcOrdinal, int PollCount, bool? Consented,
+        string StateCode, string ErrorCode, long? HostVersion, long? ThisPcVersion, long? RosterRevision);
     private sealed record PairingLabHttpBoundary(int? Status, string? ContentKind,
         string? JsonExceptionCategory = null, string? JsonPath = null);
     private sealed record PairingLabDevices(IReadOnlyList<DeviceView> Devices);
@@ -349,7 +351,7 @@ internal static partial class CoreRemoteJourney
                         $"/api/local/profiles/{profile.Id}/shared-world/governance");
                     LabRequire(SharedWorldRosterTrust.Verify(initialRoster), "InitialSignedRosterRequired");
                     groupKey = new SharedWorldPeerRoot(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId).GroupKey;
-                    var clients = new[] { (Id: deviceA, Client: first), (Id: deviceB, Client: second) };
+                    var clients = new[] { (Id: deviceA, Client: first, Ordinal: 1), (Id: deviceB, Client: second, Ordinal: 2) };
                     foreach (var pc in clients)
                     {
                         // The ordinary background pass enrolls this identity;
@@ -365,8 +367,9 @@ internal static partial class CoreRemoteJourney
                             member.DeviceId == pc.Id && !member.Revoked && !string.IsNullOrWhiteSpace(member.PublicKey) &&
                             member.Grants is { Receive: true, EligibleHost: true, Reshare: true, RecoveryVoter: false, ManageSharing: false }),
                             "AutomaticSignedGrantsMissing");
-                        LabRequire((await PairingLabGetAsync<ReceivedSharedWorldStatus>(pc.Client,
-                            $"/api/local/friend/{profile.Id}/shared-world")).Consented, "AutomaticReceivingMissing");
+                        await WaitForAutomaticLabReceivingAsync(pc.Client,
+                            new(initialRoster.OwnerPublicKey, profile.Id, initialRoster.GroupId), pc.Id, pc.Ordinal,
+                            membershipClock, membershipOperations);
                         var receiveEdit = await PutAsync<SharedWorldGrantRequest, PairingDecision>(owner,
                             $"/api/local/devices/{pc.Id}/shared-world/{profile.Id}", new(false));
                         LabRequire(!receiveEdit.Ok && receiveEdit.Code == "ServerHostingSettingRequired", "PerPcReceiveOverrodeServerChoice");
@@ -1436,6 +1439,94 @@ internal static partial class CoreRemoteJourney
         LabRequire(response.IsSuccessStatusCode, "ScopedServerAccessRemovalHttpRejected");
         return await response.Content.ReadFromJsonAsync<PairingDecision>(Json) ??
             throw new PairingLabFailure("ScopedServerAccessRemovalResponseMissing");
+    }
+
+    private static async Task WaitForAutomaticLabReceivingAsync(HttpClient client, SharedWorldPeerRoot root, Guid deviceId, int pcOrdinal,
+        Stopwatch clock, List<PairingLabOperation> observations)
+    {
+        LabRequire(pcOrdinal is 1 or 2, "AutomaticReceivingPcOrdinalRequired");
+        const int timeoutMs = 25000;
+        var startedMs = clock.ElapsedMilliseconds;
+        var timer = Stopwatch.StartNew();
+        using var deadline = new CancellationTokenSource(timeoutMs);
+        ReceivedSharedWorldStatus? status = null;
+        var polls = 0;
+        var confirmed = false;
+        var code = "AutomaticReceivingMissing";
+        int? httpStatus = null;
+        try
+        {
+            // Friend consent is a separate local projection of the signed
+            // membership. Observe it without another sync or consent write.
+            while (timer.ElapsedMilliseconds < timeoutMs)
+            {
+                polls++;
+                status = await client.GetFromJsonAsync<ReceivedSharedWorldStatus>(
+                    $"/api/local/friend/{root.ProfileId}/shared-world", Json, deadline.Token) ??
+                    throw new PairingLabFailure("AutomaticReceivingResponseMissing");
+                if (status.Consented)
+                {
+                    var group = (await client.GetFromJsonAsync<WorldPeerGroupView[]>(
+                        "/api/local/world-peers", Json, deadline.Token))?.SingleOrDefault(item => item.GroupKey == root.GroupKey);
+                    LabRequire(group is not null && group.ProfileId == root.ProfileId && group.State.Root == root &&
+                        group.SelfDeviceId == deviceId && group.ReceiveConsented && group.CanReceive && group.CanHost && group.CanReshare,
+                        "AutomaticReceivingMembershipChanged");
+                    confirmed = true;
+                    code = "AutomaticReceivingConfirmed";
+                    return;
+                }
+                await Task.Delay(250, deadline.Token);
+            }
+            throw new PairingLabFailure(code);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        { throw new PairingLabFailure(code); }
+        catch (HttpRequestException error)
+        {
+            httpStatus = (int?)error.StatusCode is >= 100 and <= 599 ? (int?)error.StatusCode : null;
+            code = "AutomaticReceivingHttpRejected";
+            throw new PairingLabFailure(code, httpStatus);
+        }
+        catch (JsonException)
+        {
+            code = "AutomaticReceivingInvalidResponse";
+            throw new PairingLabFailure(code);
+        }
+        catch (PairingLabFailure error)
+        {
+            code = error.Code;
+            throw;
+        }
+        finally
+        {
+            static long? PositiveNumber(long? value) => value is > 0 and <= 9007199254740991 ? value : null;
+            var stateCode = status?.State switch
+            {
+                null => "NotObserved",
+                "Consent off" => "ConsentOff",
+                "Error" => "Error",
+                "Host save source changed. Turn Allow saves off, then on to approve the new signed group. Earlier verified copies stay here." => "SourceReviewRequired",
+                "Competing save histories. Review before receiving another save." => "HistoryConflict",
+                "Host version not checked" => "HostVersionNotChecked",
+                "Up to date when last checked" => "UpToDateWhenLastChecked",
+                "Ready to pull" => "ReadyToPull",
+                "Receiving" => "Receiving",
+                _ => "Other"
+            };
+            var errorCode = status is null ? "NotObserved" : status.Error switch
+            {
+                null => "None",
+                "The stored save failed verification. The live world was not changed." => "StoredSaveVerificationFailed",
+                "The signed save history could not be checked on this PC." => "SignedHistoryCheckFailed",
+                _ => "Other"
+            };
+            var receiving = new PairingLabReceivingObservation(pcOrdinal, polls, status?.Consented, stateCode, errorCode,
+                PositiveNumber(status?.HostVersion), PositiveNumber(status?.ThisPcVersion), PositiveNumber(status?.RosterRevision));
+            var observation = new PairingLabOperation("AutomaticReceivingPc" + pcOrdinal, confirmed ? "Returned" : "Failed",
+                startedMs, timer.ElapsedMilliseconds, timeoutMs, code, HttpStatus: httpStatus, Receiving: receiving);
+            lock (observations) observations.Add(observation);
+            Console.WriteLine("LOCAL_PAIRING_MEMBERSHIP_OPERATION " + JsonSerializer.Serialize(observation, Json));
+        }
     }
 
     private static Task WaitForAutomaticLabMembershipAsync(HttpClient client, SharedWorldPeerRoot root, Guid deviceId, string code) =>
