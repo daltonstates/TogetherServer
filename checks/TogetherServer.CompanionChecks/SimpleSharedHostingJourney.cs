@@ -59,6 +59,7 @@ internal static partial class CoreRemoteJourney
         var friendStartAttempts = 0;
         var ownerStartAttempts = 0;
         var initialStartObservations = new List<object>();
+        object? initialFriendPreparationObservation = null;
         var friendStartObservations = new List<object>();
         var ownerStartObservations = new List<object>();
         LocalHostingStatus? prepared = null;
@@ -206,9 +207,36 @@ internal static partial class CoreRemoteJourney
                 $"/api/local/friend/{profile.Id}/shared-world/hosting/access/check", new { });
             LabRequire(checkedPermission.Allowed && checkedPermission.Code == "HostingAllowed",
                 "SimpleExplicitHostingAccessRejected");
+            activeCheck = "first-friend-preparation";
+            var preparationStartedMs = timer.ElapsedMilliseconds;
             prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
                 $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
                 new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
+            initialFriendPreparationObservation = new
+            {
+                elapsedMs = timer.ElapsedMilliseconds - preparationStartedMs,
+                ok = prepared.Ok,
+                allowed = prepared.Allowed,
+                consented = prepared.Consented,
+                readyForManualStart = prepared.ReadyForManualStart,
+                running = prepared.Running,
+                code = FixedCode(prepared.Code),
+                localProfilePresent = prepared.LocalProfileId is not null,
+                branchPresent = prepared.BranchHash is not null,
+                remedyKind = prepared.Remedy?.Kind switch
+                {
+                    null => "None",
+                    { } kind when kind is "Permission" or "Respond" or "ChooseHistory" or "Review" or "ShareStoppedProgress" or
+                    "Terms" or "GetSave" or "ChooseServer" or "GameSetup" or "Ports" or "Connection" or "ConfirmCopy" => kind,
+                    _ => "Unclassified"
+                },
+                steps = prepared.Steps.Take(8).Select(step => new
+                {
+                    key = step.Key is "permission" or "server" or "save" or "ports" or "connection" ? step.Key : "Other",
+                    state = step.State is "Ready" or "Unknown" or "ActionRequired" ? step.State : "Unclassified"
+                }).ToArray()
+            };
+            Console.WriteLine("SIMPLE_SHARED_HOSTING_INITIAL_PREPARATION " + JsonSerializer.Serialize(initialFriendPreparationObservation, Json));
             LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId is not null && prepared.BranchHash is not null,
                 "SimpleFriendPreparationRejected");
             var preparedLocalId = prepared.LocalProfileId;
@@ -479,6 +507,7 @@ internal static partial class CoreRemoteJourney
                 friendStartAttempts,
                 ownerStartAttempts,
                 initialStartObservations,
+                initialFriendPreparationObservation,
                 friendStartObservations,
                 ownerStartObservations,
                 latestReviewDiagnostic,

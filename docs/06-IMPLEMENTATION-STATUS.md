@@ -102,6 +102,31 @@ log are preserved in `local-data/hosting-history-reuse-20/`. Final integrated
 verification will use fresh hosted runners with every identity guard retained;
 there is still no .20 physical or full-acceptance claim.
 
+Source `9449d136d839e24e0e799b51b2188627e2fc07bb`,
+[run 40600312679](https://github.com/daltonstates/TogetherServer/actions/runs/40600312679),
+passes all 94 source groups and eight packaged API journeys. Its Desktop report
+passes all 12 independent required cases, including the previously unreached
+maximized restart and Explorer tray Quit, with no repeated identity mismatch.
+Windows startup is explicitly deferred by development staging to the separate
+production-mode gate; QuietTime still blocks actual notification delivery/click.
+Browser passed eight journeys, then its screenshot shows a port-guard refusal
+before native launch while the old harness reports a Ready timeout. The exact
+port owner/socket refusal cause is unknown. Automatic sharing failed both its
+ordinary and diagnostic run at first Friend preparation, after two successful
+original publications, with zero Friend/returning-owner Starts. The old report
+omits that returned preparation status, so its cause cannot be inferred from
+host-only selection diagnostics. All failed artifacts and exact source identity
+are retained. No product behavior change is justified by these reports alone.
+
+Narrow CI diagnostics now retain the first Prepare's safe fixed status fields,
+and the browser awaits/records the actual first Start acknowledgement before
+claiming a readiness attempt. Snapshot polls retain only state/count/identity
+presence flags. The Ready budget still starts at the original click completion;
+waiting for its response does not extend that budget. Neither action is retried,
+and permissions, port checks, readiness, fixture setup and transfer guards are
+unchanged. These harness changes require hosted validation; local checks remain
+syntax/lint, formatting and strict compilation only.
+
 ## Physical .19 V1release cycle, 2026-10-27 EDT (not accepted: delivery)
 
 The owner reported both PCs updated to .19, confirmed the laptop unattended and

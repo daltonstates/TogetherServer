@@ -36,7 +36,7 @@ const ownedFixtureExecutables = new Set()
 const claimedPorts = new Set()
 const report = { schema: 1, candidateSha256, boundary: 'Bundled React and loopback synthetic fixtures in a separately approved Windows environment. No real game, WAN, join or save acceptance.',
   journeys: [], screenshots: [], layout: [], browserErrors: [], failedRequests: [], expectedModeDenials: [], expectedModeCancellations: [], deduplicatedConsoleHttpErrors: [], modeTransitionDiagnostics: [], guidedEditorDom: [], chatRecovery: [], chatDelivery: [],
-  dialogs: [], requiredSetup: [], protectedReloads: [], cleanup: [], startedUtc: new Date().toISOString() }
+  dialogs: [], requiredSetup: [], protectedReloads: [], lifecycleStarts: [], cleanup: [], startedUtc: new Date().toISOString() }
 const browserCollectors = []
 const protectedReloadTickets = new WeakMap()
 const pendingResponseClassifications = new Set()
@@ -1401,8 +1401,42 @@ async function editorRecovery(page, host, profiles) {
 async function lifecycleLogsAndSessions(page, host, profiles) {
   await selectServer(page, profiles.valheim.name)
   const workspace = page.getByRole('region', { name: `${profiles.valheim.name} workspace`, exact: true })
-  await workspace.getByRole('button', { name: 'Start server', exact: true }).first().click()
-  await eventually(() => api(host, '/api/local/snapshot'), value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'), 'synthetic Valheim readiness')
+  const observation = { phase: 'initial-host-start', httpStatus: null, ok: null, code: 'Unread',
+    responseElapsedMs: null, readinessElapsedMs: null, readinessPolls: 0, snapshotReadFailures: 0,
+    matchingRunCount: null, lastState: 'Unobserved', processRecorded: false, operationRecorded: false }
+  report.lifecycleStarts.push(observation)
+  const startBegan = Date.now()
+  let clickedAt = startBegan
+  const [response] = await Promise.all([
+    page.waitForResponse(value => value.url() === `${host.origin}/api/local/profiles/${profiles.valheim.id}/start` &&
+      value.request().method() === 'POST'),
+    workspace.getByRole('button', { name: 'Start server', exact: true }).first().click().then(() => { clickedAt = Date.now() })
+  ])
+  observation.httpStatus = response.status()
+  const started = await response.json()
+  observation.responseElapsedMs = Date.now() - startBegan
+  observation.ok = started?.ok === true
+  observation.code = typeof started?.code === 'string' && /^[A-Za-z][A-Za-z0-9]{0,95}$/u.test(started.code)
+    ? started.code : 'Unclassified'
+  assert(response.status() === 200 && started?.ok === true,
+    `Synthetic Valheim Start refused: HTTP ${observation.httpStatus}, ${observation.code}.`)
+  try {
+    await eventually(async () => {
+      observation.readinessPolls++
+      let snapshot
+      try { snapshot = await api(host, '/api/local/snapshot') }
+      catch (error) { observation.snapshotReadFailures++; throw error }
+      const matches = snapshot.runs.filter(run => run.profileId === profiles.valheim.id)
+      observation.matchingRunCount = matches.length
+      const run = matches.length === 1 ? matches[0] : null
+      observation.lastState = run && typeof run.state === 'string' && /^[A-Za-z ]{1,48}$/u.test(run.state)
+        ? run.state : matches.length === 0 ? 'Missing' : 'Unclassified'
+      observation.processRecorded = Number.isInteger(run?.processId) && run.processId > 0
+      observation.operationRecorded = typeof run?.operationId === 'string' && /^[\da-f-]{36}$/iu.test(run.operationId)
+      return snapshot
+    }, value => value.runs.some(run => run.profileId === profiles.valheim.id && run.state === 'Ready'),
+    'synthetic Valheim readiness', Math.max(0, 30_000 - (Date.now() - clickedAt)))
+  } finally { observation.readinessElapsedMs = Date.now() - clickedAt }
   await rememberManagedProcesses(host)
   // Normal Start has now recorded ownership of this fresh synthetic world.
   // The stand-in emits no game payload; create these fixture bytes only in that owned root.
