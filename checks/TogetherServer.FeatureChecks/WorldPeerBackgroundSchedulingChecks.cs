@@ -138,22 +138,36 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 !background.IsCompleted, "another world's blocked background transfer delayed explicit preparation");
             fixture.Other.Handler.ReleaseMetadata.TrySetResult(true);
             await fixture.Other.Handler.CatalogEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // The same flight offers its local publication before this
+            // incoming catalog. This fake peer lacks retained receive consent,
+            // so its paused offer cannot certify a receipt. Joining/canceling
+            // must add no further work.
+            var heldPayloadRequests = fixture.Other.Handler.PayloadRequests;
+            var heldChallenges = fixture.Other.Handler.Challenges;
+            Require(fixture.Other.Handler.CatalogRequests == 1 && fixture.Other.Handler.CompletedCatalogs == 0 &&
+                fixture.Other.Handler.ChunkRequests == 0 &&
+                fixture.Service.Views().Single(item => item.GroupKey == fixture.Other.Root.GroupKey)
+                    .BackgroundTransfers!.Single().Current is { ExactReceiptAccepted: false, SubmittedBytes: 0 },
+                "the held incoming catalog repeated receive work or certified a peer without receiving consent");
             using (var canceled = new CancellationTokenSource())
             {
                 var waiter = fixture.Service.ResolveLatestRecoverySourceAsync(fixture.Other.Root, canceled.Token);
                 canceled.Cancel();
                 await RequireCancellationAsync(waiter, canceled.Token);
-                Require(!background.IsCompleted && fixture.Other.Handler.PayloadRequests == 1,
+                Require(!background.IsCompleted && fixture.Other.Handler.PayloadRequests == heldPayloadRequests &&
+                    fixture.Other.Handler.Challenges == heldChallenges,
                     "canceling a joining preparation canceled or repeated the background payload transfer");
             }
             joinedPreparation = fixture.Service.ResolveLatestRecoverySourceAsync(fixture.Other.Root, default);
-            Require(!joinedPreparation.IsCompleted && fixture.Other.Handler.PayloadRequests == 1,
+            Require(!joinedPreparation.IsCompleted && fixture.Other.Handler.PayloadRequests == heldPayloadRequests &&
+                fixture.Other.Handler.Challenges == heldChallenges,
                 "same-world preparation did not join the existing bounded payload transfer");
             fixture.Other.Handler.ReleaseCatalog.TrySetResult(true);
             var joined = await joinedPreparation.WaitAsync(TimeSpan.FromSeconds(10));
             await background.WaitAsync(TimeSpan.FromSeconds(10));
             await Task.WhenAll(repeated).WaitAsync(TimeSpan.FromSeconds(5));
-            Require(joined.Ok && fixture.Other.Handler.CompletedCatalogs == 1 &&
+            Require(joined.Ok && fixture.Other.Handler.CompletedCatalogs == 1 && fixture.Other.Handler.CatalogRequests == 1 &&
+                fixture.Other.Handler.ChunkRequests == 0 &&
                 fixture.Other.Handler.ProofFailures == 0 && fixture.Target.Handler.ProofFailures == 0,
                 "background/preparation repeated a catalog transfer or invalidated a single-use peer proof");
             fixture.Target.VerifyCachedCopy(); fixture.Other.VerifyCachedCopy();
@@ -204,7 +218,10 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         try
         {
             await fixture.Other.Handler.CatalogEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            Require(!poll.IsCompleted && fixture.Other.Handler.PayloadRequests == 1,
+            Require(!poll.IsCompleted && !sharing.IsCompleted && fixture.Other.Handler.CatalogRequests == 1 &&
+                fixture.Other.Handler.CompletedCatalogs == 0 && fixture.Other.Handler.ChunkRequests == 0 &&
+                peers.Views().Single(item => item.GroupKey == fixture.Other.Root.GroupKey)
+                    .BackgroundTransfers!.Single().Current is { ExactReceiptAccepted: false, SubmittedBytes: 0 },
                 "completed-save discovery waited for the original Host's heartbeat or roster gate");
         }
         finally

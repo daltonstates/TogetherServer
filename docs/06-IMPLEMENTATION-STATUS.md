@@ -76,6 +76,32 @@ outgoing priority/exact receipt/fairness and bounded idle work. General fixtures
 native, browser, installer and full candidate verification belong in hosted
 Windows CI; no .20 physical benefit or delivery acceptance is claimed here.
 
+The first exact-source Windows run, source `154fdd131354a9f73f6569e03ee9640746d91a60`,
+[40597526187](https://github.com/daltonstates/TogetherServer/actions/runs/40597526187),
+passed 93 of 94 source groups, including all new reuse, priority and idle groups.
+The coalesced-background group still expected one aggregate payload request at
+the held incoming Catalog. The new priority Seed offer legitimately precedes it;
+this fixture lacks remote retained receiving consent, so the offer pauses and
+must not certify a receipt. Its corrected assertions require exactly one incoming
+Catalog, zero incoming chunks, no completed Catalog while held, no receipt or
+submitted payload, and unchanged payload/challenge counts when preparation joins
+or cancels. Existing timing, proof, copy-integrity and no-run checks remain.
+The same old assertion in the blocked-Host-poll case is corrected. No application
+code or consent was changed to accommodate this test finding.
+The corrected discovery and background-coalescing groups both pass locally
+using generated files/fake HTTP; their strict focused build has zero compiler
+warnings/errors. Full final-source hosted verification remains required.
+
+First-run automatic sharing, pairing/both-ended UX, browser, compatibility,
+core/rehearsal, UI review and installer/package lanes passed. Desktop retained
+eight native passes, a separate QuietTime notification block, a disposable-process
+identity mismatch before maximized cold-start API/window readiness, and four
+later skipped cases. Read-only review found no concrete mismatch cause; it is
+not evidence of a placement defect. Both failed artifacts and the 93/94 source
+log are preserved in `local-data/hosting-history-reuse-20/`. Final integrated
+verification will use fresh hosted runners with every identity guard retained;
+there is still no .20 physical or full-acceptance claim.
+
 ## Physical .19 V1release cycle, 2026-10-27 EDT (not accepted: delivery)
 
 The owner reported both PCs updated to .19, confirmed the laptop unattended and

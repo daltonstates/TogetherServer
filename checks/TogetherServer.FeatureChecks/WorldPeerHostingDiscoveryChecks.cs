@@ -403,6 +403,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         internal bool OnlyMetadata => operations.Count > 0 && operations.Keys.All(item => item == WorldPeerOperations.Metadata);
         internal int PayloadRequests => operations.Where(item => item.Key is WorldPeerOperations.Catalog or WorldPeerOperations.Chunk or WorldPeerOperations.Seed).Sum(item => item.Value);
         internal int CatalogRequests => operations.GetValueOrDefault(WorldPeerOperations.Catalog);
+        internal int ChunkRequests => operations.GetValueOrDefault(WorldPeerOperations.Chunk);
         internal int MetadataRequests => operations.GetValueOrDefault(WorldPeerOperations.Metadata);
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
