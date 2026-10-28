@@ -15,6 +15,31 @@ disagree, and returning-owner Start initially refused the newest save before
 later succeeding without a file picker. Ordinary Start selects an exact signed
 verified save automatically; a file picker is not part of that operation.
 
+Final application source: `5f990e721d02d51745a569f8452dbb10f7f54d82`.
+The [exact-source Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40628192561)
+has completed: 16 successful jobs, one Desktop notification block and the
+expected dispatch-only skip. All 27 broader gates pass, including Minecraft
+12/12, Companion 46/46 and Shared Worlds 11/11 with no recovery scenario skipped.
+All 94 source groups, eight packaged API journeys and 1,597 UI tests in 109 files
+pass. Both ordinary automatic-hosting journeys pass all nine stages on unchanged
+candidate bytes, with one Friend Start and one returning-owner Start each, no
+repeated preparation and no diagnostic replacement. Pairing/both-ended UX,
+browser, six compatibility baselines, core, rehearsal and UI review pass.
+
+Desktop passes 12 required cases and 14 window-control cases. Windows QuietTime
+blocks notification delivery/click; this is not fully green or full acceptance.
+The separate production-mode startup, desktop and update handoff gates pass.
+All six installer smoke cases and three actual wizard choices pass. The reviewed
+portable is 66,277,099 bytes, SHA-256
+`48d75541db7fa461f7606ef4dd0b1355a7ae8b3fa4d9e778f1d3055f57d4f4ec`;
+the installer is 60,735,695 bytes, SHA-256
+`24da936cac2abc164b1e87d456868d6ff6cca05547135b5583cf1eb4792560f0`.
+Both are unsigned. Package provenance, embedded UI, sidecars and artifact digests
+have been reviewed without launching either executable locally. Publication is
+limited to a review preview; no .21 physical cycle or measured CPU/transfer
+improvement is claimed. Earlier candidate failures below remain part of the
+record.
+
 The current .21 candidate keeps the original world as the sharing/report scope
 when a prepared continuation is selected. Local run controls remain on that
 concrete continuation. The existing read-only poll now remains mounted on the
@@ -51,13 +76,13 @@ liveness risk; it has not been established as the cause of the physical delay.
 Local validation is code-only. Strict Release solution compilation passes with
 zero warnings/errors. The 119 AppFlows checks and 47 SharedHostNotice checks
 pass, including unchanged-selection Preparing/Hosting/Stopped updates and the
-app/game port distinction; typecheck, production bundle and lint pass. Eight
+app/game port distinction; typecheck, production bundle and lint pass. Nine
 focused generated-file/fake-HTTP backend groups pass, including retained
 historical reuse, signed-anchor/missing-copy routing, current access refusals,
 publication priority, pull-hint expiry and scheduling. The final code-only
-rebuild has zero warnings/errors and formatting passes. Hosted Windows CI is
-pending. No general fixture, native/browser/installer or production hosting
-operation was run on this active laptop for this follow-up.
+rebuild has zero warnings/errors and formatting passes. Final hosted Windows CI
+results are recorded above. No general fixture, native/browser/installer or
+production hosting operation was run on this active laptop for this follow-up.
 
 The first focused backend pass had five successful groups and one discovery
 assertion still expecting the old generic review code for a missing newer save.
@@ -158,8 +183,8 @@ freshness and recovery-head groups pass, including signed copy-only positive
 cases and unknown-copy, new-head, grant, conflict, tamper and second-change
 negative cases. They assert no extra transfer/retention or hosting mutation.
 Fixed categorical diagnostics identify future refusal boundaries without paths,
-identities or save hashes. The source is awaiting final hosted verification; no
-.21 release, tag, installation or physical test has occurred.
+identities or save hashes. Final hosted verification passes the functional gates
+recorded above. No .21 installation or physical test has occurred.
 
 ### Separate physical .20 observations
 
