@@ -130,8 +130,9 @@ internal static partial class WorldPeerHostingDiscoveryChecks
 
     private static async Task ReturningOwnerMissingCopyChecksAsync(string parent)
     {
-        using (var fixture = new ReturningOwnerCopyFixture(parent))
+        foreach (var samePayload in new[] { false, true })
         {
+            using var fixture = new ReturningOwnerCopyFixture(parent, samePayload);
             await fixture.AnnounceAsync();
             var original = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default);
             Require(original is { Ok: true, RecoveryRequired: true, Source: null, Code: "SharedSaveCopyPending" } &&
@@ -139,11 +140,15 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 "An announced newer save without local payload did not route original Start into common catch-up.");
             fixture.RequireNoReceivedCopy();
             var latest = await fixture.Peers.ResolveLatestRecoverySourceAsync(fixture.Root, default);
+            var source = latest.Source;
             Require(latest.Ok && latest.Source?.Descriptor.Version.VersionHash == fixture.Latest.VersionHash &&
-                fixture.Copies.SourceHandler.Operations.Contains(WorldPeerOperations.Catalog) &&
-                fixture.Copies.SourceHandler.Operations.Contains(WorldPeerOperations.Chunk),
-                "The routed returning owner did not receive and select the exact complete newer signed continuation.");
-            latest.Source!.Verify(fixture.Copies.A, fixture.Root);
+                fixture.Copies.SourceHandler.Operations.Contains(WorldPeerOperations.Catalog),
+                $"The routed returning owner did not select the exact complete newer signed continuation: {latest.Code}; " +
+                $"samePayload={samePayload}; operations={string.Join(",", fixture.Copies.SourceHandler.Operations)}.");
+            Require(fixture.Copies.SourceHandler.Operations.Contains(WorldPeerOperations.Chunk) != samePayload,
+                $"The routed returning owner did not {(samePayload ? "reuse its exact unchanged bytes" : "receive the changed payload")}: " +
+                $"{latest.Code}; operations={string.Join(",", fixture.Copies.SourceHandler.Operations)}.");
+            source!.Verify(fixture.Copies.A, fixture.Root);
             fixture.RequireOriginalPreserved();
         }
         foreach (var unavailable in new[] { "Offline", "Revoked", "Expired", "Consent" })
@@ -553,7 +558,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         private string? retainedOriginalPayload;
         private const System.Reflection.BindingFlags Private = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
 
-        internal ReturningOwnerCopyFixture(string parent)
+        internal ReturningOwnerCopyFixture(string parent, bool samePayload = false)
         {
             Copies = new(parent, "Branch");
             var settings = Copies.A.LoadSettings();
@@ -565,6 +570,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             originalPayload = Path.Combine(Copies.A.RootPath, "shared-worlds", Root.ProfileId.ToString("N"), Root.GroupId.ToString("N"),
                 "1", SharedWorldService.PayloadDirectory, "world.dat");
             originalBytes = File.ReadAllBytes(originalPayload);
+            var laterBytes = samePayload ? originalBytes : Encoding.UTF8.GetBytes("generated newer signed returning-owner progress");
             liveMarker = Path.Combine(profile.WorldDirectory, "preserved-owner.synthetic");
             File.WriteAllText(liveMarker, "generated original live world stays intact");
             using (var host = ECDsa.Create())
@@ -574,8 +580,8 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 for (var number = 3; number <= 11; number++)
                 {
                     current = SharedWorldService.SignVersion(current with
-                    { Number = number, ParentHash = current.VersionHash, BackupId = Guid.NewGuid() }, host);
-                    WriteCopy(Path.GetDirectoryName(Copies.DirectoryPath)!, current, originalBytes);
+                    { Number = number, ParentHash = current.VersionHash, BackupId = Guid.NewGuid(), Files = [Fact(laterBytes)] }, host);
+                    WriteCopy(Path.GetDirectoryName(Copies.DirectoryPath)!, current, laterBytes);
                 }
                 Latest = current;
             }

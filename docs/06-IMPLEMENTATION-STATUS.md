@@ -13,8 +13,9 @@ The owner manually installed .21 on both PCs and confirmed both unattended with
 V1release stopped. The laptop's running EXE matches the exact public
 `5f990e721d02d51745a569f8452dbb10f7f54d82` bytes; the main PC reports .21 through
 its authenticated connection. Its EXE and filesystem were not independently
-inspected. Only V1release was exercised. No tunnel, firewall, router, DNS,
-pairing, permission or installation changes were made by testing.
+inspected. Only V1release was exercised. The test client issued no manual tunnel,
+firewall, router, DNS, listener-policy, pairing, permission or installation
+changes. Normal hosting-pipeline network effects were not independently diffed.
 
 The existing laptop preparation was based on save 11; the original PC had
 announced save 12. One explicit normal preparation verified and adopted 12 in
@@ -48,14 +49,24 @@ signatures, ancestry, payload hashes and receipt inspection. These are not pure
 payload-hash timings. No game-client join or owner-recognized gameplay change
 was observed.
 
-**Ordered acceptance remains incomplete.** Save 13 had no exact original-owner
-receipt through 2026-10-28 06:12:40 UTC, twenty minutes after publication. Saved
-restart was then tested as a separate component because ordinary hosting does
+**Timely ordered acceptance remains incomplete.** Save 13's twenty-minute
+observation ending 2026-10-28 06:12:40 UTC did not verify an exact original-owner
+receipt. Saved restart was then tested as a separate component because ordinary hosting does
 not require an owner receipt; its sentinel explicitly records that the ordered
-acceptance had already failed. Save 14 likewise had no exact owner receipt
-through 06:36:02 UTC, twenty minutes after publication. No manual Sync, transfer replay,
+acceptance had already failed. Save 14's twenty-minute observation ending
+06:36:02 UTC likewise did not verify an exact owner receipt. No manual Sync, transfer replay,
 Start retry or receipt substitution was used. Existing immutable publications
 and pending deliveries remain protected; the game is stopped.
+
+A later independent check at **07:21:42 UTC** verifies an exact valid
+original-owner receipt for publication 14, with its complete signed history,
+current roster/root and all 315 payload hashes still valid. The one recently
+authenticated eligible external peer has that exact receipt; a second eligible
+peer remains pending. This supersedes the pending-14 status at the earlier
+observation. The receipt carries no completion timestamp: it was verified at
+approximately 66 minutes after publication, but its actual arrival time is
+unknown. This does not turn the failed twenty-minute delivery window into a
+pass or establish receipt-before-restart ordering for 13.
 
 The original PC remains Connected and reports Offline through fresh authenticated
 companion status. There are two eligible external peers; only one initially had
@@ -98,7 +109,7 @@ owner when awake.
 
 Signed metadata comparison of 14 with its exact parent 13 finds 310 unchanged
 files totaling 119,289,182 bytes; five changed/added files total 163,721 bytes.
-Current receiving code reuses exact publications but does not hydrate a new
+Installed .21 receiving code reuses exact publications but does not hydrate a new
 publication's staging from matching files in another verified publication. This
 is a source-confirmed opportunity to avoid redundant downloads, not a measured
 wire-byte saving on either physical PC.
@@ -139,12 +150,22 @@ passes. The cursor check passed a fresh-fixture recheck without a product change
 its original file-access cause is unknown. Neither pass erases the first result.
 The final .22 version/bundle alignment, UI typecheck/lint/bundle and formatting
 pass, and the final strict solution rebuild has zero warnings/errors. Hosted
-Windows validation remains pending before treating the batch as a reviewed
-candidate. No further physical cycle or installation is
-planned tonight. Remaining evidence requires the original PC's receive cursor,
+Windows validation found a returning-owner discovery fixture failure at source
+`298ab8c`: it required Chunk even though all later signed publications retained
+the original bytes. The corrected fixture separately requires exact selected
+save and Catalog for both shapes, Chunk for genuinely changed signed bytes and
+zero Chunk for unchanged bytes. The complete bounded prepared-hosting discovery
+group now passes locally, making 16 unique audited process-free groups passed
+across this batch. No product checks, deadlines or permissions were relaxed.
+The first correction build caught an invalid IDisposable assumption in the
+fixture; its log is retained, the unnecessary using was removed, and the strict
+focused rebuild has zero warnings/errors. The initial hosted failure is also
+retained; corrected-source hosted validation remains pending.
+No further physical cycle or installation is planned tonight. Delivery-time
+attribution still requires the original PC's receive cursor,
 accepted-byte progress, current errors and CPU work; the
 [read-only main-PC handoff](development/main-pc-returning-host-check.txt) remains
-the next diagnostic surface if delivery stays pending. Physical safe JSON and
+the next diagnostic surface if delivery is slow or pending. Physical safe JSON and
 measurement scripts are under ignored `local-data/physical-test-5f990e7/`.
 
 ## Integrated .21 returning-host and live report correction

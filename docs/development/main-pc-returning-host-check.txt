@@ -8,23 +8,30 @@ authenticated connection, but main's EXE/filesystem was not independently read.
 Laptop normal preparation adopted main's newer12 over old prepared11 in144.8s,
 without Receiving. Start12 reached real Ready in61.2s with no Receiving/copy/setup
 repetition. Stop published13(parent12) in14.2s; all315 payload hashes and signed
-history/current roster verified. No exact13 owner receipt through06:12:40,
-twenty minutes later. Saved restart was then tested independently:13 reached
+history/current roster verified. The twenty-minute observation ending06:12:40
+did not verify exact13 owner receipt. Saved restart was then tested independently:13 reached
 real Ready in48.8s, again without Receiving/copy/setup; Stop published14(parent13)
 in14.2s. All315hashes/signatures/history/current roster of14 verified. The game
 is stopped. Ordered acceptance remains incomplete; restart is a separate pass.
-Save14 had no exact owner receipt through06:36:02(twenty minutes). Laptop's outbound OriginalHost snapshots
+Save14's twenty-minute observation ending06:36:02 did not verify an exact owner
+receipt. A later independent check07:21:42 UTC DOES verify the exact valid owner
+receipt14, current signed history/roster and315/315 payload hashes. One of two
+eligible external peers has recent authentication and that exact receipt; the
+other remains pending. Receipt completion time is not recorded, so delivery is
+known complete at approximately66min, with actual arrival time unknown. This
+does not erase the earlier failed observation or prove receipt13 before restart.
+Laptop's outbound OriginalHost snapshots
 show SeedPaused for newest publication while MAIN owns an inbound pull. Those
 zero submitted bytes do NOT measure chunks served separately to MAIN.
 Main companion status remained Connected/Offline with fresh~3s observations.
 Stale outgoing world-peer contacts do NOT establish that main is offline.
 
-Primary missing evidence is MAIN's actual incoming13/14 stage/cursor, accepted
+For slow delivery, missing evidence is MAIN's actual incoming13/14 stage/cursor, accepted
 bytes across the45s peer budget, fixed refusal/error codes and CPU deltas.
 Source review found a scheduling race where a canceled WaitAsync can read an
 older LastResult before its real flight finishes, but this has NOT been observed
 on MAIN and must not be labeled the physical cause. Sender's8-9s/zero-received
-SeedPaused backoff to5min can be legitimate while MAIN pulls. Also current
+SeedPaused backoff to5min can be legitimate while MAIN pulls. Installed .21
 receiving reuses only exact publication identities; signed14vs13 lists310/315
 unchanged files119289182/119452903B, only5changed/added163721B. That is a source
 opportunity, not measured MAIN wire bytes. The laptop's idle CPU was1.51% total
@@ -35,9 +42,13 @@ TCP connects to main succeeded, median27.9ms; no wire throughput/path proof.
 No tunnel/network change was made. The owner requires planning any tunnel when
 awake; do not configure one as part of this diagnostic.
 
-One combined UNPUBLISHED .22 source follow-up is being validated on
-the laptop (inventory reuse, positive canonical-key parsing cache, real-flight
+One combined UNPUBLISHED .22 source follow-up is being validated with code-only
+local checks and hosted Windows CI (inventory reuse, positive canonical-key parsing cache, real-flight
 scheduling completion ownership, cross-publication matching-file staging).
+Initial source298ab8c Windows run40649330591 found a fixture requiring Chunk
+despite unchanged signed bytes. The corrected discovery group passes locally
+for both changed bytes(download) and unchanged bytes(reuse), with exact save
+selection in both. Corrected-source hosted validation remains pending.
 It is NOT installed on either PC. Do not patch/install a separate candidate or
 repeat the physical sequence. Keep this task READ-ONLY. Capture three bounded
 safe observations and existing incoming-stage metadata if needed; do not force
