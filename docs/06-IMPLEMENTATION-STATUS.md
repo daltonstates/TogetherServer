@@ -7,25 +7,61 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## 0.3.3.23 preview candidate
+## 0.3.3.23 preview release
 
-The candidate retains the complete published .22 source and adds the transfer,
-approved-port and update-retention changes below. Final integrated local UI
-validation passes all 1,657 tests in 111 files without skips, plus whole lint,
-TypeScript, production bundling and 64 pure renderer/fixture checks. The .NET
-solution compiles with no warnings or errors. A common launch guard now skips
-protected sharing-identity reads when no transfer is pending, preserving prior
-proof-gate refusals; its three focused hosting/compression/guard groups pass.
-The original feature-only validation below remains separate evidence.
+[0.3.3.23 Preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.23)
+was published on 2026-10-28 from exact application source
+`1ff236c18eb5f3751cb3168afb2f7814ef846630`. It retains the complete published
+.22 source and adds the transfer, approved-port and update-retention changes
+below. The tag remains on the tested application source; this delivery note
+is a subsequent documentation-only commit.
 
-Hosted candidate `6c34fb3` passed core remote controls, six earlier-version
-compatibility lanes, installer packaging, browser/hosting/sharing captures,
-local pairing including actual two-ended UI, and two automatic-sharing runs.
-Its Existing job caught a test expecting five-second polling after the notice
-moved to one second; the final UI tests correct that expectation. Its native
-notification gate remains blocked while independent native cases pass. Final
-publication uses the subsequent guarded candidate and its own recorded checks.
-No app, game, browser or installer was launched on the owner's active desktop.
+[Final hosted Windows run 40730487443](https://github.com/daltonstates/TogetherServer/actions/runs/40730487443)
+completed with 16 successful jobs. Core remote controls, automatic sharing,
+actual two-ended synthetic UI, all six earlier-version compatibility lanes,
+browser/hosting/sharing captures and installer packaging passed. QolApi passed
+97 source/synthetic groups and nine packaged API cases. Existing passed all
+1,657 UI tests in 111 files, 115 general checks, game-driver fixtures, 46
+companion groups, shared-save journeys, whole-solution formatting, served and
+staging isolation, hidden/interactive desktop smoke and update handoff.
+Local lint, TypeScript, production bundling and 64 pure renderer checks also
+passed; the .NET solution compiled with no warnings or errors.
+
+The overall workflow remains red: Desktop records the hosted Windows
+`QuietTime` block on OS notification delivery/click/navigation. Its independent
+native-window cases passed. The workflow-dispatch-only continuation job is
+inapplicable to this push and was skipped. Full native, physical two-PC/LAN/WAN,
+real-game join and recognizable saved-restart acceptance remain incomplete.
+Fixture and browser evidence do not certify valued-world integrity.
+
+Package artifact `12834249453` contains the exact candidate executable embedded
+by the installer. Six installer smoke cases and all three actual wizard choices
+passed. Both executables are unsigned. Their published SHA-256 values are:
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Portable | 66309898 | `1ed72ff087a371091da9cef83b5863fb93c8ff0f02d672ffde09e164237487d5` |
+| Installer | 60773835 | `d3f7e46d33fe2ed776f02bf4bba4b9d2227dc637faa959fd4cec8344ae10d9dd` |
+
+Anonymous public downloads of both executables and both checksum files match
+the verified package, versions, source revision and GitHub digests. All 37
+prior releases retain their asset IDs, names, sizes and digests. Stable/latest
+remains `v0.3.3`; the new release is public and marked prerelease.
+Hosting-render artifact `12835261834` attempted all 108 cases, captured 672
+images and reported zero failures, skips or layout findings. Three final
+captures were manually inspected (network warning, receiving at narrow/150%
+text, and port guidance); this sample does not certify every image. The raw
+manifest still says `captured-awaiting-visual-inspection`.
+
+Earlier runs remain recorded: `6c34fb3` exposed the old five-second polling
+expectation and an overbroad sharing-identity read; both were corrected.
+Run `40724941139` exposed five immediate fixture-identity assertions. A bounded
+checks-only wait now requires the exact recorded PID, start time and executable
+before the original assertions; production process-identity refusal stays
+strict. Its frozen-candidate diagnostic run `40728529519` passed functional
+checks before finding formatting errors. Those were fixed in the final source,
+whose complete Existing job passed. No app, game, browser or installer was
+launched on the owner's active desktop.
 
 ## 2026-10-28: shared transfers, local ports and update retention
 
