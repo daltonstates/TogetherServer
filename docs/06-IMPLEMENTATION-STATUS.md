@@ -32,6 +32,8 @@ separate from repeating preparation on an unchanged Start.
 | Independent saved restart and graceful Stop | 13 to 14 | 26.500 s | 48.779 s | 25.418 s | 4.093 s | 14.234 s |
 
 Each Start and Stop was issued exactly once, with separate create-new sentinels.
+Both real Starts and Stops ran on the laptop. An original-PC native Start and
+its already-open GUI were not physically exercised in this sequence.
 Both Starts had no Receiving, PreparingCopy or ServerSetup phase. Exact recorded
 native PID/start/path agreement and fresh trusted zero-player `ValheimLogReady`
 observations established real Ready. Working-file verification ran once per
@@ -87,6 +89,27 @@ over 144.856 s, 3.9182% of total machine CPU. Its zero PayloadVerification count
 does not mean zero hashing: direct preparation validation is outside that
 transfer/receipt counter. Counter wall times overlap and cannot be added into
 CPU time. These measurements do not establish a controlled improvement over .20.
+
+The recorded operation windows also measured the laptop parent app separately
+from its game and WebView processes. Percentages below divide CPU seconds by
+observed wall seconds and all 16 logical processors; they are not whole-system
+usage or main-PC measurements.
+
+| Observed .21 window | Wall seconds | Parent-app CPU seconds | Parent share of total machine CPU |
+| --- | --- | --- | --- |
+| First Start through observed Ready | 61.192 | 34.218 | 3.4949% |
+| Saved restart through observed Ready | 48.798 | 27.172 | 3.4802% |
+| First Stop through observed publication | 14.226 | 9.500 | 4.1737% |
+| Final Stop through observed publication | 14.245 | 10.906 | 4.7850% |
+
+Four separately recorded delivery-observation windows range from 374.946 to
+523.919 s and use 147.296 to 211.250 parent-app CPU seconds, averaging 2.4553%
+to 2.5201% of total machine CPU. Those sampled windows are not the entire
+transfer interval and do not locate the receiver's bottleneck. The exact native
+game processes had accumulated 26.891 s and 23.016 s of CPU at their respective
+Ready observations; those lifetime counters are separate from the parent app.
+No extra physical operation was performed to derive this table from the saved
+evidence.
 
 A bounded 40 s managed thread sample used `dotnet-trace` 10.0.750501 against the
 exact .21 process; capture and conversion took 44.239 s, during which the parent
@@ -160,13 +183,49 @@ across this batch. No product checks, deadlines or permissions were relaxed.
 The first correction build caught an invalid IDisposable assumption in the
 fixture; its log is retained, the unnecessary using was removed, and the strict
 focused rebuild has zero warnings/errors. The initial hosted failure is also
-retained; corrected-source hosted validation remains pending.
+retained.
+
+The corrected frozen application source is
+`5a78e67ced045a3c1793dd558a07039de46baaf1`, still **unpublished .22**.
+Its [exact-source Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40652368693)
+passes all 94 source groups and eight packaged API journeys, both ordinary
+automatic-hosting journeys, pairing/both-ended UX, six compatibility baselines,
+UI review, browser, core, rehearsal and installer packaging. The broader Windows
+lane also passes all 27 gates, including 1,597 UI tests in 109 files, Minecraft
+12/12, Companion 46/46 and Shared Worlds 11/11 with zero recovery scenarios
+skipped. The run completed with 16 successful jobs, one Desktop notification
+block and the expected dispatch-only skip. Both ordinary journeys use one normal
+preparation,
+one Friend Start and one returning-owner Start, exact selected signed progress
+and no repeated preparation or diagnostic replacement.
+
+The Desktop lane passes 12 required native cases and 14 window-control cases;
+one OS notification delivery/click case remains blocked by Windows QuietTime.
+Development-mode startup is explicitly skipped there; the separate
+production-mode startup, desktop and update-handoff gates pass in the broader
+lane. This is not fully green or full acceptance. The package passes six installer smoke
+cases and three actual wizard choices on its hosted runner. Local static review
+matches both files, sidecars, version resources, source/run identity and artifact
+digests without launching either EXE. Portable: 66,282,406 bytes, SHA-256
+`b98a09337479c6ca4f866cf26b452f4e2233c0707e2d856eb35c86ff3b59b1fb`.
+Installer: 60,737,950 bytes, SHA-256
+`83304e92fa25c339f73f11651afdb86d9049b75211f70113dc65f25e3d8fd504`.
+Both are unsigned. Neither artifact is a public release or installed update;
+both physical PCs remain owner-installed .21, and no .22 physical speedup is
+claimed.
+
 No further physical cycle or installation is planned tonight. Delivery-time
 attribution still requires the original PC's receive cursor,
 accepted-byte progress, current errors and CPU work; the
 [read-only main-PC handoff](development/main-pc-returning-host-check.txt) remains
 the next diagnostic surface if delivery is slow or pending. Physical safe JSON and
 measurement scripts are under ignored `local-data/physical-test-5f990e7/`.
+Because receipt 14 is now verified, its temporary receive stage may already be
+gone. A later idle snapshot cannot reconstruct past receiver CPU, request time
+or wire throughput unless those observations were retained. Any future .22
+physical comparison requires owner manual installation and newly confirmed
+unattended/stopped conditions, with both transfer roles observed during the same
+approved cycle. No tunnel is justified as a prerequisite by the current evidence.
 
 ## Integrated .21 returning-host and live report correction
 
