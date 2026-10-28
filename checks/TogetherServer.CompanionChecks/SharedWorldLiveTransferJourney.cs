@@ -225,14 +225,6 @@ internal static partial class SharedWorldJourney
             Console.WriteLine("PASS actual pending state resumes through pinned authenticated HTTPS; signed receipt confirms the hash-verified copy on Host");
             passed++;
 
-            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
-                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
-                "owner could not disable shared hosting after the confirmed copy");
-            await WaitCopiesAsync(owner, profile.Id, 0);
-            await PollAsync(friendLocal);
-            await WaitSharedStateAsync(friendLocal, profile.Id, "Consent off");
-            var withdrawn = await GetAsync<ReceivedSharedWorldStatus>(friendLocal,
-                $"/api/local/friend/{profile.Id}/shared-world");
             var publishedFile = version.Files.Single();
             var expectedHash = Convert.ToHexString(SHA256.HashData(payload));
             var publishedPayload = SharedWorldService.SafeChild(Path.Combine(hostData, "shared-worlds",
@@ -240,19 +232,50 @@ internal static partial class SharedWorldJourney
                 version.Number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 SharedWorldService.PayloadDirectory), publishedFile.Path);
             var originalPayload = SharedWorldService.SafeChild(profile.WorldDirectory, publishedFile.Path);
-            Require(!withdrawn.Consented && withdrawn.State == "Consent off" &&
-                withdrawn.ThisPcVersion == version.Number && withdrawn.Error is null &&
+            // Finish an explicit verification under the already existing grant
+            // before changing the generated payload. Passive status is cached;
+            // it must not hash world files on each GET to discover this change.
+            var verified = await PostAsync<object, ReceivedSharedWorldResult>(friendLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+            Require(verified.Ok && verified.Status is { Consented: true, Error: null } verifiedStatus &&
+                verifiedStatus.ThisPcVersion == version.Number &&
                 File.Exists(received) && publishedFile.Sha256 == expectedHash &&
                 Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(received))) == expectedHash,
-                "automatic consent withdrawal removed or invalidated the retained verified copy");
+                "the confirmed LiveSave did not pass its healthy explicit-verification baseline");
+            var pointerPath = Path.Combine(receivedRoot, "latest.json");
+            var pointerBytes = File.ReadAllBytes(pointerPath);
+            var receiptBytes = File.ReadAllBytes(receiptPath);
             using (var stream = new FileStream(received, FileMode.Open, FileAccess.Write))
                 stream.WriteByte((byte)(payload[0] ^ 0xff));
+            var tamperedBytes = File.ReadAllBytes(received);
+            var failedVerification = await PostAsync<object, ReceivedSharedWorldResult>(friendLocal,
+                $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+            var failedStatus = await GetAsync<ReceivedSharedWorldStatus>(friendLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
+            Require(!failedVerification.Ok && failedStatus is { Consented: true, State: "Error", ThisPcVersion: null } &&
+                !string.IsNullOrWhiteSpace(failedStatus.Error) &&
+                File.ReadAllBytes(received).SequenceEqual(tamperedBytes) &&
+                File.ReadAllBytes(pointerPath).SequenceEqual(pointerBytes) &&
+                File.ReadAllBytes(receiptPath).SequenceEqual(receiptBytes),
+                "explicit verification accepted or repaired corrupt LiveSave bytes, advanced its pointer, or replaced its receipt");
+            // Withdraw once after the failed verification. Healthy-copy
+            // withdrawal is covered independently in SharedWorldJourney; this
+            // lane proves a known negative observation survives withdrawal.
+            Require((await PutAsync<SharedWorldConsentRequest, SharedWorldResult>(owner,
+                $"/api/local/profiles/{profile.Id}/shared-world/hosting", new(false))).Ok,
+                "owner could not disable shared hosting after the confirmed copy");
+            await WaitCopiesAsync(owner, profile.Id, 0);
+            await PollAsync(friendLocal);
+            await WaitSharedStateAsync(friendLocal, profile.Id, "Consent off");
             var tampered = await GetAsync<ReceivedSharedWorldStatus>(friendLocal,
                 $"/api/local/friend/{profile.Id}/shared-world");
             Require(!tampered.Consented && tampered.State == "Consent off" &&
                 tampered.ThisPcVersion is null && !string.IsNullOrWhiteSpace(tampered.Error) &&
-                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(received))) != expectedHash,
-                "a tampered received LiveSave remained verified or was repaired during the assertion");
+                Convert.ToHexString(SHA256.HashData(tamperedBytes)) != expectedHash &&
+                File.ReadAllBytes(received).SequenceEqual(tamperedBytes) &&
+                File.ReadAllBytes(pointerPath).SequenceEqual(pointerBytes) &&
+                File.ReadAllBytes(receiptPath).SequenceEqual(receiptBytes),
+                "withdrawal erased the known LiveSave verification failure, revived copy proof, or changed its retained bytes/receipt");
             Require(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(publishedPayload))) == publishedFile.Sha256 &&
                 Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(originalPayload))) == expectedHash,
                 "received-copy tampering changed the immutable Host publication or original world");
