@@ -4,16 +4,31 @@ on:
   push:
     branches: [main, 'review/full-acceptance-*']
   pull_request:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Original Windows CI run containing windows-candidate
+        required: true
+        type: string
+      candidate_source:
+        description: Exact 40-hex application source revision
+        required: true
+        type: string
+      candidate_sha256:
+        description: Exact 64-hex SHA-256 of the frozen application
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-ci-${{ github.ref }}-${{ github.sha }}
+  group: windows-ci-${{ github.event_name == 'workflow_dispatch' && format('frozen-hosting-{0}', github.run_id) || format('{0}-{1}', github.ref, github.sha) }}
   cancel-in-progress: true
 
 jobs:
   candidate:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -68,6 +83,7 @@ jobs:
           retention-days: 1
 
   server-access-ui:
+    if: github.event_name != 'workflow_dispatch'
     name: Review server access and hosting wizard with unchanged candidate UI
     needs: candidate
     runs-on: windows-latest
@@ -266,6 +282,7 @@ jobs:
           retention-days: 7
 
   verify:
+    if: github.event_name != 'workflow_dispatch'
     needs: candidate
     strategy:
       fail-fast: false
@@ -343,6 +360,7 @@ jobs:
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   local-pairing:
+    if: github.event_name != 'workflow_dispatch'
     needs: candidate
     name: Verify local pairing and both-ended UX
     runs-on: windows-latest
@@ -536,6 +554,7 @@ jobs:
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   shared-hosting:
+    if: github.event_name != 'workflow_dispatch'
     needs: candidate
     name: Verify automatic shared hosting
     runs-on: windows-latest
@@ -599,7 +618,175 @@ jobs:
           if-no-files-found: warn
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
+  frozen-hosting-recheck:
+    if: github.event_name == 'workflow_dispatch'
+    name: Recheck ordinary hosting with an existing frozen candidate
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+      CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+    steps:
+      - name: Validate inputs and original same-repository workflow run
+        id: origin
+        shell: pwsh
+        env:
+          ACTIONS_READ_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [long]$runId = 0
+          if ($env:CANDIDATE_RUN_ID -cnotmatch '^[1-9][0-9]{0,18}$' -or
+              ![long]::TryParse($env:CANDIDATE_RUN_ID, [ref]$runId) -or $runId -lt 1 -or
+              $env:CANDIDATE_SOURCE -cnotmatch '^[0-9a-fA-F]{40}$' -or
+              $env:CANDIDATE_SHA256 -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'Frozen candidate inputs are invalid.' }
+          $source = $env:CANDIDATE_SOURCE.ToLowerInvariant()
+          $hash = $env:CANDIDATE_SHA256.ToLowerInvariant()
+          $headers = @{Accept='application/vnd.github+json'; Authorization="Bearer $env:ACTIONS_READ_TOKEN";
+            'X-GitHub-Api-Version'='2022-11-28'; 'User-Agent'='TogetherServer-frozen-hosting-recheck'}
+          $run = Invoke-RestMethod -Headers $headers -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$runId"
+          [long]$observedAttempt = 0
+          if ([string]$run.id -cne [string]$runId -or $run.repository.full_name -cne $env:GITHUB_REPOSITORY -or
+              $run.head_sha -cne $source -or $run.path -cne '.github/workflows/windows-ci.yml' -or
+              ![long]::TryParse([string]$run.run_attempt, [ref]$observedAttempt) -or $observedAttempt -lt 1) {
+            throw 'The original candidate run does not match this repository, workflow and exact source.'
+          }
+          @{schema=1;repository=$env:GITHUB_REPOSITORY;candidateRunId=[string]$runId;candidateSource=$source;
+            candidateSha256=$hash;candidateArtifact='windows-candidate';originalWorkflowPath=$run.path;
+            sourceRunAttemptObserved=$observedAttempt;verificationRevision=$env:GITHUB_SHA;
+            verificationRunId=$env:GITHUB_RUN_ID;verificationRunAttempt=$env:GITHUB_RUN_ATTEMPT;
+            fullyAccepted=$false;boundary='Dedicated hosted synthetic hosting recheck; no physical game or PC acceptance.'} |
+            ConvertTo-Json | Set-Content (Join-Path $env:RUNNER_TEMP 'frozen-hosting-recheck-origin.json') -Encoding utf8
+          "run_id=$runId" >> $env:GITHUB_OUTPUT
+          "source=$source" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Check out the exact original application and dispatcher source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.origin.outputs.source }}
+          persist-credentials: false
+
+      - name: Install the original source's pinned .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+
+      - name: Download the existing candidate without rebuilding or replacing it
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-candidate
+          path: .
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.origin.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Bind the original candidate manifest, source and executable bytes
+        id: bound
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $origin = Get-Content (Join-Path $env:RUNNER_TEMP 'frozen-hosting-recheck-origin.json') -Raw | ConvertFrom-Json
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $head -cne $origin.candidateSource) { throw 'Dispatcher checkout differs from the original application source.' }
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $identity = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
+          $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
+          $actual = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          $productVersion = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion
+          [long]$originalAttempt = 0
+          if ($identity.source -cne $origin.candidateSource -or [string]$identity.runId -cne $origin.candidateRunId -or
+              $identity.job -cne 'candidate' -or [string]::IsNullOrWhiteSpace($version) -or $identity.version -cne $version -or
+              $identity.sha256 -cne $origin.candidateSha256 -or $actual -cne $origin.candidateSha256 -or
+              $identity.productVersion -cne "$version+$($origin.candidateSource)" -or $productVersion -cne $identity.productVersion -or
+              ![long]::TryParse([string]$identity.runAttempt, [ref]$originalAttempt) -or $originalAttempt -lt 1 -or
+              $originalAttempt -gt $origin.sourceRunAttemptObserved) { throw 'Frozen candidate provenance or exact bytes differ.' }
+          $evidence = New-Item -ItemType Directory -Force local-data/ci-evidence/frozen-hosting-recheck
+          $origin | Add-Member -NotePropertyName candidateOriginalRunAttempt -NotePropertyValue $originalAttempt
+          $origin | Add-Member -NotePropertyName candidateJob -NotePropertyValue 'candidate'
+          $origin | Add-Member -NotePropertyName candidateVersion -NotePropertyValue $version
+          $origin | Add-Member -NotePropertyName candidateProductVersion -NotePropertyValue $productVersion
+          $origin | ConvertTo-Json | Set-Content (Join-Path $evidence.FullName 'candidate-context.json') -Encoding utf8
+          Copy-Item -LiteralPath local-data/release-candidate/candidate.json -Destination (Join-Path $evidence.FullName 'original-candidate.json')
+
+      - name: Compile only the dispatcher at the original source
+        shell: pwsh
+        run: |
+          dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen-source hosting dispatcher restore failed.' }
+          dotnet build checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release --no-restore -p:CodeOnlyVerification=true
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen-source hosting dispatcher compilation failed.' }
+
+      - name: Run two ordinary unchanged hosting cases and retain any failure
+        shell: pwsh
+        run: |
+          # Explicit hosted Windows opt-in. Never run these native fixtures on the owner's active desktop.
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          $context = Get-Content local-data/ci-evidence/frozen-hosting-recheck/candidate-context.json -Raw | ConvertFrom-Json
+          $addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+            $_.AddressState.ToString() -eq 'Preferred' -and $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
+          } | Sort-Object InterfaceIndex, IPAddress)
+          if ($addresses.Count -eq 0) { throw 'No assigned private runner IPv4 address is available.' }
+          $runnerAddress = $addresses[0].IPAddress
+          $ordinary = [Collections.Generic.List[object]]::new()
+          $diagnostic = $null
+          try {
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+              if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $context.candidateSha256) { throw 'Frozen bytes changed before an ordinary case.' }
+              $env:TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS = '0'
+              $clock = [Diagnostics.Stopwatch]::StartNew()
+              dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+              $exitCode = $LASTEXITCODE
+              $ordinary.Add(@{case=$attempt;diagnostics=$false;exitCode=$exitCode;elapsedMs=$clock.ElapsedMilliseconds})
+              if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $context.candidateSha256) { throw 'Frozen bytes changed during an ordinary case.' }
+            }
+            if (@($ordinary | Where-Object exitCode -ne 0).Count -gt 0) {
+              $env:TOGETHERSERVER_LAB_LATEST_DIAGNOSTICS = '1'
+              $clock = [Diagnostics.Stopwatch]::StartNew()
+              dotnet checks/TogetherServer.CompanionChecks/bin/Release/net10.0-windows/TogetherServer.CompanionChecks.dll $candidate --simple-shared-hosting-journey --allow-interactive-tests --lab-lan-address $runnerAddress
+              $diagnostic = @{diagnostics=$true;exitCode=$LASTEXITCODE;elapsedMs=$clock.ElapsedMilliseconds;replacesOrdinaryFailure=$false}
+            }
+          } finally {
+            @{ordinaryRequested=2;ordinary=@($ordinary.ToArray());diagnostic=$diagnostic;
+              candidateSource=$context.candidateSource;candidateRunId=$context.candidateRunId;
+              candidateOriginalRunAttempt=$context.candidateOriginalRunAttempt;candidateSha256=$context.candidateSha256;
+              fullyAccepted=$false} | ConvertTo-Json -Depth 5 |
+              Set-Content local-data/ci-evidence/frozen-hosting-recheck/journey-summary.json -Encoding utf8
+          }
+          if ($ordinary.Count -ne 2 -or @($ordinary | Where-Object exitCode -ne 0).Count -ne 0) {
+            throw 'An ordinary frozen-candidate hosting case failed; diagnostic evidence cannot replace that failure.'
+          }
+
+      - name: Verify the same frozen bytes after every attempted case
+        if: always() && steps.bound.outcome == 'success'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $context = Get-Content local-data/ci-evidence/frozen-hosting-recheck/candidate-context.json -Raw | ConvertFrom-Json
+          $actual = (Get-FileHash -LiteralPath local-data/release-candidate/TogetherServer.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{candidateSha256=$context.candidateSha256;finalCandidateSha256=$actual;unchanged=($actual -ceq $context.candidateSha256)} |
+            ConvertTo-Json | Set-Content local-data/ci-evidence/frozen-hosting-recheck/final-identity.json -Encoding utf8
+          if ($actual -cne $context.candidateSha256) { throw 'The frozen candidate changed during the recheck.' }
+
+      - name: Retain only frozen provenance and small redacted hosting reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frozen-hosting-recheck-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/frozen-hosting-recheck-origin.json
+            local-data/ci-evidence/frozen-hosting-recheck/*.json
+            local-data/local-pairing-lab/simple-hosting-*/report.json
+          if-no-files-found: warn
+          retention-days: 7
+
   mixed-version:
+    if: github.event_name != 'workflow_dispatch'
     needs: candidate
     strategy:
       fail-fast: false
@@ -676,6 +863,7 @@ jobs:
           retention-days: ${{ startsWith(github.ref_name, 'review/') && 1 || 7 }}
 
   package:
+    if: github.event_name != 'workflow_dispatch'
     needs: candidate
     name: Package candidate without full acceptance claim
     runs-on: windows-latest

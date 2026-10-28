@@ -109,12 +109,13 @@ internal static class WindowsConsoleProcess
             var handshake = MinecraftConsoleCapture.ParseHandshake(handshakePayload);
             run.ProcessId = handshake.ProcessId;
             using var process = Process.GetProcessById(handshake.ProcessId);
-            if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != handshake.StartTimeUtcTicks ||
-                !Path.GetFullPath(process.MainModule!.FileName)
-                    .Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase) ||
+            var (gameStartTimeUtcTicks, gameExecutablePath) =
+                ReadNewProcessIdentity(process, run.ExecutablePath, handshake.StartTimeUtcTicks);
+            if (!gameExecutablePath.Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase) ||
                 !Path.GetFullPath(handshake.ExecutablePath)
                     .Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Minecraft capture returned an unexpected managed process identity.");
+            run.StartTimeUtcTicks = gameStartTimeUtcTicks;
             return handshake.ProcessId;
         }
         finally
@@ -125,32 +126,51 @@ internal static class WindowsConsoleProcess
     }
 
     private static (long StartTimeUtcTicks, string ExecutablePath) ReadNewProcessIdentity(
-        Process process, string expectedExecutablePath)
+        Process process, string expectedExecutablePath, long? expectedStartTimeUtcTicks = null) =>
+        ReadNewProcessIdentity(process.Id, expectedExecutablePath, expectedStartTimeUtcTicks, () =>
+        {
+            process.Refresh();
+            return process.HasExited ? new(process.Id, true, 0, null) :
+                new(process.Id, false, process.StartTime.ToUniversalTime().Ticks, process.MainModule?.FileName);
+        }, TimeProvider.System, () => Thread.Sleep(50));
+
+    internal readonly record struct NewProcessIdentityObservation(int ProcessId, bool Exited,
+        long StartTimeUtcTicks, string? ExecutablePath);
+
+    // This small observation seam also permits generated startup sequences to
+    // exercise the exact native reader's identity/deadline rules without a process.
+    internal static (long StartTimeUtcTicks, string ExecutablePath) ReadNewProcessIdentity(
+        int expectedProcessId, string expectedExecutablePath, long? expectedStartTimeUtcTicks,
+        Func<NewProcessIdentityObservation> observe, TimeProvider clock, Action pause)
     {
         // CreateProcess has returned the exact PID, but Windows can briefly
         // expose a null MainModule while the image is still initializing.
         // Retry only that PID and require its expected executable; never fall
         // back to a process name or a different process.
         var expected = Path.GetFullPath(expectedExecutablePath);
-        var wait = Stopwatch.StartNew();
+        if (expectedProcessId <= 0 || expectedStartTimeUtcTicks is <= 0)
+            throw new InvalidDataException("The new managed process identity is invalid.");
+        var began = clock.GetTimestamp();
         Exception? lastFailure = null;
         while (true)
         {
             try
             {
-                process.Refresh();
-                if (process.HasExited)
+                var current = observe();
+                if (current.ProcessId != expectedProcessId || current.Exited || current.StartTimeUtcTicks <= 0 ||
+                    expectedStartTimeUtcTicks is { } expectedTicks && current.StartTimeUtcTicks != expectedTicks)
                     throw new InvalidDataException(
-                        "Minecraft capture host exited before its exact identity could be recorded.");
-                var started = process.StartTime.ToUniversalTime().Ticks;
-                var module = process.MainModule?.FileName;
+                        "The new managed process exited or changed its exact identity.");
+                var module = current.ExecutablePath;
                 if (!string.IsNullOrWhiteSpace(module))
                 {
                     var executable = Path.GetFullPath(module);
                     if (!executable.Equals(expected, StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException(
-                            "Minecraft capture host identity could not be verified.");
-                    return (started, executable);
+                            "The new managed process executable could not be verified.");
+                    if (clock.GetElapsedTime(began) >= TimeSpan.FromSeconds(2))
+                        throw new InvalidDataException("The new managed process identity was not available in time.");
+                    return (current.StartTimeUtcTicks, executable);
                 }
             }
             catch (Exception ex) when (ex is not InvalidDataException &&
@@ -160,10 +180,10 @@ internal static class WindowsConsoleProcess
                 lastFailure = ex;
             }
 
-            if (wait.Elapsed >= TimeSpan.FromSeconds(2))
+            if (clock.GetElapsedTime(began) >= TimeSpan.FromSeconds(2))
                 throw new InvalidDataException(
-                    "Minecraft capture host identity was not available in time.", lastFailure);
-            Thread.Sleep(50);
+                    "The new managed process identity was not available in time.", lastFailure);
+            pause();
         }
     }
 

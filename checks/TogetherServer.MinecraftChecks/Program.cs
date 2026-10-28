@@ -6,6 +6,13 @@ using System.Text;
 using System.Text.Json;
 using TogetherServer;
 
+if (args.SequenceEqual(["--capture-identity-code-only"], StringComparer.Ordinal))
+{
+    CheckCaptureIdentityReader();
+    Console.WriteLine("PASS bounded exact launch identity reader (generated observations only)");
+    return 0;
+}
+
 if (args.SequenceEqual(["--fixture-diagnostics-code-only"], StringComparer.Ordinal))
 {
     FixtureReadinessDiagnostics.CheckParser();
@@ -19,8 +26,61 @@ if (MinecraftConsoleCapture.IsCommand(args))
     return Environment.ExitCode;
 }
 
-// Also exercise the pure parser in the hosted native runner without a new workflow step.
+// Exercise the pure parsers/identity reader in hosted checks without a new workflow step.
 FixtureReadinessDiagnostics.CheckParser();
+CheckCaptureIdentityReader();
+
+static void CheckCaptureIdentityReader()
+{
+    const int processId = 17;
+    const long started = 123456789;
+    var expected = Path.Combine(Path.GetTempPath(), "synthetic-launch-identity", "java.exe");
+    var valid = new WindowsConsoleProcess.NewProcessIdentityObservation(processId, false, started, expected);
+    var clock = new CaptureIdentityCheckClock();
+    var samples = new Queue<WindowsConsoleProcess.NewProcessIdentityObservation>([valid with { ExecutablePath = null },
+        valid with { ExecutablePath = "" }, valid]);
+    var pauses = 0;
+    var observed = WindowsConsoleProcess.ReadNewProcessIdentity(processId, expected, started, () => samples.Dequeue(), clock,
+        () => { pauses++; clock.Advance(); });
+    if (observed.StartTimeUtcTicks != started || observed.ExecutablePath != expected || pauses != 2 || samples.Count != 0)
+        throw new InvalidOperationException("A temporarily absent game module did not resume only its exact launch identity.");
+    foreach (var refused in new[] { valid with { ProcessId = processId + 1 }, valid with { Exited = true },
+        valid with { StartTimeUtcTicks = started + 1 }, valid with { ExecutablePath = Path.Combine(Path.GetDirectoryName(expected)!, "other.exe") } })
+    {
+        var reads = 0;
+        var rejected = false;
+        try
+        {
+            WindowsConsoleProcess.ReadNewProcessIdentity(processId, expected, started, () => { reads++; return refused; }, clock,
+                () => throw new InvalidOperationException("An exited or changed process identity was retried."));
+        }
+        catch (InvalidDataException) { rejected = true; }
+        if (!rejected || reads != 1) throw new InvalidOperationException("A changed launch identity was accepted or replaced.");
+    }
+    clock = new CaptureIdentityCheckClock();
+    pauses = 0;
+    var timedOut = false;
+    try
+    {
+        WindowsConsoleProcess.ReadNewProcessIdentity(processId, expected, started, () => valid with { ExecutablePath = null }, clock,
+            () => { pauses++; clock.Advance(); });
+    }
+    catch (InvalidDataException) { timedOut = true; }
+    if (!timedOut || pauses != 40 || clock.GetTimestamp() != TimeSpan.FromSeconds(2).Ticks)
+        throw new InvalidOperationException("An absent module extended the bounded launch identity deadline.");
+    clock = new CaptureIdentityCheckClock();
+    var lateRefused = false;
+    try
+    {
+        WindowsConsoleProcess.ReadNewProcessIdentity(processId, expected, started, () =>
+        {
+            for (var index = 0; index < 40; index++) clock.Advance();
+            return valid;
+        }, clock, () => throw new InvalidOperationException("A late exact identity was retried."));
+    }
+    catch (InvalidDataException) { lateRefused = true; }
+    if (!lateRefused) throw new InvalidOperationException("An exact identity arriving after the deadline was accepted.");
+}
 
 var fixture = Path.GetFullPath("src/TogetherServer.MinecraftFixture/bin/Release/net10.0/TogetherServer.MinecraftFixture.exe");
 if (!File.Exists(fixture)) throw new FileNotFoundException("Build the Minecraft console fixture first.", fixture);
@@ -575,15 +635,15 @@ await Check("known pre-game capture failure clears only its exact run and permit
     var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] })).Ok,
         "pre-game failure profile was rejected");
-    var failedLaunch = await manager.StartAsync(profile.Id);
-    Require(!failedLaunch.Ok && failedLaunch.Code == "LaunchFailed" && data.LoadRuns().Count == 0,
-        "a capture host that proved no game started left an unresolved managed run");
-
-    File.Copy(fixture, profile.ExecutablePath, true);
-    var retry = await manager.StartAsync(profile.Id);
-    Require(retry.Ok, $"known-safe launch cleanup did not permit retry: {retry.Code} {retry.Message}");
     try
     {
+        var failedLaunch = await manager.StartAsync(profile.Id);
+        Require(!failedLaunch.Ok && failedLaunch.Code == "LaunchFailed" && data.LoadRuns().Count == 0,
+            "a capture host that proved no game started left an unresolved managed run");
+
+        File.Copy(fixture, profile.ExecutablePath, true);
+        var retry = await manager.StartAsync(profile.Id);
+        Require(retry.Ok, $"known-safe launch cleanup did not permit retry: {retry.Code} {retry.Message}");
         await Ready(manager, data, profile.Id, retry);
         var exactRun = data.LoadRuns().Single();
         await Stop(manager, profile);
@@ -593,15 +653,13 @@ await Check("known pre-game capture failure clears only its exact run and permit
     {
         foreach (var run in data.LoadRuns())
         {
-            try
-            {
-                using var process = Process.GetProcessById(run.ProcessId!.Value);
-                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == run.StartTimeUtcTicks &&
-                    Path.GetFullPath(process.MainModule!.FileName).Equals(run.ExecutablePath,
-                        StringComparison.OrdinalIgnoreCase))
-                    process.Kill();
-            }
-            catch (Exception) { }
+            var gameExited = CleanupRecordedFixtureProcess(run.ProcessId, run.StartTimeUtcTicks, run.ExecutablePath);
+            // Never stop the capture around an unproved possible game. Once
+            // this exact disposable game is gone, allow its capture to drain.
+            var captureExited = gameExited && (run.ConsoleCaptureProcessId is null || CleanupRecordedFixtureProcess(
+                run.ConsoleCaptureProcessId, run.ConsoleCaptureStartTimeUtcTicks, run.ConsoleCaptureExecutablePath, waitBeforeKill: true));
+            if (!gameExited || !captureExited)
+                Report("WARNING exact pre-game retry fixture cleanup could not be confirmed; ambiguous identities were kept.");
         }
     }
 });
@@ -988,3 +1046,11 @@ await Check("older run records recover port ownership from their saved profile",
 
 Report($"Minecraft checks: {passed} passed, {failed} failed. Disposable data: {root}");
 return failed == 0 ? 0 : 1;
+
+internal sealed class CaptureIdentityCheckClock : TimeProvider
+{
+    private long ticks;
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+    public override long GetTimestamp() => ticks;
+    internal void Advance() => ticks += TimeSpan.FromMilliseconds(50).Ticks;
+}

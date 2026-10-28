@@ -85,6 +85,31 @@ lane has 12 required passes and the explicit QuietTime notification block.
 Those results do not substitute for final-source CI. No .21 tag/release or owner
 installation has occurred at this checkpoint.
 
+The subsequent `3ae1d0dd43b3b1937ff591129dec92fd70a868fe`
+[CI run](https://github.com/daltonstates/TogetherServer/actions/runs/40617364954)
+passes all 94 source groups, eight API journeys and 1,597 UI checks. Its first
+ordinary Friend preparation returns `LatestSaveChanged` before creating a
+local profile/branch; the separate diagnostic journey then passes all nine
+stages. That diagnostic pass does not replace the failed ordinary case, and the
+changed observation component is unknown. The strict freshness fence remains
+unchanged. A dispatch-only hosted workflow can recheck the exact original
+candidate, with pinned source/run/hash provenance, two fresh ordinary journeys
+and separate failure evidence. It neither rebuilds the app nor retries Start
+inside a journey or weakens a deadline/permission/freshness check.
+
+That run also fails Minecraft's pre-game-failure retry with a null-reference
+launch error, followed by four fixture-file lock failures. Source review finds
+an immediate game `MainModule!` dereference where Windows may temporarily
+return no module; this is a strong source match, not a retained launch-stack
+proof. The integrated correction uses the existing bounded identity reader for
+that exact game PID/start/path and keeps ambiguous runs unresolved. Generated
+observations cover delayed module availability, identity mismatch, exit and
+deadline without launching a process. They pass locally; strict compilation has
+zero warnings/errors. The fixture's retry assertion now lies inside exact-record
+cleanup, so a failed assertion cannot bypass cleanup and cause later file-lock
+cascades. Native verification remains hosted. Both earlier .21 packages are
+withheld; no .21 release, tag or installation exists at this checkpoint.
+
 ### Separate physical .20 observations
 
 These are read-only observations of the running .20 app, not .21 acceptance.
