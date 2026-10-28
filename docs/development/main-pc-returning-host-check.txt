@@ -79,8 +79,12 @@ Save only the redacted report under ignored local-data/main-pc-return-followup/
 and return that concise report. Clearly separate observed facts, source-based
 inferences and unknowns. No further user panel inspection is required.
 
-The laptop task is implementing one integrated correction for world-scoped live
-reports, clear app/game address labels, pending-copy original Start catch-up,
-and bounded pull-ownership hints. Do not patch/install a separate candidate or
+The laptop task published the integrated .21 review preview at:
+https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.21
+It includes world-scoped live reports, clear app/game address labels,
+pending-copy original Start catch-up and bounded pull-ownership hints. Hosted
+functional checks pass; QuietTime notification and physical acceptance remain
+open. This read-only handoff does not authorize installation or physical tests.
+Do not patch/install a separate candidate or
 weaken any signature, ancestry, expiry, revocation, consent, receipt or process
 check while collecting this evidence.

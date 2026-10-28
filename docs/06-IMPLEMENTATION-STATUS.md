@@ -16,6 +16,12 @@ later succeeding without a file picker. Ordinary Start selects an exact signed
 verified save automatically; a file picker is not part of that operation.
 
 Final application source: `5f990e721d02d51745a569f8452dbb10f7f54d82`.
+Release: [v0.3.3.21 review preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.21),
+published 2026-10-28T04:20:02Z, release `426257994`. Annotated tag
+`da141016a05100fa810f91aa96f645141194e7e3` targets that application source.
+All four anonymous public downloads match the reviewed bytes and server digests.
+All 35 prior releases and the four .20 asset identities/digests remain intact;
+stable/latest remains `v0.3.3`.
 The [exact-source Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40628192561)
 has completed: 16 successful jobs, one Desktop notification block and the
 expected dispatch-only skip. All 27 broader gates pass, including Minecraft
