@@ -110,7 +110,7 @@ internal sealed partial class FriendLink
             foreach (var id in ReceiveConsentProfileIds(profileId))
             {
                 withdrawnSharedConsent.TryRemove(id, out _);
-                sharedLocalObservations.TryRemove(id, out _);
+                InvalidateSharedLocalObservation(id);
                 if (sharedProfileCancellation.TryRemove(id, out var previous)) previous.Dispose();
             }
             return true;
@@ -152,7 +152,7 @@ internal sealed partial class FriendLink
             var enabled = new WorldPeerReceiveConsentStore(data).Effective(root, deviceId, false);
             foreach (var profileId in profiles)
             {
-                sharedLocalObservations.TryRemove(profileId, out _);
+                InvalidateSharedLocalObservation(profileId);
                 if (enabled)
                 {
                     withdrawnSharedConsent.TryRemove(profileId, out _);

@@ -194,6 +194,10 @@ internal static partial class SharedWorldJourney
             await Task.Delay(3500);
             var revoked = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world");
+            Require(FriendLink.ReadReceivedLatest(aRoot)?.VersionHash == firstVersion.VersionHash &&
+                    !Directory.Exists(Path.Combine(aRoot, secondVersion.VersionHash)) &&
+                    File.Exists(partial) && new FileInfo(partial).Length >= SharedWorldService.ChunkBytes,
+                "revocation changed the earlier verified pointer, promoted the pending copy, or removed its committed partial bytes");
             Require(revoked.ThisPcVersion == 1 && File.Exists(partial),
                 "revocation committed the pending save or removed resumable data");
             StopApp(friendA);
@@ -279,10 +283,10 @@ internal static partial class SharedWorldJourney
                 "payload", "world.dat");
             using (var stream = new FileStream(tamperedFile, FileMode.Open, FileAccess.Write))
                 stream.WriteByte(42);
-            var tamperedStatus = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
-                $"/api/local/friend/{profile.Id}/shared-world");
             var tamperedPull = await PostAsync<object, ReceivedSharedWorldResult>(aLocal,
                 $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+            var tamperedStatus = await GetAsync<ReceivedSharedWorldStatus>(aLocal,
+                $"/api/local/friend/{profile.Id}/shared-world");
             var healthyB = await GetAsync<ReceivedSharedWorldStatus>(bLocal,
                 $"/api/local/friend/{profile.Id}/shared-world");
             Require(tamperedStatus.State == "Error" && tamperedStatus.ThisPcVersion is null &&

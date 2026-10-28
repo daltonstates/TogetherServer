@@ -197,6 +197,31 @@ The final candidate must include this CSS correction. The first Existing
 runner was canceled at its timeout while the old serialized-Start assertion
 held its cleanup gate; it had passed all 1,685 initial UI tests beforehand.
 
+The [fourth .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40767721350)
+used `984a2555b0077a62fc35aa750bc1f5ca74d77c60` and completed with 17
+successful jobs. Browser now passes tablet/150% header bounds and the expanded
+jobs-popover matrix. Desktop retains the known notification block. Existing
+passed all 1,686 UI tests, 115 general checks, driver checks and early packaged
+journeys, then exposed a cache regression in the shared-world revocation case.
+The refusal shortcut hid the earlier completed version; it did not promote the
+pending save or discard committed partial bytes. Consent-off status now keeps
+historical completed metadata while remaining explicitly unconsented, without
+payload hashing, network work or waiting on the transfer gate. Explicit failed
+copy verification publishes an Error observation and removes the cached copy
+claim. Consent/material invalidation cannot revive that known failure from a
+signed manifest alone; successful verification or a new verified commit clears
+it. The packaged tamper check now asks for explicit verification before judging
+the passive cached response, preserving its refusal and independent-copy checks.
+
+The final solution rebuild passed with zero warnings/errors. Three focused
+groups pass, including a restarted signed fake-HTTP transfer paused after a
+committed chunk, owner withdrawal, unchanged pointer/receipt, retained partial
+data, cold status with an exclusively locked old payload, and explicit
+tamper/withdraw/reallow/repair transitions. Exact logs are
+`local-data/shared-hosting-revoked-history-final-build.log` and
+`local-data/shared-hosting-revoked-history-focused.log`. These changes await the
+next frozen-candidate hosted run; no interactive acceptance was run locally.
+
 Physical laptop/main-PC behavior, real network transfer timing, real-game
 joins/save-load/restart, rendered/native acceptance and a new frozen-candidate
 hosted run remain separate requirements. The screenshot is unresolved physical

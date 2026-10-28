@@ -605,6 +605,8 @@ internal static class SharedRosterBootstrapChecks
     internal static async Task RunSlowReceiveProgressAsync(string root)
     {
         await BusyAutomaticConsentObservationAsync(root);
+        await RestartedRevokedReceivePreservesHistoryAsync(root);
+        await ExplicitFailedVerificationInvalidatesObservationAsync(root);
         foreach (var gzip in new[] { false, true })
         {
             using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
@@ -640,6 +642,97 @@ internal static class SharedRosterBootstrapChecks
                 "The deliberately slow original-Host transfer failed full verification/receipt.");
         }
         await CorruptCompletedPartialProgressAsync(root);
+    }
+
+    private static async Task ExplicitFailedVerificationInvalidatesObservationAsync(string root)
+    {
+        using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+        fixture.Current = fixture.Child(fixture.Bootstrap);
+        fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+        fixture.PrepareFirstSave();
+        await fixture.ConnectAsync();
+        Require((await fixture.CheckAsync()).Available && (await fixture.PullAsync()).Ok,
+            "The explicit-verification fixture did not receive its signed copy.");
+        var version = fixture.PublishedVersion!;
+        var pointer = Path.Combine(fixture.ReceiveRoot, "latest.json");
+        var priorPointer = File.ReadAllBytes(pointer);
+        var file = Path.Combine(fixture.ReceiveRoot, version.VersionHash, SharedWorldService.PayloadDirectory, "synthetic.db");
+        using (var output = new FileStream(file, FileMode.Open, FileAccess.Write)) output.WriteByte(42);
+        Require(fixture.ReceiveStatus is { ThisPcVersion: 1, Error: null },
+            "A passive cached observation unexpectedly rehashed the payload.");
+        var receiptRequests = fixture.ReceiptRequests;
+        var failed = await fixture.PullAsync();
+        Require(!failed.Ok && fixture.ReceiveStatus is { State: "Error", ThisPcVersion: null, Error: not null } &&
+            fixture.ReceiptRequests == receiptRequests && File.ReadAllBytes(pointer).SequenceEqual(priorPointer) && File.ReadAllBytes(file)[0] == 42,
+            "Explicit payload verification hid its failure, attested corruption or changed the stored copy.");
+        Require((await fixture.SetConsentAsync(false)).Ok && fixture.ReceiveStatus is
+        { Consented: false, ThisPcVersion: null, Error: not null },
+            "Consent-off metadata fallback revived a copy known to have failed full verification.");
+        fixture.Connection.ObserveSharedCatchUpScheduling(fixture.Connection.View());
+        Require(fixture.ReceiveStatus is { Consented: false, ThisPcVersion: null, Error: not null } &&
+            (await fixture.SetConsentAsync(true)).Ok && fixture.ReceiveStatus is
+            { Consented: true, ThisPcVersion: null, Error: not null },
+            "Policy/cache invalidation erased a known failed-verification observation.");
+        File.WriteAllBytes(file, fixture.PublishedPayload); // Repair only this generated test payload.
+        Require((await fixture.PullAsync()).Ok && fixture.ReceiveStatus is { ThisPcVersion: 1, Error: null },
+            "A new successful explicit full verification could not replace its previous negative observation.");
+    }
+
+    private static async Task RestartedRevokedReceivePreservesHistoryAsync(string root)
+    {
+        using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+        fixture.Current = fixture.Child(fixture.Bootstrap);
+        fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+        fixture.PrepareFirstSave();
+        await fixture.ConnectAsync();
+        Require((await fixture.CheckAsync()).Available && (await fixture.PullAsync()).Ok,
+            "The revocation fixture did not receive its first signed copy automatically.");
+        var first = fixture.PublishedVersion!;
+        var firstReceipt = fixture.ConfirmedReceipt;
+        var pointerPath = Path.Combine(fixture.ReceiveRoot, "latest.json");
+        var firstPointer = File.ReadAllBytes(pointerPath);
+        var receiptRequests = fixture.ReceiptRequests;
+        fixture.PrepareNextSave();
+        var second = fixture.PublishedVersion!;
+        await fixture.RestartConnectionAsync();
+        using var release = new ManualResetEventSlim(false);
+        var committed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var chunkReports = 0;
+        var receive = fixture.PullAsync(reportProgress: (bytes, _) =>
+        {
+            if (bytes != SharedWorldService.ChunkBytes || ++chunkReports != 2) return;
+            committed.TrySetResult();
+            Require(release.Wait(TimeSpan.FromSeconds(10)), "The owner revocation did not release the committed-chunk barrier.");
+        });
+        try
+        {
+            await committed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var previous = fixture.Current;
+            fixture.Current = fixture.Sign(fixture.Child(previous) with
+            {
+                OwnerOverride = true,
+                Members = previous.Members.Select(member => member with { Grants = new() }).ToArray()
+            });
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, previous, fixture.Current];
+            Require((await fixture.CheckAsync()).Available && !(await fixture.CheckHostingAsync()).Consented,
+                "The receiver did not learn the owner's signed Receive withdrawal.");
+        }
+        finally { release.Set(); }
+        var stopped = await receive.WaitAsync(TimeSpan.FromSeconds(10));
+        var partial = Path.Combine(fixture.ReceiveRoot, ".partial-" + second.VersionHash, SharedWorldService.PayloadDirectory, "synthetic.db");
+        Require(!stopped.Ok && fixture.ReceiptRequests == receiptRequests && fixture.ConfirmedReceipt == firstReceipt &&
+            File.ReadAllBytes(pointerPath).SequenceEqual(firstPointer) &&
+            FriendLink.ReadReceivedLatest(fixture.ReceiveRoot)?.VersionHash == first.VersionHash &&
+            File.Exists(partial) && new FileInfo(partial).Length >= SharedWorldService.ChunkBytes &&
+            !Directory.Exists(Path.Combine(fixture.ReceiveRoot, second.VersionHash)),
+            "Signed revocation promoted the unfinished copy, acknowledged it, removed resumable bytes or changed the earlier verified copy.");
+        // No page has observed this restarted link. Locking the old payload
+        // also proves the status projection does not rehash it to show history.
+        using var lockedPayload = new FileStream(Path.Combine(fixture.ReceiveRoot, first.VersionHash,
+            SharedWorldService.PayloadDirectory, "synthetic.db"), FileMode.Open, FileAccess.Read, FileShare.None);
+        var status = fixture.ReceiveStatus;
+        Require(status is { Consented: false, ThisPcVersion: 1, TransferPhase: null } && status.State == "Consent off",
+            "A cold consent-off observation erased the retained completed version after a revoked receive.");
     }
 
     private static async Task BusyAutomaticConsentObservationAsync(string root)
@@ -1010,6 +1103,19 @@ internal static class SharedRosterBootstrapChecks
                 files, "", "", ""), owner);
         }
 
+        public void PrepareNextSave()
+        {
+            var prior = PublishedVersion ?? throw new InvalidOperationException("Prepare the first signed save first.");
+            PublishedPayload = Enumerable.Range(0, SharedWorldService.ChunkBytes * 4).Select(index => (byte)(index % 239)).ToArray();
+            PublishedVersion = SharedWorldService.SignVersion(prior with
+            {
+                Number = prior.Number + 1,
+                ParentHash = prior.VersionHash,
+                BackupId = Guid.NewGuid(),
+                Files = [new("synthetic.db", PublishedPayload.LongLength, Convert.ToHexString(SHA256.HashData(PublishedPayload)))]
+            }, owner);
+        }
+
         public void Seed(bool includeChild = true)
         {
             Chain.Append(Bootstrap, Bootstrap.OwnerPublicKey);
@@ -1054,6 +1160,17 @@ internal static class SharedRosterBootstrapChecks
         {
             await ConnectAsync();
             return await link!.CheckSharedWorldSharingAsync(ProfileId);
+        }
+
+        public async Task RestartConnectionAsync()
+        {
+            link?.Dispose();
+            link = new FriendLink(Data, "friend.protected", (address, pins) =>
+            {
+                Require(address == "https://127.0.0.1:5131" && pins.Contains(new string('A', 64)), "Restart escaped the pinned transport.");
+                return new HttpClient(this, disposeHandler: false) { BaseAddress = new Uri(address) };
+            });
+            Require((await link.PollAsync()).Profiles.Single().Id == ProfileId, "The restarted signed fixture lost its assigned profile.");
         }
 
         public Task<ReceivedSharedWorldResult> SetConsentAsync(bool enabled) =>
@@ -1167,6 +1284,9 @@ internal static class SharedRosterBootstrapChecks
             else if (PublishedVersion is { } version && path.StartsWith(
                 $"/api/companion/servers/{ProfileId}/shared-world/{version.VersionHash}/files/0/chunks/", StringComparison.Ordinal))
             {
+                if (Current.Members.Single(member => member.DeviceId == deviceId) is not { Revoked: false, Grants.Receive: true })
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+                    { Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(new { code = "SharingOff" }, Json)) });
                 Require(long.TryParse(path.AsSpan(path.LastIndexOf('/') + 1), out var offset) &&
                     offset >= 0 && offset < PublishedPayload.LongLength && offset % SharedWorldService.ChunkBytes == 0,
                     "synthetic save chunk offset was invalid");

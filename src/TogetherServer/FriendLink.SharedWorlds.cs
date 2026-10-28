@@ -1026,6 +1026,11 @@ internal sealed partial class FriendLink
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedLocalObservations = new();
     private readonly ConcurrentDictionary<Guid, SharedWorldPeerRoot> sharedProgressRoots = new();
     private readonly SharedWorldTransferHealth sharedTransferHealth = new();
+    private void InvalidateSharedLocalObservation(Guid profileId)
+    {
+        if (sharedLocalObservations.TryGetValue(profileId, out var prior) && prior.Error is null)
+            sharedLocalObservations.TryRemove(new(profileId, prior));
+    }
     private void InvalidateSharedReceiveStatus(Guid profileId)
     {
         sharedTransfers.TryRemove(profileId, out _);
@@ -1085,7 +1090,7 @@ internal sealed partial class FriendLink
             sharedSchedulingObservation = new(snapshot.HostId, snapshot.Endpoint, snapshot.State, profiles, notices);
             sharedRetryAfter.Clear();
             sharedFailures.Clear();
-            sharedLocalObservations.Clear();
+            foreach (var profileId in sharedLocalObservations.Keys) InvalidateSharedLocalObservation(profileId);
             return true;
         }
     }
@@ -1694,7 +1699,7 @@ internal sealed partial class FriendLink
                 sharedRetryAfter.Remove(profileId);
                 sharedFailures.Remove(profileId);
                 sharedTransfers.TryRemove(profileId, out _);
-                sharedLocalObservations.TryRemove(profileId, out _);
+                InvalidateSharedLocalObservation(profileId);
             }
             sharedTransferHealth.Reset(profileId);
             return new(true, "ConsentSaved", enabled ? "This PC may pull approved completed saves." :
@@ -1715,9 +1720,12 @@ internal sealed partial class FriendLink
             var observedConsent = ReceiveConsentRoot(profileId) is { } consentRoot
                 ? new WorldPeerReceiveConsentStore(data).ObservedEnabled(consentRoot, SharedWorldDeviceId) : null;
             if (observedConsent == false || observedConsent is null && withdrawnSharedConsent.ContainsKey(profileId))
-                return new(false, null, null, "Consent off");
+                return SharedWorldConsentOffStatus(profileId);
             if (observedConsent == true && sharedLocalObservations.TryGetValue(profileId, out var oldConsent) && !oldConsent.Consented)
-                sharedLocalObservations.TryRemove(profileId, out _);
+            {
+                if (oldConsent.Error is null) sharedLocalObservations.TryRemove(new(profileId, oldConsent));
+                else sharedLocalObservations.TryUpdate(profileId, oldConsent with { Consented = true, State = "Error" }, oldConsent);
+            }
             if (sharedTransfers.TryGetValue(profileId, out var running)) return running;
             if (sharedProgressRoots.TryGetValue(profileId, out var knownRoot) &&
                 SharedSaveTransferProgress.Read(data, knownRoot) is { } observed) return observed;
@@ -1733,7 +1741,7 @@ internal sealed partial class FriendLink
                     sharedProgressRoots[profileId] = peerRoot;
                     if (SharedSaveTransferProgress.Read(data, peerRoot) is { } peerTransfer) return peerTransfer;
                 }
-                if (!HasSharedWorldReceiveConsent(profileId)) return new(false, null, null, "Consent off");
+                if (!HasSharedWorldReceiveConsent(profileId)) return SharedWorldConsentOffStatus(profileId);
             }
             finally { gate.Release(); }
             var local = sharedLocalObservations.GetValueOrDefault(profileId) ?? LocalSharedWorldStatus(profileId, verifyPayload: false);
@@ -1750,6 +1758,40 @@ internal sealed partial class FriendLink
                 };
         }
         finally { ReleaseRetained(); }
+    }
+
+    private ReceivedSharedWorldStatus SharedWorldConsentOffStatus(Guid profileId)
+    {
+        // A current Receive refusal must not erase historical local-copy
+        // evidence. This display projection grants no permission and performs
+        // no network request, full payload hash or wait on the link gate.
+        var prior = sharedLocalObservations.GetValueOrDefault(profileId);
+        if (prior?.ThisPcVersion is null && prior?.Error is null && sharedTransfers.TryGetValue(profileId, out var active) && active.ThisPcVersion is not null)
+            prior = active;
+        if (prior?.ThisPcVersion is null && prior?.Error is null && config is { } connection)
+        {
+            try
+            {
+                var sourceId = connection.PeerWorld is { } world &&
+                    (profileId == world.ProfileId || profileId == connection.PeerWorldLocalProfileId) ? world.ProfileId : profileId;
+                var deviceId = connection.PeerWorldMemberDeviceId ?? connection.DeviceId;
+                var root = Path.Combine(data.RootPath, "received-shared-worlds", deviceId.ToString("N"), sourceId.ToString("N"));
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, root);
+                var latest = ReadReceivedLatestMetadata(root);
+                if (latest is not null && latest.ProfileId == sourceId)
+                    prior = new(false, prior?.HostVersion, latest.Number, "Consent off", prior?.Error,
+                        RosterRevision: prior?.RosterRevision,
+                        Trust: "Previously completed signed copy; receiving is currently off",
+                        CompletedUtc: ReceivedSharedWorldProjection.CompletedUtc(latest));
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or
+                CryptographicException or InvalidDataException or ArgumentException or System.Security.SecurityException)
+            { /* Unavailable historical metadata cannot revive receiving permission. */ }
+        }
+        var denied = (prior ?? new(false, null, null, "Consent off")) with
+        { Consented = false, State = "Consent off", TransferPhase = null, ReceivedBytes = 0, TotalBytes = 0 };
+        sharedLocalObservations[profileId] = denied;
+        return denied;
     }
 
     public async Task<ReceivedSharedWorldResult> CheckSharedWorldAsync(Guid profileId,
@@ -1795,7 +1837,7 @@ internal sealed partial class FriendLink
             if (version is null || !SharedWorldService.VerifySignature(version) ||
                 version.ProfileId != profileId || version.Game != profile.Kind)
                 return SharedFailure("InvalidManifest", "The Host's shared save failed verification.");
-            var old = ReadReceivedLatest(root);
+            var old = ReadReceivedLatestForObservation(profileId, root);
             var resolvedAnchor = ResolvedAuthorityAnchor(profileId, version);
             await gate.WaitAsync(cancellationToken);
             entered = true;
@@ -2235,7 +2277,7 @@ internal sealed partial class FriendLink
             var copyDescription = version.CaptureKind == SharedWorldCaptureKinds.LiveSave ?
                 "live save copy" : "post-Stop file copy";
             Directory.CreateDirectory(root);
-            var old = ReadReceivedLatest(root);
+            var old = ReadReceivedLatestForObservation(profileId, root);
             var resolvedAnchor = ResolvedAuthorityAnchor(profileId, version);
             await gate.WaitAsync(transferToken);
             entered = true;
@@ -2865,7 +2907,7 @@ internal sealed partial class FriendLink
         finally { gate.Release(); }
         if (floor is null || floor.GroupId != version.GroupId) return false;
         // ReadReceivedLatest verifies every payload hash immediately before attesting.
-        if (ReadReceivedLatest(root)?.VersionHash != version.VersionHash) return false;
+        if (ReadReceivedLatestForObservation(profileId, root)?.VersionHash != version.VersionHash) return false;
         if (!AuthorizedVersionSigner(profileId, version)) return false;
         if (verifiedInThisTransfer && sharedTransfers.TryGetValue(profileId, out var active) &&
             active.HostVersion == version.Number)
@@ -3150,6 +3192,33 @@ internal sealed partial class FriendLink
         var key = ECDsa.Create();
         key.ImportPkcs8PrivateKey(bytes, out _);
         return key;
+    }
+
+    private SharedWorldVersion? ReadReceivedLatestForObservation(Guid profileId, string root)
+    {
+        try { return ReadReceivedLatest(root); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or
+            CryptographicException or InvalidDataException or ArgumentException or System.Security.SecurityException)
+        {
+            // Explicit/background verification owns this negative observation.
+            // Later passive GETs must not reconstruct successful payload proof
+            // from the still-signed manifest, or hash every file themselves.
+            var prior = sharedLocalObservations.GetValueOrDefault(profileId) ?? new(true, null, null, "Error");
+            sharedLocalObservations[profileId] = prior with
+            {
+                Consented = true,
+                ThisPcVersion = null,
+                State = "Error",
+                Error = "The stored save failed verification. The live world was not changed.",
+                ReceivedBytes = 0,
+                TotalBytes = 0,
+                TransferPhase = null,
+                CompletedUtc = null,
+                ReceivedUtc = null,
+                ReceiptConfirmed = null
+            };
+            throw;
+        }
     }
 
     internal static SharedWorldVersion? ReadReceivedLatest(string root, CancellationToken cancellationToken = default,
