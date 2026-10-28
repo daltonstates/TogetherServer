@@ -2091,14 +2091,15 @@ try
         [new DeviceServerPermissionRequest(stopProfile.Id, true, true,
                 CanExtendTimer: true, CanViewLogs: true),
             new DeviceServerPermissionRequest(replacementProfile.Id, true, false)]))).Ok,
-        "could not assign the queued-start profile for shutdown-race coverage");
+        "could not assign the concurrent-start profile for shutdown-race coverage");
+    var shutdownRaceTimer = Stopwatch.StartNew();
     var stopSubmitted = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
         $"/api/local/friend/{stopProfile.Id}/stop", new { });
     var startSubmitted = await OwnerPost<object, FriendActionResult>(stopFriendLocal,
         $"/api/local/friend/{replacementProfile.Id}/start", new { });
     Require(stopSubmitted.Code == "OperationAccepted" && stopSubmitted.OperationId is not null &&
         startSubmitted.Code == "OperationAccepted" && startSubmitted.OperationId is not null,
-        "long Stop and queued Start were not accepted as durable operations");
+        "long Stop and concurrent Start were not accepted as durable operations");
     using var quittingOwner = new HttpClient
     {
         BaseAddress = new Uri($"http://127.0.0.1:{stopHostPort}"),
@@ -2112,17 +2113,30 @@ try
     var runningOperations = await OwnerPost<object, FriendView>(stopFriendLocal, "/api/local/friend/poll", new { });
     operationPollTimer.Stop();
     var stopProgress = runningOperations.Profiles.Select(item => item.Operation)
-        .Single(operation => operation?.Id == stopSubmitted.OperationId);
+        .SingleOrDefault(operation => operation?.Id == stopSubmitted.OperationId);
     var startProgress = runningOperations.Profiles.Select(item => item.Operation)
-        .Single(operation => operation?.Id == startSubmitted.OperationId);
+        .SingleOrDefault(operation => operation?.Id == startSubmitted.OperationId);
+    var operationProgressFacts = $"pollMs={operationPollTimer.ElapsedMilliseconds}; raceMs={shutdownRaceTimer.ElapsedMilliseconds}; " +
+        $"stopState={SupportReportRedactor.Token(stopProgress?.State, 32)}; stopCode={SupportReportRedactor.Token(stopProgress?.Code)}; " +
+        $"startState={SupportReportRedactor.Token(startProgress?.State, 32)}; startCode={SupportReportRedactor.Token(startProgress?.Code)}; " +
+        $"startOk={startProgress?.Ok}; quitCompleted={quitTask.IsCompleted}";
+    Console.WriteLine("Shutdown race progress: " + operationProgressFacts);
+    // Start preparation is independently scheduled, so its durable operation
+    // can already be Running while its lifecycle work waits behind Stop. Quit
+    // can also reject it before this restarted Friend finishes reconnecting.
+    var safeStartProgress = startProgress?.State is RemoteOperationStates.Pending or RemoteOperationStates.Running ||
+        startProgress is { State: RemoteOperationStates.Failed, Ok: false, Code: "HostShuttingDown" };
     Require(operationPollTimer.Elapsed < TimeSpan.FromSeconds(4) &&
         stopProgress?.State is RemoteOperationStates.Running or RemoteOperationStates.Succeeded &&
-        startProgress?.State == RemoteOperationStates.Pending,
-        "a restarted Friend could not observe durable operation progress without waiting on the locked heartbeat");
+        safeStartProgress,
+        "a restarted Friend could not observe durable operation progress without waiting on the locked heartbeat; " + operationProgressFacts);
     var quitDuringQueue = await quitTask;
+    var quitFacts = $"raceMs={shutdownRaceTimer.ElapsedMilliseconds}; quitOk={quitDuringQueue.GetProperty("ok").GetBoolean()}; " +
+        $"quitCode={SupportReportRedactor.Token(quitDuringQueue.GetProperty("code").GetString())}";
+    Console.WriteLine("Shutdown race Quit result: " + quitFacts);
     Require(quitDuringQueue.GetProperty("ok").GetBoolean() &&
         quitDuringQueue.GetProperty("code").GetString() == "Closing",
-        "Host Quit did not take ownership of shutdown after the long Stop completed");
+        "Host Quit did not take ownership of shutdown after the long Stop completed; " + operationProgressFacts + "; " + quitFacts);
     using (var exitTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
         await stopHost.WaitForExitAsync(exitTimeout.Token);
     StopApp(stopHost);
@@ -2139,17 +2153,23 @@ try
         await Task.Delay(100);
     }
     var recoveredStop = recoveredOperations!.Profiles.Select(item => item.Operation)
-        .Single(operation => operation?.Id == stopSubmitted.OperationId);
+        .SingleOrDefault(operation => operation?.Id == stopSubmitted.OperationId);
     var blockedStart = recoveredOperations.Profiles.Select(item => item.Operation)
-        .Single(operation => operation?.Id == startSubmitted.OperationId);
+        .SingleOrDefault(operation => operation?.Id == startSubmitted.OperationId);
     var afterShutdownRace = await stopOwner.GetFromJsonAsync<HostSnapshot>("/api/local/snapshot");
+    var shutdownResultFacts = $"raceMs={shutdownRaceTimer.ElapsedMilliseconds}; " +
+        $"stopState={SupportReportRedactor.Token(recoveredStop?.State, 32)}; stopCode={SupportReportRedactor.Token(recoveredStop?.Code)}; " +
+        $"startState={SupportReportRedactor.Token(blockedStart?.State, 32)}; startCode={SupportReportRedactor.Token(blockedStart?.Code)}; " +
+        $"startOk={blockedStart?.Ok}; runs={afterShutdownRace?.Runs.Count}; " +
+        $"runStates={string.Join(",", afterShutdownRace?.Runs.Take(8).Select(run => SupportReportRedactor.Token(run.State, 32)) ?? [])}";
+    Console.WriteLine("Shutdown race recovered result: " + shutdownResultFacts);
     Require(recoveredStop is { State: RemoteOperationStates.Succeeded, Code: "ValheimStopped" } &&
         blockedStart is not null && blockedStart.State is RemoteOperationStates.Failed or RemoteOperationStates.Interrupted &&
         afterShutdownRace!.Runs.All(run => run.State == "Offline"),
-        "a queued remote Start launched during shutdown or unfinished work was not recovered as terminal");
+        "a concurrent remote Start launched during shutdown or unfinished work was not recovered as terminal; " + shutdownResultFacts);
     Require(File.ReadAllText(Path.Combine(stopProfile.WorldDirectory, "synthetic-stop.marker")) == "Ctrl+C received",
         "remote Stop did not use the synthetic console's graceful exit");
-    Console.WriteLine("PASS long remote Stop survives Friend restart and queued Start cannot race Host shutdown"); passes++;
+    Console.WriteLine("PASS long remote Stop survives Friend restart and concurrent Start cannot race Host shutdown"); passes++;
 
     // A terminal-operation poll deliberately returns before heartbeat refresh.
     // The restarted Friend must receive canonical permissions and capabilities before proxying logs.

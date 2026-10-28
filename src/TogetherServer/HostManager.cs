@@ -1083,12 +1083,14 @@ public sealed partial class HostManager
             var stoppedNames = new List<string>();
             foreach (var conflict in initial.PortConflicts)
             {
+                if (ApplicationStartIssue() is { } appIssue) return appIssue;
                 if (AddedTimeIsActive(conflict.ProfileId))
                     return Result(false, "PortConflictProtected",
                         $"{conflict.ProfileName} is being kept alive with time added by " +
                         (friendAddedMinutes.GetValueOrDefault(conflict.ProfileId) > 0 ? "a Friend." : "the Host."),
                         initial.PortConflicts);
                 var operation = await StopUnderGateAsync(conflict.ProfileId, run =>
+                    ApplicationStartAllowed?.Invoke() != false &&
                     startAllowed?.Invoke() != false &&
                     !AddedTimeIsActive(conflict.ProfileId) &&
                     settings.Profiles.SingleOrDefault(profile => profile.Id == conflict.ProfileId)?.Maintenance?.Enabled != true &&
@@ -1101,9 +1103,12 @@ public sealed partial class HostManager
                         PlayerCountTrusted: true
                     });
                 if (!operation.Ok)
+                {
+                    if (ApplicationStartIssue() is { } stoppedAppIssue) return stoppedAppIssue;
                     return Result(false, operation.Code,
                         $"{conflict.ProfileName} was not stopped, so the requested server was not started. {operation.Message}",
                         initial.PortConflicts);
+                }
                 stoppedNames.Add(conflict.ProfileName);
             }
 
@@ -1143,6 +1148,7 @@ public sealed partial class HostManager
         Func<bool>? startAllowed, StartAttemptDiagnostics.Scope attempt)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (ApplicationStartIssue() is { } appIssue) return appIssue;
         if (startAllowed?.Invoke() == false)
             return Result(false, "RemoteStartAuthorizationChanged", "Start permission or server assignment changed before launch. The server was not started.");
         if (data.Recovery.LifecycleBlocked)
@@ -1264,6 +1270,7 @@ public sealed partial class HostManager
             return Result(false, "LaunchFailed", "Server launch preparation failed: " + SupportReportRedactor.Redact(error.Message));
         }
         cancellationToken.ThrowIfCancellationRequested();
+        if (ApplicationStartIssue() is { } preparedAppIssue) return preparedAppIssue;
         if (startAllowed?.Invoke() == false)
             return Result(false, "RemoteStartAuthorizationChanged", "Start permission or server assignment changed during preparation. The server was not started.");
         runs.Add(run);
@@ -1273,6 +1280,12 @@ public sealed partial class HostManager
             BeforeManagedLaunchForChecks?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             requireOriginalSource?.Invoke();
+            if (ApplicationStartIssue() is { } launchAppIssue)
+            {
+                runs.Remove(run);
+                SaveRunsState();
+                return launchAppIssue;
+            }
             if (startAllowed?.Invoke() == false)
             {
                 runs.Remove(run);
@@ -1327,6 +1340,7 @@ public sealed partial class HostManager
         await gate.WaitAsync();
         try
         {
+            if (ApplicationStartIssue() is { } appIssue) return appIssue;
             if (startAllowed?.Invoke() == false)
                 return Result(false, "RemoteStartAuthorizationChanged", "Restart permission or server assignment changed. The server was not stopped or started.");
             if (data.Recovery.LifecycleBlocked)
@@ -1340,7 +1354,7 @@ public sealed partial class HostManager
                     stopped.PortConflicts);
             var started = StartUnderGate(profileId, false, startAllowed: startAllowed);
             if (!started.Ok)
-                return Result(false, "RestartStartFailed",
+                return Result(false, started.Code == "HostShuttingDown" ? started.Code : "RestartStartFailed",
                     $"{profile.Name} stopped successfully, but it could not start again. {started.Message}",
                     started.PortConflicts);
             return Result(true, "ServerRestarted",
@@ -1772,6 +1786,7 @@ public sealed partial class HostManager
         await gate.WaitAsync();
         try
         {
+            if (ApplicationStartIssue() is { } appIssue) return appIssue;
             if (data.Recovery.LifecycleBlocked)
                 return Result(false, "DataRecoveryRequired",
                     "Review and acknowledge the recovered local data before safely restarting a server.");
@@ -1800,7 +1815,7 @@ public sealed partial class HostManager
             }
             var started = StartUnderGate(profileId, false);
             if (!started.Ok)
-                return Result(false, "SafeRestartStartFailed",
+                return Result(false, started.Code == "HostShuttingDown" ? started.Code : "SafeRestartStartFailed",
                     $"{profile.Name} stopped and its backup finished, but it could not start again. {started.Message}",
                     started.PortConflicts);
             Activity("Backup", "SafeRestartCompleted",

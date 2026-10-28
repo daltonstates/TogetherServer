@@ -35,6 +35,38 @@ internal static class FriendLocalHostingRoutes
             throw new InvalidDataException("Use the fixed backup sharing action.");
     }
 
+    internal static async Task<IResult> StartPreparedAsync(HttpContext context, Guid profileId,
+        FriendLocalHostingService service, FriendService friend, SemaphoreSlim modeGate,
+        Func<bool> friendMode, Func<bool> unavailable)
+    {
+        if (!Fixed(context)) return Results.StatusCode(403);
+        FriendService.LocalHostingConnection? connection = null;
+        LocalHostingStartRequest? input = null;
+        try
+        {
+            return await OwnerStartLocalRoutes.StartAsync(modeGate, context.RequestAborted,
+                () => !friendMode()
+                    ? Results.Conflict(new LocalHostingActionResult(false, "HostMode", "Open Join to host this shared server."))
+                    : unavailable()
+                        ? Results.Conflict(new LocalHostingActionResult(false, "AppBusy", "Wait for the current app operation."))
+                        : null,
+                () => friendMode() && !unavailable() && connection is not null && friend.CurrentLocalHostingConnection(connection),
+                permit => service.StartPreparedAsync(connection!, profileId, input!, context.RequestAborted, permit),
+                async () =>
+                {
+                    var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                        context.Request.ContentLength, 1024, context.RequestAborted);
+                    input = FriendLocalHostingService.ParseHostingStart(bytes ?? []);
+                    connection = friend.RetainLocalHostingConnection();
+                    return connection is null ? Results.Json(service.UnpairedStart(profileId)) : null;
+                });
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
+            System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
+        { return Results.BadRequest(new LocalHostingActionResult(false, "LocalHostingRequestRejected", "Repeat the automatic checks for the exact local save before starting.")); }
+        finally { connection?.Dispose(); }
+    }
+
     internal static void Map(WebApplication app, LocalData data, FriendService friend,
         HostManager manager, CompanionServer companion, ExternalPortProbe externalProbe,
         SemaphoreSlim modeGate, Func<bool> friendMode, Func<bool> unavailable, WorldPeerService? peers = null)
@@ -115,23 +147,8 @@ internal static class FriendLocalHostingRoutes
             var preparation = service.PrepareInBackgroundAsync(profileId, request, app.Lifetime.ApplicationStopping);
             return Results.Json(FriendLocalHostingService.WithRemedy(await preparation.WaitAsync(context.RequestAborted)));
         });
-        app.MapPost(route + "/start", async (HttpContext context, Guid profileId) =>
-        {
-            if (!Fixed(context)) return Results.StatusCode(403);
-            await modeGate.WaitAsync(context.RequestAborted);
-            try
-            {
-                if (!friendMode()) return Results.Conflict(new LocalHostingActionResult(false, "HostMode", "Open Join to host this shared server."));
-                if (unavailable()) return Results.Conflict(new LocalHostingActionResult(false, "AppBusy", "Wait for the current app operation."));
-                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body, context.Request.ContentLength, 1024, context.RequestAborted);
-                var input = FriendLocalHostingService.ParseHostingStart(bytes ?? []);
-                return Results.Json(await service.StartPreparedAsync(profileId, input, context.RequestAborted));
-            }
-            catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
-                System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
-            { return Results.BadRequest(new LocalHostingActionResult(false, "LocalHostingRequestRejected", "Repeat the automatic checks for the exact local save before starting.")); }
-            finally { modeGate.Release(); }
-        });
+        app.MapPost(route + "/start", (HttpContext context, Guid profileId) =>
+            StartPreparedAsync(context, profileId, service, friend, modeGate, friendMode, unavailable));
         app.MapPost(route + "/share-stopped-progress", async (HttpContext context, Guid profileId) =>
         {
             if (!Fixed(context)) return Results.StatusCode(403);
@@ -214,32 +231,40 @@ internal static class FriendLocalHostingRoutes
             async (HttpContext context, Guid localProfileId) =>
         {
             if (!Fixed(context)) return Results.StatusCode(403);
-            await modeGate.WaitAsync(context.RequestAborted);
+            HostStartInput? request = null;
             try
             {
-                if (friendMode()) return Results.Conflict(new { ok = false, code = "FriendMode", message = "Open Host to start this local server." });
-                if (unavailable()) return Results.Conflict(new { ok = false, code = "AppBusy", message = "Wait for the current app operation." });
-                var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
-                    context.Request.ContentLength, 512, context.RequestAborted);
-                var request = ParseStart(bytes ?? []);
-                if (!request.AcceptSplitWarning) return Results.Json(new
-                {
-                    ok = false,
-                    code = "SplitWarningRequired",
-                    message = "Confirm that another Host may still be running and both histories remain separate."
-                });
-                var current = await manager.CompanionSnapshotAsync();
-                if (!current.Settings.Profiles.Any(profile => profile.Id == localProfileId &&
-                    profile.SeparateCopyBranchHash == request.BranchHash))
-                    return Results.Json(new { ok = false, code = "SeparateCopyMissing", message = "Check this server's latest save before starting." });
-                return Results.Json(peers is null ?
-                    await manager.StartSeparateCopyAsync(localProfileId, request.BranchHash, context.RequestAborted) :
-                    await new SimpleOwnerHostingService(data, manager, peers, companion.SyncAsync)
-                        .StartAsync(localProfileId, context.RequestAborted));
+                return await OwnerStartLocalRoutes.StartAsync(modeGate, context.RequestAborted,
+                    () => friendMode()
+                        ? Results.Conflict(new { ok = false, code = "FriendMode", message = "Open Host to start this local server." })
+                        : unavailable()
+                            ? Results.Conflict(new { ok = false, code = "AppBusy", message = "Wait for the current app operation." })
+                            : null,
+                    () => !friendMode() && !unavailable(),
+                    permit => peers is null
+                        ? manager.StartSeparateCopyAsync(localProfileId, request!.BranchHash, context.RequestAborted, permit)
+                        : new SimpleOwnerHostingService(data, manager, peers, companion.SyncAsync)
+                            .StartAsync(localProfileId, context.RequestAborted, permit),
+                    async () =>
+                    {
+                        var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
+                            context.Request.ContentLength, 512, context.RequestAborted);
+                        request = ParseStart(bytes ?? []);
+                        if (!request.AcceptSplitWarning) return Results.Json(new
+                        {
+                            ok = false,
+                            code = "SplitWarningRequired",
+                            message = "Confirm that another Host may still be running and both histories remain separate."
+                        });
+                        var current = await manager.CompanionSnapshotAsync();
+                        if (!current.Settings.Profiles.Any(profile => profile.Id == localProfileId &&
+                            profile.SeparateCopyBranchHash == request.BranchHash))
+                            return Results.Json(new { ok = false, code = "SeparateCopyMissing", message = "Check this server's latest save before starting." });
+                        return null;
+                    });
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or ArgumentException)
             { return Results.BadRequest(new { ok = false, code = "LocalHostingRequestRejected", message = "Use the fixed local Start action." }); }
-            finally { modeGate.Release(); }
         });
     }
 }

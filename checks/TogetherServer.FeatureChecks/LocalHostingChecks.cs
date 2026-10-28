@@ -741,6 +741,7 @@ internal static partial class LocalHostingChecks
     {
         internal int ProcessAttempts { get; private set; }
         internal Action? BeforeProcessAttempt { get; set; }
+        internal Action? DuringPrepareForChecks { get; set; }
         public string Kind => GameKinds.Fixture;
         public string DisplayName => "Source-only preparation";
         public bool ShowPortDiagnostics => false;
@@ -757,7 +758,11 @@ internal static partial class LocalHostingChecks
             BeforeProcessAttempt?.Invoke();
             return new("No process operation is permitted.");
         }
-        public void PrepareStart(ServerProfile profile, ManagedRun run) => throw NoProcess();
+        public void PrepareStart(ServerProfile profile, ManagedRun run)
+        {
+            if (DuringPrepareForChecks is { } prepare) { prepare(); return; }
+            throw NoProcess();
+        }
         public GameLaunchResult Start(ServerProfile profile, ManagedRun run) => throw NoProcess();
         public GameHealthResult Health(ManagedRun run) => throw NoProcess();
         public Task<GameStopResult> StopAsync(Process process, ManagedRun run) => throw NoProcess();

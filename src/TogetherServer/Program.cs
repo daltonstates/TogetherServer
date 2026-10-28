@@ -181,9 +181,10 @@ using var minecraftClient = localLab is null ? new HttpClient { Timeout = TimeSp
 var minecraftInstaller = new MinecraftInstaller(minecraftClient, data, instance.IsStaging);
 using var modeGate = new SemaphoreSlim(1, 1);
 var updatePending = false;
-var shutdownPending = false;
+var shutdown = new AppShutdownIntent(SharedWorldMutationGate.For(root));
+manager.ApplicationStartAllowed = () => !shutdown.IsPending;
 var companionServer = new CompanionServer(data, manager, pairing, games, serverLogs, modeGate, port,
-    () => updatePending, () => shutdownPending, friend.ProbeRecoveryHostLossAsync,
+    () => updatePending, () => shutdown.IsPending, friend.ProbeRecoveryHostLossAsync,
     friend.CurrentRecoveryHostLoss, serverChat: serverChat, loopbackOnly: localLab is not null,
     labAllowsBind: localLab is null ? null : localLab.AllowsBind,
     labAllowsEndpoint: localLab is null ? null : localLab.IsAllowedEndpoint);
@@ -195,7 +196,7 @@ var simpleOwnerHosting = new SimpleOwnerHostingService(data, manager, worldPeers
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
-app.Lifetime.ApplicationStopping.Register(() => shutdownPending = true);
+app.Lifetime.ApplicationStopping.Register(shutdown.MarkStopping);
 companionServer.PrepareRemoteStart = async (profileId, cancellationToken, allowed, progress) =>
 {
     // Stop explicit preparation with the application before background loops
@@ -246,27 +247,27 @@ static bool HasSensitiveLocalGetHeader(HttpContext context) =>
 ServerDirectoryRoutes.Map(app, manager, friend);
 BackgroundJobRoutes.Map(app, data);
 WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
-    () => friendMode, () => updatePending || shutdownPending);
+    () => friendMode, () => updatePending || shutdown.IsPending);
 FriendLocalHostingRoutes.Map(app, data, friend, manager, companionServer, externalPortProbe, modeGate,
-    () => friendMode, () => updatePending || shutdownPending, peers: worldPeers);
+    () => friendMode, () => updatePending || shutdown.IsPending, peers: worldPeers);
 ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
-    () => !friendMode && !updatePending && !shutdownPending);
+    () => !friendMode && !updatePending && !shutdown.IsPending);
 UserProfileLocalRoutes.Map(app, data.UserProfile, modeGate,
-    () => !updatePending && !shutdownPending);
+    () => !updatePending && !shutdown.IsPending);
 ApprovedGamePortsLocalRoutes.Map(app, data.ApprovedGamePorts, modeGate,
-    () => !updatePending && !shutdownPending);
+    () => !updatePending && !shutdown.IsPending);
 RequiredFeatureSetupLocalRoutes.Map(app, new RequiredFeatureSetupService(data), modeGate,
-    () => !updatePending && !shutdownPending);
+    () => !updatePending && !shutdown.IsPending);
 GettingStartedLocalRoutes.Map(app, new GettingStartedService(data), modeGate,
-    () => !updatePending && !shutdownPending);
+    () => !updatePending && !shutdown.IsPending);
 GamePasswordLocalRoutes.Map(app, friend, modeGate,
-    () => friendMode && !updatePending && !shutdownPending);
+    () => friendMode && !updatePending && !shutdown.IsPending);
 // As with the existing save action, HostManager owns capture serialization.
 // Do not hold modeGate through a long adapter wait: safe Stop and exact-request
 // cancellation must remain able to enter their existing lifecycle paths.
 LiveSaveAcceptanceRoutes.Map(app, manager,
     context => !friendMode && HasSensitiveLocalGetHeader(context),
-    context => !friendMode && !updatePending && !shutdownPending && HasSensitiveLocalGetHeader(context) &&
+    context => !friendMode && !updatePending && !shutdown.IsPending && HasSensitiveLocalGetHeader(context) &&
         string.Equals(context.Request.Headers.Origin, $"http://127.0.0.1:{port}", StringComparison.OrdinalIgnoreCase));
 
 static IResult? FixedOwnerGetRejection(HttpContext context)
@@ -492,19 +493,22 @@ app.MapPost("/api/local/update/install", (Func<HttpContext, Task<IResult>>)(asyn
     try
     {
         if (updatePending) return UpdatePreparationBlocked("AlreadyUpdating", "The app is already restarting.");
-        if (shutdownPending) return UpdatePreparationBlocked("ShutdownPending", "TogetherServer is closing.");
-        if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+        if (shutdown.IsPending) return UpdatePreparationBlocked("ShutdownPending", "TogetherServer is closing.");
+        if (await manager.HasManagedRunsAsync())
             return UpdatePreparationBlocked("ManagedRunPresent", "Stop or resolve every hosted server before installing the update.");
     }
     finally { modeGate.Release(); }
     var prepared = await updater.PrepareAsync();
     if (!prepared.Ok) return Results.Json(prepared);
+    // Installing an update closes this app. Fence new launches before the
+    // final admission wait, and release this intent if installation refuses.
+    using var installIntent = shutdown.BeginQuit();
     await modeGate.WaitAsync();
     try
     {
         if (updatePending) return UpdatePreparationBlocked("AlreadyUpdating", "The app is already restarting.");
-        if (shutdownPending) return UpdatePreparationBlocked("ShutdownPending", "TogetherServer is closing.");
-        if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+        if (shutdown.IsStopping) return UpdatePreparationBlocked("ShutdownPending", "TogetherServer is closing.");
+        if (await manager.HasManagedRunsAsync())
             return UpdatePreparationBlocked("ManagedRunPresent", "Stop or resolve every hosted server before installing the update.");
         var targetVersion = updater.PreparedVersion;
         if (targetVersion is null)
@@ -523,6 +527,7 @@ app.MapPost("/api/local/update/install", (Func<HttpContext, Task<IResult>>)(asyn
             updater.ReportPreparation("Restarting", "TogetherServer is closing to install the verified update.");
             updatePending = true;
             context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
+            installIntent.Accept();
         }
         return Results.Json(started);
     }
@@ -531,13 +536,20 @@ app.MapPost("/api/local/update/install", (Func<HttpContext, Task<IResult>>)(asyn
 app.MapPost("/api/local/show", async () => desktop is not null && await desktop.ShowAsync()
     ? Results.Json(new { ok = true, code = "WindowShown" })
     : Results.Conflict(new { ok = false, code = "WindowUnavailable" }));
+IResult? OwnerStartRejection()
+{
+    if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
+    if (shutdown.IsPending) return Results.Conflict(new { code = "HostShuttingDown", message = "TogetherServer is closing or checking a Quit request." });
+    if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+    return null;
+}
+bool OwnerStartAllowed() => !friendMode && !updatePending && !shutdown.IsPending;
 async Task<IResult> HostOnly<T>(Func<Task<T>> action)
 {
     await modeGate.WaitAsync();
     try
     {
-        if (updatePending) return Results.Conflict(new { code = "UpdatePending", message = "TogetherServer is restarting for an update." });
-        if (friendMode) return Results.Conflict(new { code = "FriendMode", message = "Switch to Host mode first." });
+        if (OwnerStartRejection() is { } rejection) return rejection;
         return Results.Json(await action());
     }
     finally { modeGate.Release(); }
@@ -935,9 +947,11 @@ app.MapGet("/api/local/game-types", () => Results.Json(games.All.Select(game => 
     game.DisplayName
 })));
 app.MapPost("/api/local/profiles/{id:guid}/start", (Guid id, HttpContext context) =>
-    HostOnly(() => simpleOwnerHosting.StartAsync(id, context.RequestAborted)));
+    OwnerStartLocalRoutes.StartAsync(modeGate, context.RequestAborted, OwnerStartRejection, OwnerStartAllowed,
+        permit => simpleOwnerHosting.StartAsync(id, context.RequestAborted, permit)));
 app.MapPost("/api/local/profiles/{id:guid}/stop", (Guid id) => HostOnly(() => manager.StopAsync(id)));
-app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) => HostOnly(() => manager.RestartAsync(id)));
+app.MapPost("/api/local/profiles/{id:guid}/restart", (Guid id) =>
+    HostOnly(() => manager.RestartAsync(id, startAllowed: () => !shutdown.IsPending)));
 app.MapPost("/api/local/profiles/{id:guid}/safe-restart", (Guid id) =>
     HostOnly(() => manager.SafeRestartAsync(id)));
 app.MapPost("/api/local/profiles/{id:guid}/prepare-change", (Guid id) =>
@@ -1310,24 +1324,26 @@ app.MapPost("/api/local/world-load/{id:guid}/cleanup", async (Guid id, WorldLoad
     Results.Json(await manager.WorldLoadRehearsalAsync(id, "cleanup", confirmStopped: request.ConfirmStopped)));
 app.MapPost("/api/local/profiles/{id:guid}/backups/{backupId:guid}/restore", (Guid id, Guid backupId) =>
     HostOnly(() => manager.RestoreBackupAsync(id, backupId)));
-app.MapPost("/api/local/profiles/{id:guid}/resume-hosting", (Guid id) => HostOnly(async () =>
+app.MapPost("/api/local/profiles/{id:guid}/resume-hosting", (Guid id, HttpContext context) =>
+    OwnerStartLocalRoutes.StartAsync(modeGate, context.RequestAborted, OwnerStartRejection, OwnerStartAllowed,
+        permit => simpleOwnerHosting.StartAsync(id, context.RequestAborted, permit), async () =>
 {
     var snapshot = await manager.SnapshotAsync();
     if (!startupRecovery.CanResume(id))
-        return new ActionResult(false, "ResumeUnavailable",
-            "This server was not recorded as active in the interrupted app session.", snapshot);
+        return Results.Json(new ActionResult(false, "ResumeUnavailable",
+            "This server was not recorded as active in the interrupted app session.", snapshot));
     var run = snapshot.Runs.SingleOrDefault(item => item.ProfileId == id);
     if (run?.State == "Failed")
     {
         var archived = await manager.ForgetAsync(id);
-        if (!archived.Ok) return archived;
+        if (!archived.Ok) return Results.Json(archived);
     }
     else if (run is not null && run.State != "Offline")
-        return new ActionResult(false, "ResumeBlocked",
+        return Results.Json(new ActionResult(false, "ResumeBlocked",
             run.State is "Ready" or "Starting" or "Process running"
                 ? "TogetherServer already reattached to the exact managed process; another copy was not started."
-                : "The prior process identity needs local review before hosting can resume.", snapshot);
-    return await simpleOwnerHosting.StartAsync(id, CancellationToken.None);
+                : "The prior process identity needs local review before hosting can resume.", snapshot));
+    return null;
 }));
 app.MapPost("/api/local/profiles/{id:guid}/password", (Guid id, ValheimPasswordRequest request) =>
     HostOnly(() => manager.SetValheimPasswordAsync(id, request.Password)));
@@ -1442,7 +1458,7 @@ async Task<IResult> BrowseSharedServerFile(HttpContext context)
     var hostScope = !friendMode;
     return await FeatureRole(context, hostScope, async () =>
     {
-        if (shutdownPending)
+        if (shutdown.IsPending)
             return Results.Conflict(new SharedServerBrowseResult(false, "ShutdownPending", "TogetherServer is closing."));
         var bytes = await FeatureBody(context, QolLocalEndpointInputs.MaximumSharedBrowseBytes);
         if (bytes is null || !QolLocalEndpointInputs.TrySharedServerBrowse(bytes, out var request))
@@ -1461,7 +1477,7 @@ async Task<IResult> BrowseSharedServerFile(HttpContext context)
             context.RequestAborted.ThrowIfCancellationRequested();
             var selected = await desktop.PickFileAsync(picker.Title, picker.Filter);
             context.RequestAborted.ThrowIfCancellationRequested();
-            if (shutdownPending || !await SharedServerScopeMatches(request, hostScope, connectionId, context.RequestAborted))
+            if (shutdown.IsPending || !await SharedServerScopeMatches(request, hostScope, connectionId, context.RequestAborted))
                 return Results.Conflict(new SharedServerBrowseResult(false, "ServerSelectionScopeChanged",
                     "The selected server changed. Open it and browse again."));
             if (selected is null)
@@ -1524,7 +1540,7 @@ IResult ImportConfirmationFailure(string code, string message) => Results.Json(n
 Task<IResult> PrepareOwnerImport(HttpContext context, string kind, string title, string filter) =>
     FeatureRole(context, true, async () =>
     {
-        if (shutdownPending)
+        if (shutdown.IsPending)
             return Results.Conflict(new SetupImportPreviewResult(false, "ShutdownPending", "TogetherServer is closing."));
         // Refuse before opening a picker or inspecting an original save.
         if (instance.FreshWorldsOnly)
@@ -1552,7 +1568,7 @@ Task<IResult> PrepareOwnerImport(HttpContext context, string kind, string title,
     });
 Task<IResult> LegacyImportReviewRequired(HttpContext context) => FeatureRole(context, true, async () =>
 {
-    if (shutdownPending) return ImportConfirmationFailure("ShutdownPending", "TogetherServer is closing.");
+    if (shutdown.IsPending) return ImportConfirmationFailure("ShutdownPending", "TogetherServer is closing.");
     if (instance.FreshWorldsOnly)
         return ImportConfirmationFailure("StagingFreshWorldRequired", "Development cannot import an existing world. Use separate fresh development storage.");
     var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumPrepareRequestBytes);
@@ -1575,7 +1591,7 @@ app.MapPost("/api/local/factorio/import-save", (Func<HttpContext, Task<IResult>>
 app.MapPost("/api/local/setup/import-confirm", (Func<HttpContext, Task<IResult>>)(context =>
     FeatureRole(context, true, async () =>
     {
-        if (shutdownPending) return ImportConfirmationFailure("ShutdownPending", "TogetherServer is closing.");
+        if (shutdown.IsPending) return ImportConfirmationFailure("ShutdownPending", "TogetherServer is closing.");
         if (instance.FreshWorldsOnly)
             return ImportConfirmationFailure("StagingFreshWorldRequired", "Development cannot import an existing world. Use separate fresh development storage.");
         var bytes = await FeatureBody(context, SetupImportRequestParser.MaximumRequestBytes);
@@ -1731,20 +1747,23 @@ app.MapPost("/api/local/mode/{mode}", async (string mode) =>
 });
 app.MapPost("/api/local/quit", (Func<HttpContext, Task<IResult>>)(async context =>
 {
+    // Raise intent before waiting behind a long Stop. A Start already queued
+    // ahead of Quit must see this fence when it reaches its launch checks.
+    using var quitIntent = shutdown.BeginQuit();
     await modeGate.WaitAsync();
     try
     {
-        if (shutdownPending)
+        if (shutdown.IsStopping)
             return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
-        if ((await manager.SnapshotAsync()).Runs.Any(run => run.State != "Offline"))
+        if (await manager.HasManagedRunsAsync())
             return Results.Json(new
             {
                 ok = false,
                 code = "ManagedRunPresent",
                 message = "Stop or resolve every managed server before quitting TogetherServer."
             });
-        shutdownPending = true;
         context.Response.OnCompleted(() => { app.Lifetime.StopApplication(); return Task.CompletedTask; });
+        quitIntent.Accept();
         return Results.Json(new { ok = true, code = "Closing", message = "TogetherServer is closing." });
     }
     finally { modeGate.Release(); }
@@ -2235,7 +2254,7 @@ app.MapPost("/api/local/friend/{id:guid}/chat/messages", async (Guid id, ChatPos
 app.MapPost("/api/local/friend/{id:guid}/probe-game", (HttpContext context, Guid id) =>
     FeatureRole(context, false, async () =>
     {
-        if (shutdownPending)
+        if (shutdown.IsPending)
             return Results.Conflict(new GameEndpointProbeResult(false, "ShutdownPending", "TogetherServer is closing.", DateTimeOffset.UtcNow));
         var bytes = await FeatureBody(context, QolLocalEndpointInputs.MaximumGameProbeBytes);
         if (bytes is null || !QolLocalEndpointInputs.TryGameProbe(bytes, out var request))

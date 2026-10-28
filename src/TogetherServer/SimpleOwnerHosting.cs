@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
 namespace TogetherServer;
@@ -8,16 +9,71 @@ namespace TogetherServer;
 internal sealed class SimpleOwnerHostingService(LocalData data, HostManager manager,
     WorldPeerService peers, Func<Task> synchronizeListener)
 {
+    private static readonly ConditionalWeakTable<HostManager, StartRequests> Requests = new();
+
+    // Service instances can be created by more than one local route. Claim the
+    // requested profile on the shared manager before jobs or discovery begin.
+    // This is an explicit-request refusal, not a queue or retained Start intent.
+    private sealed class StartRequests
+    {
+        private readonly object sync = new();
+        private readonly Dictionary<Guid, Request> active = [];
+
+        internal Request? Begin(Guid profileId, out Guid? existingJob)
+        {
+            lock (sync)
+            {
+                if (active.TryGetValue(profileId, out var existing))
+                {
+                    existingJob = existing.JobId;
+                    return null;
+                }
+                existingJob = null;
+                var request = new Request(this, profileId);
+                active.Add(profileId, request);
+                return request;
+            }
+        }
+
+        internal sealed class Request(StartRequests owner, Guid profileId) : IDisposable
+        {
+            internal Guid? JobId;
+            private int disposed;
+
+            internal void LinkJob(Guid jobId)
+            {
+                lock (owner.sync) JobId = jobId;
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+                lock (owner.sync)
+                    if (owner.active.GetValueOrDefault(profileId) == this) owner.active.Remove(profileId);
+            }
+        }
+    }
+
     // This scope is owned by the explicit instruction, independently of the
     // requesting page. Nothing retained here is an instruction to launch after
     // restart, retry or a later periodic synchronization.
     internal async Task<ActionResult> StartAsync(Guid profileId, CancellationToken cancellationToken,
         Func<bool>? startAllowed = null, Action<WorldPeerSourceProgress>? progress = null)
     {
+        using var request = Requests.GetValue(manager, _ => new()).Begin(profileId, out var existingJob);
+        if (request is null)
+        {
+            const string message = "A Start request is already checking or preparing this server. Follow its current Background job or result before trying again.";
+            // A nested caller must not mark the original attempt as failed.
+            StartAttemptDiagnostics.RecordFailure(data, profileId, "Start", "Preparing", "LocalHostingBusy", message,
+                "BlockedStart", Guid.NewGuid(), existingJob);
+            return new(false, "LocalHostingBusy", message, await manager.SnapshotAsync());
+        }
         using var attempt = StartAttemptDiagnostics.Begin(data, profileId);
         var profile = data.LoadSettings().Profiles.SingleOrDefault(item => item.Id == profileId);
         using var job = BackgroundJobs.For(data).Begin("hosting:" + profileId, profileId,
             profile?.Name ?? "Shared server", profile?.WorldId ?? "Shared world", "Prepare Start");
+        request.LinkJob(job.Id);
         attempt.LinkJob(job.Id);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromMinutes(10));
@@ -55,6 +111,8 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             () => startAllowed() && manager.RemoteMaintenanceBlocker(actualProfileId) is null;
         try
         {
+            if (manager.ApplicationStartAllowed?.Invoke() == false)
+                return await Refused("HostShuttingDown", "TogetherServer is closing or checking a Quit request. The server was not started.");
             if (startAllowed?.Invoke() == false)
                 return await Refused("RemoteStartAuthorizationChanged", "The Start request is no longer authorized. Check current access before trying again.");
             var snapshot = await manager.CompanionSnapshotAsync();

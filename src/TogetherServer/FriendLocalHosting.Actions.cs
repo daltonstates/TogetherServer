@@ -76,19 +76,32 @@ internal sealed partial class FriendLocalHostingService
     // Only the local POST calls this method. It carries no durable start intent:
     // a late status response, app restart or background poll cannot retry Start.
     internal async Task<LocalHostingActionResult> StartPreparedAsync(Guid profileId, LocalHostingStartRequest input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Func<bool>? startAllowed = null)
+    {
+        using var connection = friend.RetainLocalHostingConnection();
+        if (connection is null)
+            return UnpairedStart(profileId);
+        return await StartPreparedAsync(connection, profileId, input, cancellationToken, startAllowed);
+    }
+
+    internal LocalHostingActionResult UnpairedStart(Guid profileId)
     {
         using var attempt = StartAttemptDiagnostics.Begin(data, profileId, "HostLocally");
         attempt.ReportPhase("StartValidation");
-        using var connection = friend.RetainLocalHostingConnection();
-        if (connection is null)
-        {
-            attempt.Fail("NotPaired", "Choose the saved Host connection first.", "BlockedStart");
-            return new(false, "NotPaired", "Choose the saved Host connection first.");
-        }
+        attempt.Fail("NotPaired", "Choose the saved Host connection first.", "BlockedStart");
+        return new(false, "NotPaired", "Choose the saved Host connection first.");
+    }
+
+    // The route retains its selected connection while still under modeGate.
+    // Do not reacquire a selection after asynchronous request validation.
+    internal async Task<LocalHostingActionResult> StartPreparedAsync(FriendService.LocalHostingConnection connection,
+        Guid profileId, LocalHostingStartRequest input, CancellationToken cancellationToken, Func<bool>? startAllowed = null)
+    {
+        using var attempt = StartAttemptDiagnostics.Begin(data, profileId, "HostLocally");
+        attempt.ReportPhase("StartValidation");
         using var job = BeginHostingJob(connection, profileId, "Host locally", attempt);
         using var progress = HostingProgressFor(connection.Link, profileId).Begin(connection.Link, profileId, job, attempt.ReportPhase);
-        var result = await StartPreparedForConnectionAsync(connection, profileId, input, progress, cancellationToken);
+        var result = await StartPreparedForConnectionAsync(connection, profileId, input, progress, cancellationToken, startAllowed);
         progress.Complete(result.Ok, result.Message);
         attempt.Complete(result.Ok, result.Code, result.Message,
             result.Code == "LaunchFailed" ? "LaunchFailed" : "BlockedStart");
@@ -99,10 +112,17 @@ internal sealed partial class FriendLocalHostingService
 
     private async Task<LocalHostingActionResult> StartPreparedForConnectionAsync(FriendService.LocalHostingConnection connection,
         Guid profileId, LocalHostingStartRequest input, LocalHostingProgressStore.Operation progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Func<bool>? startAllowed)
     {
         LocalHostingActionResult Refused(string code, string message) => new(false, code, message);
         static LocalHostingActionResult Basic(ActionResult result) => new(result.Ok, result.Code, result.Message);
+        bool StartStillAllowed() => friend.CurrentLocalHostingConnection(connection) && startAllowed?.Invoke() != false &&
+            !SharedSaveTransferProgress.BlocksHosting(connection.Link.SharedWorldStatus(profileId));
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!friend.CurrentLocalHostingConnection(connection))
+            return Refused("ConnectionChanged", "The selected Host changed. Review this server again.");
+        if (startAllowed?.Invoke() == false)
+            return Refused("LocalHostingAuthorizationChanged", "Local hosting is no longer available for this request. Review the current app mode and server before trying again.");
         // The prepared source resolver exchanges bounded signed peer metadata.
         // A separate original-Host enrollment is not a Start prerequisite.
         var access = await connection.Link.LocalHostingAccessAsync(profileId, false, cancellationToken);
@@ -209,6 +229,10 @@ internal sealed partial class FriendLocalHostingService
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
+            if (!friend.CurrentLocalHostingConnection(connection))
+                return Refused("ConnectionChanged", "The selected Host changed. Start was canceled; review this server again.");
+            if (startAllowed?.Invoke() == false)
+                return Refused("LocalHostingAuthorizationChanged", "Local hosting is no longer available for this request. Review the current app mode and server before trying again.");
             if (SharedSaveTransferProgress.BlocksHosting(connection.Link.SharedWorldStatus(profileId)))
                 return Refused("SharedSaveTransferInProgress", "A save transfer began during the hosting checks. Wait for it to finish before hosting.");
             progress.Report("Starting", "Starting the checked game server on this PC. Waiting for the Host's result.");
@@ -219,7 +243,7 @@ internal sealed partial class FriendLocalHostingService
                     return Refused("HostingRequestChanged", "The exact final hosting move needs review before starting.");
                 // StartUnderGate repeats signed authority, final-save/setup, route,
                 // source fencing, process identity and all declared port checks.
-                var plannedStarted = await manager.StartAsync(input.LocalProfileId, cancellationToken);
+                var plannedStarted = await manager.StartAsync(input.LocalProfileId, cancellationToken, StartStillAllowed);
                 if (plannedStarted.Ok && announceHostingState is not null)
                     await announceHostingState(root, CancellationToken.None);
                 return Basic(plannedStarted);
@@ -227,7 +251,7 @@ internal sealed partial class FriendLocalHostingService
             if (!input.AcceptSplitWarning || status.BranchHash != input.BranchHash ||
                 !connection.Link.SeparateCopyBranches(profileId).Any(branch => branch.BranchHash == input.BranchHash))
                 return Refused("SplitWarningRequired", "Review the exact local save. Another Host may still be running and progress stays separate.");
-            var started = await manager.StartSeparateCopyAsync(input.LocalProfileId, input.BranchHash!, cancellationToken);
+            var started = await manager.StartSeparateCopyAsync(input.LocalProfileId, input.BranchHash!, cancellationToken, StartStillAllowed);
             if (!started.Ok && started.Code == "LatestSaveChanged" && status.BranchHash is { } refused)
                 await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refused, cancellationToken);
             if (started.Ok && announceHostingState is not null)
