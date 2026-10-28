@@ -1,4 +1,12 @@
 .shared-host-notice { display: grid; gap: .85rem; min-inline-size: 0; }
+.shared-host-compact { position: relative; display: inline-block; align-self: center; }
+.shared-host-compact > summary { display: flex; padding: .45rem; cursor: pointer; list-style: none; color: var(--color-warning, #e7ac69); }
+.shared-host-compact > summary::-webkit-details-marker { display: none; }
+.shared-host-compact > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 5px; }
+.shared-host-popover { position: absolute; inset-block-start: 100%; inset-inline-start: 0; z-index: 50; inline-size: min(31rem, 80vw); max-block-size: 65vh; overflow: auto; padding: 1rem; border: 1px solid var(--color-accent-border); border-radius: 10px; background: var(--color-surface, #202329); box-shadow: 0 12px 35px #0005; }
+.shared-host-compact-report { margin-block-end: .75rem; }
+.shared-host-compact-report p { margin: .4rem 0; }
+.shared-host-compact-report small { display: block; margin-block: .3rem; }
 .shared-host-announcement { position: absolute; inline-size: 1px; block-size: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .shared-host-group, .shared-host-unknown { min-inline-size: 0; padding: 1rem; border: 1px solid var(--color-accent-border); border-radius: 12px; background: var(--color-accent-soft); }
 .shared-host-group { display: grid; gap: .8rem; }

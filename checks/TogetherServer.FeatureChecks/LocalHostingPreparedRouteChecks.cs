@@ -145,7 +145,7 @@ internal static partial class LocalHostingChecks
             !Directory.Exists(Path.Combine(fixture.Data.RootPath, "world-peer-recovery-sources")) && probes == expectedProbes,
             "advisory-route Start changed listener policy, histories, processes, or repeated the outside checker");
         if (fault is null)
-            Require(reachedDriver && heldAtDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1,
+            Require((reachedDriver || result?.Code == "LaunchFailed") && heldAtDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1,
                 "an ordinary route warning did not reach only the refusing driver with an exact held source: " + route + ": " + result?.Code);
         else
         {

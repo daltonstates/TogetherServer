@@ -215,17 +215,19 @@ public sealed partial class HostManager
                 return new(false, "UnknownProfile", "Choose a saved Host server.", profileId, []);
 
             var boundedLimit = Math.Clamp(limit, 1, MaximumRecentSessionLimit);
+            var historyProfiles = SessionHistoryProfiles(profileId);
             var sessions = data.LoadRunArchive()
-                .Where(item => item.ProfileId == profileId && item.OperationId != Guid.Empty &&
+                .Where(item => historyProfiles.Contains(item.ProfileId) && item.OperationId != Guid.Empty &&
                     item.ArchivedUtc != default)
                 .OrderByDescending(item => item.EndedUtc ?? item.ArchivedUtc)
                 .Take(boundedLimit)
-                .Select(ToRecentServerSession)
+                .Select(item => ToRecentServerSession(item) with { ProfileId = profileId })
                 .ToList();
             return new(true, "RecentSessions", sessions.Count == 0
                 ? "No archived sessions are available for this server."
                 : $"Showing {sessions.Count} recent archived session{(sessions.Count == 1 ? "" : "s")}.",
-                profileId, sessions);
+                profileId, sessions, StartAttemptDiagnostics.Recent(data, historyProfiles, boundedLimit)
+                    .Select(item => item with { ProfileId = profileId }).ToArray());
         }
         finally { gate.Release(); }
     }
@@ -1051,21 +1053,22 @@ public sealed partial class HostManager
 
     public Task<ActionResult> StartAsync(Guid profileId) => StartAsync(profileId, CancellationToken.None);
 
-    public async Task<ActionResult> StartAsync(Guid profileId, CancellationToken cancellationToken)
+    public async Task<ActionResult> StartAsync(Guid profileId, CancellationToken cancellationToken,
+        Func<bool>? startAllowed = null)
     {
         await gate.WaitAsync(cancellationToken);
-        try { cancellationToken.ThrowIfCancellationRequested(); return StartUnderGate(profileId, false, cancellationToken: cancellationToken); }
+        try { cancellationToken.ThrowIfCancellationRequested(); return StartUnderGate(profileId, false, cancellationToken: cancellationToken, startAllowed: startAllowed); }
         finally { gate.Release(); }
     }
 
     // This is an explicit Friend action after an ordinary Start reports the
     // conflict. It never runs automatically from the first Start request.
-    public async Task<ActionResult> ReplaceEmptyPortConflictsAndStartAsync(Guid profileId)
+    public async Task<ActionResult> ReplaceEmptyPortConflictsAndStartAsync(Guid profileId, Func<bool>? startAllowed = null)
     {
         await gate.WaitAsync();
         try
         {
-            var initial = StartUnderGate(profileId, false);
+            var initial = StartUnderGate(profileId, false, startAllowed: startAllowed);
             if (initial.Code != "PortConflict" || initial.PortConflicts is not { Count: > 0 }) return initial;
             if (initial.PortConflicts.Any(conflict => !conflict.CanReplace))
                 return Result(false, "PortConflictProtected",
@@ -1086,6 +1089,7 @@ public sealed partial class HostManager
                         (friendAddedMinutes.GetValueOrDefault(conflict.ProfileId) > 0 ? "a Friend." : "the Host."),
                         initial.PortConflicts);
                 var operation = await StopUnderGateAsync(conflict.ProfileId, run =>
+                    startAllowed?.Invoke() != false &&
                     !AddedTimeIsActive(conflict.ProfileId) &&
                     settings.Profiles.SingleOrDefault(profile => profile.Id == conflict.ProfileId)?.Maintenance?.Enabled != true &&
                     games.TryGet(run.Kind, out var driver) &&
@@ -1103,7 +1107,7 @@ public sealed partial class HostManager
                 stoppedNames.Add(conflict.ProfileName);
             }
 
-            var started = StartUnderGate(profileId, false);
+            var started = StartUnderGate(profileId, false, startAllowed: startAllowed);
             return started.Ok
                 ? started with
                 {
@@ -1116,22 +1120,31 @@ public sealed partial class HostManager
     }
 
     private ActionResult StartUnderGate(Guid profileId, bool crashRecoveryAttempt,
-        string? separateBranchHash = null, bool worldLoadTrial = false, CancellationToken cancellationToken = default)
+        string? separateBranchHash = null, bool worldLoadTrial = false, CancellationToken cancellationToken = default,
+        Func<bool>? startAllowed = null)
     {
         // Pairing revocation does not take the lifecycle semaphore. Hold its
         // shared gate through the managed launch so a completed revoke cannot
         // be followed by a Start authorized with an older roster.
         lock (SharedWorldMutationGate.For(data.RootPath))
         {
+            using var attempt = StartAttemptDiagnostics.Begin(data, profileId, crashRecoveryAttempt ? "RecoveryStart" : "Start");
+            attempt.ReportPhase("LaunchGuards");
             cancellationToken.ThrowIfCancellationRequested();
-            return StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash, worldLoadTrial, cancellationToken);
+            var result = StartWithMembershipGate(profileId, crashRecoveryAttempt, separateBranchHash, worldLoadTrial, cancellationToken,
+                startAllowed, attempt);
+            attempt.Complete(result.Ok, result.Code, result.Message, result.Code == "LaunchFailed" ? "LaunchFailed" : "BlockedStart");
+            return result;
         }
     }
 
     private ActionResult StartWithMembershipGate(Guid profileId, bool crashRecoveryAttempt,
-        string? separateBranchHash, bool worldLoadTrial, CancellationToken cancellationToken)
+        string? separateBranchHash, bool worldLoadTrial, CancellationToken cancellationToken,
+        Func<bool>? startAllowed, StartAttemptDiagnostics.Scope attempt)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (startAllowed?.Invoke() == false)
+            return Result(false, "RemoteStartAuthorizationChanged", "Start permission or server assignment changed before launch. The server was not started.");
         if (data.Recovery.LifecycleBlocked)
             return Result(false, "DataRecoveryRequired",
                 "Review and acknowledge the recovered local data before starting a server.");
@@ -1141,7 +1154,7 @@ public sealed partial class HostManager
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
         if (SharedTransferStartIssue(profile) is { } transferIssue) return transferIssue;
         if (SharedHostingStartIssue(profile) is { } sharedHostingIssue)
-            return Result(false, "NewerSharedSaveAvailable", sharedHostingIssue);
+            return Result(false, sharedHostingIssue.Code, sharedHostingIssue.Message);
         if (SharedContinuationStartIssue(profile, out var requireOriginalSource, out var workingSource) is { } continuationIssue)
             return Result(false, "LatestSaveChanged", continuationIssue);
         if (profile.WorldLoadRehearsalId is not null && !worldLoadTrial)
@@ -1228,7 +1241,7 @@ public sealed partial class HostManager
         var run = new ManagedRun
         {
             ProfileId = profile.Id,
-            OperationId = Guid.NewGuid(),
+            OperationId = attempt.OperationId,
             Kind = profile.Kind,
             WorldId = profile.WorldId,
             WorldDirectory = Path.GetFullPath(profile.WorldDirectory),
@@ -1243,8 +1256,16 @@ public sealed partial class HostManager
         addedShutdownMinutes.Remove(profileId);
         friendAddedMinutes.Remove(profileId);
         observations.Remove(profileId);
-        driver.PrepareStart(profile, run);
+        attempt.ReportPhase("PreparingProcess");
+        try { driver.PrepareStart(profile, run); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            return Result(false, "LaunchFailed", "Server launch preparation failed: " + SupportReportRedactor.Redact(error.Message));
+        }
         cancellationToken.ThrowIfCancellationRequested();
+        if (startAllowed?.Invoke() == false)
+            return Result(false, "RemoteStartAuthorizationChanged", "Start permission or server assignment changed during preparation. The server was not started.");
         runs.Add(run);
         SaveRunsState(); // An interrupted launch stays Unknown, blocking a second writer.
         try
@@ -1252,6 +1273,13 @@ public sealed partial class HostManager
             BeforeManagedLaunchForChecks?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             requireOriginalSource?.Invoke();
+            if (startAllowed?.Invoke() == false)
+            {
+                runs.Remove(run);
+                SaveRunsState();
+                return Result(false, "RemoteStartAuthorizationChanged", "Start permission or server assignment changed immediately before launch. The server was not started.");
+            }
+            attempt.ReportPhase("LaunchingProcess");
             var launch = driver.Start(profile, run);
             run.ProcessId = launch.ProcessId;
             using (var started = Process.GetProcessById(run.ProcessId.Value))
@@ -1293,11 +1321,14 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    public async Task<ActionResult> RestartAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null)
+    public async Task<ActionResult> RestartAsync(Guid profileId, Func<ManagedRun, bool>? remoteStillSafe = null,
+        Func<bool>? startAllowed = null)
     {
         await gate.WaitAsync();
         try
         {
+            if (startAllowed?.Invoke() == false)
+                return Result(false, "RemoteStartAuthorizationChanged", "Restart permission or server assignment changed. The server was not stopped or started.");
             if (data.Recovery.LifecycleBlocked)
                 return Result(false, "DataRecoveryRequired",
                     "Review and acknowledge the recovered local data before restarting a server.");
@@ -1307,7 +1338,7 @@ public sealed partial class HostManager
             if (!stopped.Ok)
                 return Result(false, stopped.Code, "Restart did not stop the server. " + stopped.Message,
                     stopped.PortConflicts);
-            var started = StartUnderGate(profileId, false);
+            var started = StartUnderGate(profileId, false, startAllowed: startAllowed);
             if (!started.Ok)
                 return Result(false, "RestartStartFailed",
                     $"{profile.Name} stopped successfully, but it could not start again. {started.Message}",
@@ -2862,6 +2893,10 @@ public sealed partial class HostManager
 
     private void ArchiveDefinitivelyExitedRun(ManagedRun run, ServerSessionEndReason endReason)
     {
+        if (!run.WasReady)
+            StartAttemptDiagnostics.RecordFailure(data, run.ProfileId, "Start", "WaitingForReady",
+                "ProcessExitedBeforeReady", "The recorded game process exited before the app observed Ready. This record does not establish a game join or saved-world test.",
+                "FailedBeforeReady", operationId: run.OperationId);
         var preserveRecoveryState = false;
         var recoveryScheduled = false;
         var existing = crashRecovery.SingleOrDefault(item => item.ProfileId == run.ProfileId);

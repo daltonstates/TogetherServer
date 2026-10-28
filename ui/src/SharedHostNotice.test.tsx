@@ -62,6 +62,33 @@ afterEach(() => {
 })
 
 describe('Shared Host notice', () => {
+  it('shows only a compact historical caution next to actions and preserves details on explicit review', async () => {
+    const fetcher = vi.fn(async () => reply([stoppedGroup()]))
+    vi.stubGlobal('fetch', fetcher)
+    render(<SharedHostNotice {...props} compact />)
+    const summary = await screen.findByLabelText('Earlier Host differs from the original Host')
+    expect(summary.closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(summary)
+    expect(screen.getByRole('region', { name: 'Shared Host status details' })).toHaveTextContent('Historical stopped session report')
+    expect(screen.getByText(/This is historical information, not a current incident/)).toBeInTheDocument()
+    expect(screen.getByText(/A signed announcement does not prove live reachability/)).toBeInTheDocument()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('suppresses original owner announcements by canonical zero member identity and owner key despite matching display names', async () => {
+    const current = group()
+    current.state.peers[0].deviceId = '00000000-0000-0000-0000-000000000000'
+    current.state.peers[0].publicKey = current.state.root.ownerPublicKey
+    current.state.sessions[0].deviceId = current.state.peers[0].deviceId
+    current.state.sessions[0].publicKey = current.state.root.ownerPublicKey
+    vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
+    render(<SharedHostNotice {...props} compact />)
+    await flush()
+    expect(screen.queryByRole('region')).not.toBeInTheDocument()
+    expect(screen.queryByText('PC ending 000000')).not.toBeInTheDocument()
+    expect(document.querySelector('.shared-host-compact')).not.toBeInTheDocument()
+  })
+
   it('shows a signed hosting report and approved route without changing permissions, defaults, connections or servers', async () => {
     const fetch = vi.fn(async () => reply([group()]))
     const connected = vi.fn()

@@ -121,6 +121,13 @@ export type RecentServerSessionsResult = {
   message: string
   profileId: string
   sessions: RecentServerSession[]
+  attempts?: StartAttemptDiagnostic[]
+}
+export type StartAttemptDiagnostic = {
+  id: string; profileId: string; operationId: string; targetDeviceId: string | null
+  operation: string; phase: string; code: string; message: string; requestedUtc: string
+  completedUtc: string | null; relatedJobId: string | null
+  kind: 'BlockedStart' | 'PreparationFailed' | 'LaunchFailed' | 'FailedBeforeReady' | 'Interrupted' | 'TransferFailed'
 }
 
 export type ActivityEvent = {
@@ -1063,12 +1070,35 @@ export const parseRecentServerSessions: Decoder<RecentServerSessionsResult> = (v
       backupResult
     }
   })
+  if (source.attempts !== undefined && (!Array.isArray(source.attempts) || source.attempts.length > 20))
+    throw new ContractError(`${context}.attempts is outside its supported bounds.`)
+  const attempts = list(source.attempts ?? [], `${context}.attempts`, (value, itemContext = `${context}.attempts`) => {
+    const item = object(value, itemContext)
+    const id = (value: unknown): string => {
+      const result = boundedText(value, itemContext, 36)
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result)) throw new ContractError(`${itemContext} has an invalid identity.`)
+      return result
+    }
+    const itemProfileId = id(item.profileId)
+    const requestedUtc = nullableUtcTimestamp(item.requestedUtc, itemContext)
+    const completedUtc = nullableUtcTimestamp(item.completedUtc, itemContext)
+    if (itemProfileId !== profileId || !requestedUtc || completedUtc && Date.parse(completedUtc) < Date.parse(requestedUtc))
+      throw new ContractError(`${itemContext} has invalid attempt evidence.`)
+    return { id: id(item.id), profileId: itemProfileId, operationId: id(item.operationId),
+      targetDeviceId: item.targetDeviceId === null ? null : id(item.targetDeviceId), operation: boundedText(item.operation, itemContext, 64),
+      phase: boundedText(item.phase, itemContext, 64), code: boundedText(item.code, itemContext, 64),
+      message: boundedText(item.message, itemContext, 400), requestedUtc, completedUtc,
+      relatedJobId: item.relatedJobId === null ? null : id(item.relatedJobId),
+      kind: literal(item.kind, ['BlockedStart', 'PreparationFailed', 'LaunchFailed', 'FailedBeforeReady', 'Interrupted', 'TransferFailed'] as const, itemContext) }
+  })
+  if (new Set(attempts.map(item => item.id)).size !== attempts.length) throw new ContractError(`${context}.attempts contains duplicates.`)
   return {
     ok: flag(source.ok, `${context}.ok`),
     code: boundedText(source.code, `${context}.code`, 80),
     message: boundedText(source.message, `${context}.message`, 600),
     profileId,
-    sessions
+    sessions,
+    attempts
   }
 }
 

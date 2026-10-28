@@ -442,7 +442,23 @@ internal static class WorldPeerExistingCopyChecks
                 .Invoke(Sender, [Group(Sender), TargetRoute, new[] { descriptor }, token, null])!;
         internal string IncomingDirectory => Path.Combine(DuplicateVault, descriptor.Version.VersionHash);
         internal string IncomingStage => Path.Combine(DuplicateVault, ".partial-" + descriptor.Version.VersionHash, SharedWorldService.PayloadDirectory);
-        internal WorldPeerSaveDescriptor PrepareMatchingPublication(bool caseOnlyPath = false)
+        internal void PrepareChangedForwardedSave()
+        {
+            var branch = descriptor.Branch ?? throw new InvalidOperationException("A forwarded successor branch is required.");
+            var bytes = RandomNumberGenerator.GetBytes(SharedWorldService.ChunkBytes + 29);
+            using var hosting = ECDsa.Create();
+            hosting.ImportPkcs8PrivateKey(B.LoadProtected(WorldAuthorityStore.HostingKeyName(Root.ProfileId))!, out _);
+            var next = SharedWorldService.SignVersion(descriptor.Version with
+            {
+                Number = descriptor.Version.Number + 1,
+                ParentHash = descriptor.Version.VersionHash,
+                BackupId = Guid.NewGuid(),
+                Files = [Fact(bytes)]
+            }, hosting);
+            WriteCopy(new SharedWorldSeparateCopyStore(B).PublishedRoot(branch), next, bytes);
+            descriptor = new(next, branch);
+        }
+        internal WorldPeerSaveDescriptor PrepareMatchingPublication(bool caseOnlyPath = false, bool forceLargeChanged = false)
         {
             Require(original, "Matching publications use the generated owner fixture.");
             var prior = descriptor;
@@ -452,6 +468,7 @@ internal static class WorldPeerExistingCopyChecks
             Require(files.ContainsKey("changed.dat") && files.ContainsKey("nested/unchanged.bin"), "The matching-file capture was not prepared.");
             files["changed.dat"] = files["changed.dat"].Select(value => (byte)(value ^ 0x5a)).ToArray();
             files["added.dat"] = files["world.dat"].ToArray(); // Equal bytes at another path still require transfer.
+            if (forceLargeChanged) files["nested/unchanged.bin"] = files["nested/unchanged.bin"].Select(value => (byte)(value ^ 0xa5)).ToArray();
             if (caseOnlyPath) { files["World.dat"] = files["world.dat"]; files.Remove("world.dat"); }
             var next = SharedWorldService.SignVersion(prior.Version with
             {
@@ -609,24 +626,48 @@ internal static class WorldPeerExistingCopyChecks
         internal List<WorldPeerRequest> Requests { get; } = [];
         internal List<WorldPeerSeedResponse> SeedResponses { get; } = [];
         internal Action<WorldPeerExchangeRequest>? BeforeExchange { get; set; }
+        internal Func<byte[], HttpContent>? ChunkContent { get; set; }
+        internal bool AcceptGzipSeed { get; set; }
+        internal int CompressedRequests { get; private set; }
+        internal Action<WorldPeerExchangeRequest>? AfterExchange { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             var bytes = await request.Content!.ReadAsByteArrayAsync(token);
             if (request.RequestUri!.AbsolutePath.EndsWith("/challenge", StringComparison.Ordinal))
-                return new(HttpStatusCode.OK)
+            {
+                var reply = new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = JsonContent.Create(Service.PrepareChallenge(root.GroupKey,
                     WorldPeerProtocol.DecodeEnvelope<WorldPeerChallengeRequest>(bytes, 2 * 1024 * 1024), route.CertificateSha256), options: Json)
                 };
+                if (AcceptGzipSeed) reply.Headers.Add(SharedSaveCompression.SeedCapabilityHeader, "gzip");
+                return reply;
+            }
+            if (request.Content.Headers.ContentEncoding.Contains("gzip"))
+            {
+                CompressedRequests++;
+                var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+                context.Request.Headers.ContentEncoding = "gzip";
+                context.Request.ContentLength = bytes.Length;
+                context.Request.Body = new SlowSaveTransferChecks.SlowBody(bytes, pause: false);
+                context.RequestAborted = token;
+                bytes = await SharedSaveCompression.ReadPeerRequestAsync(context, 2 * 1024 * 1024) ??
+                    throw new InvalidDataException("The synthetic compressed seed was rejected.");
+            }
             var exchange = WorldPeerProtocol.DecodeEnvelope<WorldPeerExchangeRequest>(bytes, 2 * 1024 * 1024);
             Operations.Add(exchange.Request.Operation);
             Requests.Add(exchange.Request);
             BeforeExchange?.Invoke(exchange);
             var response = await Service.ExchangeAsync(root.GroupKey, exchange.Request, exchange.Payload, token, route.CertificateSha256);
+            AfterExchange?.Invoke(exchange);
             if (Catalog is not null && exchange.Request.Operation == WorldPeerOperations.Catalog) response = JsonSerializer.SerializeToUtf8Bytes(Catalog, Json);
             if (exchange.Request.Operation == WorldPeerOperations.Seed)
                 SeedResponses.Add(WorldPeerProtocol.DecodeEnvelope<WorldPeerSeedResponse>(response, WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Seed)));
-            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
+            return new(HttpStatusCode.OK)
+            {
+                Content = exchange.Request.Operation == WorldPeerOperations.Chunk && ChunkContent is not null
+                ? ChunkContent(response) : new ByteArrayContent(response)
+            };
         }
     }
 }

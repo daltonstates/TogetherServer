@@ -8,15 +8,63 @@ namespace TogetherServer;
 internal sealed class SimpleOwnerHostingService(LocalData data, HostManager manager,
     WorldPeerService peers, Func<Task> synchronizeListener)
 {
-    internal async Task<ActionResult> StartAsync(Guid profileId, CancellationToken cancellationToken)
+    // This scope is owned by the explicit instruction, independently of the
+    // requesting page. Nothing retained here is an instruction to launch after
+    // restart, retry or a later periodic synchronization.
+    internal async Task<ActionResult> StartAsync(Guid profileId, CancellationToken cancellationToken,
+        Func<bool>? startAllowed = null, Action<WorldPeerSourceProgress>? progress = null)
+    {
+        using var attempt = StartAttemptDiagnostics.Begin(data, profileId);
+        var profile = data.LoadSettings().Profiles.SingleOrDefault(item => item.Id == profileId);
+        using var job = BackgroundJobs.For(data).Begin("hosting:" + profileId, profileId,
+            profile?.Name ?? "Shared server", profile?.WorldId ?? "Shared world", "Prepare Start");
+        attempt.LinkJob(job.Id);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMinutes(10));
+        void Report(WorldPeerSourceProgress value)
+        {
+            deadline.Token.ThrowIfCancellationRequested();
+            attempt.ReportPhase(value.Phase);
+            job.Report(value.Phase, value.CompletedBytes, value.TotalBytes > 0 ? value.TotalBytes : null, value.Message);
+            progress?.Invoke(value);
+        }
+        try
+        {
+            Report(new("Permission", "Checking this Start request and current hosting permission."));
+            var result = await StartCoreAsync(profileId, deadline.Token, startAllowed, Report);
+            attempt.Complete(result.Ok, result.Code, result.Message, result.Ok ? "BlockedStart" : "PreparationFailed");
+            if (result.Ok) job.Complete(result.Code, "The requested Start completed its preparation and launch checks.");
+            else job.Fail(result.Code, "The requested Start stopped safely. Review its typed result and server history.");
+            return result;
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            const string message = "This Start request's preparation deadline expired. Existing saves were kept. Choose Start again to check current state.";
+            attempt.Fail("HostingPreparationTimedOut", message);
+            job.Fail("HostingPreparationTimedOut", message);
+            return new(false, "HostingPreparationTimedOut", message, await manager.SnapshotAsync());
+        }
+    }
+
+    private async Task<ActionResult> StartCoreAsync(Guid profileId, CancellationToken cancellationToken,
+        Func<bool>? startAllowed, Action<WorldPeerSourceProgress> progress)
     {
         async Task<ActionResult> Refused(string code, string message) =>
             new(false, code, message, await manager.SnapshotAsync());
+        Func<bool>? PermitFor(Guid actualProfileId) => startAllowed is null ? null :
+            () => startAllowed() && manager.RemoteMaintenanceBlocker(actualProfileId) is null;
         try
         {
+            if (startAllowed?.Invoke() == false)
+                return await Refused("RemoteStartAuthorizationChanged", "The Start request is no longer authorized. Check current access before trying again.");
             var snapshot = await manager.CompanionSnapshotAsync();
             var requested = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId);
-            if (requested is null) return await manager.StartAsync(profileId, cancellationToken);
+            if (requested is not null && requested.SeparateCopySourceProfileId is null && snapshot.Settings.Profiles.Any(candidate =>
+                candidate.SeparateCopySourceProfileId == profileId && snapshot.Runs.Any(run =>
+                    run.ProfileId == candidate.Id && run.RunOperationId is not null)))
+                return await Refused("LocalContinuationAlreadyManaged", "This world already has a local managed continuation. Refresh server status and review its current run before another Start.");
+            if (requested is null || snapshot.Runs.Any(item => item.ProfileId == profileId && item.RunOperationId is not null))
+                return await manager.StartAsync(profileId, cancellationToken, PermitFor(profileId));
             var sourceId = requested.SeparateCopySourceProfileId ?? requested.Id;
             var original = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == sourceId &&
                 item.SeparateCopySourceProfileId is null);
@@ -29,7 +77,7 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                 var retainedRoot = new SharedWorldPeerRoot(retainedBranch.Offer.Roster.OwnerPublicKey,
                     sourceId, retainedBranch.Offer.Roster.GroupId);
                 using var preparation = peers.BeginHostingPreparation(retainedRoot);
-                var newest = await peers.ResolveLatestPreparedStartSourceAsync(retainedRoot, profileId, directBranch, cancellationToken);
+                var newest = await peers.ResolveLatestPreparedStartSourceAsync(retainedRoot, profileId, directBranch, cancellationToken, progress);
                 if (!newest.Ok || newest.Source is null) return await Refused(newest.Code, newest.Message);
                 using var heldSource = newest.Source;
                 void RequireScope()
@@ -45,16 +93,17 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                 if (working.VersionHash != newest.Source.Descriptor.Version.VersionHash)
                     return await Refused("LatestSaveChanged", "A newer save is available. Use Host locally on the joined server to continue from it.");
                 await manager.RecordHostingObservationAsync(profileId, newest, RequireScope, cancellationToken, working);
-                return await manager.StartSeparateCopyAsync(profileId, directBranch, cancellationToken);
+                progress(new("Starting", "Rechecking this explicit Start request before launch."));
+                return await manager.StartSeparateCopyAsync(profileId, directBranch, cancellationToken, PermitFor(profileId));
             }
             // A completed planned successor retains the original profile ID.
             // Authority state classifies this path only: the common manager
             // still verifies the signed restore, route, final save and fences.
             // Fenced sources and damaged/historical authority use those same gates.
             if (requested.SeparateCopySourceProfileId is null && new WorldAuthorityStore(data).HasState(requested.Id))
-                return await manager.StartAsync(profileId, cancellationToken);
+                return await manager.StartAsync(profileId, cancellationToken, PermitFor(profileId));
             if (original is null || !original.SharedSavesEnabled)
-                return await manager.StartAsync(profileId, cancellationToken);
+                return await manager.StartAsync(profileId, cancellationToken, PermitFor(profileId));
             var roster = await peers.ReadOwnerHostingRosterAsync(sourceId, cancellationToken);
             if (roster is null)
                 return await Refused("SharedHostingReviewRequired", "This server's sharing permission needs review before hosting.");
@@ -73,7 +122,7 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                 var announcedOriginal = await peers.AnnounceLocalHostingAsync(root, cancellationToken);
                 if (!announcedOriginal.Ok && announcedOriginal.Code != "RecipientConnectionRequired")
                     return await Refused(announcedOriginal.Code, announcedOriginal.Message);
-                var originalLatest = await peers.ResolveLatestOriginalStartSourceAsync(root, cancellationToken);
+                var originalLatest = await peers.ResolveLatestOriginalStartSourceAsync(root, cancellationToken, progress);
                 if (originalLatest.Source is { } originalSource)
                 {
                     using var heldOriginal = originalSource;
@@ -87,16 +136,16 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                     RequireOriginalScope();
                     await manager.VerifyRetainedContinuationsAsync(sourceId, cancellationToken);
                     await manager.RecordOriginalHostingObservationAsync(originalLatest, RequireOriginalScope, cancellationToken);
-                    return await manager.StartAsync(sourceId, cancellationToken);
+                    return await manager.StartAsync(sourceId, cancellationToken, PermitFor(sourceId));
                 }
                 if (!originalLatest.RecoveryRequired)
                 {
                     if (originalLatest.Code == "NoPublishedSave" && originalVersion is null)
-                        return await manager.StartAsync(profileId, cancellationToken);
+                        return await manager.StartAsync(profileId, cancellationToken, PermitFor(profileId));
                     return await Refused(originalLatest.Code, originalLatest.Message);
                 }
             }
-            var latest = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken);
+            var latest = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken, progress);
             if (!latest.Ok || latest.Source is null)
             {
                 return await Refused(latest.Code, latest.Message);
@@ -105,7 +154,7 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             source.Verify(data, root);
             await manager.VerifyRetainedContinuationsAsync(sourceId, cancellationToken);
             if (requested.Id == sourceId && source.Descriptor.Version.VersionHash == originalVersion?.VersionHash)
-                return await manager.StartAsync(sourceId, cancellationToken);
+                return await manager.StartAsync(sourceId, cancellationToken, PermitFor(sourceId));
             await manager.VerifyOriginalContinuationAsync(sourceId, originalVersion, cancellationToken);
 
             var branch = source.Descriptor.Branch;
@@ -121,6 +170,7 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             }
             if (existing is null)
             {
+                progress(new("PreparingCopy", "Preparing fresh local storage for the latest verified save."));
                 var declared = await peers.PrepareOwnerRecoveryAsync(root.GroupKey, source.BranchHash, true,
                     cancellationToken, source);
                 if (!declared.Ok || declared.Branch is null) return await Refused(declared.Code, declared.Message);
@@ -150,17 +200,19 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                     ports.FactorioRconPort), cancellationToken);
                 if (!restored.Ok) return await Refused(restored.Code, restored.PendingChecks?.FirstOrDefault() ?? restored.Message);
             }
+            progress(new("ServerSetup", "Checking the local server setup for this Start request."));
             var finished = await manager.FinishSeparateCopyAsync(sourceId, new(branch.BranchHash, setup));
             if (!finished.Ok || finished.ProfileId is null) return await Refused(finished.Code, finished.Message);
             var announced = await peers.AnnounceLocalHostingAsync(root, cancellationToken);
             if (!announced.Ok) return await Refused(announced.Code, announced.Message);
             await synchronizeListener();
-            var rechecked = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken);
+            var rechecked = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken, progress);
             if (!rechecked.Ok || rechecked.Source?.Descriptor.Version.VersionHash != source.Descriptor.Version.VersionHash)
                 return await Refused(rechecked.Ok ? "LatestSaveChanged" : rechecked.Code,
                     rechecked.Ok ? "A newer completed save arrived. Continue hosting to check it before starting." : rechecked.Message);
             await manager.RecordHostingObservationAsync(finished.ProfileId.Value, rechecked, cancellationToken);
-            return await manager.StartSeparateCopyAsync(finished.ProfileId.Value, branch.BranchHash, cancellationToken);
+            progress(new("Starting", "Rechecking this explicit Start request before launch."));
+            return await manager.StartSeparateCopyAsync(finished.ProfileId.Value, branch.BranchHash, cancellationToken, PermitFor(finished.ProfileId.Value));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))

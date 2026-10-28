@@ -378,6 +378,7 @@ export function routeFixture(state, request) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return { status: 400, body: { code: 'SyntheticInvalidJson', message: 'Invalid synthetic request body.' } }; } }
   state.requests.push({ method, path });
   if (path === '/api/local/profile' && method === 'GET') return reply({ displayName: 'Synthetic owner' });
+  if (path === '/api/local/background-jobs' && method === 'GET') return reply({ jobs: [], activeCount: 0 });
   if (path === '/api/local/getting-started' && (method === 'GET' || method === 'PUT')) {
     if (url.search || method === 'GET' && Object.keys(body).length) return null;
     if (method === 'PUT') {

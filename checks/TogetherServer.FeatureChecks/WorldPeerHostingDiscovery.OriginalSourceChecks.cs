@@ -10,6 +10,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
 {
     private static async Task OriginalPublicationStartChecksAsync(string parent)
     {
+        await OfflineOriginalExplicitPreparationAsync(parent);
         await StaleBackgroundAdvertisementScheduleAsync(parent);
         await OriginalAdvertisementScheduleAsync(parent);
         await LocalAdvertisementIdentityChecksAsync(parent);
@@ -125,6 +126,41 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             fixture.RequireNoCopyOrTransfer();
             using var released = new FileStream(fixture.PublicationFile(fixture.Current), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             Require(released.CanWrite, "canceled original verification leaked its held payload");
+        }
+    }
+
+    private static async Task OfflineOriginalExplicitPreparationAsync(string parent)
+    {
+        foreach (var finalFence in new[] { false, true })
+        {
+            using var fixture = new OriginalPublicationFixture(parent, "offline-row-explicit-preparation-" + finalFence, fileCount: 3);
+            var snapshot = await fixture.Manager.CompanionSnapshotAsync();
+            Require(snapshot.Runs.Single(item => item.ProfileId == fixture.Profile.Id) is
+            { State: "Offline", RunOperationId: null } && fixture.Data.LoadRuns().Count == 0,
+                "The ordinary original Start regression did not contain its normal Offline presentation row.");
+            var beforeMetadata = fixture.Base.Target.Handler.MetadataRequests;
+            var progress = new List<WorldPeerSourceProgress>();
+            fixture.Driver.Validate = _ =>
+            {
+                Require(fixture.Base.Target.Handler.MetadataRequests > beforeMetadata &&
+                    progress.Any(item => item.Phase == "Verifying" && item.CompletedBytes > 0),
+                    "An Offline display row bypassed fresh metadata or held-source verification before driver validation.");
+                RequireHeldOriginal(fixture.PublicationFile(fixture.Current));
+            };
+            if (finalFence)
+                fixture.Manager.SharedHostingStartDecision = (_, _) => new(false, "NewerSharedSaveAvailable",
+                    "The synthetic final lifecycle fence observed changed shared progress.");
+            var result = await fixture.Owner.StartAsync(fixture.Profile.Id, default, progress: progress.Add)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            Require(result.Code == (finalFence ? "NewerSharedSaveAvailable" : "OriginalSourceVerified") &&
+                fixture.Base.Target.Handler.MetadataRequests > beforeMetadata &&
+                progress.Any(item => item.Phase == "Verifying" && item.CompletedBytes > 0) &&
+                fixture.Driver.ValidationAttempts == (finalFence ? 0 : 1) && fixture.Driver.PrepareAttempts == 0 &&
+                fixture.Driver.StartAttempts == 0 && fixture.Data.LoadRuns().Count == 0,
+                $"An ordinary shared original with an Offline row skipped request-owned latest preparation or its final fence: {result.Code}.");
+            fixture.RequireNoCopyOrTransfer();
+            using var released = new FileStream(fixture.PublicationFile(fixture.Current), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            Require(released.CanWrite, "The Offline original Start regression leaked its immutable source lease.");
         }
     }
 
@@ -785,6 +821,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         internal SharedWorldVersion Current { get; private set; }
         internal OriginalStartDriver Driver { get; } = new();
         internal WorldPeerService Peers { get; }
+        internal HostManager Manager { get; }
         internal SimpleOwnerHostingService Owner { get; }
         private readonly OriginalFilesCapture capture;
         private readonly SharedWorldService publisher;
@@ -805,7 +842,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             // for its fresh publications, nor an owner registry entry.
             Directory.Delete(Path.Combine(Data.RootPath, "world-peer-recovery-sources"), recursive: true);
             SaveGroups(Data, [Membership(Base.Other.Root, Base.Other.Roster, Guid.Empty, Base.Other.Route)]);
-            var manager = new HostManager(Data, new GameServerRegistry([Driver], PortProbeMode.ObserveOnly));
+            Manager = new HostManager(Data, new GameServerRegistry([Driver], PortProbeMode.ObserveOnly));
             HttpClient Client(string endpoint, IEnumerable<string> pins)
             {
                 Require(endpoint.TrimEnd('/') == Base.Target.Route.Address && pins.SequenceEqual([Base.Target.Route.CertificateSha256]),
@@ -813,10 +850,10 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 return new(Base.Target.Handler, disposeHandler: false) { BaseAddress = new Uri(Base.Target.Route.Address + "/") };
             }
             friends = new(Data, Client);
-            Peers = new(Data, manager, friends, new PairingService(Data), Client);
-            manager.SharedHostingObservation = Peers.LatestObservationHash;
-            manager.SharedHostingStartBlock = (root, hash) => Peers.CanonicalStartBlock(root, hash)?.Message;
-            Owner = new(Data, manager, Peers, () => throw new InvalidOperationException("Original Start must not enable a listener."));
+            Peers = new(Data, Manager, friends, new PairingService(Data), Client);
+            Manager.SharedHostingObservation = Peers.LatestObservationHash;
+            Manager.SharedHostingStartBlock = (root, hash) => Peers.CanonicalStartBlock(root, hash)?.Message;
+            Owner = new(Data, Manager, Peers, () => throw new InvalidOperationException("Original Start must not enable a listener."));
         }
 
         internal SharedWorldVersion PublishSameBytes()

@@ -78,11 +78,22 @@ internal sealed partial class FriendLocalHostingService
     internal async Task<LocalHostingActionResult> StartPreparedAsync(Guid profileId, LocalHostingStartRequest input,
         CancellationToken cancellationToken)
     {
+        using var attempt = StartAttemptDiagnostics.Begin(data, profileId, "HostLocally");
+        attempt.ReportPhase("StartValidation");
         using var connection = friend.RetainLocalHostingConnection();
-        if (connection is null) return new(false, "NotPaired", "Choose the saved Host connection first.");
-        using var progress = hostingProgress.Begin(connection.Link, profileId);
+        if (connection is null)
+        {
+            attempt.Fail("NotPaired", "Choose the saved Host connection first.", "BlockedStart");
+            return new(false, "NotPaired", "Choose the saved Host connection first.");
+        }
+        using var job = BeginHostingJob(connection, profileId, "Host locally", attempt);
+        using var progress = HostingProgressFor(connection.Link, profileId).Begin(connection.Link, profileId, job, attempt.ReportPhase);
         var result = await StartPreparedForConnectionAsync(connection, profileId, input, progress, cancellationToken);
         progress.Complete(result.Ok, result.Message);
+        attempt.Complete(result.Ok, result.Code, result.Message,
+            result.Code == "LaunchFailed" ? "LaunchFailed" : "BlockedStart");
+        if (result.Ok) job.Complete(result.Code, result.Message);
+        else job.Fail(result.Code, result.Message);
         return result;
     }
 

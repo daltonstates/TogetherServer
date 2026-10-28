@@ -157,6 +157,7 @@ export type FriendPlayFlowProps = {
   onOpenLogs?: () => void
   startNotice?: ReactNode
   localHostingAction?: ReactNode
+  hostNotice?: ReactNode
   connectionDetails?: ReactNode
   requirements?: ReactNode
   showServerNotifications?: boolean
@@ -165,7 +166,7 @@ export type FriendPlayFlowProps = {
 
 // Compose the existing actions. No polling, implicit Start, query or game launch is added.
 export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction = null, nowMs, identityKey, onStart, onStop, onRefresh,
-  onOpenConnectionDoctor, onOpenLogs, startNotice, localHostingAction, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
+  onOpenConnectionDoctor, onOpenLogs, startNotice, localHostingAction, hostNotice, connectionDetails, requirements, showServerNotifications = true, children }: FriendPlayFlowProps) {
   const headingId = useId()
   const [notificationsOpened, setNotificationsOpened] = useState(false)
   const connection = friendConnectionExplanation(snapshot, nowMs)
@@ -185,8 +186,9 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
       {onRefresh && <Button className="icon-button" aria-label="Refresh server status" title="Refresh server status" disabled={busy} onClick={onRefresh}><Icon name={pendingAction === 'refresh' ? 'loader' : 'refresh'} /></Button>}</div>
     {!starting && <p>{playExplanation}</p>}
     <div className="friend-primary-actions">
+      {hostNotice}
       {(currentProfile?.state === 'Offline' || pendingAction === 'start' && currentProfile?.state === 'Starting') && permissions.currentAccess && onStart && <Button className="server-primary-action" disabled={busy || !permissions.actions.start.available}
-        title={!permissions.actions.start.available ? permissions.actions.start.reason : undefined}
+        title={!permissions.actions.start.available ? permissions.actions.start.reason : 'Remote Start asks the selected Host PC to run this server.'}
         onClick={() => { if (!busy && permissions.actions.start.available) onStart() }}><Icon name={pendingAction === 'start' ? 'loader' : 'play'} />{pendingAction === 'start' ? 'Starting…' : 'Start server'}</Button>}
       {localHostingAction}
       {canJoin && currentProfile && <OpenGameButton profileId={profile.id} kind={currentProfile.gameKind ?? currentProfile.kind}
@@ -196,6 +198,9 @@ export function FriendPlayFlow({ snapshot, profile, busy = false, pendingAction 
         title={!permissions.actions.stop.available ? permissions.actions.stop.reason : undefined}
         onClick={() => { if (!busy && permissions.actions.stop.available) onStop() }}><Icon name={pendingAction === 'stop' ? 'loader' : 'stop'} />{pendingAction === 'stop' ? 'Stopping…' : 'Stop server'}</Button>}
     </div>
+    {localHostingAction && <small className="helper-text">Start server runs on the selected Host PC. Host locally uses this PC.</small>}
+    {currentProfile?.operation?.code === 'NewerSharedSaveAvailable' && currentProfile.operation.state === 'Failed' &&
+      <p role="status" className="helper-text">The selected Host needs a newer verified save before it can start. This refusal does not mean a download began. Keep an approved PC with that save online, then choose Start server again to request preparation on the target Host. Receiving a copy on this PC does not block remote Start.</p>}
     {permissions.currentAccess && currentProfile && <ServerStartupProgress key={`${snapshot.connectionId}:${currentProfile.id}`} {...startupState} host={false}
       logEndpoint={permissions.actions.logs.available ? `/api/local/friend/${currentProfile.id}/logs` : undefined}
       onOpenLogs={permissions.actions.logs.available ? onOpenLogs : undefined} />}

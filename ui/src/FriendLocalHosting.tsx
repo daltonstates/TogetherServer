@@ -537,7 +537,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       clearWatch()
       abort.abort(); ++request.current; mutation.current = false; setBusy(false); setPendingAction(null)
       plannedAuthorization.current = null; setPlannedOperation(null); setChecksCurrent(false)
-      startIntent.current = null; setOpen(true)
+      startIntent.current = null; if (dialogOpen.current) setOpen(true)
       const reason = Date.now() >= overallDeadline ? overallDeadline < began + 10 * 60 * 1000
         ? 'The current hosting request reached its time limit.' : 'Preparation reached its 10-minute time limit.' :
         'No new preparation progress was reported for 2 minutes.'
@@ -579,7 +579,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         completedFiles: previous?.completedFiles ?? latestProgress?.completedFiles, totalFiles: previous?.totalFiles ?? latestProgress?.totalFiles,
         phaseTimings: previous?.phaseTimings ?? latestProgress?.phaseTimings, finishedAt: Date.now(), status: next }))
       if (!next.ok || localHostingAttention(next, acceptedTerms, serverFile)) {
-        startIntent.current = null; setOpen(true)
+        startIntent.current = null; if (dialogOpen.current) setOpen(true)
       }
       if (authorization && (!next.ok || next.readyForManualStart)) {
         plannedAuthorization.current = null; setPlannedOperation(null)
@@ -590,7 +590,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         setLastHostingAttempt(previous => previous ?? { state: 'Failed', message: hostingRequestError(cause), phase,
           receivedBytes: latestProgress?.receivedBytes, totalBytes: latestProgress?.totalBytes, completedFiles: latestProgress?.completedFiles,
           totalFiles: latestProgress?.totalFiles, phaseTimings: latestProgress?.phaseTimings, finishedAt: Date.now(), status: null })
-        startIntent.current = null; setChecksCurrent(false); setOpen(true)
+        startIntent.current = null; setChecksCurrent(false); if (dialogOpen.current) setOpen(true)
       }
     } finally {
       clearWatch()
@@ -915,6 +915,13 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     ? 'Updating the hosting checks. Wait for the current result before starting.' : startUnconfirmed && !priorityStep ? startResultMessage : sharingIdentityChanged ? sharingIdentityMessage : sharingRequired && guidanceStatus
       ? hostingCheckResult(guidanceStatus) : actionMessage
   const pause = () => {
+    if (busy && pendingAction === 'prepare') {
+      // Preparation belongs to the backend. Closing this view cancels the local
+      // Start intent, while the save job continues and remains in Background jobs.
+      startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null)
+      setNetworkConfirmed(false); dialogOpen.current = false; setOpen(false)
+      return
+    }
     if (pendingAction === 'shareStoppedProgress') setLastHostingAttempt(previous => previous?.action === 'shareStoppedProgress' && previous.state === 'Completed' ? previous : { state: 'Failed', action: 'shareStoppedProgress', phase: null,
       message: 'Sharing stopped progress was paused before its result was confirmed. Retry automatic checks and review the stopped save before trying again. Existing backups were kept.',
       finishedAt: Date.now(), status: stoppedSharingStatus })
@@ -965,7 +972,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       disabled={disabled || busy || transfer.blocked} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>)}
     {permissionAllowed && transfer.blocked && !open && <FriendSaveTransferProgress status={transfer.status}
       fresh={transfer.fresh} unavailable={transfer.unavailable} />}
-    {open && <SettingsDialog title="Host locally" description={worldName} busy={busy}
+    {open && <SettingsDialog title="Host locally" description={worldName} busy={busy} allowBusyClose={pendingAction === 'prepare'}
       onClose={pause} footer={status?.running && status.localProfileId ?
         <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :
         sharingRequired ? <Button disabled={!canShareStoppedProgress} onClick={() => void shareStoppedProgress()}><Icon name={busy ? 'loader' : 'archive'} />

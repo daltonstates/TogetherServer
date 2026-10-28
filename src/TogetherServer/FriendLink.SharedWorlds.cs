@@ -1023,10 +1023,14 @@ internal sealed partial class FriendLink
 
     private const long ReceiverReserveBytes = 1024L * 1024 * 1024;
     private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedTransfers = new();
+    private readonly ConcurrentDictionary<Guid, ReceivedSharedWorldStatus> sharedLocalObservations = new();
+    private readonly ConcurrentDictionary<Guid, SharedWorldPeerRoot> sharedProgressRoots = new();
     private readonly SharedWorldTransferHealth sharedTransferHealth = new();
     private void InvalidateSharedReceiveStatus(Guid profileId)
     {
         sharedTransfers.TryRemove(profileId, out _);
+        sharedLocalObservations.TryRemove(profileId, out _);
+        sharedProgressRoots.TryRemove(profileId, out _);
         // Reset advances the existing attempt epoch: a legacy request that
         // finishes later cannot restore its obsolete NoPublishedSave/failure.
         sharedTransferHealth.Reset(profileId);
@@ -1034,8 +1038,7 @@ internal sealed partial class FriendLink
     private void PublishSharedTransferStatus(Guid profileId, SharedWorldTransferHealth.Attempt attempt,
         ReceivedSharedWorldStatus status)
     {
-        lock (sharedReceiptSync)
-            if (sharedTransferHealth.IsCurrent(profileId, attempt)) sharedTransfers[profileId] = status;
+        if (sharedTransferHealth.IsCurrent(profileId, attempt)) sharedTransfers[profileId] = status;
     }
     private void ClearSharedTransferStatus(Guid profileId, SharedWorldTransferHealth.Attempt attempt)
     {
@@ -1059,6 +1062,33 @@ internal sealed partial class FriendLink
     private Task? scheduledSharedTransfer;
     private readonly Dictionary<Guid, DateTimeOffset> sharedRetryAfter = [];
     private readonly Dictionary<Guid, int> sharedFailures = [];
+    private sealed record SharedPullFlight(Task<ReceivedSharedWorldResult> Completion, CancellationToken OwnerCancellation);
+    private readonly Dictionary<Guid, SharedPullFlight> sharedPullFlights = [];
+    private sealed record SharedSchedulingObservation(Guid HostId, string Endpoint, string State,
+        HashSet<(Guid, string)> Profiles, HashSet<Guid> Notices);
+    private SharedSchedulingObservation? sharedSchedulingObservation;
+
+    // The application scheduler observes only material cached heartbeat fields.
+    // Player counts, elapsed time and page observations never invalidate the
+    // one-minute idle freshness interval or its bounded failure backoff.
+    internal bool ObserveSharedCatchUpScheduling(FriendView snapshot)
+    {
+        lock (sharedScheduleSync)
+        {
+            var profiles = snapshot.Profiles.Select(profile => (profile.Id, profile.Kind)).ToHashSet();
+            var notices = (snapshot.Activity ?? []).Where(item => item.Category == "Backup" &&
+                    item.Action is "SharedSavesEnabled" or "SharedSavesDisabled" or "SharedSavePublished" ||
+                item.Category == "Lifecycle" && item.Action == "Stopped").Select(item => item.Id).ToHashSet();
+            var old = sharedSchedulingObservation;
+            if (old is not null && old.HostId == snapshot.HostId && old.Endpoint == snapshot.Endpoint && old.State == snapshot.State &&
+                old.Profiles.SetEquals(profiles) && old.Notices.SetEquals(notices)) return false;
+            sharedSchedulingObservation = new(snapshot.HostId, snapshot.Endpoint, snapshot.State, profiles, notices);
+            sharedRetryAfter.Clear();
+            sharedFailures.Clear();
+            sharedLocalObservations.Clear();
+            return true;
+        }
+    }
 
     internal async Task<SharedWorldSharingView> CheckSharedWorldSharingAsync(Guid profileId,
         CancellationToken cancellationToken = default)
@@ -1247,6 +1277,7 @@ internal sealed partial class FriendLink
     {
         lock (sharedScheduleSync)
         {
+            ObserveSharedCatchUpScheduling(view);
             if (shutdown.IsCancellationRequested || scheduledSharedTransfer is { IsCompleted: false } ||
                 view.State is not ("Connected" or "Disabled") || !gate.Wait(0)) return;
             Guid next;
@@ -1278,9 +1309,15 @@ internal sealed partial class FriendLink
 
     private async Task RunScheduledSharedTransferAsync(Guid profileId, CancellationToken shutdown)
     {
+        using var job = BackgroundJobs.For(data).Begin("legacy-check:" + configFile + ":" + profileId.ToString("N"),
+            profileId, view.Profiles.FirstOrDefault(item => item.Id == profileId)?.Name ?? "Shared server", "Shared world", "Periodic save check", periodic: true);
         try
         {
             var result = await PullSharedWorldAsync(profileId, shutdown);
+            if (result.Code == "NoPublishedSave")
+                job.Waiting(result.Code, "No completed save has been published yet. Background checks will continue.");
+            else if (result.Ok) job.Waiting(result.Code, "The save check finished. The next periodic check is due in about one minute.");
+            else job.Fail(result.Code, "The background save check could not finish. Review this server's sharing or connection status; existing copies were kept.");
             lock (sharedScheduleSync)
             {
                 var reviewRequired = result.Code is "SourceReviewRequired" or "ConsentRequired" or
@@ -1657,6 +1694,7 @@ internal sealed partial class FriendLink
                 sharedRetryAfter.Remove(profileId);
                 sharedFailures.Remove(profileId);
                 sharedTransfers.TryRemove(profileId, out _);
+                sharedLocalObservations.TryRemove(profileId, out _);
             }
             sharedTransferHealth.Reset(profileId);
             return new(true, "ConsentSaved", enabled ? "This PC may pull approved completed saves." :
@@ -1670,17 +1708,35 @@ internal sealed partial class FriendLink
         if (!TryRetain()) return new(false, null, null, "Not paired");
         try
         {
-            gate.Wait();
+            // Page observation is memory-only, including while a transfer or
+            // discovery owns the link gate. Hashing the full retained save on
+            // every one-second poll prevented observations of streaming bytes.
+            if (config is null || config.KnownRevoked) return new(false, null, null, "Not paired");
+            var observedConsent = ReceiveConsentRoot(profileId) is { } consentRoot
+                ? new WorldPeerReceiveConsentStore(data).ObservedEnabled(consentRoot, SharedWorldDeviceId) : null;
+            if (observedConsent == false || observedConsent is null && withdrawnSharedConsent.ContainsKey(profileId))
+                return new(false, null, null, "Consent off");
+            if (observedConsent == true && sharedLocalObservations.TryGetValue(profileId, out var oldConsent) && !oldConsent.Consented)
+                sharedLocalObservations.TryRemove(profileId, out _);
+            if (sharedTransfers.TryGetValue(profileId, out var running)) return running;
+            if (sharedProgressRoots.TryGetValue(profileId, out var knownRoot) &&
+                SharedSaveTransferProgress.Read(data, knownRoot) is { } observed) return observed;
+            if (!gate.Wait(0)) return sharedLocalObservations.GetValueOrDefault(profileId) ??
+                new(false, null, null, "Background save check pending");
             try
             {
                 if (config is null) return new(false, null, null, "Not paired");
                 if (sharedTransfers.TryGetValue(profileId, out var active) &&
                     HasSharedWorldReceiveConsent(profileId)) return active;
-                if (ReceiveConsentRoot(profileId) is { } peerRoot && HasSharedWorldReceiveConsent(profileId) &&
-                    SharedSaveTransferProgress.Read(data, peerRoot) is { } peerTransfer) return peerTransfer;
+                if (ReceiveConsentRoot(profileId) is { } peerRoot && HasSharedWorldReceiveConsent(profileId))
+                {
+                    sharedProgressRoots[profileId] = peerRoot;
+                    if (SharedSaveTransferProgress.Read(data, peerRoot) is { } peerTransfer) return peerTransfer;
+                }
+                if (!HasSharedWorldReceiveConsent(profileId)) return new(false, null, null, "Consent off");
             }
             finally { gate.Release(); }
-            var local = LocalSharedWorldStatus(profileId);
+            var local = sharedLocalObservations.GetValueOrDefault(profileId) ?? LocalSharedWorldStatus(profileId, verifyPayload: false);
             var issue = sharedTransferHealth.Issue(profileId);
             return issue is null || !local.Consented || local.Error is not null ||
                 local.State.StartsWith("Host save source changed", StringComparison.Ordinal) ||
@@ -1809,7 +1865,7 @@ internal sealed partial class FriendLink
         finally { if (entered) gate.Release(); ReleaseRetained(); }
     }
 
-    private ReceivedSharedWorldStatus LocalSharedWorldStatus(Guid profileId)
+    private ReceivedSharedWorldStatus LocalSharedWorldStatus(Guid profileId, bool verifyPayload = true)
     {
         bool consent;
         bool review;
@@ -1819,7 +1875,9 @@ internal sealed partial class FriendLink
         SharedRosterFloor? floor;
         string? root;
         Guid? deviceId;
-        gate.Wait();
+        if (!verifyPayload && !gate.Wait(0)) return sharedLocalObservations.GetValueOrDefault(profileId) ??
+            new(true, null, null, "Background save check pending");
+        if (verifyPayload) gate.Wait();
         try
         {
             consent = HasSharedWorldReceiveConsent(profileId);
@@ -1841,7 +1899,7 @@ internal sealed partial class FriendLink
         bool? receiptConfirmed = null;
         try
         {
-            var latest = ReadReceivedLatest(root);
+            var latest = verifyPayload ? ReadReceivedLatest(root) : ReadReceivedLatestMetadata(root);
             received = latest?.Number;
             receivedHash = latest?.VersionHash;
             completedUtc = latest?.ProfileId == profileId ? ReceivedSharedWorldProjection.CompletedUtc(latest) : null;
@@ -1853,13 +1911,13 @@ internal sealed partial class FriendLink
         catch (Exception ex) when (ex is IOException or JsonException or CryptographicException or InvalidDataException)
         { error = "The stored save failed verification. The live world was not changed."; }
         (string State, string Message)? historyNotice = null;
-        if (consent && error is null && !review && !conflict)
+        if (verifyPayload && consent && error is null && !review && !conflict)
         {
             try { historyNotice = SignedHistoryNotice(root); }
             catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
             { error = "The signed save history could not be checked on this PC."; }
         }
-        return new(consent, hostVersion, received,
+        var result = new ReceivedSharedWorldStatus(consent, hostVersion, received,
             DescribeReceivedHistory(consent, error, review, conflict,
                 hostVersion, hostHash, received, receivedHash), error,
             RosterRevision: floor?.Revision,
@@ -1867,6 +1925,8 @@ internal sealed partial class FriendLink
             CapacityNotice: historyNotice?.Message,
             CapacityState: historyNotice?.State,
             CompletedUtc: completedUtc, ReceivedUtc: receivedUtc, ReceiptConfirmed: receiptConfirmed);
+        sharedLocalObservations[profileId] = result;
+        return result;
     }
 
     internal static string DescribeReceivedHistory(bool consent, string? error, bool review,
@@ -2034,7 +2094,38 @@ internal sealed partial class FriendLink
             config.PendingSharedWorldGroups.Remove(profileId);
     }
 
-    public async Task<ReceivedSharedWorldResult> PullSharedWorldAsync(Guid profileId,
+    public Task<ReceivedSharedWorldResult> PullSharedWorldAsync(Guid profileId,
+        CancellationToken cancellationToken = default, Action<long, long>? reportProgress = null)
+    {
+        lock (sharedScheduleSync)
+        {
+            if (sharedPullFlights.TryGetValue(profileId, out var existing))
+                return existing.OwnerCancellation.IsCancellationRequested
+                    ? RetryAfterCanceledPullAsync(existing.Completion, profileId, cancellationToken, reportProgress)
+                    : existing.Completion.WaitAsync(cancellationToken);
+            var flight = Task.Run(async () =>
+            {
+                try { return await PullSharedWorldSingleAsync(profileId, cancellationToken, reportProgress); }
+                finally { lock (sharedScheduleSync) sharedPullFlights.Remove(profileId); }
+            }, CancellationToken.None);
+            sharedPullFlights[profileId] = new(flight, cancellationToken);
+            return flight.WaitAsync(cancellationToken);
+        }
+    }
+
+    private async Task<ReceivedSharedWorldResult> RetryAfterCanceledPullAsync(Task<ReceivedSharedWorldResult> previous,
+        Guid profileId, CancellationToken cancellationToken, Action<long, long>? reportProgress)
+    {
+        // An observer may see its cancellation before the actual writer has
+        // flushed/disposed its partial file. Drain that owner before a fresh
+        // retry; never attach the retry to an already canceled operation.
+        try { await previous.WaitAsync(cancellationToken); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+        cancellationToken.ThrowIfCancellationRequested();
+        return await PullSharedWorldAsync(profileId, cancellationToken, reportProgress);
+    }
+
+    private async Task<ReceivedSharedWorldResult> PullSharedWorldSingleAsync(Guid profileId,
         CancellationToken cancellationToken = default, Action<long, long>? reportProgress = null)
     {
         if (!TryRetain()) return SharedFailure("ConnectionClosed", "This connection is closing.");
@@ -2085,6 +2176,7 @@ internal sealed partial class FriendLink
         SharedWorldPeerRoot? transferRoot = null;
         string? transferHash = null;
         IDisposable? transferActivity = null;
+        var transferCompleted = false;
         try
         {
             await gate.WaitAsync(cancellationToken);
@@ -2197,7 +2289,8 @@ internal sealed partial class FriendLink
             {
                 transferRoot = trackedRoot;
                 transferHash = version.VersionHash;
-                transferActivity = SharedSaveTransferProgress.Begin(data, trackedRoot, version.VersionHash);
+                sharedProgressRoots[profileId] = trackedRoot;
+                transferActivity = SharedSaveTransferProgress.Begin(data, trackedRoot, version.VersionHash, profile.Name, version.WorldId);
             }
             SaveConfig();
             gate.Release();
@@ -2228,6 +2321,9 @@ internal sealed partial class FriendLink
                     ReceiptConfirmed: observation?.HostConfirmed));
                 var alreadyConfirmed = await SendSharedReceiptAsync(profileId, old, deviceId,
                     transferClient, transferToken, verifiedInThisTransfer: true);
+                transferCompleted = true;
+                if (!alreadyConfirmed && transferRoot is not null) SharedSaveTransferProgress.Pending(data, transferRoot, version.VersionHash,
+                    "ReceiptPending", "The verified save is here. Confirmation to the Host is pending and will be retried.");
                 return new(true, "AlreadyReceived", alreadyConfirmed ?
                     $"This PC already has the latest hash-verified {copyDescription}, confirmed to the Host. Game load has not been checked." :
                     $"This PC already has the latest hash-verified {copyDescription}. Game load has not been checked. Host confirmation is pending; retry when connected.",
@@ -2238,8 +2334,9 @@ internal sealed partial class FriendLink
                 return SharedFailure("LinkedVault", "The receiving vault contains a linked folder.");
             Directory.CreateDirectory(stage);
             var payloadStage = Path.Combine(stage, SharedWorldService.PayloadDirectory);
+            var partialBaseline = version.Files.Select(file => ExistingPartialBytes(payloadStage, file)).ToArray();
             var remaining = SharedWorldService.BoundedTotalBytes(version.Files) -
-                version.Files.Sum(file => ExistingPartialBytes(payloadStage, file));
+                partialBaseline.Sum();
             var totalBytes = SharedWorldService.BoundedTotalBytes(version.Files);
             var receivedBytes = totalBytes - remaining;
             attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
@@ -2254,6 +2351,7 @@ internal sealed partial class FriendLink
                 ReceivedUtc: priorObservation?.ReceivedUtc, TransferPhase: "Receiving",
                 ReceiptConfirmed: priorObservation?.HostConfirmed);
             PublishSharedTransferStatus(profileId, attempt, progressStatus);
+            if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, version, "Receiving", receivedBytes, totalBytes);
             if (!HasReceiverReserve(SharedWorldFixtureSpace.AvailableBytes(root), remaining))
                 return SharedFailure("InsufficientSpace", "Keep at least 1 GiB free after receiving this save. Existing verified copies were kept.");
             for (var index = 0; index < version.Files.Count; index++)
@@ -2261,6 +2359,21 @@ internal sealed partial class FriendLink
                 var file = version.Files[index];
                 var path = SharedWorldService.SafeChild(payloadStage, file.Path);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                void RebaseRetainedBytes(long retained)
+                {
+                    if (partialBaseline[index] == retained) return;
+                    // A staged file can change after the initial inventory.
+                    // Remove its old baseline before retransmission, including
+                    // a complete file that now fails its hash. Count retained
+                    // bytes once, rather than adding a second copy to progress.
+                    receivedBytes += retained - partialBaseline[index];
+                    partialBaseline[index] = retained;
+                    attempt.Progress(version.VersionHash, receivedBytes, totalBytes);
+                    reportProgress?.Invoke(receivedBytes, totalBytes);
+                    progressStatus = progressStatus with { ReceivedBytes = receivedBytes };
+                    PublishSharedTransferStatus(profileId, attempt, progressStatus);
+                    if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, version, "Receiving", receivedBytes, totalBytes);
+                }
                 if (file.Length == 0)
                 {
                     if (!File.Exists(path)) File.WriteAllBytes(path, []);
@@ -2269,7 +2382,7 @@ internal sealed partial class FriendLink
                 }
                 if (File.Exists(path) && new FileInfo(path).Length == file.Length)
                 {
-                    try { SharedWorldService.VerifyFile(path, file); continue; }
+                    try { SharedWorldService.VerifyFile(path, file); RebaseRetainedBytes(file.Length); continue; }
                     catch (InvalidDataException) { File.Delete(path); }
                 }
                 var offset = ResumeOffset(path, file);
@@ -2279,6 +2392,7 @@ internal sealed partial class FriendLink
                     offset = 0;
                 }
                 if (offset == 0 && File.Exists(path)) File.Delete(path);
+                RebaseRetainedBytes(offset);
                 await using var output = OpenPartialOutput(path, offset);
                 output.Position = offset;
                 while (offset < file.Length)
@@ -2296,11 +2410,21 @@ internal sealed partial class FriendLink
                     using var chunkResponse = await transferClient.GetAsync(
                         $"api/companion/servers/{profileId}/shared-world/{version.VersionHash}/files/{index}/chunks/{offset}",
                         HttpCompletionOption.ResponseHeadersRead, transferToken);
+                    var expected = (int)Math.Min(SharedWorldService.ChunkBytes, file.Length - offset);
+                    var chunkStartBytes = receivedBytes;
                     var chunk = await ReadBoundedSharedAsync(chunkResponse.Content,
-                        SharedWorldService.ChunkBytes, transferToken);
+                        chunkResponse.IsSuccessStatusCode ? expected : SharedWorldService.ChunkBytes,
+                        transferToken, chunkResponse.IsSuccessStatusCode ? bytes =>
+                        {
+                            var measured = chunkStartBytes + Math.Min(bytes, expected);
+                            attempt.Progress(version.VersionHash, measured, totalBytes);
+                            reportProgress?.Invoke(measured, totalBytes);
+                            PublishSharedTransferStatus(profileId, attempt, progressStatus with { ReceivedBytes = measured });
+                            if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, version, "Receiving", measured, totalBytes);
+                        }
+                    : null);
                     if (!HasSharedWorldReceiveConsent(profileId))
                         return SharedFailure("ConsentWithdrawn", "This PC stopped receiving shared saves.");
-                    var expected = (int)Math.Min(SharedWorldService.ChunkBytes, file.Length - offset);
                     if (!chunkResponse.IsSuccessStatusCode || chunk is null || chunk.Length != expected)
                         return !chunkResponse.IsSuccessStatusCode ? RemoteSharedDenial(chunk) :
                             SharedFailure("TransferInterrupted", "The Host stopped this transfer. Progress was kept for retry.");
@@ -2312,6 +2436,7 @@ internal sealed partial class FriendLink
                     transferToken.ThrowIfCancellationRequested();
                     progressStatus = progressStatus with { ReceivedBytes = receivedBytes };
                     PublishSharedTransferStatus(profileId, attempt, progressStatus);
+                    if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, version, "Receiving", receivedBytes, totalBytes);
                     // Disposable fixture runs can hold a completed chunk open so the
                     // packaged journey exercises cancellation and control concurrency.
                     if (Environment.GetEnvironmentVariable(GameServerRegistry.FixtureOptInEnvironmentVariable) == "1" &&
@@ -2332,6 +2457,7 @@ internal sealed partial class FriendLink
             }
             progressStatus = progressStatus with { State = "Verifying", TransferPhase = "Verifying" };
             PublishSharedTransferStatus(profileId, attempt, progressStatus);
+            if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, version, "Verifying", receivedBytes, totalBytes);
             foreach (var file in version.Files)
                 SharedWorldService.VerifyFile(SharedWorldService.SafeChild(payloadStage, file.Path), file);
             using var latestResponse = await transferClient.GetAsync(
@@ -2383,8 +2509,12 @@ internal sealed partial class FriendLink
             SaveConfig();
             gate.Release();
             entered = false;
+            if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, version, "Receipt", receivedBytes, totalBytes);
             var copyConfirmed = await SendSharedReceiptAsync(profileId, version, deviceId,
                 transferClient, transferToken, verifiedInThisTransfer: true);
+            transferCompleted = true;
+            if (!copyConfirmed && transferRoot is not null) SharedSaveTransferProgress.Pending(data, transferRoot, version.VersionHash,
+                "ReceiptPending", "The verified save is here. Confirmation to the Host is pending and will be retried.");
             try
             {
                 if (retainedCopy && !ContainsReparsePoint(stage)) Directory.Delete(stage, true);
@@ -2414,7 +2544,11 @@ internal sealed partial class FriendLink
         {
             ClearSharedTransferStatus(profileId, attempt);
             if (transferRoot is not null && transferHash is not null)
+            {
+                if (!transferCompleted) SharedSaveTransferProgress.Fail(data, transferRoot, transferHash,
+                    "TransferIncomplete", "The save transfer did not finish verification or receipt processing. Existing verified saves were kept; a later check may retry.");
                 SharedSaveTransferProgress.Clear(data, transferRoot, transferHash);
+            }
             transferActivity?.Dispose();
             if (entered) gate.Release();
         }
@@ -2702,7 +2836,10 @@ internal sealed partial class FriendLink
         if (!File.Exists(path)) return 0;
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return -1;
         var length = new FileInfo(path).Length;
-        return length <= file.Length && length % SharedWorldService.ChunkBytes == 0 ? length : -1;
+        // A completed file can end between chunk boundaries. Unfinished writes
+        // resume only at a whole chunk; full verification still precedes use.
+        return length > file.Length ? -1 : length == file.Length ? length :
+            length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes;
     }
 
     internal static FileStream OpenPartialOutput(string path, long offset) =>
@@ -3017,15 +3154,8 @@ internal sealed partial class FriendLink
         Action<long, long, int, int>? progress = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var path = Path.Combine(root, "latest.json");
-        if (!File.Exists(path)) return null;
-        if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
-            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException("The received version metadata is oversized or linked.");
-        var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
-        if (version is null || !SharedWorldService.VerifySignature(version) ||
-            !Directory.Exists(Path.Combine(root, version.VersionHash)))
-            throw new InvalidDataException("The prior received version failed verification.");
+        var version = ReadReceivedLatestMetadata(root);
+        if (version is null) return null;
         var total = SharedWorldService.BoundedTotalBytes(version.Files);
         long verified = 0;
         var files = 0;
@@ -3038,6 +3168,22 @@ internal sealed partial class FriendLink
             WorldPeerPayloadHash.Report(progress, verified, total, ++files, version.Files.Count);
         }
         cancellationToken.ThrowIfCancellationRequested();
+        return version;
+    }
+
+    // Last completed display evidence only. It cannot authorize launch or a
+    // receipt; those paths call ReadReceivedLatest and hash every payload file.
+    private static SharedWorldVersion? ReadReceivedLatestMetadata(string root)
+    {
+        var path = Path.Combine(root, "latest.json");
+        if (!File.Exists(path)) return null;
+        if (new FileInfo(path).Length > SharedWorldService.MaximumManifestBytes ||
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("The received version metadata is oversized or linked.");
+        var version = JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json);
+        if (version is null || !SharedWorldService.VerifySignature(version) ||
+            !Directory.Exists(Path.Combine(root, version.VersionHash)))
+            throw new InvalidDataException("The prior received version failed verification.");
         return version;
     }
 
@@ -3415,7 +3561,7 @@ internal sealed partial class FriendLink
     }
 
     internal static async Task<byte[]?> ReadBoundedSharedAsync(HttpContent content, long maximum,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Action<long>? receivedProgress = null)
     {
         if (content.Headers.ContentLength > maximum) return null;
         await using var stream = await content.ReadAsStreamAsync(cancellationToken);
@@ -3427,6 +3573,10 @@ internal sealed partial class FriendLink
             if (read == 0) return output.ToArray();
             if (output.Length + read > maximum) return null;
             output.Write(buffer, 0, read);
+            // HttpClient's negotiated gzip handler supplies decoded payload
+            // bytes here. These units match the signed manifest file lengths;
+            // Content-Length (compressed wire bytes) is never a progress total.
+            receivedProgress?.Invoke(output.Length);
         }
     }
 

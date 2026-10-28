@@ -47,7 +47,11 @@ internal static class ServerDirectoryConcurrencyChecks
         var service = new FriendLocalHostingService(data, friends, manager);
         using var selected = friends.RetainLocalHostingConnection()
             ?? throw new InvalidOperationException("The generated selected connection was unavailable.");
-        using var operation = Field<LocalHostingProgressStore>(service, "hostingProgress").Begin(selected.Link, profileIds[0]);
+        var progressStore = (LocalHostingProgressStore)(typeof(FriendLocalHostingService)
+            .GetMethod("HostingProgressFor", BindingFlags.Instance | BindingFlags.NonPublic)?
+            .Invoke(service, [selected.Link, profileIds[0]])
+            ?? throw new InvalidOperationException("The expected per-server observation store is missing."));
+        using var operation = progressStore.Begin(selected.Link, profileIds[0]);
         Require(friends.ServerDirectoryHosts().Count == 2 && friends.CurrentLocalHostingConnection(selected),
             "The generated directory did not expose both saved Hosts before contention.");
 

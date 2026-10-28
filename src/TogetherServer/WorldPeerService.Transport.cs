@@ -693,9 +693,15 @@ internal sealed partial class WorldPeerService : IDisposable
         => SendPeerWithResponderAsync(group, route, operation, cancellationToken,
             payload, offset, versionHash, fileIndex, chunkOffset, null);
 
+    private Task<byte[]> SendPeerProgressAsync(Group group, SharedWorldPeerRoute route, string operation,
+        CancellationToken cancellationToken, string versionHash, int fileIndex, long chunkOffset, Action<long> receivedProgress)
+        => SendPeerWithResponderAsync(group, route, operation, cancellationToken,
+            null, 0, versionHash, fileIndex, chunkOffset, null, receivedProgress);
+
     private async Task<byte[]> SendPeerWithResponderAsync(Group group, SharedWorldPeerRoute route, string operation,
         CancellationToken cancellationToken, byte[]? payload, int offset,
-        string? versionHash, int? fileIndex, long? chunkOffset, Action<Guid, string>? validatedResponder)
+        string? versionHash, int? fileIndex, long? chunkOffset, Action<Guid, string>? validatedResponder,
+        Action<long>? receivedProgress = null)
     {
         // A responder retains one challenge per requester/world. Do not let a
         // foreground metadata handshake invalidate a background payload proof.
@@ -705,7 +711,7 @@ internal sealed partial class WorldPeerService : IDisposable
         try
         {
             return await SendPeerCoreAsync(group, route, operation, cancellationToken,
-                payload, offset, versionHash, fileIndex, chunkOffset, validatedResponder);
+                payload, offset, versionHash, fileIndex, chunkOffset, validatedResponder, receivedProgress);
         }
         catch (Exception error) when (error is HttpRequestException or AuthenticationException or IOException)
         {
@@ -717,7 +723,8 @@ internal sealed partial class WorldPeerService : IDisposable
 
     private async Task<byte[]> SendPeerCoreAsync(Group group, SharedWorldPeerRoute route, string operation,
         CancellationToken cancellationToken, byte[]? payload, int offset,
-        string? versionHash, int? fileIndex, long? chunkOffset, Action<Guid, string>? validatedResponder)
+        string? versionHash, int? fileIndex, long? chunkOffset, Action<Guid, string>? validatedResponder,
+        Action<long>? receivedProgress)
     {
         using var measurement = hostingWork.Measure(HostingWorkStage.PeerRequest);
         ObjectDisposedException.ThrowIf(peerDisposed, this);
@@ -819,7 +826,8 @@ internal sealed partial class WorldPeerService : IDisposable
         observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Exchange);
         using var response = await client.SendAsync(exchange, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         observation?.Response((int)response.StatusCode);
-        var bytes = await FriendLink.ReadBoundedSharedAsync(response.Content, WorldPeerProtocol.ResponseLimit(operation), cancellationToken);
+        var bytes = await FriendLink.ReadBoundedSharedAsync(response.Content, WorldPeerProtocol.ResponseLimit(operation), cancellationToken,
+            response.IsSuccessStatusCode ? receivedProgress : null);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException("The pinned peer did not return a bounded world response.", null,
                 response.StatusCode);
@@ -883,11 +891,14 @@ internal sealed partial class WorldPeerService : IDisposable
                     await gates.Transfer.WaitAsync(cancellationToken);
                     try
                     {
+                        using var job = BackgroundJobs.For(data).Begin("peer-check:" + group.Root.GroupKey,
+                            group.Root.ProfileId, group.Name, "Shared world", "Periodic save check", periodic: true);
                         using var observation = transferObservations.Begin(group.Root.GroupKey, routeKey);
                         transferAttempt.Value = new(observation);
                         try
                         {
                             observation.Phase(WorldPeerTransferPhase.Metadata);
+                            job.Report("Metadata");
                             await SyncPeerMetadataAsync(group, route, cancellationToken);
                             var current = Find(group.Root.GroupKey) ?? throw new InvalidDataException("World membership changed.");
                             // This flight owns one bounded catalog for both its
@@ -897,6 +908,7 @@ internal sealed partial class WorldPeerService : IDisposable
                             var publication = await SeedNewestLocalPublicationAsync(current, route, localCatalog.Sources, cancellationToken);
                             if (publication?.PendingProgress == true) transferAttempt.Value.PendingPayload = true;
                             observation.Phase(WorldPeerTransferPhase.Pulling);
+                            job.Report("Checking saves");
                             try { await PullCatalogAsync(current, route, cancellationToken); }
                             finally
                             {
@@ -912,6 +924,7 @@ internal sealed partial class WorldPeerService : IDisposable
                                 }
                             }
                             observation.Phase(WorldPeerTransferPhase.Offering);
+                            job.Report("Forwarding");
                             // Do not begin a second conversation for the local
                             // head already offered in this pass. Even a paused
                             // offer yielded its remaining budget to incoming work.
@@ -921,10 +934,13 @@ internal sealed partial class WorldPeerService : IDisposable
                                 (WorldPeerTransferResult.SeedPaused or WorldPeerTransferResult.SeedHistoryPending or
                                  WorldPeerTransferResult.ByteBudget) ? WorldPeerTransferResult.WorkBudget : outcome);
                             failed = false;
+                            job.Waiting("CheckComplete", "The bounded background pass finished. Eligible saves continue on the next scheduled pass.");
                         }
                         catch (Exception error)
                         {
                             ObserveTransferFailure(observation, error, cancellationToken);
+                            job.Fail(observation.FinishedResult?.Error ?? "PeerCheckFailed",
+                                "The peer save check could not finish. Existing signed saves were kept; connection or sharing details may need review.");
                             throw;
                         }
                         finally

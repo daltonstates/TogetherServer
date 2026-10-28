@@ -3,6 +3,7 @@ namespace TogetherServer;
 public sealed partial class HostManager
 {
     internal Func<SharedWorldPeerRoot, string?, string?>? SharedHostingStartBlock { get; set; }
+    internal Func<SharedWorldPeerRoot, string?, WorldPeerActionResult?>? SharedHostingStartDecision { get; set; }
     internal Func<SharedWorldPeerRoot, string?>? SharedHostingObservation { get; set; }
     private sealed record HostingObservation(SharedWorldPeerRoot Root, string VersionHash,
         string ObservationHash, DateTimeOffset CheckedUtc,
@@ -188,18 +189,22 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
-    private string? SharedHostingStartIssue(ServerProfile profile)
+    private WorldPeerActionResult? SharedHostingStartIssue(ServerProfile profile)
     {
         if (!profile.SharedSavesEnabled || profile.SeparateCopySourceProfileId is not null ||
-            SharedHostingStartBlock is null) return null;
+            SharedHostingStartBlock is null && SharedHostingStartDecision is null) return null;
         try
         {
             var roster = sharedWorlds.ReadRoster(profile, requireRetainedSigningKey: true);
-            return roster is null ? null : SharedHostingStartBlock(new(roster.OwnerPublicKey, profile.Id, roster.GroupId),
-                sharedWorlds.Status(profile).Latest?.VersionHash);
+            if (roster is null) return null;
+            var root = new SharedWorldPeerRoot(roster.OwnerPublicKey, profile.Id, roster.GroupId);
+            var published = sharedWorlds.Status(profile).Latest?.VersionHash;
+            if (SharedHostingStartDecision is { } typed) return typed(root, published);
+            return SharedHostingStartBlock?.Invoke(root, published) is { } message
+                ? new(false, "NewerSharedSaveAvailable", message) : null;
         }
         catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
-        { return "The latest shared save or signed permission needs review before hosting. Existing worlds were kept."; }
+        { return new(false, "SharedSaveHistoryNeedsReview", "The latest shared save or signed permission needs review before hosting. Existing worlds were kept."); }
     }
 
     internal async Task VerifyOriginalContinuationAsync(Guid profileId, SharedWorldVersion? version,

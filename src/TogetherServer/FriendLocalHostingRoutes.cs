@@ -95,6 +95,7 @@ internal static class FriendLocalHostingRoutes
         app.MapPost(route + "/prepare", async (HttpContext context, Guid profileId) =>
         {
             if (!Fixed(context)) return Results.StatusCode(403);
+            LocalHostingPrepareRequest request;
             await modeGate.WaitAsync(context.RequestAborted);
             try
             {
@@ -102,13 +103,17 @@ internal static class FriendLocalHostingRoutes
                 if (unavailable()) return Results.Conflict(FriendLocalHostingService.Unavailable("AppBusy", "Wait for the current app operation."));
                 var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
                     context.Request.ContentLength, 8192, context.RequestAborted);
-                var request = FriendLocalHostingService.ParseRequest(bytes ?? []);
-                return Results.Json(FriendLocalHostingService.WithRemedy(await service.PrepareAsync(profileId, request, context.RequestAborted)));
+                request = FriendLocalHostingService.ParseRequest(bytes ?? []);
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 System.Security.Cryptography.CryptographicException or UnauthorizedAccessException or ArgumentException)
             { return Results.BadRequest(FriendLocalHostingService.Unavailable("LocalHostingRequestRejected", "Use the fixed local hosting preparation action.")); }
             finally { modeGate.Release(); }
+            // Only validation owns the app mode gate. Preparation has its own
+            // bounded single-flight scope and an application lifetime token;
+            // navigation cancels the observer, not the save operation.
+            var preparation = service.PrepareInBackgroundAsync(profileId, request, app.Lifetime.ApplicationStopping);
+            return Results.Json(FriendLocalHostingService.WithRemedy(await preparation.WaitAsync(context.RequestAborted)));
         });
         app.MapPost(route + "/start", async (HttpContext context, Guid profileId) =>
         {

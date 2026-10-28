@@ -62,6 +62,9 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
     public string ListenerState { get; private set; } = CompanionListenerStates.Off;
     public string? Warning { get; private set; }
     public IReadOnlyList<RemoteOperationView> RecentOperations() => operations.Recent();
+    // Supplied by the app composition root. Only an accepted, explicit remote
+    // Start can enter preparation; passive replication never invokes it.
+    internal Func<Guid, CancellationToken, Func<bool>, Action<WorldPeerSourceProgress>, Task<ActionResult>>? PrepareRemoteStart { get; set; }
 
     // Lets local takeover checks distinguish this app's HTTPS listener from an
     // unrelated process occupying the same control port.
@@ -249,7 +252,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
     private void MapRoutes(WebApplication app)
     {
         MapHandoffRequestRoutes(app, Authenticate, AuthenticationStatus);
-        GamePasswordCompanionRoutes.Map(app, data, pairing, Authenticate, AuthenticationStatus);
+        GamePasswordCompanionRoutes.Map(app, data, pairing, Authenticate, AuthenticationStatus, manager.CompanionProfileId);
         static int AuthenticationStatus(PairingDecision decision) =>
             decision.Code == "RateLimited" ? StatusCodes.Status429TooManyRequests :
             decision.Code is "Revoked" or "ApprovalPending" or "AccessExpired"
@@ -343,7 +346,21 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             var profiles = snapshot.Settings.Profiles.Where(profile =>
                 own?.AssignedProfileIds.Contains(profile.Id) == true).Select(profile =>
             {
-                var run = snapshot.Runs.Single(item => item.ProfileId == profile.Id);
+                var targetId = manager.CompanionProfileId(snapshot, profile.Id);
+                var targetProfile = snapshot.Settings.Profiles.Single(item => item.Id == targetId);
+                var run = snapshot.Runs.Single(item => item.ProfileId == targetId);
+                if (targetId == profile.Id && run.State == "Offline" && snapshot.Settings.Profiles.Any(candidate =>
+                    candidate.SeparateCopySourceProfileId == profile.Id && snapshot.Runs.Any(active =>
+                        active.ProfileId == candidate.Id && active.RunOperationId is not null)))
+                    run = run with
+                    {
+                        State = "Unknown",
+                        Detail = "Local continuation identity needs review before controls can select a run.",
+                        OnlinePlayers = null,
+                        MaxPlayers = null,
+                        PlayerCountTrusted = false,
+                        AutoShutdownAtUtc = null
+                    };
                 var permission = own?.ServerPermissions?.SingleOrDefault(item => item.ProfileId == profile.Id);
                 var canStart = permission?.CanStart ?? own?.CanStart == true;
                 var canStop = permission?.CanStop ?? own?.CanStop == true;
@@ -353,20 +370,22 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     (permission?.CanViewPassword ?? own?.CanViewPassword == true);
                 var canAddShutdownTime = canExtendTimer && snapshot.Settings.AutoShutdownEnabled &&
                     run.State == "Ready" && run.PlayerCountTrusted && run.OnlinePlayers is not null;
-                using var permit = RemoteStopSafety.TryAcquire(snapshot, profile.Id, data, games, recordedRuns);
+                using var permit = RemoteStopSafety.TryAcquire(snapshot, targetId, data, games, recordedRuns);
+                var separateRestart = targetProfile.SeparateCopySourceProfileId is not null;
                 return new PublicProfile(profile.Id, profile.Name,
                     run.State,
-                    games.TryGet(profile.Kind, out var driver) ? driver.JoinAddress(profile, address) : null,
+                    games.TryGet(targetProfile.Kind, out var driver) ? driver.JoinAddress(targetProfile, address) : null,
                     snapshot.Settings.RemoteControlsEnabled && canStop && permit.Allowed,
                     permit.Allowed ? null : permit.Reason,
                     profile.Kind == GameKinds.Custom ? profile.Custom?.GameName ?? "Custom game" : profile.Kind,
                     run.OnlinePlayers, run.MaxPlayers,
                     run.AutoShutdownAtUtc, run.AutoShutdownReason, canStart, canStop,
-                    snapshot.Settings.RemoteControlsEnabled && canStart && canStop && permit.Allowed,
-                    permit.Allowed ? null : permit.Reason,
+                    snapshot.Settings.RemoteControlsEnabled && canStart && canStop && permit.Allowed && !separateRestart,
+                    separateRestart ? "Stop this shared continuation, then choose Start to recheck the latest save before launching again." :
+                        permit.Allowed ? null : permit.Reason,
                     recentOperations.FirstOrDefault(operation => operation.ProfileId == profile.Id),
-                    profile.Maintenance?.Enabled == true,
-                    string.IsNullOrWhiteSpace(profile.Maintenance?.Message) ? null : profile.Maintenance.Message,
+                    profile.Maintenance?.Enabled == true || targetProfile.Maintenance?.Enabled == true,
+                    string.IsNullOrWhiteSpace(profile.Maintenance?.Message) ? targetProfile.Maintenance?.Message : profile.Maintenance.Message,
                     canAddShutdownTime,
                     snapshot.Settings.FriendTimerExtensionMinutes,
                     Math.Max(0, snapshot.Settings.FriendTimerExtensionMaximumMinutes - run.FriendAddedMinutes),
@@ -377,7 +396,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     PlayerObservationSource: run.PlayerObservationSource,
                     PlayerCountObservedUtc: run.PlayerCountObservedUtc,
                     CanViewPassword: canViewPassword,
-                    GamePasswordChangedUtc: canViewPassword ? GamePasswords.ChangedUtc(data, profile.Id) : null);
+                    GamePasswordChangedUtc: canViewPassword ? GamePasswords.ChangedUtc(data, targetId) : null);
             }).ToList();
             var protocol = CompanionProtocol.Describe(own?.ProtocolVersion);
             var assigned = own?.AssignedProfileIds.ToHashSet() ?? [];
@@ -1162,7 +1181,8 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             if (context.Request.QueryString.HasValue ||
                 context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
                 return Results.BadRequest(new { code = "InvalidRequirementsRequest", message = "Choose only an assigned saved server." });
-            var result = await manager.GameRequirementsAsync(profileId, context.RequestAborted);
+            var targetId = manager.CompanionProfileId(await manager.CompanionSnapshotAsync(), profileId);
+            var result = await manager.GameRequirementsAsync(targetId, context.RequestAborted);
             decision = pairing.AuthorizeGameRequirements(current.Id, profileId, out _);
             if (!decision.Ok)
                 return Results.Json(decision, statusCode: decision.Code == "PermissionDenied" ? 403 : AuthenticationStatus(decision));
@@ -1187,11 +1207,16 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     statusCode: StatusCodes.Status409Conflict);
             if (!ServerLogQueryParser.TryParse(context.Request.Query, out var query, out var error))
                 return Results.BadRequest(error);
-            var result = await serverLogs.ReadAsync(profileId, query, ServerLogAudience.Friend);
+            var targetId = manager.CompanionProfileId(await manager.CompanionSnapshotAsync(), profileId);
+            var result = await serverLogs.ReadAsync(targetId, query, ServerLogAudience.Friend);
             decision = pairing.AuthorizeViewLogs(currentDevice, profileId, out _);
             if (!decision.Ok)
                 return Results.Json(decision, statusCode: decision.Code == "PermissionDenied"
                     ? StatusCodes.Status403Forbidden : AuthenticationStatus(decision));
+            if (manager.CompanionProfileId(await manager.CompanionSnapshotAsync(), profileId) != targetId)
+                return Results.Conflict(new ServerLogResult(false, "RunChanged",
+                    "The current local run changed. Refresh server status before reading its logs.",
+                    ServerLogSourceStates.Unavailable, null, [], null, false));
             return result.Code == "CustomRemoteLogsUnavailable"
                 ? Results.Json(result, statusCode: StatusCodes.Status403Forbidden)
                 : Results.Json(result);
@@ -1229,7 +1254,8 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     "The Host has not assigned this server to this PC.", null), statusCode: 403);
             }
 
-            var result = await manager.RefreshPlayerCountAsync(request.ProfileId);
+            var targetId = manager.CompanionProfileId(await manager.CompanionSnapshotAsync(), request.ProfileId);
+            var result = await manager.RefreshPlayerCountAsync(targetId);
             data.TryAudit($"remote-player-count-refresh {device.Id} {request.ProfileId} {result.Code} {DateTimeOffset.UtcNow:O}");
             var status = await PublicStatus(device.Id);
             if (!Reauthorize(currentDevice, out _, out decision))
@@ -1280,11 +1306,12 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
         });
 
         async Task<RemoteOperationOutcome> ExecuteRemoteAction(Guid deviceId, Guid profileId, RemoteActionKind action,
-            int clientProtocol)
+            int clientProtocol, Guid requestId)
         {
             if (!CompanionProtocol.IsCompatible(clientProtocol))
                 return new(false, "ProtocolIncompatible", CompanionProtocol.CompatibilityMessage(clientProtocol));
             await modeGate.WaitAsync();
+            var ownsModeGate = true;
             try
             {
                 if (isUpdating?.Invoke() == true)
@@ -1313,10 +1340,39 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     return new(false, "PermissionDenied", "The Host has not granted this action for this server to this PC.");
                 }
 
+                var targetId = manager.CompanionProfileId(snapshot, profileId);
+                if (manager.RemoteMaintenanceBlocker(targetId) is { } targetMaintenance)
+                    return new(false, "MaintenanceMode", targetMaintenance);
+                if (action == RemoteActionKind.Restart && snapshot.Settings.Profiles.SingleOrDefault(item =>
+                    item.Id == targetId)?.SeparateCopySourceProfileId is not null)
+                    return new(false, "SharedRestartPreparationRequired",
+                        "Stop this shared continuation, then choose Start to recheck the latest save before launching again.");
+
+                bool StartStillAuthorized()
+                {
+                    var currentAccess = pairing.AuthorizeActiveDevice(deviceId, out var current);
+                    return currentAccess.Ok && current is not null && manager.RemoteControlsEnabled &&
+                        !manager.LifecycleBlocked && manager.RemoteMaintenanceBlocker(profileId) is null &&
+                        manager.RemoteMaintenanceBlocker(targetId) is null &&
+                        isUpdating?.Invoke() != true && isShuttingDown?.Invoke() != true &&
+                        RemoteActionPolicy.Allowed(pairing, current, profileId, action);
+                }
                 ActionResult result;
+                async Task<ActionResult> PrepareStartAsync()
+                {
+                    // Preparation is application-owned asynchronous work. Do
+                    // not hold the app-wide settings/mode gate through network
+                    // or file I/O. Its authorization fence repeats at launch.
+                    modeGate.Release();
+                    ownsModeGate = false;
+                    return PrepareRemoteStart is { } prepare
+                        ? await prepare(profileId, app.Lifetime.ApplicationStopping, StartStillAuthorized,
+                            value => operations.ReportProgress(deviceId, requestId, value.Phase, value.Message))
+                        : await manager.StartAsync(profileId, app.Lifetime.ApplicationStopping, StartStillAuthorized);
+                }
                 if (action is RemoteActionKind.Stop or RemoteActionKind.Restart)
                 {
-                    using var permit = RemoteStopSafety.TryAcquire(snapshot, profileId, data, games);
+                    using var permit = RemoteStopSafety.TryAcquire(snapshot, targetId, data, games);
                     if (!permit.Allowed)
                         return new(false, permit.Code, permit.Reason);
                     bool StillAuthorized()
@@ -1324,6 +1380,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                         var currentAccess = pairing.AuthorizeActiveDevice(deviceId, out var current);
                         return currentAccess.Ok && current is not null && manager.RemoteControlsEnabled &&
                             !manager.LifecycleBlocked && manager.RemoteMaintenanceBlocker(profileId) is null &&
+                            manager.RemoteMaintenanceBlocker(targetId) is null &&
                             RemoteActionPolicy.Allowed(pairing, current, profileId, action);
                     }
                     // The lifecycle gate can be queued, and fresh driver reads
@@ -1332,21 +1389,21 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     bool StillSafe(ManagedRun run) =>
                         StillAuthorized() && permit.StillSafe(run) && StillAuthorized();
                     result = action == RemoteActionKind.Stop
-                        ? await manager.StopAsync(profileId, StillSafe)
-                        : await manager.RestartAsync(profileId, StillSafe);
+                        ? await manager.StopAsync(targetId, StillSafe)
+                        : await manager.RestartAsync(targetId, StillSafe, StartStillAuthorized);
                 }
                 else
                     result = action switch
                     {
-                        RemoteActionKind.Replace => await manager.ReplaceEmptyPortConflictsAndStartAsync(profileId),
-                        RemoteActionKind.Extend => await manager.ExtendAutoShutdownForFriendAsync(profileId),
-                        RemoteActionKind.Start => await manager.StartAsync(profileId),
+                        RemoteActionKind.Replace => await manager.ReplaceEmptyPortConflictsAndStartAsync(profileId, StartStillAuthorized),
+                        RemoteActionKind.Extend => await manager.ExtendAutoShutdownForFriendAsync(targetId),
+                        RemoteActionKind.Start => await PrepareStartAsync(),
                         _ => throw new ArgumentOutOfRangeException(nameof(action))
                     };
                 data.TryAudit($"remote-{RemoteActionPolicy.Name(action)} {deviceId} {profileId} {result.Code} {DateTimeOffset.UtcNow:O}");
                 return new(result.Ok, result.Code, result.Message, result.PortConflicts);
             }
-            finally { modeGate.Release(); }
+            finally { if (ownsModeGate) modeGate.Release(); }
         }
 
         async Task<IResult> RemoteAction(HttpContext context, RemoteActionRequest request, RemoteActionKind action)
@@ -1383,6 +1440,16 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             }
             if (!Guid.TryParse(context.Request.Headers["Idempotency-Key"], out var key) || key == Guid.Empty)
                 return Results.BadRequest(new FriendActionResult(false, "IdempotencyKeyRequired", "A request ID is required.", null));
+            IResult Refused(string code, string message, int status)
+            {
+                // Record only authenticated assigned requests with a valid
+                // correlation key, never unauthenticated probe traffic.
+                if (action is RemoteActionKind.Start or RemoteActionKind.Restart or RemoteActionKind.Replace)
+                    StartAttemptDiagnostics.RecordFailure(data, request.ProfileId, "RemoteStart", "Authorization",
+                        code, code == "MaintenanceMode" ? "The Host placed this server in maintenance mode." : message,
+                        "BlockedStart", key);
+                return Results.Json(new FriendActionResult(false, code, message, null), statusCode: status);
+            }
             var actionName = RemoteActionPolicy.Name(action);
             var prior = operations.Lookup(device.Id, key, request.ProfileId, actionName);
             if (prior is not null)
@@ -1399,24 +1466,21 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                         existing.Id, existing.State), statusCode: StatusCodes.Status202Accepted);
             }
             if (!manager.RemoteControlsEnabled)
-                return Results.Json(new FriendActionResult(false, "RemoteControlsDisabled", "The Host has paused remote controls.",
-                    null), statusCode: 403);
+                return Refused("RemoteControlsDisabled", "The Host has paused remote controls.", 403);
             if (manager.LifecycleBlocked)
-                return Results.Json(new FriendActionResult(false, "DataRecoveryRequired",
-                    "Remote lifecycle actions are paused until the Host owner reviews recovered local data.", null),
-                    statusCode: StatusCodes.Status409Conflict);
+                return Refused("DataRecoveryRequired", "Remote lifecycle actions are paused until the Host owner reviews recovered local data.",
+                    StatusCodes.Status409Conflict);
             if (manager.RemoteMaintenanceBlocker(request.ProfileId) is { } maintenanceBlocker)
-                return Results.Json(new FriendActionResult(false, "MaintenanceMode", maintenanceBlocker, null), statusCode: 403);
+                return Refused("MaintenanceMode", maintenanceBlocker, 403);
             if (!RemoteActionPolicy.Allowed(pairing, device, request.ProfileId, action))
             {
                 if (!Reauthorize(device, out _, out decision))
                     return Results.Json(new FriendActionResult(false, decision.Code, decision.Message, null),
                         statusCode: AuthenticationStatus(decision));
-                return Results.Json(new FriendActionResult(false, "PermissionDenied",
-                    "The Host has not granted this action for this server to this PC.", null), statusCode: 403);
+                return Refused("PermissionDenied", "The Host has not granted this action for this server to this PC.", 403);
             }
             var submission = operations.Submit(device.Id, key, request.ProfileId, actionName,
-                () => ExecuteRemoteAction(device.Id, request.ProfileId, action, clientProtocol));
+                () => ExecuteRemoteAction(device.Id, request.ProfileId, action, clientProtocol, key));
             if (!submission.Accepted)
                 return Results.Conflict(new FriendActionResult(false, submission.Code, submission.Message, null));
             var accepted = submission.Operation!;

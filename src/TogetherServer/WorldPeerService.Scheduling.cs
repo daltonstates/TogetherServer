@@ -117,7 +117,8 @@ internal sealed partial class WorldPeerService
         .Select(activity => activity.Id);
 
     private static IEnumerable<Guid> StoppedNotices(FriendView connection) => (connection.Activity ?? [])
-        .Where(activity => activity.Category == "Lifecycle" && activity.Action == "Stopped" &&
+        .Where(activity => (activity.Category == "Lifecycle" && activity.Action == "Stopped" ||
+            activity.Category == "Backup" && activity.Action == "SharedSavePublished") &&
             activity.ProfileId is { } profileId && connection.Profiles.Any(profile => profile.Id == profileId))
         .Select(activity => activity.Id);
 

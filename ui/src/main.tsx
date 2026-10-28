@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ApiError, changeJson, errorMessage, getJson, getLocalJson } from './api'
 import { AppErrorBoundary } from './AppErrorBoundary'
+import { BackgroundJobs } from './BackgroundJobs'
 import { ProfileAccess, ProfileSettings, useLocalProfile } from './ProfileSettings'
 import { RequiredFeatureSetup, useRequiredFeatureSetup } from './RequiredFeatureSetup'
 import { GuideWelcome, GuidedWalkthrough, type GuideKind, type GuideStep } from './GuidedSetup'
@@ -2196,6 +2197,7 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
     <header className="topbar">
       <div className="brand"><span className="brand-mark">T</span><span><strong>{appInstance?.displayName ?? 'TogetherServer'}</strong><small>Game server workspace</small></span></div>
       <HeaderTools>
+        <BackgroundJobs />
         <Button className="secondary header-guides-trigger" aria-label="Setup guides" disabled={!!pending || gettingStarted.busy}
           onClick={() => void changeScope(gettingStarted.open)}><Icon name="plug" /><span>Guides</span></Button>
         <Button className={`secondary header-servers-trigger${workspacePage === 'host' || workspacePage === 'join' ? ' selected' : ''}`}
@@ -2349,13 +2351,13 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
               {joinSection === 'connection' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host={false}
                 available={snapshot.hostCapabilities.includes('shared-worlds-v2')} worldName={profile.name} serverState={profile.state}
                 serverStatusFresh={friendConnectionExplanation(snapshot, nowMs).currentAccess} observedHostAddress={snapshot.endpoint} />}
-              {joinSection === 'play' && profile.kind !== 'Custom' && !['Revoked', 'Access expired', 'Awaiting approval'].includes(snapshot.state) &&
-                snapshot.hostCapabilities.includes('shared-world-peers-v1') && <SharedHostNotice profileId={profile.id}
-                  connectionId={snapshot.connectionId} currentHostAddress={snapshot.endpoint} currentHostSessionId={profile.runOperationId}
-                  disabled={!!pending || operationBusy} onConnected={async () => {
-                    applySnapshot(await readSnapshot()); setShowPairing(false); setJoinSection('play')
-                  }} />}
               {joinSection === 'play' && <FriendPlayFlow snapshot={snapshot} profile={profile} nowMs={nowMs} busy={!!pending || operationBusy}
+                hostNotice={profile.kind !== 'Custom' && !['Revoked', 'Access expired', 'Awaiting approval'].includes(snapshot.state) &&
+                  snapshot.hostCapabilities.includes('shared-world-peers-v1') && <SharedHostNotice compact profileId={profile.id}
+                    connectionId={snapshot.connectionId} currentHostAddress={snapshot.endpoint} currentHostSessionId={profile.runOperationId}
+                    disabled={!!pending || operationBusy} onConnected={async () => {
+                      applySnapshot(await readSnapshot()); setShowPairing(false); setJoinSection('play')
+                    }} />}
                 showServerNotifications={false}
                 pendingAction={pending === `friend-start-${profile.id}` || operationBusy && profile.operation?.action === 'start' ? 'start' : pending === `friend-stop-${profile.id}` || operationBusy && profile.operation?.action === 'stop' ? 'stop' : pending === `friend-refresh-${profile.id}` ? 'refresh' : null}
                 identityKey={friendGameCheckIdentity(snapshot, profile)}
@@ -2535,6 +2537,9 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                     </div>
                   </div>
                   <div className="actions server-actions" aria-label="Server controls">
+                    {sharingProfile.kind !== 'Custom' && sharingProfile.sharedSavesEnabled && <SharedHostNotice compact
+                      profileId={sharingProfile.id} connectionId={null} disabled={!!pending} visible={workspacePage === 'host'}
+                      onConnected={async () => { if (await switchMode('friend')) { setShowPairing(false); setJoinSection('play') } }} />}
                     {(status?.state === 'Offline' || pending === `start-${profile.id}`) && <Button className="server-primary-action" disabled={!!pending || dirty || hasUnsavedServerEdits || dataRecovery?.lifecycleBlocked} title={dataRecovery?.lifecycleBlocked ? 'Resolve the local data recovery warning first.' : dirty ? 'Save or cancel setup changes first.' : hasUnsavedServerEdits ? 'Save or discard file changes before starting.' : undefined} onClick={() => {
                       if ([...draftGuards.current].some(([key, guard]) => key !== 'chat' && (guard.dirty || guard.saving))) return
                       void startLocalProfile(profile)
@@ -2557,11 +2562,6 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
                 </div>
                 <div className="server-tab-content">
-                {hostServerTab === 'overview' && sharingProfile.kind !== 'Custom' && sharingProfile.sharedSavesEnabled && <SharedHostNotice
-                  profileId={sharingProfile.id} connectionId={null} disabled={!!pending} visible={workspacePage === 'host'}
-                  onConnected={async () => {
-                    if (await switchMode('friend')) { setShowPairing(false); setJoinSection('play') }
-                  }} />}
                 {hostServerTab === 'overview' && profile.kind !== 'Custom' && <SharedHostingIdentity profileId={profile.id} host
                   worldName={profile.worldId} serverState={status?.state ?? 'Unknown'} serverStatusFresh={!loadError} observedHostAddress={snapshot.settings.companionEndpoint} />}
                 {hostServerTab === 'overview' && inviteProfileId === profile.id && <div className="inline-invite">

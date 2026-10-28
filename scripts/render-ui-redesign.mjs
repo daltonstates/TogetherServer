@@ -80,7 +80,8 @@ const appSections = [
   ['shortcuts', 'Keyboard shortcuts', 'Keyboard shortcuts'],
 ];
 const setupPolishCases = [
-  { id: 'setup-polish-hosting-notice', scenario: 'friend-peers', workspace: 'Join', section: ['Join sections', 'play', 'Play'], screen: { css: '.shared-host-notice', text: 'reports hosting' } },
+  { id: 'setup-polish-hosting-notice', scenario: 'friend-peers', workspace: 'Join', section: ['Join sections', 'play', 'Play'],
+    steps: [{ summary: 'Reported Host differs from the original Host' }], screen: region('Shared Host status details') },
   ...['missing-server', 'connection'].map(remedy => ({ id: `setup-polish-hosting-${remedy}`, scenario: 'friend-connected',
     fixture: { hostingRemedy: remedy }, workspace: 'Join', section: ['Join sections', 'play', 'Play'],
     steps: [{ button: 'Host on this PC' }], screen: { role: 'dialog', name: 'Host on this PC' } })),

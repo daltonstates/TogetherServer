@@ -189,12 +189,21 @@ var companionServer = new CompanionServer(data, manager, pairing, games, serverL
     labAllowsEndpoint: localLab is null ? null : localLab.IsAllowedEndpoint);
 companionServer.PeerWorlds = worldPeers;
 manager.CompanionListenerOwnershipProbe = companionServer.OwnsListener;
-manager.SharedHostingStartBlock = (rootKey, publishedHash) => worldPeers.CanonicalStartBlock(rootKey, publishedHash)?.Message;
+manager.SharedHostingStartDecision = worldPeers.CanonicalStartBlock;
 manager.SharedHostingObservation = worldPeers.LatestObservationHash;
 var simpleOwnerHosting = new SimpleOwnerHostingService(data, manager, worldPeers, companionServer.SyncAsync);
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, port));
 var app = builder.Build();
+app.Lifetime.ApplicationStopping.Register(() => shutdownPending = true);
+companionServer.PrepareRemoteStart = async (profileId, cancellationToken, allowed, progress) =>
+{
+    // Stop explicit preparation with the application before background loops
+    // drain, even while the companion listener is still finishing shutdown.
+    using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
+        app.Lifetime.ApplicationStopping);
+    return await simpleOwnerHosting.StartAsync(profileId, lifetime.Token, allowed, progress);
+};
 try { await worldPeers.RefreshMembershipsAsync(false, app.Lifetime.ApplicationStopping); }
 catch (Exception error) when (error is IOException or InvalidDataException or JsonException)
 { DiagnosticOutput.WriteError("World peer membership needs review: " + error.GetType().Name); }
@@ -235,6 +244,7 @@ static bool HasSensitiveLocalGetHeader(HttpContext context) =>
     context.Request.Headers["X-TogetherServer-Local"] == "1";
 
 ServerDirectoryRoutes.Map(app, manager, friend);
+BackgroundJobRoutes.Map(app, data);
 WorldPeerLocalRoutes.Map(app, worldPeers, friend, manager, companionServer, modeGate,
     () => friendMode, () => updatePending || shutdownPending);
 FriendLocalHostingRoutes.Map(app, data, friend, manager, companionServer, externalPortProbe, modeGate,

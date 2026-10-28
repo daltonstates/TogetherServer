@@ -258,6 +258,18 @@ export function RecentSessions({ profileId, visible, loader = defaultLoader }: {
       <p>Summaries saved after this server stops. Filters cover the newest 20 saved sessions on this Host PC.</p></div>
       <Button className="secondary" disabled={loading || !visible} onClick={() => void load()}>{loading ? 'Loading…' : 'Refresh'}</Button>
     </div>
+    {!loadError && currentResult?.attempts && currentResult.attempts.length > 0 && <section aria-label="Start and preparation attempts">
+      <h4>Start and preparation attempts</h4>
+      <p>Blocked requests and failed preparation are diagnostic records. They do not count as game sessions or runtime.</p>
+      <div className="recent-session-list">{currentResult.attempts.map(attempt => <article className="recent-session-card tone-attention" key={attempt.id}>
+        <div className="recent-session-heading"><div><strong>{({ BlockedStart: 'Start blocked before launch', PreparationFailed: 'Preparation failed',
+          TransferFailed: 'Save transfer failed', LaunchFailed: 'Process launch failed', FailedBeforeReady: 'Run failed before Ready', Interrupted: 'Attempt interrupted' })[attempt.kind]}</strong>
+          <small>{attempt.operation} · {attempt.phase}</small></div><time dateTime={attempt.requestedUtc}>{dateTime(attempt.requestedUtc, 'Unavailable')}</time></div>
+        <p>{attempt.message}</p><p>Result: <code>{attempt.code}</code></p>
+        <small>Request {attempt.operationId.slice(0, 8)}{attempt.targetDeviceId && ` · Target PC ending ${attempt.targetDeviceId.slice(-6).toUpperCase()}`}
+          {attempt.relatedJobId && ` · Background job ${attempt.relatedJobId.slice(0, 8)}`}</small>
+      </article>)}</div>
+    </section>}
     {loading && !currentResult && <div className="recent-sessions-state" role="status">Loading recent sessions…</div>}
     {loadError && <DismissibleNotice scope={profileId} className="recent-sessions-state error" role="alert"><strong>Recent sessions unavailable</strong>
       <p>TogetherServer could not read the saved session history.</p><Button className="secondary" onClick={() => void load()}>Try again</Button></DismissibleNotice>}

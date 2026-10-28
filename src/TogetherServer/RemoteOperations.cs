@@ -28,6 +28,7 @@ public sealed class RemoteOperation
     public DateTimeOffset RequestedUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? StartedUtc { get; set; }
     public DateTimeOffset? CompletedUtc { get; set; }
+    public string Phase { get; set; } = "Queued";
     public List<PortConflictView>? PortConflicts { get; set; }
 }
 
@@ -47,6 +48,7 @@ public sealed record RemoteOperationSubmission(bool Accepted, bool Existing, str
 public sealed class RemoteOperationCoordinator : IAsyncDisposable
 {
     private const int MaximumEntries = 500;
+    private const int MaximumConcurrentStarts = 4;
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
     private readonly object sync = new();
     private readonly LocalData data;
@@ -55,6 +57,7 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim queueSignal = new(0);
     private readonly CancellationTokenSource workerStop = new();
     private readonly Task worker;
+    private readonly Dictionary<Guid, Task> activeStarts = [];
     private int disposed;
 
     private sealed record QueuedOperation(Guid OperationId, Func<Task<RemoteOperationOutcome>> Execute);
@@ -98,6 +101,19 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
                         "Request ID was already used for a different action.", null);
                 return new(true, true, existing.Code, existing.Message, View(existing));
             }
+            if (action == "start" && operations.Any(item => item.ProfileId == profileId && item.Action == "start" &&
+                !RemoteOperationStates.Terminal(item.State)))
+            {
+                StartAttemptDiagnostics.RecordFailure(data, profileId, "RemoteStart", "Queued", "StartAlreadyPreparing",
+                    "A Start request is already preparing this server. Follow that request's current progress.", "BlockedStart", requestId);
+                return new(false, false, "StartAlreadyPreparing", "A Start request is already preparing this server. Follow that request's current progress.", null);
+            }
+            if (action == "start" && activeStarts.Count >= MaximumConcurrentStarts)
+            {
+                StartAttemptDiagnostics.RecordFailure(data, profileId, "RemoteStart", "Queued", "StartPreparationBusy",
+                    "The Host is preparing four Start requests. Wait for one to finish, then try again.", "BlockedStart", requestId);
+                return new(false, false, "StartPreparationBusy", "The Host is preparing four Start requests. Wait for one to finish, then try again.", null);
+            }
 
             operation = new RemoteOperation
             {
@@ -124,8 +140,22 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
                 return new(false, false, "OperationJournalUnavailable",
                     "The Host could not safely record this request, so it was not run.", null);
             }
-            queue.Enqueue(new(operation.Id, execute));
-            queueSignal.Release();
+            if (action == "start")
+            {
+                // Slow save preparation must not hold unrelated remote Stop or
+                // timer actions behind the single serialized action queue.
+                // Actual process creation still belongs to HostManager's gate.
+                activeStarts.Add(profileId, Task.Run(async () =>
+                {
+                    try { await ExecuteGuardedAsync(operation.Id, execute); }
+                    finally { lock (sync) activeStarts.Remove(profileId); }
+                }));
+            }
+            else
+            {
+                queue.Enqueue(new(operation.Id, execute));
+                queueSignal.Release();
+            }
         }
 
         data.TryAudit($"remote-operation-accepted {operation.Id} {deviceId} {profileId} {action} {operation.RequestedUtc:O}");
@@ -156,6 +186,25 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
         }
     }
 
+    // Explicit request progress only. Status polling never schedules or renews
+    // an operation, and repeated identical observations do not rewrite disk.
+    public void ReportProgress(Guid deviceId, Guid requestId, string phase, string message)
+    {
+        lock (sync)
+        {
+            var operation = operations.SingleOrDefault(item => item.DeviceId == deviceId && item.RequestId == requestId);
+            if (operation is null || operation.State != RemoteOperationStates.Running) return;
+            var safePhase = SupportReportRedactor.Token(phase, 64);
+            var safeMessage = SupportReportRedactor.Redact(message);
+            if (operation.Phase == safePhase && operation.Message == safeMessage) return;
+            operation.Phase = safePhase;
+            operation.Message = safeMessage;
+            try { data.SaveRemoteOperations(operations); }
+            catch (Exception error) when (JournalFailure(error))
+            { data.TryAudit($"remote-operation-progress-unavailable {operation.Id} {error.GetType().Name}"); }
+        }
+    }
+
     public IReadOnlyList<RemoteOperationView> Recent(int maximum = 100)
     {
         lock (sync) return operations.OrderByDescending(item => item.RequestedUtc)
@@ -178,15 +227,18 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
                 await queueSignal.WaitAsync(cancellationToken);
                 while (!cancellationToken.IsCancellationRequested && queue.TryDequeue(out var queued))
                 {
-                    try { await ExecuteAsync(queued.OperationId, queued.Execute); }
-                    catch (Exception ex)
-                    {
-                        data.TryAudit($"remote-operation-worker-failed {queued.OperationId} {ex.GetType().Name} {DateTimeOffset.UtcNow:O}");
-                    }
+                    await ExecuteGuardedAsync(queued.OperationId, queued.Execute);
                 }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private async Task ExecuteGuardedAsync(Guid operationId, Func<Task<RemoteOperationOutcome>> execute)
+    {
+        try { await ExecuteAsync(operationId, execute); }
+        catch (Exception error)
+        { data.TryAudit($"remote-operation-worker-failed {operationId} {error.GetType().Name} {DateTimeOffset.UtcNow:O}"); }
     }
 
     private async Task ExecuteAsync(Guid operationId, Func<Task<RemoteOperationOutcome>> execute)
@@ -214,6 +266,9 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
             }
         }
 
+        using var attempt = operation.Action is "start" or "restart" or "replace"
+            ? StartAttemptDiagnostics.Begin(data, operation.ProfileId, "RemoteStart", operation.Id) : null;
+        attempt?.ReportPhase("Authorization");
         RemoteOperationOutcome outcome;
         try { outcome = await execute(); }
         catch (Exception ex)
@@ -223,6 +278,8 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
         }
 
         var publicOutcome = PublicOutcome(operation.Action, outcome);
+        attempt?.Complete(outcome.Ok, outcome.Code, outcome.Message,
+            outcome.Code == "LaunchFailed" ? "LaunchFailed" : "BlockedStart");
         lock (sync)
         {
             operation = operations.Single(item => item.Id == operationId);
@@ -284,7 +341,16 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
             ? $"The Host completed the requested {label}."
             : code == "PortConflict"
                 ? "Another managed server is using a required game port. Review the safe replacement option."
-                : $"The Host could not complete the requested {label} ({code}). Review the current server status before trying again.";
+                : code switch
+                {
+                    "NewerSharedSaveAvailable" => "The target Host knows about newer shared progress and has not started. No save transfer is implied by this refusal. Keep an approved PC with that save online, then retry Start so the target Host can prepare the latest save.",
+                    "SharedSaveTransferInProgress" => "The target Host is receiving, verifying or confirming this world's save. Follow its Background jobs progress, then retry Start when preparation finishes.",
+                    "LatestSaveChanged" => "The latest signed save information changed before launch. The server was not started. Retry Start to prepare and recheck the current save.",
+                    "RemoteStartAuthorizationChanged" => "Start permission or server assignment changed during preparation. The server was not started. Ask the Host to review access before trying again.",
+                    "SharedSaveHistoryNeedsReview" or "WorldHistoryReviewRequired" or "HostingHistoryChoiceRequired" => "Shared saves have missing or competing history. The server was not started. Review the protected copies on the target Host before trying again.",
+                    "SharedSaveUnavailable" or "SharedSaveRequired" => "The target Host could not obtain a complete shared save. Keep an approved PC with the save online, inspect Background jobs, then retry Start.",
+                    _ => $"The Host could not complete the requested {label} ({code}). Review the current server status before trying again."
+                };
         return new(outcome.Ok, code, message, outcome.PortConflicts);
     }
 
@@ -306,14 +372,17 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        Task[] starts;
         lock (sync)
         {
             if (disposed != 0) return;
             disposed = 1;
             workerStop.Cancel();
+            starts = activeStarts.Values.ToArray();
         }
         try { await worker; }
         catch (OperationCanceledException) { }
+        await Task.WhenAll(starts);
         lock (sync)
         {
             var interrupted = false;

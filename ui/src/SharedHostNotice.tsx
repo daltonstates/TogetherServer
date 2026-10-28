@@ -14,6 +14,7 @@ export type SharedHostNoticeProps = {
   currentHostSessionId?: string | null
   visible?: boolean
   disabled?: boolean
+  compact?: boolean
   onConnected?: () => void | Promise<void>
 }
 
@@ -33,6 +34,23 @@ type HostGroup = { group: WorldPeerGroup; choices: HostChoice[]; stopped: Stoppe
 type View = { state: 'checking' | 'ready' | 'unknown'; groups: WorldPeerGroup[]; error?: string }
 const hidden = () => document.visibilityState === 'hidden'
 const pollMilliseconds = 1000
+const originalHostDeviceId = '00000000-0000-0000-0000-000000000000'
+
+// The original Host is the owner key at the canonical owner member identity.
+// Display names, saved aliases and endpoints never establish this relationship.
+function otherHostReports(groups: WorldPeerGroup[], profileId: string) {
+  return groups.filter(group => group.profileId === profileId && group.ownerPublicKey).flatMap(group => {
+    const reports = group.state.sessions.filter(item => item.authorized && !item.hasConflict)
+    const active = reports.filter(item => ['Hosting', 'Preparing'].includes(item.session.state))
+    const latest = [...reports].sort((a, b) => Date.parse(b.session.endedUtc ?? b.session.startedUtc ?? '') -
+      Date.parse(a.session.endedUtc ?? a.session.startedUtc ?? ''))[0]
+    return (active.length ? active : latest ? [latest] : []).filter(item => item.deviceId !== originalHostDeviceId ||
+      item.publicKey !== group.ownerPublicKey).map(item => ({ group, item,
+      historical: !['Hosting', 'Preparing'].includes(item.session.state),
+      observedUtc: group.state.peers.find(peer => peer.deviceId === item.deviceId && peer.publicKey === item.publicKey)?.announcedUtc ??
+        item.session.endedUtc ?? item.session.startedUtc }))
+  })
+}
 
 function hostAddress(value: string | null | undefined): string | null {
   if (!value) return null
@@ -88,7 +106,7 @@ export function SharedHostNotice(props: SharedHostNoticeProps) {
     props.currentHostSessionId, props.visible ?? true])} {...props} />
 }
 
-function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessionId, visible = true, disabled = false,
+function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessionId, visible = true, disabled = false, compact = false,
   onConnected }: SharedHostNoticeProps) {
   const [view, setView] = useState<View>({ state: 'checking', groups: [] })
   const [pageVisible, setPageVisible] = useState(!hidden())
@@ -208,8 +226,36 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
 
   if (!visible || !pageVisible) return null
   const shown = hostingGroups(view.groups, profileId, currentHostAddress, currentHostSessionId)
+  const differentHosts = otherHostReports(view.groups, profileId)
+  const review = view.groups.filter(group => group.profileId === profileId && (group.warning || group.state.needsChoice ||
+    group.state.peers.some(peer => peer.hasConflict) || group.state.sessions.some(item => item.hasConflict)))
+  if (compact && differentHosts.length === 0 && review.length === 0 && view.state !== 'unknown') return null
+  const compactLabel = differentHosts.length ? differentHosts.every(report => report.historical)
+    ? 'Earlier Host differs from the original Host' : 'Reported Host differs from the original Host' : 'Review shared Host status'
+  const compactDetails = <>
+    {differentHosts.map(({ group, item, historical, observedUtc }) => <div key={`${group.groupKey}:${item.session.sessionId}`} className="shared-host-compact-report">
+      <strong>{group.name} · PC ending {item.deviceId.slice(-6).toUpperCase()}</strong>
+      <p>{historical ? `Historical ${item.session.state.toLowerCase()} session report` : `Current signed ${item.session.state.toLowerCase()} report`} from a Host other than the original Host.</p>
+      <small>Observed {observedUtc ? <time dateTime={observedUtc}>{new Date(observedUtc).toLocaleString()}</time> : 'at an unavailable time'}.</small>
+      <small>A signed announcement does not prove live reachability. {historical && 'This is historical information, not a current incident.'}</small>
+    </div>)}
+    {review.map(group => <p key={group.groupKey} className="shared-host-caution">{group.name}: {group.warning || 'Competing or conflicting signed reports need review. Existing histories are preserved.'}</p>)}
+    <details><summary>Signed identity and authority review</summary>
+      {view.groups.filter(group => group.profileId === profileId).map(group => <div key={group.groupKey}>
+        <p>{group.name} · canonical world <code>{group.groupKey}</code></p>
+        <p>Original owner identity <code>{group.ownerPublicKey}</code>.</p>
+        <p>{group.state.needsChoice ? 'The group has unresolved hosting choices.' : 'No unresolved hosting choice was reported in this observation.'}</p>
+        {group.state.sessions.map(report => <p key={`${report.deviceId}:${report.session.sessionId}`}>
+          PC <code>{report.deviceId}</code> · {report.session.state} · {report.authorized ? 'authorized signed member' : 'current permission not established'}
+          {report.hasConflict && ' · conflicting signed report'}<br />History <code>{report.session.branchHash}</code> · session <code>{report.session.sessionId}</code>.
+        </p>)}
+        {group.state.branches.filter(branch => branch.hasConflict || branch.branch.authorityHash).map(branch =>
+          <p key={`${branch.deviceId}:${branch.branch.branchHash}`}>History <code>{branch.branch.branchHash}</code> · authority <code>{branch.branch.authorityHash ?? 'unavailable'}</code>{branch.hasConflict && ' · conflict retained for review'}.</p>)}
+      </div>)}
+    </details>
+  </>
   const announcement = shown.map(item => `${item.group.name}: ${reportTitle(item)}.`).join(' ')
-  return <><span className="shared-host-announcement" aria-live="polite" aria-atomic="true">{announcement}</span>
+  const content = <>
     {(shown.length > 0 || view.state === 'unknown') && <section className="shared-host-notice" aria-label="Shared Host updates">
     {view.state === 'unknown' ? <div className="shared-host-unknown" role="status">
       <Icon name="plug" /><div><strong>Shared Host updates unavailable</strong><p>{view.error}</p>
@@ -246,4 +292,8 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
     </article> })}
     {message && <p className="shared-host-result" role={message.error ? 'alert' : 'status'}>{message.text}</p>}
   </section>}</>
+  return compact ? <details className="shared-host-compact">
+    <summary aria-label={compactLabel} title={compactLabel}><Icon name={review.length ? 'warning' : 'clock'} size={17} /><span className="sr-only">{compactLabel}</span></summary>
+    <div className="shared-host-popover" role="region" aria-label="Shared Host status details">{compactDetails}{content}</div>
+  </details> : <><span className="shared-host-announcement" aria-live="polite" aria-atomic="true">{announcement}</span>{content}</>
 }

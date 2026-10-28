@@ -32,6 +32,7 @@ type TransferProgress = { state: string; phase: string; operation: string; httpS
 type BackgroundTransfer = { routeOrdinal: number; recipientRole: string; current: TransferProgress | null;
   lastResult: TransferProgress | null; lastFailure: TransferProgress | null }
 export type WorldPeerGroup = { groupKey: string; name: string; profileId: string; selfDeviceId: string;
+  ownerPublicKey?: string;
   sharingEnabled: boolean; receiveConsented: boolean; canReceive: boolean; canReshare: boolean; canHost: boolean;
   warning: string | null; selection: GroupSelection | null; backgroundTransfers: BackgroundTransfer[];
   state: { groupKey: string; peers: Peer[]; branches: BranchView[]; sessions: SessionView[];
@@ -187,11 +188,11 @@ export function parseWorldPeerGroups(value: unknown): WorldPeerGroup[] {
     const replication = object(state.replication)
     const groupKey = identity(source.groupKey, hashPattern)
     const profileId = identity(source.profileId)
-    text(root.ownerPublicKey)
+    const ownerPublicKey = text(root.ownerPublicKey)
     identity(root.groupId)
     if (identity(root.profileId) !== profileId || identity(state.groupKey, hashPattern) !== groupKey)
       throw new Error('The peer information names another world.')
-    return { groupKey, profileId, name: text(source.name, 100), selfDeviceId: identity(source.selfDeviceId),
+    return { groupKey, profileId, ownerPublicKey, name: text(source.name, 100), selfDeviceId: identity(source.selfDeviceId),
       sharingEnabled: flag(source.sharingEnabled), receiveConsented: flag(source.receiveConsented),
       canReceive: flag(source.canReceive), canReshare: flag(source.canReshare), canHost: flag(source.canHost),
       warning: source.warning == null ? null : text(source.warning, 1000), selection: parseSelection(source.selection),

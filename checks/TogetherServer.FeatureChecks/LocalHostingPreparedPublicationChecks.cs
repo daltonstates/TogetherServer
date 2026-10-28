@@ -187,7 +187,7 @@ internal static partial class LocalHostingChecks
         }
         if (fault == "none")
         {
-            Require(reachedDriver && heldAtDriver && localAdvertisementChecked && !localAdvertisementChanged &&
+            Require((reachedDriver || result?.Code == "LaunchFailed") && heldAtDriver && localAdvertisementChecked && !localAdvertisementChanged &&
                 fixture.Driver.ProcessAttempts == 1 && resolving == 1 && announcements == 1 && observations == 2 &&
                 verifiedFiles == 315 && publication.Version.Number == 4 && publication.Version.Files.Count == 315 &&
                 publication.Version.ParentHash == publication.Branch.Offer.Version.VersionHash &&
@@ -203,10 +203,10 @@ internal static partial class LocalHostingChecks
             var ownerResult = await new SimpleOwnerHostingService(fixture.Data, fixture.Manager, peers,
                 () => throw new InvalidOperationException("A prepared local Start must not repeat listener setup."))
                 .StartAsync(prepared.LocalProfileId.Value, default);
-            // This service maps the refusing fake driver's exception to its
-            // normal typed failure. Actual boundary entry is the attempt count
+            // The common launch boundary maps the refusing fake driver's
+            // exception to LaunchFailed. Actual entry is the attempt count
             // and held file lease, never an inferred successful process.
-            Require(ownerResult is { Ok: false, Code: "SharedHostingReviewRequired" } && heldAtDriver && fixture.Driver.ProcessAttempts == 2 &&
+            Require(ownerResult is { Ok: false, Code: "LaunchFailed" } && heldAtDriver && fixture.Driver.ProcessAttempts == 2 &&
                 !Directory.Exists(cacheRoot) && fixture.Data.LoadRuns().Count == 0,
                 "the Host screen did not reuse the same exact 315-file prepared publication through the common launch gate: " +
                 $"code={ownerResult.Code}; held={heldAtDriver}; " +

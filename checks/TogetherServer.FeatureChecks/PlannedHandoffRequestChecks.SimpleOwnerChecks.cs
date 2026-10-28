@@ -74,7 +74,7 @@ internal static partial class PlannedHandoffRequestChecks
 
         var beforeStart = ProtectedFiles(data);
         var valid = await hosting.StartAsync(profile.Id, default).WaitAsync(TimeSpan.FromSeconds(5));
-        Require(valid.Code == "SharedHostingReviewRequired" && driver.ProcessAttempts == 1 && data.LoadRuns().Count == 0 &&
+        Require(valid.Code == "LaunchFailed" && driver.ProcessAttempts == 1 && data.LoadRuns().Count == 0 &&
             !File.Exists(ownerKey) && File.ReadAllBytes(save).SequenceEqual(before),
             $"the completed planned Host card did not reach its refusing fake driver through common Start: {valid.Code}; attempts={driver.ProcessAttempts}");
         RequireProtectedFiles(data, beforeStart);

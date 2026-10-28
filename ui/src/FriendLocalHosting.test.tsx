@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FriendLocalHosting, localHostingAttention, parseLocalHostingStatus, type LocalHostingStatus } from './FriendLocalHosting'
+import { FriendPlayFlow } from './FriendPlayFlow'
+import type { FriendSnapshot, PublicProfile } from './contracts'
 import type { HostingProgress } from './LocalHostingProgress'
 
 const profileId = '11111111-1111-4111-8111-111111111111'
@@ -2244,4 +2246,59 @@ it('clears a draft game-port approval when the saved Host connection changes', a
   const next = await openHosting()
   expect(next.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' })).not.toBeChecked()
   expect(next.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+})
+
+
+it('allows remote Start and unrelated navigation while this PC receives its replica', async () => {
+  const remoteStart = vi.fn(), navigate = vi.fn()
+  const profile: PublicProfile = { id: profileId, name: 'Shared server', kind: 'Valheim', state: 'Offline',
+    runOperationId: null, joinAddress: null, canStart: true, canStop: false, canStopNow: false, stopReason: null,
+    canRestartNow: false, restartReason: null, onlinePlayers: null, maxPlayers: null, autoShutdownAtUtc: null,
+    autoShutdownReason: null, maintenanceEnabled: false, maintenanceMessage: null, canExtendTimer: false,
+    timerExtensionMinutes: 0, timerExtensionRemainingMinutes: 0, canViewLogs: false }
+  const snapshot: FriendSnapshot = { mode: 'Friend', state: 'Connected', detail: '', endpoint: 'https://192.0.2.1:5131',
+    lastConnectedUtc: new Date().toISOString(), remoteControlsEnabled: true, canStart: true, canStop: false,
+    connectionId: 'first', connections: null, profiles: [profile], hostCapabilities: [], protocolCompatible: true }
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(url === base ? { ...idleTransfer, transferPhase: 'Receiving', receivedBytes: 25, totalBytes: 100 } : initial)
+  }))
+  render(<><button onClick={navigate}>Another server</button><FriendPlayFlow snapshot={snapshot} profile={profile}
+    showServerNotifications={false} onStart={remoteStart} localHostingAction={<FriendLocalHosting {...props} />} /></>)
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Start server' }))
+  expect(remoteStart).toHaveBeenCalledOnce()
+  fireEvent.click(screen.getByRole('button', { name: 'Another server' }))
+  expect(navigate).toHaveBeenCalledOnce()
+  expect(writes).toEqual([])
+})
+
+it('closes preparation without canceling its request, reopening the dialog or automatically starting', async () => {
+  let finish!: (value: Response) => void
+  let preparationSignal: AbortSignal | null | undefined
+  const writes: string[] = []
+  stubFetch(async (url, init) => {
+    if (init?.method) {
+      writes.push(url)
+      if (url.endsWith('/prepare')) {
+        preparationSignal = init.signal
+        return new Promise<Response>(resolve => { finish = resolve })
+      }
+    }
+    return response(initial)
+  })
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  await waitFor(() => expect(writes).toEqual([`${base}/hosting/prepare`]))
+  const close = dialog.getByRole('button', { name: 'Close Host locally' })
+  expect(close).toBeEnabled()
+  fireEvent.click(close)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(preparationSignal?.aborted).toBe(false)
+  await act(async () => { finish(response(prepared)) })
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(writes).toEqual([`${base}/hosting/prepare`])
 })

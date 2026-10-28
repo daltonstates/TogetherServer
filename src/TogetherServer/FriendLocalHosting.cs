@@ -31,6 +31,51 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     Func<SharedWorldPeerRoot, IDisposable>? beginPreparation = null,
     Func<SharedWorldPeerRoot, CancellationToken, Task>? announceHostingState = null)
 {
+    private readonly object preparationSync = new();
+    private readonly SemaphoreSlim preparationGate = new(1, 1);
+    private readonly Dictionary<(object Connection, Guid ProfileId), Task<LocalHostingStatus>> preparations = [];
+
+    // Application-owned work: a response consumer may leave, cancel its HTTP
+    // wait or close a dialog without canceling an already authorized prepare.
+    // There is no Start continuation here. A later Start is always explicit.
+    internal Task<LocalHostingStatus> PrepareInBackgroundAsync(Guid profileId, LocalHostingPrepareRequest request,
+        CancellationToken applicationStopping)
+    {
+        var retained = friend.RetainLocalHostingConnection();
+        if (retained is null) return Task.FromResult(Unavailable("NotPaired", "Choose a saved Host connection first."));
+        var key = ((object)retained.Link, profileId);
+        lock (preparationSync)
+        {
+            if (preparations.TryGetValue(key, out var running))
+            {
+                retained.Dispose();
+                return running;
+            }
+            var task = Task.Run(async () =>
+            {
+                using (retained)
+                {
+                    var entered = false;
+                    try
+                    {
+                        await preparationGate.WaitAsync(applicationStopping);
+                        entered = true;
+                        if (!friend.CurrentLocalHostingConnection(retained))
+                            return Unavailable("ConnectionChanged", "The selected Host changed. Review this server again.");
+                        return await PrepareAsync(profileId, request, applicationStopping);
+                    }
+                    finally
+                    {
+                        if (entered) preparationGate.Release();
+                        lock (preparationSync) preparations.Remove(key);
+                    }
+                }
+            }, CancellationToken.None);
+            preparations.Add(key, task);
+            return task;
+        }
+    }
+
     private bool HasLatestSource => latestSource is not null || latestSourceProgress is not null;
 
     private Task<WorldPeerLatestSourceResult> LatestSourceAsync(SharedWorldPeerRoot root,
@@ -272,13 +317,26 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     internal async Task<LocalHostingStatus> PrepareAsync(Guid profileId, LocalHostingPrepareRequest request,
         CancellationToken cancellationToken = default)
     {
+        using var attempt = StartAttemptDiagnostics.Begin(data, profileId, "PrepareHosting");
+        attempt.ReportPhase("PreparingSave");
         using var connection = friend.RetainLocalHostingConnection();
-        if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        if (connection is null)
+        {
+            attempt.Fail("NotPaired", "Choose a saved Host connection first.");
+            return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        }
         if (SharedSaveTransferProgress.BlocksHosting(connection.Link.SharedWorldStatus(profileId)))
+        {
+            attempt.Fail("SharedSaveTransferInProgress", "The relevant save is still receiving, verifying or confirming its receipt.");
             return Unavailable("SharedSaveTransferInProgress", "Wait for the current shared save to finish receiving and verifying before preparing hosting.");
-        using var progress = hostingProgress.Begin(connection.Link, profileId);
+        }
+        using var job = BeginHostingJob(connection, profileId, "Hosting preparation", attempt);
+        using var progress = HostingProgressFor(connection.Link, profileId).Begin(connection.Link, profileId, job, attempt.ReportPhase);
         var result = await PrepareForConnectionAsync(connection, profileId, request, progress, cancellationToken);
         progress.Complete(result.Ok, result.Message);
+        attempt.Complete(result.Ok, result.Code, result.Message, "PreparationFailed");
+        if (result.Ok) job.Complete(result.Code, result.Message);
+        else job.Fail(result.Code, result.Message);
         return result;
     }
 

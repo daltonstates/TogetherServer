@@ -77,7 +77,7 @@ public sealed record RecentServerSession(Guid ProfileId, Guid OperationId, strin
     int? MaximumTrustedOnlinePlayers, ServerSessionBackupResult? BackupResult);
 
 public sealed record RecentServerSessionsResult(bool Ok, string Code, string Message, Guid ProfileId,
-    IReadOnlyList<RecentServerSession> Sessions);
+    IReadOnlyList<RecentServerSession> Sessions, IReadOnlyList<StartAttemptDiagnostic>? Attempts = null);
 
 public static class BackupKinds
 {

@@ -10,6 +10,7 @@ internal static class SharedSaveCompressionChecks
 {
     internal static async Task RunAsync(string root)
     {
+        await SlowSaveTransferChecks.RunAsync(root);
         static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
         var payload = Enumerable.Repeat((byte)'s', SharedWorldService.ChunkBytes).ToArray();
         var compressed = SharedSaveCompression.Compress(payload)!;

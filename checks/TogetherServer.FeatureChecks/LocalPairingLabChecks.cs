@@ -148,7 +148,9 @@ internal static class LocalPairingLabChecks
             Require(!LocalPairingLabMode.AllowsRequest(method, $"/api/local/friend/{id}/shared-world/hosting/access/check"),
                 "hosting access check admitted an unreviewed method");
         var group = new string('A', 64);
-        Require(LocalPairingLabMode.AllowsRequest("GET", "/api/local/world-peers") &&
+        Require(LocalPairingLabMode.AllowsRequest("GET", "/api/local/background-jobs") &&
+            !LocalPairingLabMode.AllowsRequest("POST", "/api/local/background-jobs") &&
+            LocalPairingLabMode.AllowsRequest("GET", "/api/local/world-peers") &&
             LocalPairingLabMode.AllowsRequest("GET", "/api/local/world-peers/work") &&
             LocalPairingLabMode.AllowsRequest("PUT", $"/api/local/world-peers/{group}/sharing") &&
             LocalPairingLabMode.AllowsRequest("POST", $"/api/local/world-peers/{group}/connect"), "fixed peer routes blocked");

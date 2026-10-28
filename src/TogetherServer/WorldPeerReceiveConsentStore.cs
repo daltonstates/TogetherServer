@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -17,9 +18,27 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
     private sealed record State(int Schema, IReadOnlyList<Entry> Overrides, bool Denied = false);
     private sealed class Failure { internal bool Denied; }
     private static readonly ConditionalWeakTable<object, Failure> Failures = new();
+    private static readonly ConditionalWeakTable<object,
+        ConcurrentDictionary<(SharedWorldPeerRoot Root, Guid Device), WorldPeerReceiveConsentDecision>> Observations = new();
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     { MaxDepth = 12, UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
     private object Sync => SharedWorldMutationGate.For(data.RootPath);
+
+    // Display-only process observation, shared across aliases/LocalData wrappers
+    // for this same app directory. Reading active transfer progress must not
+    // wait for a world mutation lock or reopen protected consent state. Actual
+    // transfers and launch continue to call Read/Effective authoritatively.
+    internal bool? ObservedEnabled(SharedWorldPeerRoot root, Guid deviceId)
+    {
+        if (Failures.TryGetValue(Sync, out var failure) && failure.Denied) return false;
+        return Observations.TryGetValue(Sync, out var items) && items.TryGetValue((root, deviceId), out var item)
+            ? item.Enabled : null;
+    }
+    private WorldPeerReceiveConsentDecision Observe(SharedWorldPeerRoot root, Guid deviceId, WorldPeerReceiveConsentDecision decision)
+    {
+        Observations.GetValue(Sync, _ => new())[(root, deviceId)] = decision;
+        return decision;
+    }
 
     internal WorldPeerReceiveConsentDecision Read(SharedWorldPeerRoot root, Guid deviceId)
     {
@@ -27,9 +46,13 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
         {
             if (!SharedWorldPeerTrust.ValidRoot(root)) return new(false, -1, true);
             var state = Load();
-            if (state is null || state.Denied) return new(false, -1, true);
+            if (state is null || state.Denied)
+            {
+                Failures.GetValue(Sync, _ => new Failure()).Denied = true;
+                return Observe(root, deviceId, new(false, -1, true));
+            }
             var item = state.Overrides.SingleOrDefault(item => item.Root == root && item.DeviceId == deviceId);
-            return item is null ? new(null, 0) : new(item.Enabled, item.Revision);
+            return Observe(root, deviceId, item is null ? new(null, 0) : new(item.Enabled, item.Revision));
         }
     }
 
@@ -49,6 +72,8 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
                 if (state is null || state.Denied)
                 {
                     if (enabled) throw new InvalidDataException("Receiving consent needs local review before it can be enabled.");
+                    Failures.GetValue(Sync, _ => new Failure()).Denied = true;
+                    Observe(root, deviceId, new(false, -1, true));
                     return true; // Corrupt or exhausted consent state already denies every receive path.
                 }
                 var old = state.Overrides.SingleOrDefault(item => item.Root == root && item.DeviceId == deviceId);
@@ -67,9 +92,15 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
                 }
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(new State(1, entries, denied), Json);
                 if (bytes.Length > MaximumBytes && !enabled)
+                {
                     bytes = JsonSerializer.SerializeToUtf8Bytes(new State(1, state.Overrides, true), Json);
+                    denied = true;
+                }
                 if (bytes.Length > MaximumBytes) throw new InvalidDataException("Receiving consent storage is oversized.");
                 data.SaveProtected(StateName, bytes);
+                if (denied) Failures.GetValue(Sync, _ => new Failure()).Denied = true;
+                Observe(root, deviceId, new(denied ? false : enabled,
+                    entries.LastOrDefault(item => item.Root == root && item.DeviceId == deviceId)?.Revision ?? -1, denied));
                 return true;
             }
             catch

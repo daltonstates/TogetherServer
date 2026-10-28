@@ -578,24 +578,101 @@ internal static class SharedRosterBootstrapChecks
             await fixture.PullAsync(cancellation.Token, (received, total) =>
             {
                 progress.Add((received, total));
-                if (received > 0 && received < total) cancellation.Cancel();
+                // The read callback now reports partial decoded bytes before
+                // a complete chunk exists. Cancel after its committed repeat.
+                if (received == SharedWorldService.ChunkBytes && progress.Count(item => item.Received == received) == 2)
+                    cancellation.Cancel();
             });
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { canceled = true; }
         var totalBytes = fixture.PublishedPayload.LongLength;
-        Require(canceled && progress.SequenceEqual(new[]
-            { (0L, totalBytes), ((long)SharedWorldService.ChunkBytes, totalBytes) }) &&
+        Require(canceled && progress[0] == (0L, totalBytes) &&
+            progress.Any(item => item.Received > 0 && item.Received < SharedWorldService.ChunkBytes) &&
+            progress[^1] == ((long)SharedWorldService.ChunkBytes, totalBytes) &&
             fixture.ChunkRequests == 1 && fixture.ReceiptRequests == 0 &&
             FriendLink.ReadReceivedLatest(fixture.ReceiveRoot) is null,
             "byte progress ignored cancellation or promoted an incomplete save");
         progress.Clear();
         var resumed = await fixture.PullAsync(reportProgress: (received, total) => progress.Add((received, total)));
         Require(resumed is { Ok: true, Code: "SaveReceived", Status.ReceiptConfirmed: true } &&
-            progress.SequenceEqual(new[]
-                { ((long)SharedWorldService.ChunkBytes, totalBytes), (totalBytes, totalBytes) }) &&
+            progress[0] == ((long)SharedWorldService.ChunkBytes, totalBytes) && progress[^1] == (totalBytes, totalBytes) &&
+            progress.All(item => item.Received >= SharedWorldService.ChunkBytes && item.Total == totalBytes) &&
             fixture.ChunkRequests == 2 && fixture.ReceiptRequests == 1 &&
             FriendLink.ReadReceivedLatest(fixture.ReceiveRoot)?.VersionHash == fixture.PublishedVersion!.VersionHash,
             "resumed byte progress lost its partial baseline or bypassed complete verification and receipt");
+    }
+
+    internal static async Task RunSlowReceiveProgressAsync(string root)
+    {
+        foreach (var gzip in new[] { false, true })
+        {
+            using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+            fixture.Current = fixture.Child(fixture.Bootstrap);
+            fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+            fixture.PrepareFirstSave(randomHalf: gzip);
+            await fixture.ConnectAsync();
+            Require((await fixture.SetConsentAsync(true)).Ok, "The slow transfer did not obtain synthetic consent.");
+            SlowSaveTransferChecks.SlowBody? slow = null;
+            fixture.ChunkContent = bytes =>
+            {
+                if (!gzip) return new StreamContent(slow = new(bytes));
+                var compressed = SharedSaveCompression.Compress(bytes) ?? throw new InvalidOperationException("Synthetic gzip payload did not compress.");
+                // Same decoded stream delivered by HttpClient's negotiated
+                // GZip handler, over deliberately paused compressed transport.
+                return new StreamContent(new System.IO.Compression.GZipStream(slow = new(compressed),
+                    System.IO.Compression.CompressionMode.Decompress));
+            };
+            var receive = fixture.PullAsync();
+            for (var index = 0; slow is null && index < 100; index++) await Task.Delay(10);
+            Require(slow is not null, "The original-Host receive did not reach its actual response body.");
+            await slow!.Paused.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var measured = fixture.ReceiveStatus;
+            Require(!receive.IsCompleted && measured is { ReceivedBytes: > 0, TransferPhase: "Receiving" } &&
+                measured.ReceivedBytes < measured.TotalBytes && measured.TotalBytes == fixture.PublishedPayload.LongLength,
+                "Original-Host progress waited for a whole chunk or mixed gzip wire bytes with signed payload totals.");
+            var job = BackgroundJobs.For(fixture.Data).Read().Jobs.Single(item => item.Operation == "Save download");
+            Require(job.ReceivedBytes == measured.ReceivedBytes && job.TotalBytes == measured.TotalBytes,
+                "Original-Host streaming bytes did not reach the application job projection.");
+            fixture.ChunkContent = bytes => new StreamContent(new SlowSaveTransferChecks.SlowBody(bytes, pause: false));
+            slow.Release.TrySetResult();
+            Require((await receive.WaitAsync(TimeSpan.FromSeconds(20))) is { Ok: true, Status.ReceiptConfirmed: true },
+                "The deliberately slow original-Host transfer failed full verification/receipt.");
+        }
+        await CorruptCompletedPartialProgressAsync(root);
+    }
+
+    private static async Task CorruptCompletedPartialProgressAsync(string root)
+    {
+        using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+        fixture.Current = fixture.Child(fixture.Bootstrap);
+        fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+        fixture.PrepareFirstSave(extraCompletedFile: true);
+        await fixture.ConnectAsync();
+        Require((await fixture.SetConsentAsync(true)).Ok, "The corrupt staged retry did not obtain synthetic consent.");
+        var stage = Path.Combine(fixture.ReceiveRoot, ".partial-" + fixture.PublishedVersion!.VersionHash, SharedWorldService.PayloadDirectory);
+        Directory.CreateDirectory(stage);
+        var changed = Path.Combine(stage, "synthetic.db");
+        File.WriteAllBytes(changed, fixture.PublishedPayload);
+        File.WriteAllBytes(Path.Combine(stage, "synthetic.fwl"), fixture.ExtraPayload);
+        fixture.ChunkContent = bytes => new StreamContent(new SlowSaveTransferChecks.SlowBody(bytes, pause: false));
+        var tampered = false;
+        var samples = new List<long>();
+        var total = fixture.PublishedPayload.LongLength + fixture.ExtraPayload.LongLength;
+        var received = await fixture.PullAsync(reportProgress: (bytes, declared) =>
+        {
+            Require(declared == total && bytes >= 0 && bytes <= declared,
+                "Retransmitting a changed completed staged file exceeded the signed logical total.");
+            samples.Add(bytes);
+            if (!tampered && bytes == total)
+            {
+                tampered = true;
+                File.WriteAllBytes(changed, fixture.PublishedPayload.Select(value => (byte)(value ^ 0x5a)).ToArray());
+            }
+        });
+        Require(tampered && samples[0] == total && samples.Contains(fixture.ExtraPayload.LongLength) && samples[^1] == total &&
+            received is { Ok: true, Status.ReceiptConfirmed: true } && fixture.ChunkRequests == 2 &&
+            FriendLink.ReadReceivedLatest(fixture.ReceiveRoot)?.VersionHash == fixture.PublishedVersion.VersionHash,
+            "The slow multi-file retry lost the intact completed file's baseline or skipped complete verification/receipt.");
     }
 
     private static async Task RecoveredFloorReceivesSaveAsync(string root)
@@ -832,7 +909,9 @@ internal static class SharedRosterBootstrapChecks
         public int AuthorityRequests { get; private set; }
         public SharedWorldVersion? PublishedVersion { get; private set; }
         public byte[] PublishedPayload { get; private set; } = [];
+        public byte[] ExtraPayload { get; private set; } = [];
         public SharedWorldReceipt? ConfirmedReceipt { get; private set; }
+        public Func<byte[], HttpContent>? ChunkContent { get; set; }
         public string? LastAnchor { get; private set; }
         public long LastOffset { get; private set; } = -1;
         public string CacheName => $"shared-world-roster-{deviceId:N}-{ProfileId:N}.protected";
@@ -878,15 +957,25 @@ internal static class SharedRosterBootstrapChecks
 
         public void SaveCache(SharedWorldRoster roster) => Data.SaveProtected(CacheName, JsonSerializer.SerializeToUtf8Bytes(roster, Json));
 
-        public void PrepareFirstSave()
+        public void PrepareFirstSave(bool randomHalf = false, bool extraCompletedFile = false)
         {
             PublishedPayload = Enumerable.Range(0, SharedWorldService.ChunkBytes + 31)
                 .Select(index => (byte)(index % 251)).ToArray();
+            if (randomHalf)
+            {
+                var half = RandomNumberGenerator.GetBytes(16384);
+                for (var index = 0; index < PublishedPayload.Length; index++) PublishedPayload[index] = half[index % half.Length];
+            }
+            ExtraPayload = extraCompletedFile ? Enumerable.Range(0, 47).Select(index => (byte)index).ToArray() : [];
+            var files = new List<SharedWorldFile>
+            {
+                new("synthetic.db", PublishedPayload.LongLength, Convert.ToHexString(SHA256.HashData(PublishedPayload)))
+            };
+            if (extraCompletedFile) files.Add(new("synthetic.fwl", ExtraPayload.LongLength, Convert.ToHexString(SHA256.HashData(ExtraPayload))));
             PublishedVersion = SharedWorldService.SignVersion(new(1, Current.GroupId, 1, null,
                 ProfileId, GameKinds.Valheim, "synthetic-roster-repair", DateTimeOffset.UtcNow,
                 SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(2456, false),
-                [new("synthetic.db", PublishedPayload.LongLength,
-                    Convert.ToHexString(SHA256.HashData(PublishedPayload)))], "", "", ""), owner);
+                files, "", "", ""), owner);
         }
 
         public void Seed(bool includeChild = true)
@@ -1052,7 +1141,9 @@ internal static class SharedRosterBootstrapChecks
                 ChunkRequests++;
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new ByteArrayContent(PublishedPayload.AsSpan((int)offset,
+                    Content = ChunkContent?.Invoke(PublishedPayload.AsSpan((int)offset,
+                        Math.Min(SharedWorldService.ChunkBytes, PublishedPayload.Length - (int)offset)).ToArray()) ??
+                        new ByteArrayContent(PublishedPayload.AsSpan((int)offset,
                         Math.Min(SharedWorldService.ChunkBytes, PublishedPayload.Length - (int)offset)).ToArray())
                 });
             }

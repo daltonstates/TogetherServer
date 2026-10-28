@@ -218,7 +218,7 @@ internal sealed partial class WorldPeerService
                 inventory: localCopies,
                 additionalAuthorization: () => SeedSenderAllowed(group, request)) is { } reused)
             return new("SeedKnown", version.VersionHash, Receipt: reused.Receipt);
-        using var activity = SharedSaveTransferProgress.Begin(data, group.Root, version.VersionHash);
+        using var activity = SharedSaveTransferProgress.Begin(data, group.Root, version.VersionHash, group.Name, version.WorldId);
         var vault = descriptor.Branch is { } branch ? SharedWorldBranchVault.Root(data, branch) : ReceivedRoot(data, group);
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);
         var receiveGate = FriendLink.ReceiveGateFor(vault);
@@ -267,6 +267,8 @@ internal sealed partial class WorldPeerService
         }
         catch
         {
+            SharedSaveTransferProgress.Fail(data, group.Root, version.VersionHash, "PeerTransferFailed",
+                "The approved peer transfer did not finish. Existing verified saves were kept; a later background check may retry.");
             SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
             throw;
         }
@@ -308,7 +310,6 @@ internal sealed partial class WorldPeerService
             SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
             return new("SeedPaused", version.VersionHash);
         }
-        SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", 0, total);
         var stage = SharedWorldService.SafeChild(vault, ".partial-" + version.VersionHash);
         var payload = Path.Combine(stage, SharedWorldService.PayloadDirectory);
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, payload);
@@ -319,7 +320,19 @@ internal sealed partial class WorldPeerService
             await ReuseMatchingFilesAsync(group, descriptor, vault, payload, anchor, localCopies, cancellationToken,
                 () => SeedSenderAllowed(group, request));
         }
-        long received = 0;
+        // Every seed request is a separate bounded transport pass. Retained
+        // logical file bytes are its baseline, including completed files after
+        // an earlier file in the manifest. Never publish a synthetic zero at
+        // each request or count JSON/base64/gzip wire bytes as save progress.
+        long received = Directory.Exists(Path.Combine(vault, version.VersionHash)) ? total : version.Files.Sum(file =>
+        {
+            var path = SharedWorldService.SafeChild(payload, file.Path);
+            if (!File.Exists(path)) return 0L;
+            var length = new FileInfo(path).Length;
+            return length > file.Length ? 0 : length == file.Length ? length :
+                length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes;
+        });
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
         if (!Directory.Exists(Path.Combine(vault, version.VersionHash)))
             for (var index = 0; index < version.Files.Count; index++)
             {
@@ -328,11 +341,9 @@ internal sealed partial class WorldPeerService
                 SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 using var output = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
-                if (output.Length == file.Length) { received += file.Length; continue; }
+                if (output.Length == file.Length) continue;
                 var offset = output.Length <= file.Length ? output.Length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes : 0;
                 output.SetLength(offset);
-                received += offset;
-                SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
                 if (seed.Chunk is null || request.FileIndex != index || request.ChunkOffset != offset)
                     return new("SeedChunk", version.VersionHash, FileIndex: index, ChunkOffset: offset);
                 if (seed.Chunk.Length != Math.Min(SharedWorldService.ChunkBytes, file.Length - offset))

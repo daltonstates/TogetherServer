@@ -35,7 +35,7 @@ internal sealed partial class FriendLocalHostingService
     {
         using var connection = friend.RetainLocalHostingConnection();
         if (connection is null) return new(false, "NotPaired", "Choose the saved Host connection first.");
-        using var progress = hostingProgress.Begin(connection.Link, profileId);
+        using var progress = HostingProgressFor(connection.Link, profileId).Begin(connection.Link, profileId);
         LocalHostingActionResult Finished(bool ok, string code, string message)
         {
             progress.Complete(ok, message);

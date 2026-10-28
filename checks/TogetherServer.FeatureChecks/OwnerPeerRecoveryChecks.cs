@@ -89,6 +89,7 @@ internal static class OwnerPeerRecoveryChecks
         var recoveredOffer = SharedWorldSeparateCopyStore.PrepareOwnerOffer(branchVault, roster,
             owner, endpoint, pin, authority, memberBranch);
         var recovered = store.Declare(recoveredOffer, branchVault, owner, true, memberBranch);
+        CompanionContinuationChecks.Run(data, roster, recovered, ownerBranch);
         Require(recovered.Schema == 3 && recovered.SourceBranch?.BranchHash == memberBranch.BranchHash &&
             recovered.Offer.Version.VersionHash == progress.VersionHash && SharedWorldSeparateCopyStore.Verify(recovered) &&
             FriendLink.ReadReceivedLatest(store.RetainedRoot(recovered))?.VersionHash == progress.VersionHash &&

@@ -371,7 +371,7 @@ internal static partial class LocalHostingChecks
             catch (InvalidOperationException error) when (error.Message == "No process operation is permitted.")
             { reachedDriver = true; }
             if (fault is "none" or "connection")
-                Require(reachedDriver && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1 && observations == 2,
+                Require((reachedDriver || result?.Code == "LaunchFailed") && fixture.Driver.ProcessAttempts == 1 && announcements == 1 && resolutions == 1 && observations == 2,
                     "an exact verified Start or advisory connection warning did not reach only the final fake launch boundary after one latest resolution");
             else
             {

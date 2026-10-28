@@ -6,6 +6,26 @@ Verified receivers can seed completed copies through outbound pinned requests;
 explicit local hosting checks select one latest descendant and prepare fresh
 storage. See [current implementation status](06-IMPLEMENTATION-STATUS.md).
 
+Save observation is separate from discovery: page/status reads use retained
+observations and bounded signed metadata, without hashing complete saves or
+starting discovery. The existing application catch-up owner checks idle worlds
+about once a minute (peer jitter 54–60 seconds), with failure backoff bounded
+at five minutes. Publication, Stop, reconnect and material permission changes
+invalidate that schedule; an explicit hosting request performs fresh scoped
+checks. Progress and player/time polling do not renew freshness. Transport
+counters describe decoded original payload bytes, including retained resume
+bytes, independently of gzip or JSON envelope size.
+
+Application-owned background jobs coalesce periodic work and exact downloads,
+retain up to 100 completed entries for seven days and project at most 512
+entries including bounded active/waiting work. Thirty seconds without a material
+report is displayed as stalled, never complete; interrupted jobs remain
+diagnostic evidence after restart. The fixed loopback jobs GET requires the
+local header and accepts no query/body. Jobs and observed progress cannot
+authorize lifecycle work. Explicit remote Start preparation runs outside the
+app settings gate and unrelated remote actions, with current authorization
+repeated inside the final launch gate.
+
 `WorldPeerService` identifies a world by its pinned original owner key, profile
 and group, independent of endpoint or successor-local credential ID. Protected
 membership and append-only signed announcements retain directory, session,

@@ -14,6 +14,19 @@ const empty: RecentServerSessionsResult = {
 }
 
 describe('RecentSessions', () => {
+  it('keeps a prelaunch refusal separate from actual sessions and invents no runtime or player evidence', async () => {
+    render(<RecentSessions profileId={profileId} visible loader={async () => ({ ...empty, attempts: [{
+      id: '33333333-3333-4333-8333-333333333333', profileId, operationId: '44444444-4444-4444-8444-444444444444',
+      targetDeviceId: null, operation: 'RemoteStart', phase: 'Freshness', code: 'NewerSharedSaveAvailable',
+      message: 'The target Host needs the newer save. No download has started.', requestedUtc: '2026-10-28T12:00:00Z',
+      completedUtc: '2026-10-28T12:00:01Z', relatedJobId: null, kind: 'BlockedStart' }] })} />)
+    expect(await screen.findByText('Start blocked before launch')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Start and preparation attempts' })).toHaveTextContent('NewerSharedSaveAvailable')
+    expect(screen.getByText('No saved sessions yet')).toBeInTheDocument()
+    expect(screen.queryByText('Duration')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reached Ready')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reported player counts')).not.toBeInTheDocument()
+  })
   it('includes known sub-millisecond runtime in the day drill-down and excludes an interval ending at the day boundary', () => {
     const summary = weeklySummaryFixture().summary!
     const source = summary.sessions![3]

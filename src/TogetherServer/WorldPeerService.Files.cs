@@ -542,10 +542,12 @@ internal sealed partial class WorldPeerService
         WorldPeerSaveDescriptor descriptor, string vault, SharedWorldVersion? existing,
         CancellationToken cancellationToken, IReadOnlyList<LocalSave> localCopies)
     {
-        using var activity = SharedSaveTransferProgress.Begin(data, group.Root, descriptor.Version.VersionHash);
+        using var activity = SharedSaveTransferProgress.Begin(data, group.Root, descriptor.Version.VersionHash, group.Name, descriptor.Version.WorldId);
         try { await ReceivePeerSaveCoreAsync(group, route, descriptor, vault, existing, cancellationToken, localCopies); }
         catch
         {
+            SharedSaveTransferProgress.Fail(data, group.Root, descriptor.Version.VersionHash, "PeerTransferFailed",
+                "The approved peer transfer did not finish. Existing verified saves were kept; a later background check may retry.");
             SharedSaveTransferProgress.Clear(data, group.Root, descriptor.Version.VersionHash);
             throw;
         }
@@ -602,13 +604,22 @@ internal sealed partial class WorldPeerService
             {
                 if (!await ReceiveAllowedAsync(group, cancellationToken)) throw new OperationCanceledException("Save consent changed.");
                 observation?.Requested(index, output.Position);
-                var chunk = await SendPeerAsync(group, route, WorldPeerOperations.Chunk, cancellationToken,
-                    versionHash: version.VersionHash, fileIndex: index, chunkOffset: output.Position);
+                var chunkStart = received;
+                var expectedChunkBytes = Math.Min(SharedWorldService.ChunkBytes, file.Length - output.Position);
+                long chunkObserved = 0;
+                var chunk = await SendPeerProgressAsync(group, route, WorldPeerOperations.Chunk, cancellationToken,
+                    versionHash: version.VersionHash, fileIndex: index, chunkOffset: output.Position,
+                    receivedProgress: bytes =>
+                    {
+                        var logical = Math.Min(bytes, expectedChunkBytes);
+                        observation?.Received(logical - chunkObserved);
+                        chunkObserved = logical;
+                        SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", chunkStart + logical, total);
+                    });
                 if (!await ReceiveAllowedAsync(group, cancellationToken)) throw new OperationCanceledException("Save consent changed.");
                 if (chunk.Length != Math.Min(SharedWorldService.ChunkBytes, file.Length - output.Position))
                     throw new InvalidDataException("The peer save chunk length changed.");
                 await output.WriteAsync(chunk, cancellationToken);
-                observation?.Received(chunk.Length);
                 if (output.Position == file.Length) observation?.FileCompleted();
                 transferred += chunk.Length;
                 received += chunk.Length;
@@ -652,6 +663,8 @@ internal sealed partial class WorldPeerService
         // Read leases keep every verified file unchanged through the promotion.
         using var verified = WorldPeerVerifiedCopy.Open(data.RootPath, destination, version, cancellationToken);
         measurement.Dispose(); // Hash/lease/promotion work; receipt commit is separate.
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Receipt",
+            SharedWorldService.BoundedTotalBytes(version.Files), SharedWorldService.BoundedTotalBytes(version.Files));
         SharedWorldReceipt? receipt = null;
         void Commit()
         {

@@ -57,11 +57,12 @@ export function SettingsCard({ icon, title, description, summary, actionLabel, o
 
 // Mount only while open. Keeping the native dialog open is independent of changing
 // callbacks and pending actions, so refreshing a settings snapshot preserves focus.
-export function SettingsDialog({ title, description, onClose, busy = false, children, footer, wide = false }: {
+export function SettingsDialog({ title, description, onClose, busy = false, allowBusyClose = false, children, footer, wide = false }: {
   title: string
   description?: string
   onClose: () => void
   busy?: boolean
+  allowBusyClose?: boolean
   children: ReactNode
   footer?: ReactNode
   wide?: boolean
@@ -110,12 +111,12 @@ export function SettingsDialog({ title, description, onClose, busy = false, chil
   return <dialog ref={dialogRef} className={`settings-dialog${wide ? ' settings-dialog-wide' : ''}`}
     aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
     aria-modal="true" aria-busy={busy || undefined} tabIndex={-1}
-    onCancel={event => { event.preventDefault(); if (!busy) onClose() }}
+    onCancel={event => { event.preventDefault(); if (!busy || allowBusyClose) onClose() }}
     onKeyDown={event => {
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
-        if (!busy) onClose()
+        if (!busy || allowBusyClose) onClose()
       }
       if (event.key === 'Tab') {
         const controls = focusableElements(event.currentTarget)
@@ -134,7 +135,7 @@ export function SettingsDialog({ title, description, onClose, busy = false, chil
         <h2 id={`${id}-title`}>{title}</h2>
         {description && <p id={`${id}-description`}>{description}</p>}
       </div>
-      <Button className="secondary icon-button settings-dialog-close" aria-label={`Close ${title}`} title={`Close ${title}`} disabled={busy} onClick={onClose}>
+      <Button className="secondary icon-button settings-dialog-close" aria-label={`Close ${title}`} title={`Close ${title}`} disabled={busy && !allowBusyClose} onClick={onClose}>
         <Icon name="close" size={17} />
       </Button>
     </header>

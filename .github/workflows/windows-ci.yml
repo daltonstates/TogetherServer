@@ -845,6 +845,8 @@ jobs:
             legacy-sha256: 273E97AAF0C402B84CAD4930F3D3C5DE43F8A1A87FE77608F2E3E18B9A81D265
           - legacy-version: '0.3.3'
             legacy-sha256: C09A4D086145475FF94DEF32CA7AA95AA1AD260D8EDF074E3EB83D36E03280CB
+          - legacy-version: '0.3.3.23'
+            legacy-sha256: 1ED72FF087A371091DA9CEF83B5863FB93C8FF0F02D672FFDE09E164237487D5
     name: Verify ${{ matrix.legacy-version }} compatibility
     runs-on: windows-latest
     timeout-minutes: 20

@@ -1,0 +1,15 @@
+.background-jobs-menu { position: relative; }
+.background-jobs-menu > summary { display: flex; align-items: center; gap: .45rem; cursor: pointer; list-style: none; padding: .45rem .6rem; border-radius: 6px; font-size: .8rem; }
+.background-jobs-menu > summary::-webkit-details-marker { display: none; }
+.background-jobs-menu > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.background-jobs-count { padding: 0 .35rem; border-radius: 8px; background: var(--color-accent-soft); }
+.background-jobs-panel { position: absolute; inset-inline-end: 0; inset-block-start: calc(100% + .5rem); z-index: 100; inline-size: min(25rem, 85vw); max-block-size: 65vh; overflow: auto; padding: 1rem; background: var(--color-surface, #202329); border: 1px solid var(--color-border); border-radius: 10px; box-shadow: 0 12px 35px #0005; }
+.background-jobs-panel header, .background-jobs-panel small { display: block; }
+.background-jobs-panel ol { list-style: none; margin: .75rem 0 0; padding: 0; }
+.background-job { padding: .75rem 0; border-block-start: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.background-job > div { display: flex; justify-content: space-between; gap: .75rem; }
+.background-job p { margin: .4rem 0; }
+.background-job small { color: var(--color-muted); font-size: .75rem; }
+.background-job progress { inline-size: 100%; }
+.background-job.job-failed > div span, .background-job.job-interrupted > div span, .background-job.job-stalled > div span { color: var(--color-warning, #e7ac69); }
+@media (max-width: 760px) { .background-jobs-menu > summary > span:first-of-type { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); } }

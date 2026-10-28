@@ -7,6 +7,111 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## 0.3.3.24 candidate: background shared hosting and failed-attempt diagnostics
+
+This source starts from the complete published .23 application at `1ff236c`
+and its release-documentation HEAD `0e53ca4`, on
+`review/full-acceptance-shared-transfers-23-20261028`. The starting worktree
+was clean. No application, game/console fixture, browser, native dialog or
+installer was launched on the owner's desktop. Three delegated workers used
+the inherited configured model without a model override; integration, builds
+and commits remained serialized by the coordinator.
+
+Code diagnosis of the new reports:
+
+- `NewerSharedSaveAvailable` was a canonical refusal, not evidence of a
+  transfer. Remote Start bypassed the preparation path used by local owner
+  Start, and the remote journal replaced its explanation with a generic
+  failure. A string-only adapter also mislabeled history conflicts as that
+  newer-save result. The typed reason now survives, and an explicit remote
+  Start uses existing latest-save preparation before its final launch checks.
+- The receiver buffered a complete bounded HTTP chunk before publishing
+  bytes. Status polling could additionally wait behind transfer locks and
+  rehash the complete received save. Streaming decoded-byte observations now
+  use separate progress storage; passive reads do no payload verification.
+- A returning original Host can run a received continuation under a fresh
+  local profile while paired PCs still address its original assigned profile.
+  Status and controls now resolve one signed, locally managed continuation
+  of that exact canonical world on the same PC. Unknown or ambiguous identity
+  fails closed. An announcement never supplies occupancy or reachability.
+- Preparation was tied to the page's HTTP cancellation and held the app-wide
+  mode gate. It is now owned by the application, coalesced by connection/server
+  and observed independently. Closing the dialog clears its Start intent;
+  background completion alone cannot launch a server.
+
+The app-wide Background jobs menu shows save checks/downloads/preparation,
+server/world, phase, logical bytes and percentage, typed failures and retries.
+Known-length progress counts resumed original file bytes; gzip/envelope bytes
+are never compared with a save total. Unknown totals stay indeterminate.
+Verification and receipt remain distinct. Periodic jobs reuse one scope;
+history is bounded to 100 terminal entries/seven days, with at most 512 entries
+including bounded active/waiting jobs. No material progress for 30 seconds is
+shown as stalled; active persisted jobs become Interrupted on restart.
+
+The existing catch-up scheduler retains its approximately one-minute idle
+freshness interval (54–60 seconds for peers) and at most five-minute failure
+backoff. Material publication/Stop/reconnection/permission observations and
+explicit hosting requests invalidate due work. Page mounts and inexpensive
+status polls do not start another discovery/hash pass. Online approved PCs
+continue receiving and forwarding completed saves under current consent and
+permissions. Same-world transfer flights are shared with preparation.
+
+Remote Start remains available while the requesting PC receives a replica.
+Host locally remains blocked during receiving, verification and receipt.
+Up to four explicit target Start preparations can run without blocking
+unrelated remote actions; same-profile duplicates are refused and idempotent
+retries retain their original operation. The request has a ten-minute deadline,
+and current requester access, maintenance, save freshness, membership, process
+and transfer guards are repeated before process creation. No request is replayed
+after restart.
+
+Sessions now distinguish real runs from blocked Start/preparation/transfer
+attempts. The separate redacted journal retains timestamps, target, operation,
+phase, typed code, explanation and related jobs for 30 days/500 entries.
+Canonical history includes verified same-world local continuations. It does
+not invent runtime, readiness or players for attempts, or export world contents
+or credentials. The original/main Host is recognized by canonical owner key
+and owner-member identity. Other-host information is a compact accessible
+action-adjacent icon with current/historical reports, observation time and
+preserved authority/conflict review; viewing it does not select a Host.
+
+Local validation so far uses .NET 10.0.301 and SHA-256-verified Node 24.14.1:
+
+- Locked dependency installation/restore, TypeScript, lint and production UI
+  bundling passed. Vite retains its large-chunk advisory. The solution builds
+  with zero warnings/errors. No dependencies were added.
+- All 1,685 UI tests passed across 113 files in serial partitions: 120 shell
+  tests and 1,565 other tests. The 64 pure renderer/fixture checks passed.
+  Earlier integrated runs exposed stale large-banner assertions and async
+  shell-test waits; the final tests await the actual actions without increasing
+  their timeouts. Rendered/native review is separate.
+- An early full source run completed 95/99 groups. Its failures exposed a
+  progress-store test adapter, a priority timing budget, and an incorrect
+  Offline-row shortcut through preparation. Corrected scope checks and typed
+  launch expectations now pass; all six affected focused groups pass
+  across reruns, including the new Offline-row preparation guard. A fresh
+  99-group pass and hosted frozen-candidate verification are pending.
+- Slow byte observations exercise actual signed fake-HTTP response streams,
+  raw/gzip original downloads, original and successor forwarding pulls, and
+  gzip peer push with interruption/resume. Corrupt complete staging files are
+  rebased before retransmission; progress never exceeds the signed total.
+  A deliberately held job checkpoint leaves status/job reads responsive.
+  Unreadable job history is preserved while current jobs continue in memory.
+  No timing limits were increased. Expected fault-injection diagnostic messages
+  are not production failures. Source-link cases remain skipped when this test
+  account cannot create symbolic links.
+
+The candidate version is 0.3.3.24. Hosted compatibility now also pins and tests
+the exact published .23 portable digest, alongside the six existing lanes.
+This candidate has not been published; release readiness awaits the complete
+source and hosted results below.
+
+Physical laptop/main-PC behavior, real network transfer timing, real-game
+joins/save-load/restart, rendered/native acceptance and a new frozen-candidate
+hosted run remain separate requirements. The screenshot is unresolved physical
+evidence until those PCs verify the new source; prior .23 passes do not accept
+these fixes.
+
 ## 0.3.3.23 preview release
 
 [0.3.3.23 Preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.23)

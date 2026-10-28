@@ -25,7 +25,8 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
     private object? operation;
     private LocalHostingProgress? current;
 
-    internal Operation Begin(object connection, Guid profileId)
+    internal Operation Begin(object connection, Guid profileId, BackgroundJobs.Attempt? job = null,
+        Action<string>? observePhase = null)
     {
         lock (sync)
         {
@@ -40,7 +41,9 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
             timingTimestamp = time.GetTimestamp();
             current = new("Permission", "Working", "Checking the owner's current hosting permission.", now, now, 0, 0, null,
                 PhaseTimings: [new(timedPhase, 0)]);
-            return new(this, token);
+            job?.Report("Permission", message: current.Message);
+            observePhase?.Invoke("Permission");
+            return new(this, token, job, observePhase);
         }
     }
 
@@ -67,7 +70,8 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
             new LocalHostingPhaseTiming(phase, phaseTicks[phase] / TimeSpan.TicksPerMillisecond)).ToArray();
     }
 
-    internal sealed class Operation(LocalHostingProgressStore store, object token) : IDisposable
+    internal sealed class Operation(LocalHostingProgressStore store, object token,
+        BackgroundJobs.Attempt? job = null, Action<string>? observePhase = null) : IDisposable
     {
         internal void Report(string phase, string message)
         {
@@ -89,6 +93,8 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
                     TotalFiles = 0,
                     PhaseTimings = store.TimingCheckpoint(phase)
                 };
+                job?.Report(phase, message: message);
+                observePhase?.Invoke(phase);
             }
         }
 
@@ -118,6 +124,8 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
                     TotalFiles = value.TotalFiles,
                     PhaseTimings = store.TimingCheckpoint(value.Phase)
                 };
+                job?.Report(value.Phase, value.CompletedBytes, value.TotalBytes > 0 ? value.TotalBytes : null, value.Message);
+                observePhase?.Invoke(value.Phase);
             }
         }
 
@@ -145,6 +153,8 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
                     TotalFiles = 0,
                     PhaseTimings = store.TimingCheckpoint("Receiving")
                 };
+                job?.Report("Receiving", received, total, store.current.Message);
+                observePhase?.Invoke("Receiving");
             }
         }
 
@@ -170,12 +180,44 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
 
 internal sealed partial class FriendLocalHostingService
 {
-    private readonly LocalHostingProgressStore hostingProgress = new();
+    private readonly object progressSync = new();
+    private readonly Dictionary<(object Connection, Guid ProfileId), LocalHostingProgressStore> hostingProgress = [];
+
+    private LocalHostingProgressStore HostingProgressFor(object connection, Guid profileId)
+    {
+        lock (progressSync)
+        {
+            var key = (connection, profileId);
+            if (hostingProgress.TryGetValue(key, out var existing)) return existing;
+            if (hostingProgress.Count >= 128)
+            {
+                var stale = hostingProgress.FirstOrDefault(item => item.Value.Read(item.Key.Connection, item.Key.ProfileId)?.State != "Working");
+                if (stale.Value is not null) hostingProgress.Remove(stale.Key);
+                else throw new InvalidDataException("Too many hosting operations are already active.");
+            }
+            var store = new LocalHostingProgressStore();
+            hostingProgress.Add(key, store);
+            return store;
+        }
+    }
+
+    private BackgroundJobs.Attempt BeginHostingJob(FriendService.LocalHostingConnection connection,
+        Guid profileId, string operation, StartAttemptDiagnostics.Scope attempt)
+    {
+        var name = connection.Link.View().Profiles.SingleOrDefault(item => item.Id == profileId)?.Name ?? "Shared server";
+        var world = data.LoadSettings().Profiles.FirstOrDefault(item => item.Id == profileId ||
+            item.SeparateCopySourceProfileId == profileId)?.WorldId ?? "Shared world";
+        var job = BackgroundJobs.For(data).Begin($"local-hosting:{connection.Id}:{profileId}:{operation}",
+            profileId, name, world, operation);
+        attempt.LinkJob(job.Id);
+        return job;
+    }
 
     internal LocalHostingProgress? Progress(Guid profileId)
     {
         using var connection = friend.RetainLocalHostingConnection();
-        return connection is not null && friend.CurrentLocalHostingConnection(connection)
-            ? hostingProgress.Read(connection.Link, profileId) : null;
+        if (connection is null || !friend.CurrentLocalHostingConnection(connection)) return null;
+        lock (progressSync) return hostingProgress.TryGetValue((connection.Link, profileId), out var store)
+            ? store.Read(connection.Link, profileId) : null;
     }
 }

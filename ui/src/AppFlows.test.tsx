@@ -137,6 +137,7 @@ beforeEach(() => {
   friendDirectorySnapshot = friend()
   transport.read.mockReset().mockImplementation(async (path: string) => {
     if (path === '/api/local/snapshot') return state
+    if (path === '/api/local/background-jobs') return { jobs: [], activeCount: 0 }
     // The canonical endpoint admits locations independently of the UI's cache.
     if (path === '/api/local/servers') return {
       localServers: directoryWithSnapshot(null, state.mode === 'Host' ? state : localDirectorySnapshot).localServers,
@@ -529,6 +530,41 @@ describe('Task-first app and Host PC navigation', () => {
     fireEvent.click(await screen.findByText('Session recovery'))
     expect(screen.getByRole('region', { name: 'App reopened after an interruption' })).toBeVisible()
     expectNoMutation()
+  })
+
+  it('keeps the same measured background job while navigating to Settings and back to the server', async () => {
+    const stamp = new Date().toISOString()
+    let receivedBytes = 128
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) => path === '/api/local/background-jobs'
+      ? { jobs: [{ id: '22222222-2222-4222-8222-222222222222', profileId: id, serverName: 'Contract fixture', worldName: 'Synthetic world',
+        operation: 'Save download', phase: 'Receiving', state: 'Running', receivedBytes, totalBytes: 1024,
+        startedUtc: stamp, updatedUtc: stamp, completedUtc: null, resultCode: null, message: 'Receiving save bytes.', attempts: 1 }], activeCount: 1 }
+      : read(path, ...args))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const view = render(<App />)
+    try {
+      await act(async () => {})
+      const summary = workspaces().getByLabelText('Background jobs, 1 active')
+      const menu = summary.closest('details')!
+      fireEvent.click(summary)
+      expect(within(menu).getByRole('progressbar')).toHaveAttribute('value', '128')
+      await act(async () => { fireEvent.click(workspaces().getByRole('button', { name: 'App Settings' })) })
+      expect(screen.getByRole('region', { name: 'App Settings' })).toBeVisible()
+      expect(menu).not.toHaveAttribute('open')
+      receivedBytes = 640
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(workspaces().getByLabelText('Background jobs, 1 active')).toBe(summary)
+      fireEvent.click(summary)
+      expect(within(menu).getByRole('progressbar')).toHaveAttribute('value', '640')
+      expect(within(menu).getByText(/62% · 640 B of 1 KiB/)).toBeInTheDocument()
+      await act(async () => { fireEvent.click(workspaces().getByRole('button', { name: 'Servers' })) })
+      expect(screen.getByRole('region', { name: 'Contract fixture workspace' })).toBeVisible()
+      expect(workspaces().getByLabelText('Background jobs, 1 active')).toBe(summary)
+      expect(within(menu).getAllByText('Receiving save bytes.')).toHaveLength(1)
+      expectNoMutation()
+      expectNoServerAction()
+    } finally { view.unmount(); vi.useRealTimers() }
   })
 
   it('keeps global Settings and sidebar widths after switching from Host to Join and back', async () => {
@@ -969,6 +1005,10 @@ describe('Host task structure', () => {
       await act(async () => {})
       const workspace = screen.getByRole('region', { name: 'Retained owner continuation workspace' })
       const commands = within(workspace.querySelector('.server-command-header')!)
+      const hostStatus = commands.getByLabelText('Reported Host differs from the original Host')
+      expect(hostStatus.closest('details')).not.toHaveAttribute('open')
+      expect(within(workspace).getByRole('heading', { name: 'Another PC is starting the server' })).not.toBeVisible()
+      fireEvent.click(hostStatus)
       expect(within(workspace).getByRole('heading', { name: 'Another PC is starting the server' })).toBeVisible()
       expect(commands.getByRole('button', { name: 'Stop server' })).toBeVisible()
       expect(commands.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
@@ -985,10 +1025,13 @@ describe('Host task structure', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
       expect(screen.getByRole('region', { name: 'Retained owner continuation workspace' })).toBe(workspace)
       expect(within(workspace).getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeVisible()
+      expect(commands.getByLabelText('Earlier Host differs from the original Host')).toBeVisible()
       expect(within(workspace).queryByRole('heading', { name: 'Another PC reports hosting' })).not.toBeInTheDocument()
       expect(within(workspace).queryByRole('button', { name: /^Connect to PC ending/ })).not.toBeInTheDocument()
       expect(commands.getByRole('button', { name: 'Stop server' })).toBeVisible()
       expect(commands.getByText('Ready', { selector: '.status' })).toBeVisible()
+      fireEvent.click(commands.getByLabelText('Earlier Host differs from the original Host'))
+      expect(within(workspace).getByRole('heading', { name: 'Another PC reported a stopped session' })).not.toBeVisible()
       expect(transport.read.mock.calls.filter(([path]) => path === '/api/local/world-peers')).toHaveLength(3)
       expect(host().settings).toEqual(settings)
       expectNoMutation()
@@ -2243,19 +2286,23 @@ describe('current profiles and removed access', () => {
       if (path.endsWith('/forget')) state = { ...active, connections: [structuredClone(active)] }
       return { ok: true, code: 'ConnectionForgottenLocally', message: 'Saved connection deleted.' }
     })
-    render(<App />)
-    await screen.findByRole('heading', { name: 'Join a server' })
+    // Each mocked request completes in a microtask. Flush the whole user action
+    // before inspecting the next page, rather than repeatedly scanning the
+    // styled app while selection/confirmation state is still being committed.
+    await act(async () => { render(<App />) })
+    expect(screen.getByRole('heading', { name: 'Join a server' })).toBeVisible()
     expect(screen.queryByText('Old Host')).not.toBeInTheDocument()
     expect(screen.queryByText('Revoked')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Synthetic world' })).not.toBeInTheDocument()
-    fireEvent.click(directory().getByRole('checkbox', { name: 'Show removed access' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Synthetic world on Old Host' }))
-    await screen.findByRole('region', { name: 'Play' })
-    fireEvent.click(joinSections().getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Forget this Host' }))
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Delete this saved Host?' })).getByRole('button', { name: 'Delete Host' }))
-    await waitFor(() => expect(transport.change).toHaveBeenCalledWith(`/api/local/friend/connections/${removed.connectionId}/forget`, 'POST', expect.any(Function), undefined, undefined))
-    await waitFor(() => expect(screen.queryByText('Old Host')).not.toBeInTheDocument())
+    await act(async () => { fireEvent.click(directory().getByRole('checkbox', { name: 'Show removed access' })) })
+    await act(async () => { fireEvent.click(directory().getByRole('button', { name: 'Open Synthetic world on Old Host' })) })
+    expect(screen.getByRole('region', { name: 'Play' })).toBeVisible()
+    await act(async () => { fireEvent.click(joinSections().getByRole('button', { name: 'Settings' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Forget this Host' })) })
+    const confirmation = screen.getByRole('dialog', { name: 'Delete this saved Host?' })
+    await act(async () => { fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete Host' })) })
+    expect(transport.change).toHaveBeenCalledWith(`/api/local/friend/connections/${removed.connectionId}/forget`, 'POST', expect.any(Function), undefined, undefined)
+    expect(screen.queryByText('Old Host')).not.toBeInTheDocument()
     expect(directory().getByRole('button', { name: 'Open Synthetic world on Current Host' })).toHaveAttribute('aria-current', 'true')
     expectNoServerAction()
   })
