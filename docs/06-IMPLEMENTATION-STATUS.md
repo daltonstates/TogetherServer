@@ -12,9 +12,13 @@ history; published versions have their own
 One integrated `0.3.3.20` candidate contains the historical-copy correction,
 new-publication delivery priority and bounded idle work. Packaged app source:
 `fcfa7b6972c1722e9356941e7b743d7c92c850f2`.
-Release: Unpublished pending completion of the final fixture lane..
+Release: [v0.3.3.20 review preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.20),
+published 2026-10-27T23:59:08Z, release `426118196`.
+Annotated tag `e422a967c6e55ef821d09759e329839fda636110` targets the app source above.
 CI: [40601918559](https://github.com/daltonstates/TogetherServer/actions/runs/40601918559).
-Current review: 15 successful lanes; Verify Existing remains running. Desktop reports the explicit notification block below.
+Final review: 16 successful lanes; all 27 broader fixture gates passed. Desktop
+reports the explicit notification block below. No unexpected current-lane failure
+remains; this is a review preview and not full physical acceptance.
 
 An exact offered signed descriptor now finds a retained complete local save in
 the known separate-copy, received, received-branch, retained-history or numbered
@@ -56,9 +60,10 @@ dominant transfer bottleneck have not been established.
 Local evidence is code-only: UI typecheck/bundle, strict compilation with zero
 warnings/errors, formatting/lint, and selected generated-files/fake-HTTP groups.
 All general process/native/browser/installer tests ran on hosted Windows CI.
-The exact packaged candidate passes all 94 source groups and eight packaged
-API journeys. Automatic sharing passes both ordinary journeys with exactly one
-Friend Start and one returning-owner Start each; both first preparations return
+The exact packaged candidate passes all 94 source groups, eight packaged API
+journeys and 1,582 UI tests in 109 files. Automatic sharing passes both ordinary
+journeys with exactly one Friend Start and one returning-owner Start each;
+both first preparations return
 `LocalHostingPrepared`. Pairing/both-ended UX, six compatibility baselines, core,
 rehearsal, UI review and installer/package lanes pass. Browser passes 14 journeys
 and explicitly leaves three external/native scopes unexercised. Its first Start
@@ -101,7 +106,11 @@ Portable: 66,267,081 bytes, SHA-256
 Installer: 60,731,353 bytes, SHA-256
 `6e147b3c983a0ec3125a53e037d02984b271085e5b6b88cf0dfb5458da0a1fd0`.
 Both EXEs are unsigned. Package provenance and six installer smoke cases plus
-all three wizard choices are verified. Public assets will be checked after publication; all 34 previously published releases are retained at the reviewed baseline.
+all three wizard choices are verified. All four public assets were anonymously
+downloaded and hashed, matching local bytes, sizes and GitHub server digests.
+All 34 earlier release IDs remain, all four .19 asset identities/digests are
+unchanged, and latest stable remains `v0.3.3`. Public verification is recorded
+at 2026-10-28T00:00:29Z.
 Evidence: `local-data/hosting-history-reuse-20/`, with final candidate artifacts
 under `candidate-fcfa7b6/`; all earlier failed logs/artifacts are preserved.
 
