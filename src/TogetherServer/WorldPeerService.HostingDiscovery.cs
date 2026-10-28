@@ -91,7 +91,18 @@ internal sealed partial class WorldPeerService
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposed, 1) != 0 || gates is null) return;
-            lock (owner.stateSync) gates.Preparations--;
+            var wake = false;
+            lock (owner.stateSync)
+            {
+                gates.Preparations--;
+                if (gates.Preparations == 0 && !owner.peerDisposed)
+                {
+                    var due = DateTimeOffset.UtcNow.Add(owner.NextPeerScheduleDelay());
+                    if (due < owner.nextBackgroundSyncUtc) owner.nextBackgroundSyncUtc = due;
+                    wake = true;
+                }
+            }
+            if (wake) owner.WakeBackgroundScheduler();
         }
     }
     private readonly Dictionary<string, WorldExchangeGates> worldExchangeGates = new(StringComparer.Ordinal);

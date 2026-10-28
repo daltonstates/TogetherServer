@@ -858,9 +858,18 @@ internal sealed partial class WorldPeerService : IDisposable
                 return existing.Completion.WaitAsync(cancellationToken);
             if (background && gates.Preparations > 0) return Task.CompletedTask;
             var flight = new PeerTransferFlight();
+            var scheduleKey = ScheduleKey(group, route);
+            // The actual owner pins its generation even when a later caller
+            // joins it after a publication/reconnect. That newer work stays due.
+            PeerScheduledCompletion scheduling = null!;
+            scheduling = new(Interlocked.Read(ref requestedSyncGeneration), (generation, result, failed) =>
+                CompletePeerSchedule(gates, routeKey, flight, scheduleKey, scheduling, generation, result, failed));
             gates.Transfers.Add(routeKey, flight);
+            activePeerSchedules.Add(scheduleKey, scheduling);
             flight.Completion = Task.Run(async () =>
             {
+                WorldPeerTransferProgress? finishedResult = null;
+                var failed = true;
                 try
                 {
                     await gates.Transfer.WaitAsync(cancellationToken);
@@ -903,20 +912,26 @@ internal sealed partial class WorldPeerService : IDisposable
                             observation.Complete(transferAttempt.Value.PendingPayload && outcome is not
                                 (WorldPeerTransferResult.SeedPaused or WorldPeerTransferResult.SeedHistoryPending or
                                  WorldPeerTransferResult.ByteBudget) ? WorldPeerTransferResult.WorkBudget : outcome);
+                            failed = false;
                         }
                         catch (Exception error)
                         {
                             ObserveTransferFailure(observation, error, cancellationToken);
                             throw;
                         }
-                        finally { transferAttempt.Value = null; }
+                        finally
+                        {
+                            finishedResult = observation.FinishedResult;
+                            transferAttempt.Value = null;
+                        }
                     }
                     finally { gates.Transfer.Release(); }
                 }
                 finally
                 {
-                    lock (stateSync)
-                        if (gates.Transfers.GetValueOrDefault(routeKey) == flight) gates.Transfers.Remove(routeKey);
+                    // Neither the observation lock nor the Transfers monitor is
+                    // held while the owner publishes its one scheduling result.
+                    scheduling.Complete(finishedResult, failed);
                 }
             }, CancellationToken.None);
             return flight.Completion.WaitAsync(cancellationToken);
@@ -1025,9 +1040,7 @@ internal sealed partial class WorldPeerService : IDisposable
                 {
                     lock (stateSync)
                     {
-                        var delay = remainingGroupSweep > 0
-                            ? TimeSpan.FromSeconds(1) : replicationSchedule.NextDelay(DateTimeOffset.UtcNow,
-                                Interlocked.Read(ref requestedSyncGeneration));
+                        var delay = NextPeerScheduleDelay();
                         nextBackgroundSyncUtc = DateTimeOffset.UtcNow.Add(delay);
                     }
                 }
@@ -1262,16 +1275,20 @@ internal sealed partial class WorldPeerService : IDisposable
                 var route = routes[(start + index) % routes.Length];
                 var generation = Interlocked.Read(ref requestedSyncGeneration);
                 lock (stateSync)
-                    if (scheduled && !replicationSchedule.Due(ScheduleKey(group, route), generation, DateTimeOffset.UtcNow)) continue;
+                    if (scheduled && (worldExchangeGates.TryGetValue(group.Root.GroupKey, out var preparing) && preparing.Preparations > 0 ||
+                        activePeerSchedules.ContainsKey(ScheduleKey(group, route)) ||
+                        !replicationSchedule.Due(ScheduleKey(group, route), generation, DateTimeOffset.UtcNow))) continue;
                 try
                 {
                     await SyncPeerAsync(group, route, budget, background: true);
-                    RecordScheduledResult(group, route, generation, failed: false);
                     group = Find(group.Root.GroupKey) ?? group;
                 }
                 catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
                 {
-                    RecordScheduledResult(group, route, generation, failed: true);
+                    // An expired join says nothing about a still-running
+                    // owner's metadata/payload result. Its completion owns it.
+                    lock (stateSync)
+                        if (activePeerSchedules.ContainsKey(ScheduleKey(group, route))) continue;
                     var peer = Store(group).Project().Peers.SingleOrDefault(value => value.Routes.Contains(route));
                     if (peer is not null) Store(group).RecordSync(peer.DeviceId, peer.PublicKey, false);
                     SetPeerWarning(group.Root.GroupKey, "A known peer could not be synchronized. Cached signed information and copies were kept.");

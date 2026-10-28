@@ -29,6 +29,7 @@ internal static class WorldPeerExistingCopyChecks
         await OutboundOnlyAsync(parent);
         await ConsentLockOrderAsync(parent);
         await VerificationProgressAsync(parent);
+        await WorldPeerMatchingFileChecks.RunAsync(parent);
     }
 
     private static async Task ReuseAsync(string parent, string shape)
@@ -212,11 +213,14 @@ internal static class WorldPeerExistingCopyChecks
     {
         using var fixture = new Fixture(parent, "Branch");
         var payload = File.ReadAllBytes(fixture.PayloadPath);
-        var before = fixture.Pointers();
+        var originalPointer = File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(fixture.DirectoryPath)!, "latest.json"));
         var fork = await fixture.SeedSiblingAsync();
-        Require(fork is { Code: "SeedChunk", Receipt: null, FileIndex: 0, ChunkOffset: 0 } &&
-            fixture.Pointers() == before && File.ReadAllBytes(fixture.PayloadPath).SequenceEqual(payload) && fixture.Sidecars().Length == 0,
-            "A different signed sibling was acknowledged as the existing exact copy or changed its published pointer/payload.");
+        Require(fork is { Code: "SeedComplete", Receipt: not null } &&
+            fork.Receipt.VersionHash != fixture.Descriptor.Version.VersionHash &&
+            fixture.ValidReceiptFor(fork.Receipt, fork.Receipt.VersionHash) &&
+            File.ReadAllBytes(Path.Combine(Path.GetDirectoryName(fixture.DirectoryPath)!, "latest.json")).SequenceEqual(originalPointer) &&
+            File.ReadAllBytes(fixture.PayloadPath).SequenceEqual(payload) && fixture.Sidecars().Length == 0,
+            "A different signed sibling reused an old receipt or changed its source instead of completing its own verified staging copy.");
     }
 
     private static async Task ConsentLockOrderAsync(string parent)
@@ -305,7 +309,7 @@ internal static class WorldPeerExistingCopyChecks
         private readonly SharedWorldPeerRoute bRoute = new("https://192.0.2.182:5131", new string('B', 64));
         internal SharedWorldPeerRoot Root { get; }
         private SharedWorldRoster roster;
-        private readonly WorldPeerSaveDescriptor descriptor;
+        private WorldPeerSaveDescriptor descriptor;
         internal string DirectoryPath { get; }
         internal string PayloadPath => Path.Combine(DirectoryPath, SharedWorldService.PayloadDirectory, "world.dat");
         internal string DuplicateVault { get; }
@@ -331,7 +335,7 @@ internal static class WorldPeerExistingCopyChecks
         }
         internal object WorldMonitor => typeof(WorldPeerService).GetField("stateSync", Private)!.GetValue(TargetService)!;
 
-        internal Fixture(string parent, string shape)
+        internal Fixture(string parent, string shape, bool matchingFiles = false)
         {
             original = shape == "Original";
             var folder = Path.Combine(parent, "exact-copy-" + shape + "-" + Guid.NewGuid().ToString("N"));
@@ -354,7 +358,7 @@ internal static class WorldPeerExistingCopyChecks
             Require(pairing.BindSharedWorldKey(credential.DeviceId, new(nonce, Public(member), Convert.ToBase64String(member.SignData(
                 SharedWorldRosterTrust.EnrollmentBasis(credential.DeviceId, nonce, Public(member)), HashAlgorithmName.SHA256)))).Ok,
                 "Synthetic member binding failed.");
-            var capture = new Capture(A.RootPath);
+            var capture = new Capture(A.RootPath, matchingFiles);
             var publisher = new SharedWorldService(A, capture);
             roster = publisher.PublishRoster(profile, pairing.SharedRosterMembers(profile.Id));
             pairing.ConfirmSharedRosterPublished(profile.Id, roster);
@@ -427,10 +431,57 @@ internal static class WorldPeerExistingCopyChecks
         private object Group(WorldPeerService service) => typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(service, [Root.GroupKey])!;
         internal Task PullAsync() => (Task)typeof(WorldPeerService).GetMethod("PullCatalogAsync", Private)!
             .Invoke(TargetService, [Group(TargetService), original ? bRoute : aRoute, CancellationToken.None])!;
+        internal Task PullWithCancellationAsync(CancellationToken token) => (Task)typeof(WorldPeerService).GetMethod("PullCatalogAsync", Private)!
+            .Invoke(TargetService, [Group(TargetService), original ? bRoute : aRoute, token])!;
         internal Task SyncExactAsync() => (Task)typeof(WorldPeerService).GetMethod("SyncPeerAsync", Private)!
             .Invoke(TargetService, [Group(TargetService), original ? bRoute : aRoute, CancellationToken.None, true, false])!;
         internal Task<WorldPeerSeedResponse> SeedAsync() => (Task<WorldPeerSeedResponse>)typeof(WorldPeerService).GetMethod("SendSeedAsync", Private)!
             .Invoke(Sender, [Group(Sender), TargetRoute, descriptor, null, null, null, null, CancellationToken.None])!;
+        internal Task<WorldPeerTransferResult> SeedAllAsync(CancellationToken token = default) =>
+            (Task<WorldPeerTransferResult>)typeof(WorldPeerService).GetMethod("SeedDescriptorsAsync", Private)!
+                .Invoke(Sender, [Group(Sender), TargetRoute, new[] { descriptor }, token, null])!;
+        internal string IncomingDirectory => Path.Combine(DuplicateVault, descriptor.Version.VersionHash);
+        internal string IncomingStage => Path.Combine(DuplicateVault, ".partial-" + descriptor.Version.VersionHash, SharedWorldService.PayloadDirectory);
+        internal WorldPeerSaveDescriptor PrepareMatchingPublication(bool caseOnlyPath = false)
+        {
+            Require(original, "Matching publications use the generated owner fixture.");
+            var prior = descriptor;
+            var files = prior.Version.Files.ToDictionary(file => file.Path, file =>
+                File.ReadAllBytes(SharedWorldService.SafeChild(Path.Combine(DirectoryPath, SharedWorldService.PayloadDirectory), file.Path)),
+                StringComparer.Ordinal);
+            Require(files.ContainsKey("changed.dat") && files.ContainsKey("nested/unchanged.bin"), "The matching-file capture was not prepared.");
+            files["changed.dat"] = files["changed.dat"].Select(value => (byte)(value ^ 0x5a)).ToArray();
+            files["added.dat"] = files["world.dat"].ToArray(); // Equal bytes at another path still require transfer.
+            if (caseOnlyPath) { files["World.dat"] = files["world.dat"]; files.Remove("world.dat"); }
+            var next = SharedWorldService.SignVersion(prior.Version with
+            {
+                Number = prior.Version.Number + 1,
+                ParentHash = prior.Version.VersionHash,
+                BackupId = Guid.NewGuid(),
+                Files = files.OrderBy(item => item.Key, StringComparer.Ordinal).Select(item =>
+                    new SharedWorldFile(item.Key, item.Value.Length, Convert.ToHexString(SHA256.HashData(item.Value)))).ToArray()
+            }, owner);
+            var received = Path.GetDirectoryName(CanonicalReceivedPointer)!;
+            for (long number = 1; number <= prior.Version.Number; number++)
+            {
+                var path = Path.Combine(A.RootPath, "shared-worlds", Root.ProfileId.ToString("N"), Root.GroupId.ToString("N"),
+                    number.ToString(System.Globalization.CultureInfo.InvariantCulture), "version.json");
+                FriendLink.KeepSignedManifest(received, JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(path), Json)!);
+            }
+            var directory = Path.Combine(received, next.VersionHash);
+            Directory.CreateDirectory(Path.Combine(directory, SharedWorldService.PayloadDirectory));
+            foreach (var item in files)
+            {
+                var path = SharedWorldService.SafeChild(Path.Combine(directory, SharedWorldService.PayloadDirectory), item.Key);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!); File.WriteAllBytes(path, item.Value);
+            }
+            File.WriteAllBytes(Path.Combine(directory, "version.json"), JsonSerializer.SerializeToUtf8Bytes(next, Json));
+            FriendLink.KeepSignedManifest(received, next);
+            File.WriteAllBytes(Path.Combine(received, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(next, Json));
+            descriptor = new(next);
+            RemoteHandler.Catalog = new(Root, [descriptor]);
+            return prior;
+        }
         internal Task<WorldPeerSeedResponse> SeedCanonicalAsync() => (Task<WorldPeerSeedResponse>)typeof(WorldPeerService).GetMethod("SendSeedAsync", Private)!
             .Invoke(Sender, [Group(Sender), TargetRoute, new WorldPeerSaveDescriptor(descriptor.Version), null, null, null, null, CancellationToken.None])!;
         internal Task<WorldPeerSeedResponse> SeedSiblingAsync()
@@ -463,8 +514,9 @@ internal static class WorldPeerExistingCopyChecks
         internal string Pointers() => string.Join('|', new[] { A, B }.SelectMany(data => Directory.EnumerateFiles(data.RootPath, "*", SearchOption.AllDirectories)
                 .Where(path => Path.GetFileName(path) is "latest.json" or "branch.json" || Path.GetFileName(path).StartsWith("world-peer-save-observation-", StringComparison.Ordinal)))
             .Order(StringComparer.Ordinal).Select(path => path + ":" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))));
-        internal bool ValidReceipt(SharedWorldReceipt receipt) => receipt.GroupId == Root.GroupId && receipt.ProfileId == Root.ProfileId &&
-            receipt.VersionHash == descriptor.Version.VersionHash && receipt.RosterEpoch == roster.Epoch && receipt.RosterRevision == roster.Revision &&
+        internal bool ValidReceipt(SharedWorldReceipt receipt) => ValidReceiptFor(receipt, descriptor.Version.VersionHash);
+        internal bool ValidReceiptFor(SharedWorldReceipt receipt, string versionHash) => receipt.GroupId == Root.GroupId && receipt.ProfileId == Root.ProfileId &&
+            receipt.VersionHash == versionHash && receipt.RosterEpoch == roster.Epoch && receipt.RosterRevision == roster.Revision &&
             (original ? receipt.DeviceId == Guid.Empty && SharedWorldReceiptTrust.VerifyPeerOwner(receipt, Root) :
                 receipt.DeviceId == credential.DeviceId && SharedWorldReceiptTrust.Verify(receipt, Public(member)));
         internal void SaveMemberships(bool sharing = true, bool targetOnly = false)
@@ -532,9 +584,21 @@ internal static class WorldPeerExistingCopyChecks
     private sealed class Capture : ISharedWorldCaptureAdapter
     {
         internal string Path { get; }
-        internal Capture(string root) { Path = System.IO.Path.Combine(root, "synthetic-completed-backup"); Directory.CreateDirectory(Path); File.WriteAllText(System.IO.Path.Combine(Path, "world.dat"), "exact synthetic immutable completed save"); }
+        internal Capture(string root, bool matchingFiles)
+        {
+            Path = System.IO.Path.Combine(root, "synthetic-completed-backup"); Directory.CreateDirectory(Path);
+            File.WriteAllText(System.IO.Path.Combine(Path, "world.dat"), "exact synthetic immutable completed save");
+            if (!matchingFiles) return;
+            Directory.CreateDirectory(System.IO.Path.Combine(Path, "nested"));
+            File.WriteAllBytes(System.IO.Path.Combine(Path, "nested", "unchanged.bin"),
+                Enumerable.Range(0, SharedWorldService.ChunkBytes * 2 + 137).Select(index => (byte)(index * 13)).ToArray());
+            File.WriteAllText(System.IO.Path.Combine(Path, "changed.dat"), "old signed changed file");
+        }
         public VerifiedSharedWorldCapture ReadVerified(ServerProfile profile, Guid backup) => new(1,
-            SharedWorldCaptureKinds.PostStopBackup, backup, DateTimeOffset.UtcNow, [Fact(File.ReadAllBytes(System.IO.Path.Combine(Path, "world.dat")))], Path,
+            SharedWorldCaptureKinds.PostStopBackup, backup, DateTimeOffset.UtcNow,
+            Directory.EnumerateFiles(Path, "*", SearchOption.AllDirectories).Order(StringComparer.Ordinal).Select(path =>
+                new SharedWorldFile(System.IO.Path.GetRelativePath(Path, path).Replace('\\', '/'), new FileInfo(path).Length,
+                    Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))))).ToArray(), Path,
             new(3, profile.Id, profile.Kind, profile.WorldId, "Unknown", "SyntheticFilesOnly", [], [], profile.GamePort));
     }
     internal sealed class Handler(WorldPeerService service, SharedWorldPeerRoot root, SharedWorldPeerRoute route) : HttpMessageHandler
@@ -542,6 +606,9 @@ internal static class WorldPeerExistingCopyChecks
         internal WorldPeerService Service { get; set; } = service;
         internal WorldPeerCatalog? Catalog { get; set; }
         internal List<string> Operations { get; } = [];
+        internal List<WorldPeerRequest> Requests { get; } = [];
+        internal List<WorldPeerSeedResponse> SeedResponses { get; } = [];
+        internal Action<WorldPeerExchangeRequest>? BeforeExchange { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             var bytes = await request.Content!.ReadAsByteArrayAsync(token);
@@ -553,8 +620,12 @@ internal static class WorldPeerExistingCopyChecks
                 };
             var exchange = WorldPeerProtocol.DecodeEnvelope<WorldPeerExchangeRequest>(bytes, 2 * 1024 * 1024);
             Operations.Add(exchange.Request.Operation);
+            Requests.Add(exchange.Request);
+            BeforeExchange?.Invoke(exchange);
             var response = await Service.ExchangeAsync(root.GroupKey, exchange.Request, exchange.Payload, token, route.CertificateSha256);
             if (Catalog is not null && exchange.Request.Operation == WorldPeerOperations.Catalog) response = JsonSerializer.SerializeToUtf8Bytes(Catalog, Json);
+            if (exchange.Request.Operation == WorldPeerOperations.Seed)
+                SeedResponses.Add(WorldPeerProtocol.DecodeEnvelope<WorldPeerSeedResponse>(response, WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Seed)));
             return new(HttpStatusCode.OK) { Content = new ByteArrayContent(response) };
         }
     }

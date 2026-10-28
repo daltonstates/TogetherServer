@@ -211,8 +211,11 @@ internal sealed partial class WorldPeerService
         lock (stateSync)
             if (worldExchangeGates.TryGetValue(group.Root.GroupKey, out var preparation) && preparation.Preparations > 0)
                 return new("SeedPaused", version.VersionHash);
+        IReadOnlyList<LocalSave>? localCopies = seed.Manifest is null && seed.Chunk is null
+            ? await ExistingCopyInventoryAsync(group, cancellationToken) : null;
         if (seed.Manifest is null && seed.Chunk is null &&
             await TryReuseExistingCopyAsync(group, descriptor, cancellationToken,
+                inventory: localCopies,
                 additionalAuthorization: () => SeedSenderAllowed(group, request)) is { } reused)
             return new("SeedKnown", version.VersionHash, Receipt: reused.Receipt);
         var vault = descriptor.Branch is { } branch ? SharedWorldBranchVault.Root(data, branch) : ReceivedRoot(data, group);
@@ -253,11 +256,11 @@ internal sealed partial class WorldPeerService
                             Receipt: await RetainedReceiptForVerifiedCopyAsync(group, descriptor, retained, verified, cancellationToken));
                     }
                     pending = await StageSeedHistoryAsync(group, descriptor, seed.Manifest, retained, anchor, cancellationToken);
-                    return pending ?? await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken);
+                    return pending ?? await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken, localCopies);
                 }
                 finally { retainedGate.Release(); }
             }
-            return await AcceptSeedPayloadAsync(group, request, seed, vault, anchor, cancellationToken);
+            return await AcceptSeedPayloadAsync(group, request, seed, vault, anchor, cancellationToken, localCopies);
         }
         finally { receiveGate.Release(); }
     }
@@ -286,7 +289,8 @@ internal sealed partial class WorldPeerService
     }
 
     private async Task<WorldPeerSeedResponse> AcceptSeedPayloadAsync(Group group, WorldPeerRequest request,
-        WorldPeerSeedRequest seed, string vault, SharedWorldVersion? anchor, CancellationToken cancellationToken)
+        WorldPeerSeedRequest seed, string vault, SharedWorldVersion? anchor, CancellationToken cancellationToken,
+        IReadOnlyList<LocalSave>? localCopies)
     {
         var descriptor = seed.Descriptor;
         var version = descriptor.Version;
@@ -297,6 +301,12 @@ internal sealed partial class WorldPeerService
         var payload = Path.Combine(stage, SharedWorldService.PayloadDirectory);
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, payload);
         Directory.CreateDirectory(payload);
+        if (seed.Chunk is null)
+        {
+            localCopies ??= await ExistingCopyInventoryAsync(group, cancellationToken);
+            await ReuseMatchingFilesAsync(group, descriptor, vault, payload, anchor, localCopies, cancellationToken,
+                () => SeedSenderAllowed(group, request));
+        }
         if (!Directory.Exists(Path.Combine(vault, version.VersionHash)))
             for (var index = 0; index < version.Files.Count; index++)
             {

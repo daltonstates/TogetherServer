@@ -233,20 +233,7 @@ internal static class SharedWorldRosterTrust
             VerifyRevision(roster, parent, pinnedOwnerPublicKey, DateTimeOffset.MinValue, false);
     }
 
-    internal static bool ValidKey(string? value)
-    {
-        try
-        {
-            if (value is null || value.Length is < 80 or > 512) return false;
-            var bytes = Convert.FromBase64String(value);
-            using var key = ECDsa.Create();
-            key.ImportSubjectPublicKeyInfo(bytes, out var read);
-            return read == bytes.Length && key.KeySize == 256 &&
-                value == Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
-        }
-        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
-        { return false; }
-    }
+    internal static bool ValidKey(string? value) => CanonicalPublicKeyParsingCache.Shared.IsValid(value);
 
     internal static byte[] EnrollmentBasis(Guid deviceId, string nonce, string publicKey) =>
         Encoding.UTF8.GetBytes($"TogetherServer shared-world enrollment v1\n{deviceId:N}\n{nonce}\n{publicKey}");

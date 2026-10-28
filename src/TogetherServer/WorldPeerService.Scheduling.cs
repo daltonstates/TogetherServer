@@ -30,6 +30,7 @@ internal sealed class PeerMembershipRetryBurst(TimeProvider? clock = null)
 internal sealed partial class WorldPeerService
 {
     private readonly PeerReplicationSchedule replicationSchedule = new();
+    private readonly Dictionary<string, PeerScheduledCompletion> activePeerSchedules = new(StringComparer.Ordinal);
     private readonly HostingWorkCounters hostingWork = new();
     private long requestedSyncGeneration;
     private long scheduledSyncGeneration = -1;
@@ -239,17 +240,52 @@ internal sealed partial class WorldPeerService
 
     private string ScheduleKey(Group group, SharedWorldPeerRoute route) => group.Root.GroupKey + ":" + RouteKey(route);
 
-    private void RecordScheduledResult(Group group, SharedWorldPeerRoute route, long generation, bool failed)
+    // Called only after the actual owner has finalized its own observation.
+    // A canceled joining wait has no scheduling outcome to record.
+    private void CompletePeerSchedule(WorldExchangeGates gates, string routeKey, PeerTransferFlight flight,
+        string key, PeerScheduledCompletion completion, long generation,
+        WorldPeerTransferProgress? result, bool failed)
     {
-        var result = transferObservations.Read(group.Root.GroupKey, RouteKey(route))?.LastResult;
-        var incomplete = result?.Result is "ByteBudget" or "WorkBudget" or "SeedHistoryPending" or "SeedPaused" ||
-            result is { Error: "Canceled" } && (result.SubmittedBytes > 0 || result.ReceivedBytes > 0);
         lock (stateSync)
         {
-            var pending = incomplete && pendingProgress.Prompt(ScheduleKey(group, route), generation, result!);
-            replicationSchedule.Completed(ScheduleKey(group, route), generation, DateTimeOffset.UtcNow,
-                (failed || incomplete && !pending) && !pending, pending, Random.Shared.NextDouble());
+            if (gates.Transfers.GetValueOrDefault(routeKey) == flight) gates.Transfers.Remove(routeKey);
+            if (activePeerSchedules.GetValueOrDefault(key) == completion) activePeerSchedules.Remove(key);
+            if (peerDisposed) return;
+            pendingProgress.Record(replicationSchedule, key, generation, DateTimeOffset.UtcNow, result, failed, Random.Shared.NextDouble());
+            nextBackgroundSyncUtc = DateTimeOffset.UtcNow.Add(NextPeerScheduleDelay());
         }
+        WakeBackgroundScheduler();
+    }
+
+    // stateSync owns both the route deadlines and active-flight exclusions.
+    private TimeSpan NextPeerScheduleDelay()
+    {
+        if (remainingGroupSweep > 0) return TimeSpan.FromSeconds(1);
+        // Only already tracked routes reach this predicate. Preparation gates
+        // are bounded by registered worlds; no deadline/failure entry changes.
+        var preparing = worldExchangeGates.Where(pair => pair.Value.Preparations > 0)
+            .Select(pair => pair.Key + ":").ToArray();
+        return replicationSchedule.NextDelay(DateTimeOffset.UtcNow, Interlocked.Read(ref requestedSyncGeneration),
+            key => activePeerSchedules.ContainsKey(key) || preparing.Any(prefix => key.StartsWith(prefix, StringComparison.Ordinal)));
+    }
+}
+
+// One actual transfer owns its frozen result. Joining callers may cancel their
+// waits without completing this owner or replaying another attempt's counters.
+internal sealed class PeerScheduledCompletion(long generation,
+    Action<long, WorldPeerTransferProgress?, bool> completed)
+{
+    private readonly object sync = new();
+    private bool finished;
+    internal bool Complete(WorldPeerTransferProgress? result, bool failed)
+    {
+        lock (sync)
+        {
+            if (finished) return false;
+            finished = true;
+        }
+        completed(generation, result, failed);
+        return true;
     }
 }
 
@@ -261,6 +297,15 @@ internal sealed class PeerPendingProgress
     private sealed record Entry(long Generation, DateTimeOffset Attempt, long? Publication,
         int? File, long? Offset, int Stalls);
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
+
+    internal void Record(PeerReplicationSchedule schedule, string route, long generation, DateTimeOffset now,
+        WorldPeerTransferProgress? result, bool failed, double jitter)
+    {
+        var incomplete = result?.Result is "ByteBudget" or "WorkBudget" or "SeedHistoryPending" or "SeedPaused" ||
+            result is { Error: "Canceled" } && (result.SubmittedBytes > 0 || result.ReceivedBytes > 0);
+        var pending = incomplete && Prompt(route, generation, result!);
+        schedule.Completed(route, generation, now, result is null || (failed || incomplete && !pending) && !pending, pending, jitter);
+    }
 
     internal bool Prompt(string route, long generation, WorldPeerTransferProgress result)
     {

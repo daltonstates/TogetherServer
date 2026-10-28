@@ -71,7 +71,109 @@ internal static class WorldPeerRecoverySelectionChecks
             await RefusesAsync(corrupt, "signed metadata ancestry selected a candidate with damaged payload bytes");
         }
         await CheckLatestGraphAsync(root);
+        await CheckOperationInventoryAsync(root);
         await CheckInterrupted315FileCopyAsync(root);
+    }
+
+    private static async Task CheckOperationInventoryAsync(string root)
+    {
+        using var fixture = new Fixture(root, "operation-inventory");
+        var head = fixture.Third;
+        SharedWorldVersion? parent = null;
+        for (var number = 4; number <= 8; number++)
+        {
+            var payload = "inventory " + number;
+            head = fixture.Child(head, payload);
+            fixture.Write(fixture.Vault, head, payload);
+            _ = fixture.Publish(head);
+            if (number == 4) parent = head;
+        }
+        var inventories = 0;
+        fixture.Service.LocalSaveInventoryForChecks = () => inventories++;
+        var selected = await SelectLocalAsync(fixture);
+        Require(selected?.Version.VersionHash == head.VersionHash && inventories == 1,
+            "an eight-version signed ancestry rebuilt the complete local inventory for its parents");
+
+        head = fixture.Child(head, "inventory 9");
+        fixture.Write(fixture.Vault, head, "inventory 9");
+        _ = fixture.Publish(head);
+        selected = await SelectLocalAsync(fixture);
+        Require(selected?.Version.VersionHash == head.VersionHash && inventories == 2,
+            "the next selection reused an old inventory instead of discovering the new exact local head");
+
+        var requiredParent = parent ?? throw new InvalidOperationException("the synthetic parent was not created");
+        var archive = Directory.EnumerateFiles(Path.Combine(fixture.Vault, "signed-history"),
+            "*-" + requiredParent.VersionHash + ".json", SearchOption.AllDirectories).Single();
+        var manifest = Path.Combine(fixture.Vault, requiredParent.VersionHash, "version.json");
+        var archivedBytes = File.ReadAllBytes(archive);
+        var manifestBytes = File.ReadAllBytes(manifest);
+        var pointer = File.ReadAllBytes(Path.Combine(fixture.Vault, "latest.json"));
+        foreach (var change in new[] { "missing", "signature", "parent-number", "parent-root" })
+        {
+            var before = inventories;
+            var changed = false;
+            Exception? mutationError = null;
+            fixture.Service.LocalSaveInventoryForChecks = () =>
+            {
+                inventories++;
+                if (changed || mutationError is not null) return;
+                try
+                {
+                    if (change == "missing")
+                    {
+                        File.Delete(archive);
+                        File.Delete(manifest);
+                    }
+                    else
+                    {
+                        var altered = change switch
+                        {
+                            "signature" => requiredParent with { Signature = Convert.ToBase64String(new byte[64]) },
+                            "parent-number" => SharedWorldService.SignVersion(requiredParent with { Number = requiredParent.Number + 1 }, fixture.Owner),
+                            _ => SharedWorldService.SignVersion(requiredParent with { GroupId = Guid.NewGuid() }, fixture.Owner)
+                        };
+                        var bytes = JsonSerializer.SerializeToUtf8Bytes(altered, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                        File.WriteAllBytes(archive, bytes);
+                        File.WriteAllBytes(manifest, bytes);
+                    }
+                    changed = true;
+                }
+                catch (Exception error) { mutationError = error; }
+            };
+            var refused = false;
+            try
+            {
+                try { await SelectLocalAsync(fixture); }
+                catch (InvalidDataException) { refused = true; }
+                Require(changed && mutationError is null && refused && inventories == before + 1 &&
+                    File.ReadAllBytes(Path.Combine(fixture.Vault, "latest.json")).SequenceEqual(pointer),
+                    "operation inventory reuse accepted changed required parent metadata or changed the source: " + change);
+                RequireNoHostingMutation(fixture);
+                Require(!Directory.Exists(Path.Combine(fixture.Data.RootPath, "world-peer-recovery-sources")),
+                    "a refused ancestry created a retained hosting source");
+            }
+            finally
+            {
+                File.WriteAllBytes(archive, archivedBytes);
+                File.WriteAllBytes(manifest, manifestBytes);
+            }
+        }
+        fixture.Service.LocalSaveInventoryForChecks = () => inventories++;
+        var beforeRestored = inventories;
+        selected = await SelectLocalAsync(fixture);
+        Require(selected?.Version.VersionHash == head.VersionHash && inventories == beforeRestored + 1,
+            "a new operation retained stale failed history after the signed parent was restored");
+    }
+
+    private static async Task<WorldPeerSaveDescriptor?> SelectLocalAsync(Fixture fixture)
+    {
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var group = typeof(WorldPeerService).GetMethod("Find", flags)!.Invoke(fixture.Service, [fixture.Root.GroupKey])!;
+        var task = (Task)typeof(WorldPeerService).GetMethod("LatestLocalSaveAsync", flags)!.Invoke(fixture.Service,
+            [group, CancellationToken.None, null, null])!;
+        await task;
+        var selected = task.GetType().GetProperty("Result")!.GetValue(task);
+        return selected is null ? null : (WorldPeerSaveDescriptor)selected.GetType().GetProperty("Descriptor")!.GetValue(selected)!;
     }
 
     private static async Task CheckInterrupted315FileCopyAsync(string root)

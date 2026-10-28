@@ -370,7 +370,10 @@ internal sealed partial class WorldPeerService
             ReportLatestReview(new("Inventory", "SignerConflict", "InvalidDataException"));
             throw new InvalidDataException("Conflicting signed world information needs review.");
         }
-        var local = (await LocalSavesAsync(group, cancellationToken)).Where(item =>
+        var inventory = await LocalSavesAsync(group, cancellationToken);
+        // Candidate filtering must not discard retained metadata sources needed
+        // by another candidate's exact signed ancestry within this selection.
+        var local = inventory.Where(item =>
             !item.Descriptor.TestOnly && item.Descriptor.TestArtifact is null && AuthorizedDescriptor(group, item.Descriptor)).ToArray();
         if (local.Length == 0)
         {
@@ -414,7 +417,7 @@ internal sealed partial class WorldPeerService
                     if (!WorldPeerFileTransfer.TrustedHistoricSigner(group.Root, item.Descriptor.Version, records))
                         throw new InvalidDataException("The published source signer changed.");
                 }
-            }, async (hash, number, token) => await FindManifestAsync(group, hash, number, token), cancellationToken,
+            }, async (hash, number, token) => await FindManifestAsync(group, hash, number, token, inventory), cancellationToken,
             ReportLatestReview, knownNumbers, selectedAncestry);
         return local[chosen];
     }

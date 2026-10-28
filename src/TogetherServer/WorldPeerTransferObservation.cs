@@ -160,6 +160,12 @@ internal sealed class WorldPeerTransferObservationStore(TimeProvider? clock = nu
 
     internal sealed class Attempt(WorldPeerTransferObservationStore store, MutableProgress? current) : IDisposable
     {
+        // Scheduling consumes only this exact finished attempt, never a prior
+        // route result while its current owner is still running.
+        internal WorldPeerTransferProgress? FinishedResult
+        {
+            get { lock (store.sync) return current is { FrozenElapsed: not null } finished ? store.Snapshot(finished) : null; }
+        }
         internal void Phase(WorldPeerTransferPhase phase) => store.Change(current, item =>
         {
             if (!Enum.IsDefined(phase) || item.Phase == phase) return false;

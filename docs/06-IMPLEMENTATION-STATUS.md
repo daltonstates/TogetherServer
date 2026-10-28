@@ -7,6 +7,146 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## Owner-installed .21 physical results and unpublished performance follow-up
+
+The owner manually installed .21 on both PCs and confirmed both unattended with
+V1release stopped. The laptop's running EXE matches the exact public
+`5f990e721d02d51745a569f8452dbb10f7f54d82` bytes; the main PC reports .21 through
+its authenticated connection. Its EXE and filesystem were not independently
+inspected. Only V1release was exercised. No tunnel, firewall, router, DNS,
+pairing, permission or installation changes were made by testing.
+
+The existing laptop preparation was based on save 11; the original PC had
+announced save 12. One explicit normal preparation verified and adopted 12 in
+fresh managed storage, preserving the old continuation. It had no Receiving
+phase. It took 144.821 s: Permission 0.667 s, PeerSync 9.074 s, LatestSave
+2.674 s, Verifying 55.913 s, PreparingCopy 67.406 s and ServerSetup 8.454 s.
+Those phase durations include their waits and metadata work; they are not pure
+hashing, copying or network timings. Preparing genuinely newer progress is
+separate from repeating preparation on an unchanged Start.
+
+| Physical operation | Input/output save | Launch response | Request to real Ready | Native creation to Ready | Exit after Stop | New publication after Stop |
+| --- | --- | --- | --- | --- | --- | --- |
+| First Start and graceful Stop | 12 to 13 | 26.716 s | 61.167 s | 37.869 s | 4.086 s | 14.212 s |
+| Independent saved restart and graceful Stop | 13 to 14 | 26.500 s | 48.779 s | 25.418 s | 4.093 s | 14.234 s |
+
+Each Start and Stop was issued exactly once, with separate create-new sentinels.
+Both Starts had no Receiving, PreparingCopy or ServerSetup phase. Exact recorded
+native PID/start/path agreement and fresh trusted zero-player `ValheimLogReady`
+observations established real Ready. Working-file verification ran once per
+Start, taking 412 ms and 381 ms respectively. LatestSave took 7.472 s and
+5.388 s; Verifying took 10.937 s and 12.675 s. Stop rechecked two distinct fresh
+zero-player observations and the exact world/process identity. Publications 13
+and 14 have exact parents 12 and 13. The approximately 10.1 s exit-to-publication
+windows include capture, verification, publication and observation.
+
+Independent read-only verification of each publication passes its signature,
+branch proof, strict ancestry and current root/roster checks, plus all 315 file
+hashes with zero mismatch. Both payloads total 119,452,903 bytes. Whole independent
+proofs initially took 4.095 s for 13 and 2.776 s for 14, including metadata,
+signatures, ancestry, payload hashes and receipt inspection. These are not pure
+payload-hash timings. No game-client join or owner-recognized gameplay change
+was observed.
+
+**Ordered acceptance remains incomplete.** Save 13 had no exact original-owner
+receipt through 2026-10-28 06:12:40 UTC, twenty minutes after publication. Saved
+restart was then tested as a separate component because ordinary hosting does
+not require an owner receipt; its sentinel explicitly records that the ordered
+acceptance had already failed. Save 14 likewise had no exact owner receipt
+through 06:36:02 UTC, twenty minutes after publication. No manual Sync, transfer replay,
+Start retry or receipt substitution was used. Existing immutable publications
+and pending deliveries remain protected; the game is stopped.
+
+The original PC remains Connected and reports Offline through fresh authenticated
+companion status. There are two eligible external peers; only one initially had
+recent successful peer synchronization. The peer contact's later age does not
+establish that a PC is offline. In particular, stale outgoing peer-contact
+telemetry must not replace the fresh original-PC companion status. Outgoing
+`SeedPaused` reports identify the pending publication while the receiver owns a
+pull; zero submitted bytes there says nothing about separately served inbound
+chunks. No receiver filesystem or exact receive cursor was independently read.
+
+A 122.784 s stopped idle baseline used 28.766 parent-app CPU seconds on 16 logical
+processors: 1.4643% of total machine CPU. Its six WebView descendants used
+0.921875 CPU seconds, 0.0469%; the combined observed average was 1.5112%, with no
+child churn or sample errors. It recorded 20 inventory scopes (3.364 s aggregate)
+and eight peer-request scopes (10.887 s), with no payload/working verification or
+signed-registry scopes. The normal preparation used 90.812 parent-app CPU seconds
+over 144.856 s, 3.9182% of total machine CPU. Its zero PayloadVerification counter
+does not mean zero hashing: direct preparation validation is outside that
+transfer/receipt counter. Counter wall times overlap and cannot be added into
+CPU time. These measurements do not establish a controlled improvement over .20.
+
+A bounded 40 s managed thread sample used `dotnet-trace` 10.0.750501 against the
+exact .21 process; capture and conversion took 44.239 s, during which the parent
+app used 20.016 CPU seconds. It observed inbound ReadChunk handling, current
+Access checks, roster-chain Ready/validation, canonical-key parsing/CNG imports
+and monitor waits. Managed thread sampling includes waiting, safe-point bias and
+missing native symbols; its percentages are not exact on-CPU attribution.
+See [Microsoft's profiling guidance](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace).
+Raw traces stay in the existing owner-private diagnostic directory outside Git;
+only allowlisted conclusions are retained with the physical evidence.
+
+Five TCP connects to the existing configured DirectInternet companion route all
+succeeded, median 27.911 ms. The advertised target is a public address; this is
+not proof of the actual network path, TLS timing or wire throughput. At the
+owner-reported 50 Mbps, 119,452,903 raw bytes take approximately 19.1 s before
+protocol/verification overhead. Neither that theoretical bound nor connect time
+explains the observed delivery delay. A tunnel is not established as the missing
+requirement and was not created; any network change must be planned with the
+owner when awake.
+
+Signed metadata comparison of 14 with its exact parent 13 finds 310 unchanged
+files totaling 119,289,182 bytes; five changed/added files total 163,721 bytes.
+Current receiving code reuses exact publications but does not hydrate a new
+publication's staging from matching files in another verified publication. This
+is a source-confirmed opportunity to avoid redundant downloads, not a measured
+wire-byte saving on either physical PC.
+
+One combined **unpublished .22** follow-up contains:
+
+- Keep the complete operation-local inventory during ancestry selection instead
+  of rebuilding it per parent. Candidate filtering, exact parent verification
+  and final current-scope fences remain unchanged; subsequent operations rebuild.
+- Cache only positive canonical public-key parsing for exact strings in a bounded
+  256-entry set. No key handles, signatures, grants, roster, expiry, revocation or
+  permission decisions are cached. The original parsing predicate stays intact.
+- Let actual transfer completion schedule its own frozen result exactly once.
+  A canceled joining wait currently can read an old LastResult before its owner
+  finishes and charge stale backoff. This is a proven source race, not a proven
+  cause on the unobserved main-PC receiver. In-flight and preparing routes yield
+  without spinning; completion and outer preparation release wake the existing
+  scheduler without inventing a material-change generation.
+- Reuse matching files from one authorized same-world prior save while filling
+  disposable target staging for both pull and Seed. Match signed normalized
+  path, length and SHA-256; hold relative unlinked source handles, hash the copy,
+  preserve existing bytes and repeat current provenance/consent fences. This
+  subset helper grants no receipt or Start proof. Complete target verification
+  and exact receipts remain unchanged; local copy bytes are not network bytes.
+
+These source changes are not installed and have no measured physical speedup.
+Strict code-only solution compilation passes with zero warnings/errors. All 15
+selected process-free groups have passed, including matching-file pull/Seed
+wire-byte assertions, target receipt/pointer integrity, cancellation/prefix
+resume, source/target link and reparse refusal, current permission/consent
+changes, canonical-key cache safety, operation-local ancestry and completion-owned
+scheduling. The first adjacent run had two failures, both retained: the priority
+fixture used identical retained/latest/competing bytes while requiring chunk
+traffic, and the unchanged bounded-history cursor replacement returned
+UnauthorizedAccessException. The priority fixture now uses genuinely distinct
+signed bytes with all ordering/chunk/receipt/budget assertions unchanged, then
+passes. The cursor check passed a fresh-fixture recheck without a product change;
+its original file-access cause is unknown. Neither pass erases the first result.
+The final .22 version/bundle alignment, UI typecheck/lint/bundle and formatting
+pass, and the final strict solution rebuild has zero warnings/errors. Hosted
+Windows validation remains pending before treating the batch as a reviewed
+candidate. No further physical cycle or installation is
+planned tonight. Remaining evidence requires the original PC's receive cursor,
+accepted-byte progress, current errors and CPU work; the
+[read-only main-PC handoff](development/main-pc-returning-host-check.txt) remains
+the next diagnostic surface if delivery stays pending. Physical safe JSON and
+measurement scripts are under ignored `local-data/physical-test-5f990e7/`.
+
 ## Integrated .21 returning-host and live report correction
 
 The owner reported both PCs on .20: a remote hosting session did not update the

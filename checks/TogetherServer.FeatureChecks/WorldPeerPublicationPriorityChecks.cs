@@ -223,7 +223,12 @@ internal static class WorldPeerPublicationPriorityChecks
             published = Path.GetDirectoryName(copies.DirectoryPath)!;
             var branch = copies.Descriptor.Branch!;
             var existingBytes = File.ReadAllBytes(copies.PayloadPath);
-            latestBytes = largeLatest ? new byte[SharedWorldService.ChunkBytes * 3 + 17] : existingBytes;
+            latestBytes = largeLatest ? new byte[SharedWorldService.ChunkBytes * 3 + 17] :
+                existingBytes.Select(value => (byte)(value ^ 0x5a)).ToArray();
+            var otherBytes = latestBytes.Select(value => (byte)(value ^ 0xa5)).ToArray();
+            Require(!latestBytes.SequenceEqual(existingBytes) && !otherBytes.SequenceEqual(latestBytes) &&
+                !otherBytes.SequenceEqual(existingBytes),
+                "The generated priority, retained and competing payloads must require distinct signed file bytes.");
             using var hosting = ECDsa.Create();
             hosting.ImportPkcs8PrivateKey(copies.B.LoadProtected(WorldAuthorityStore.HostingKeyName(Root.ProfileId))!, out _);
             var versions = new List<SharedWorldVersion> { branch.Offer.Version, copies.Descriptor.Version };
@@ -243,7 +248,11 @@ internal static class WorldPeerPublicationPriorityChecks
             }
             Previous = new(versions.Single(version => version.Number == 8), branch);
             Latest = new(head, branch);
-            var sibling = SharedWorldService.SignVersion(head with { BackupId = Guid.NewGuid() }, hosting);
+            var sibling = SharedWorldService.SignVersion(head with
+            {
+                BackupId = Guid.NewGuid(),
+                Files = [new("world.dat", otherBytes.Length, Convert.ToHexString(SHA256.HashData(otherBytes)))]
+            }, hosting);
             var otherHead = largeLatest ? SharedWorldService.SignVersion(sibling with
             { Number = latestNumber + 1, ParentHash = sibling.VersionHash, BackupId = Guid.NewGuid() }, hosting) : sibling;
             Other = new(otherHead, branch);
@@ -254,8 +263,8 @@ internal static class WorldPeerPublicationPriorityChecks
             foreach (var version in versions.Where(version => version.Number < latestNumber))
                 FriendLink.KeepSignedManifest(remoteVault, version);
             WriteCopy(remoteVault, Previous.Version, existingBytes);
-            WriteCopy(remoteVault, sibling, latestBytes);
-            if (largeLatest) WriteCopy(remoteVault, otherHead, latestBytes);
+            WriteCopy(remoteVault, sibling, otherBytes);
+            if (largeLatest) WriteCopy(remoteVault, otherHead, otherBytes);
             File.WriteAllBytes(Path.Combine(remoteVault, "branch.json"), JsonSerializer.SerializeToUtf8Bytes(branch, Json));
             incoming = SharedWorldBranchVault.Root(copies.B, branch);
             // Fairness checks exercise a held outgoing request and incoming

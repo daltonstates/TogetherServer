@@ -11,6 +11,7 @@ internal static class SharedWorldPeerChecks
 {
     internal static void Run(string checkRoot)
     {
+        KeyParsingCacheChecks();
         static void Require(bool value, string message) { if (!value) throw new Exception(message); }
         static void Invalid(Action action, string message)
         {
@@ -40,6 +41,37 @@ internal static class SharedWorldPeerChecks
         };
         var roster = SignRoster(rosterDraft);
         Require(SharedWorldRosterTrust.Verify(roster), "synthetic owner roster did not verify");
+        var friendPublicKey = Public(friend);
+        Require(SharedWorldRosterTrust.ValidKey(root.OwnerPublicKey) &&
+            SharedWorldRosterTrust.ValidKey(friendPublicKey) &&
+            SharedWorldRosterTrust.ValidKey(friendPublicKey) &&
+            WorldGroupAccess.MayReceive(roster, friendId, friendPublicKey),
+            "valid parsing cache inputs did not retain current roster access");
+        foreach (var deniedMember in new[]
+        {
+            rosterDraft.Members[0] with { Revoked = true },
+            rosterDraft.Members[0] with { AccessExpiresUtc = DateTimeOffset.UnixEpoch }
+        })
+        {
+            var denied = SignRoster(rosterDraft with
+            {
+                Members = rosterDraft.Members.Select(value => value.DeviceId == friendId ? deniedMember : value).ToArray()
+            });
+            Require(SharedWorldRosterTrust.Verify(denied) &&
+                !WorldGroupAccess.MayFollow(denied, friendId, friendPublicKey) &&
+                !WorldGroupAccess.MayReceive(denied, friendId, friendPublicKey) &&
+                SharedWorldPeerTrust.AccessFromRoster(root, denied, friendId, friendPublicKey) is null,
+                "warm canonical keys bypassed current revocation or access expiry");
+        }
+        var withdrawn = SignRoster(rosterDraft with
+        {
+            Members = rosterDraft.Members.Select(value => value.DeviceId == friendId
+                ? value with { Grants = new() } : value).ToArray()
+        });
+        Require(WorldGroupAccess.MayFollow(withdrawn, friendId, friendPublicKey) &&
+            !WorldGroupAccess.MayReceive(withdrawn, friendId, friendPublicKey) &&
+            !SharedWorldRosterTrust.VerifySignature(roster with { Revision = roster.Revision + 1 }),
+            "warm canonical keys cached Receive grants or a prior signature result");
         var trust = new SharedWorldPeerTrust(root,
             (id, key) => SharedWorldPeerTrust.AccessFromRoster(root, roster, id, key));
         var route = new SharedWorldPeerRoute("https://192.0.2.10:5131/", Hash(10));
@@ -181,5 +213,98 @@ internal static class SharedWorldPeerChecks
             "new branches evicted unresolved history instead of refusing the capacity overflow");
         Require(capStore.Project().Branches.Count == SharedWorldPeerStore.MaximumKnownBranches &&
             capStore.Project().AnnouncementCount == countBefore, "capacity refusal changed existing histories");
+    }
+
+    private static void KeyParsingCacheChecks()
+    {
+        static void Require(bool value, string message) { if (!value) throw new Exception(message); }
+        static string Public(ECDsa key) => Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        using var firstKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var secondKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var first = Public(firstKey);
+        var second = Public(secondKey);
+        var validations = 0;
+        var cache = new CanonicalPublicKeyParsingCache(() => validations++);
+        Require(cache.IsValid(first) && cache.IsValid(new string(first.ToCharArray())) &&
+            validations == 1 && cache.Count == 1,
+            "an exact canonical key string was reparsed instead of reused");
+        Require(first != second && cache.IsValid(second) && validations == 2 && cache.Count == 2,
+            "different canonical key bytes did not receive independent validation");
+
+        var bytes = Convert.FromBase64String(first);
+        Require(bytes[0] == 0x30 && bytes[1] < 128, "the generated SPKI did not use the expected short outer length");
+        var noncanonicalDer = new byte[bytes.Length + 1];
+        noncanonicalDer[0] = bytes[0];
+        noncanonicalDer[1] = 0x81;
+        noncanonicalDer[2] = bytes[1];
+        bytes.AsSpan(2).CopyTo(noncanonicalDer.AsSpan(3));
+        var trailingBytes = new byte[bytes.Length + 1];
+        bytes.CopyTo(trailingBytes, 0);
+        using var wrongSize384 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        using var wrongSize521 = ECDsa.Create(ECCurve.NamedCurves.nistP521);
+        var malformed = "!" + first[1..];
+        foreach (var invalid in new string?[]
+        {
+            null, "", new string('A', 79), new string('A', 513), malformed, first.ToLowerInvariant(),
+            "\r\n" + first, first.Insert(40, " "),
+            Convert.ToBase64String(trailingBytes), Convert.ToBase64String(noncanonicalDer),
+            Public(wrongSize384), Public(wrongSize521)
+        }) Require(!cache.IsValid(invalid), "a malformed, noncanonical, trailing-byte or wrong-size key was cached as valid");
+        var beforeRepeatedInvalid = validations;
+        Require(!cache.IsValid(malformed) && !cache.IsValid(malformed) &&
+            validations == beforeRepeatedInvalid + 2 && cache.Count == 2,
+            "invalid parsing results were retained or changed positive cache membership");
+        Require(cache.IsValid(first) && cache.IsValid(second) && validations == beforeRepeatedInvalid + 2,
+            "invalid inputs evicted an existing positive parsing result");
+
+        using var validationEntered = new ManualResetEventSlim();
+        using var releaseValidation = new ManualResetEventSlim();
+        var concurrentValidations = 0;
+        var concurrent = new CanonicalPublicKeyParsingCache(() =>
+        {
+            if (Interlocked.Increment(ref concurrentValidations) != 1) return;
+            validationEntered.Set();
+            if (!releaseValidation.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("the generated key validation barrier was not released");
+        });
+        var held = Task.Run(() => concurrent.IsValid(first));
+        Task<bool>? duplicate = null;
+        try
+        {
+            Require(validationEntered.Wait(TimeSpan.FromSeconds(5)), "the generated cache miss did not begin validation");
+            duplicate = Task.Run(() => concurrent.IsValid(new string(first.ToCharArray())));
+            Require(duplicate.Wait(TimeSpan.FromSeconds(5)) && duplicate.Result,
+                "a concurrent cache miss held the cache lock across key validation");
+        }
+        finally
+        {
+            releaseValidation.Set();
+            Require(held.GetAwaiter().GetResult(), "a concurrent canonical key validation failed");
+            if (duplicate is not null) Require(duplicate.GetAwaiter().GetResult(), "a duplicate canonical validation failed");
+        }
+        Require(concurrentValidations == 2 && concurrent.Count == 1,
+            "concurrent positive insertions did not coalesce to one exact key");
+        var warmHits = Enumerable.Range(0, 16).Select(_ => Task.Run(() => concurrent.IsValid(first))).ToArray();
+        Require(Task.WhenAll(warmHits).GetAwaiter().GetResult().All(value => value) && concurrentValidations == 2,
+            "concurrent warm key hits repeated validation");
+
+        var capacityValidations = 0;
+        var bounded = new CanonicalPublicKeyParsingCache(() => capacityValidations++);
+        var generated = new List<string>();
+        for (var index = 0; index <= CanonicalPublicKeyParsingCache.MaximumEntries; index++)
+        {
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var value = Public(key);
+            generated.Add(value);
+            Require(bounded.IsValid(value) && bounded.Count <= CanonicalPublicKeyParsingCache.MaximumEntries,
+                "positive parsing cache exceeded its fixed capacity");
+        }
+        Require(generated.Distinct(StringComparer.Ordinal).Count() == generated.Count &&
+            bounded.Count == CanonicalPublicKeyParsingCache.MaximumEntries &&
+            capacityValidations == generated.Count && bounded.IsValid(generated[^1]) &&
+            capacityValidations == generated.Count && bounded.IsValid(generated[0]) &&
+            capacityValidations == generated.Count + 1 &&
+            bounded.Count == CanonicalPublicKeyParsingCache.MaximumEntries,
+            "bounded positive cache did not reuse retained keys and revalidate an evicted key");
     }
 }

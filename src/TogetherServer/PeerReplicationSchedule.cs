@@ -44,7 +44,16 @@ internal sealed class PeerReplicationSchedule
         routes[key] = new(generation, failures, now.AddSeconds(seconds));
     }
 
-    internal TimeSpan NextDelay(DateTimeOffset now, long? generation = null) => routes.Count == 0 ? TimeSpan.FromSeconds(60) :
-        generation is { } current && routes.Values.Any(item => item.Generation != current) ? TimeSpan.FromSeconds(1) :
-            TimeSpan.FromSeconds(Math.Clamp((routes.Values.Min(item => item.Due) - now).TotalSeconds, 1, 60));
+    internal TimeSpan NextDelay(DateTimeOffset now, long? generation = null, Func<string, bool>? inFlight = null)
+    {
+        var due = DateTimeOffset.MaxValue;
+        foreach (var route in routes)
+        {
+            if (inFlight?.Invoke(route.Key) == true) continue;
+            if (generation is { } current && route.Value.Generation != current) return TimeSpan.FromSeconds(1);
+            if (route.Value.Due < due) due = route.Value.Due;
+        }
+        return due == DateTimeOffset.MaxValue ? TimeSpan.FromSeconds(60) :
+            TimeSpan.FromSeconds(Math.Clamp((due - now).TotalSeconds, 1, 60));
+    }
 }

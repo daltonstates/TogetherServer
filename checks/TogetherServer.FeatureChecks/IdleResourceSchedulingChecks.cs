@@ -14,10 +14,97 @@ internal static class IdleResourceSchedulingChecks
     internal static async Task RunAsync(string parent)
     {
         PendingProgressBounds();
+        await FlightOwnedCancellationAsync();
         TrayPublicationBounds();
         await UnchangedIdleAsync(parent);
         await PeerOwnedLegacyConsentAsync(parent, currentPeerOperation: false);
         await PeerOwnedLegacyConsentAsync(parent, currentPeerOperation: true);
+    }
+
+    private static async Task FlightOwnedCancellationAsync()
+    {
+        const string route = "world:route";
+        var clock = new CompletionClock();
+        var schedule = new PeerReplicationSchedule();
+        var progress = new PeerPendingProgress();
+        var observations = new WorldPeerTransferObservationStore(clock);
+        using var stale = observations.Begin("world", "route");
+        stale.Complete(WorldPeerTransferResult.SeedPaused);
+        var staleResult = stale.FinishedResult!;
+        for (var index = 0; index < 3; index++)
+            progress.Record(schedule, route, 1, clock.GetUtcNow(), staleResult, false, 1);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        using var current = observations.Begin("world", "route");
+        current.Received(1024);
+        // Subsequent outgoing/publication display changes retain accepted bytes.
+        current.Expected(2048, 2, 13); current.Requested(null, null);
+        var active = new HashSet<string>(StringComparer.Ordinal) { route };
+        var completions = 0;
+        long recordedGeneration = 0;
+        WorldPeerTransferProgress? recordedResult = null;
+        var owner = new PeerScheduledCompletion(1, (generation, result, failed) =>
+        {
+            active.Remove(route);
+            progress.Record(schedule, route, generation, clock.GetUtcNow(), result, failed, 1);
+            recordedGeneration = generation; recordedResult = result; completions++;
+        });
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var actual = Task.Run(async () =>
+        {
+            await release.Task;
+            current.Fail(WorldPeerTransferError.Canceled, WorldPeerTransferResult.Canceled);
+            owner.Complete(current.FinishedResult, failed: true);
+        });
+        using var canceled = new CancellationTokenSource();
+        var joiningWait = actual.WaitAsync(canceled.Token);
+        try
+        {
+            canceled.Cancel();
+            try { await joiningWait; throw new InvalidOperationException("The joining wait ignored its cancellation."); }
+            catch (OperationCanceledException) when (canceled.IsCancellationRequested) { }
+            Require(!actual.IsCompleted && completions == 0 && current.FinishedResult is null &&
+                observations.Read("world", "route") is { Current.ReceivedBytes: 1024 } view && view.LastResult == staleResult,
+                "Canceling a joining wait finalized its running owner or confused its accepted bytes with the old pause snapshot.");
+            Require(schedule.NextDelay(clock.GetUtcNow(), 1, active.Contains) == TimeSpan.FromSeconds(60) &&
+                schedule.NextDelay(clock.GetUtcNow(), 2, active.Contains) == TimeSpan.FromSeconds(60),
+                "An active owner spun due polling or changed generations created another join before completion.");
+            schedule.Track("other:route", 1, clock.GetUtcNow());
+            Require(schedule.NextDelay(clock.GetUtcNow(), 2, active.Contains) == TimeSpan.FromSeconds(1),
+                "An active owner hid another route's due material generation.");
+            schedule.RetainWorlds(new HashSet<string>(StringComparer.Ordinal) { "world" });
+        }
+        finally { release.TrySetResult(); await actual; }
+        var now = clock.GetUtcNow();
+        Require(completions == 1 && recordedGeneration == 1 && recordedResult is { ReceivedBytes: 1024, Error: "Canceled" } &&
+            !schedule.Due(route, 1, now.AddSeconds(1)) && schedule.Due(route, 1, now.AddSeconds(2)) &&
+            schedule.Due(route, 2, now) && schedule.NextDelay(now, 2) == TimeSpan.FromSeconds(1),
+            "Actual accepted-byte completion was not recorded once, lost prompt resumption, or consumed a newer material generation.");
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Require(!owner.Complete(staleResult, failed: true) && completions == 1 &&
+            schedule.Due(route, 1, clock.GetUtcNow().AddSeconds(1)),
+            "A replayed completion renewed stale counters or moved its owner's deadline.");
+
+        using var empty = observations.Begin("world", "route");
+        var zero = new PeerScheduledCompletion(2, (generation, result, failed) =>
+            progress.Record(schedule, route, generation, clock.GetUtcNow(), result, failed, 1));
+        empty.Fail(WorldPeerTransferError.Canceled, WorldPeerTransferResult.Canceled);
+        Require(zero.Complete(empty.FinishedResult, failed: true) && !zero.Complete(recordedResult, failed: true) &&
+            !schedule.Due(route, 2, clock.GetUtcNow().AddSeconds(19)) && schedule.Due(route, 2, clock.GetUtcNow().AddSeconds(20)),
+            "A zero-byte canceled flight borrowed old accepted-byte progress instead of backing off.");
+        var missing = new PeerScheduledCompletion(2, (generation, result, failed) =>
+            progress.Record(schedule, "world:missing", generation, clock.GetUtcNow(), result, failed, 1));
+        Require(missing.Complete(null, failed: false) && !schedule.Due("world:missing", 2, clock.GetUtcNow().AddSeconds(19)) &&
+            schedule.Due("world:missing", 2, clock.GetUtcNow().AddSeconds(20)),
+            "A finished owner without its own snapshot reused an older result or invented success.");
+    }
+
+    private sealed class CompletionClock : TimeProvider
+    {
+        private long ticks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => ticks;
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.Parse("2026-10-27T12:00:00Z").AddTicks(ticks);
+        internal void Advance(TimeSpan duration) => ticks += duration.Ticks;
     }
 
     private static void PendingProgressBounds()
@@ -159,6 +246,33 @@ internal static class IdleResourceSchedulingChecks
             "material policy/reconnect observations lost their immediate enrollment and transfer wake");
         Require((await service.SetReceivingAsync(fixture.Root.GroupKey, false, default)).Ok && wakes == 6,
             "a current local consent withdrawal failed to wake replication immediately");
+        var schedule = Get<PeerReplicationSchedule>(service, "replicationSchedule");
+        var route = fixture.Root.GroupKey + ":" + new string('F', 64);
+        var currentGeneration = Get<long>(service, "requestedSyncGeneration");
+        now = DateTimeOffset.UtcNow;
+        for (var index = 0; index < 3; index++)
+            schedule.Completed(route, currentGeneration - 1, now, failed: true, pending: false, jitter: 1);
+        Set(service, "scheduledSyncGeneration", currentGeneration);
+        Set(service, "nextBackgroundSyncUtc", now.AddMinutes(1));
+        Set(service, "nextMembershipNetworkUtc", now.AddMinutes(1));
+        var beforeLease = Files(fixture.Target);
+        var outer = service.BeginHostingPreparation(fixture.Root);
+        var inner = service.BeginHostingPreparation(fixture.Root);
+        try
+        {
+            TimeSpan Delay() => (TimeSpan)typeof(WorldPeerService).GetMethod("NextPeerScheduleDelay", Private)!.Invoke(service, [])!;
+            Require(Delay() == TimeSpan.FromSeconds(60), "a preparing world's known route spun its due generation");
+            inner.Dispose();
+            Require(wakes == 6 && Delay() == TimeSpan.FromSeconds(60), "an inner preparation release woke a still-owned outer lease");
+        }
+        finally { inner.Dispose(); outer.Dispose(); }
+        outer.Dispose();
+        Require(wakes == 7 && service.NextBackgroundSyncDelay <= TimeSpan.FromSeconds(1) &&
+            Get<long>(service, "requestedSyncGeneration") == currentGeneration && beforeLease == Files(fixture.Target),
+            "outer preparation release lost its prompt event-only wake, changed material generation or wrote protected state");
+        schedule.Completed(route, currentGeneration, now, failed: true, pending: false, jitter: 1);
+        Require(!schedule.Due(route, currentGeneration, now.AddSeconds(159)) && schedule.Due(route, currentGeneration, now.AddSeconds(160)),
+            "preparation suppression or lease release reset the route's existing failure count");
     }
 
     private static async Task PeerOwnedLegacyConsentAsync(string parent, bool currentPeerOperation)

@@ -503,12 +503,12 @@ internal sealed partial class WorldPeerService
                             await RetryRetainedReceiptAsync(group, route, descriptor, retained, cancellationToken);
                             continue;
                         }
-                        await ReceivePeerSaveAsync(group, route, descriptor, retained, kept, cancellationToken);
+                        await ReceivePeerSaveAsync(group, route, descriptor, retained, kept, cancellationToken, localCopies);
                     }
                     finally { FriendLink.ReceiveGateFor(retained).Release(); }
                     return;
                 }
-                await ReceivePeerSaveAsync(group, route, descriptor, vault, existing, cancellationToken);
+                await ReceivePeerSaveAsync(group, route, descriptor, vault, existing, cancellationToken, localCopies);
                 return; // One completed payload per group/pass keeps other groups responsive.
             }
             finally { FriendLink.ReceiveGateFor(vault).Release(); }
@@ -540,7 +540,7 @@ internal sealed partial class WorldPeerService
 
     private async Task ReceivePeerSaveAsync(Group group, SharedWorldPeerRoute route,
         WorldPeerSaveDescriptor descriptor, string vault, SharedWorldVersion? existing,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, IReadOnlyList<LocalSave> localCopies)
     {
         var version = descriptor.Version;
         var observation = transferAttempt.Value?.Attempt;
@@ -563,6 +563,7 @@ internal sealed partial class WorldPeerService
         Directory.CreateDirectory(stage);
         var payloadRoot = Path.Combine(stage, SharedWorldService.PayloadDirectory);
         Directory.CreateDirectory(payloadRoot);
+        await ReuseMatchingFilesAsync(group, descriptor, vault, payloadRoot, anchor, localCopies, cancellationToken);
         long transferred = 0;
         for (var index = 0; index < version.Files.Count; index++)
         {
