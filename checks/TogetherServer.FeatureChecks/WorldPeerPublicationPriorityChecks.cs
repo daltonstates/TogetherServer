@@ -23,6 +23,7 @@ internal static class WorldPeerPublicationPriorityChecks
         await ReceiptScopeAsync(parent, ReceiptMode.SameNumberOtherHash);
         await ImportedRevocationAsync(parent);
         await CatalogInventoryReuseAsync(parent);
+        await ActiveLatestPullRemainsPendingAsync(parent);
     }
 
     private static async Task NewPublicationBeforeSlowIncomingAsync(string parent)
@@ -153,6 +154,47 @@ internal static class WorldPeerPublicationPriorityChecks
     private static long InventoryCount(WorldPeerService service) => service.WorkSnapshot().Work
         .Single(item => item.Stage == nameof(HostingWorkStage.Inventory)).Count;
 
+    private static async Task ActiveLatestPullRemainsPendingAsync(string parent)
+    {
+        var clock = new PullClock();
+        using var fixture = new DeliveryFixture(parent, latestNumber: 11, pullClock: clock);
+        fixture.Wire.Catalog = new(fixture.Root, [fixture.Previous]);
+        await fixture.RecordPreviousOwnerReceiptAsync();
+        Require(fixture.OwnerReceipt(fixture.Previous.Version.VersionHash) && fixture.Previous.Version.Number == 8,
+            "The pending-latest regression lacked its genuine exact old owner receipt.");
+        var firstChunk = await fixture.RequestLatestChunkAsync();
+        Require(firstChunk.Length > 0 && !fixture.OwnerReceipt(fixture.Latest.Version.VersionHash),
+            "Preparing a real authenticated chunk invented a completed latest-copy receipt.");
+        await fixture.AutomaticAsync();
+        var pending = fixture.Source.Views().Single().BackgroundTransfers!.Single().LastResult;
+        Require(pending is
+        {
+            State: "Pending", Result: "SeedPaused", PublicationNumber: 11, ExactReceiptAccepted: false,
+            ReceiptPublicationNumber: null, RequestedFileIndex: null, RequestedOffset: null, SubmittedBytes: 0, ReceivedBytes: 0
+        } &&
+            fixture.Wire.LatestSeedRequests == 0 && !fixture.OwnerReceipt(fixture.Latest.Version.VersionHash),
+            "An active unacknowledged pull of eleven fell through to an older receipt-eight success or invented progress.");
+        clock.Timestamp = TimeSpan.FromSeconds(30).Ticks;
+        Require((await fixture.RequestLatestChunkAsync()).SequenceEqual(firstChunk), "The generated replay did not request the same exact signed chunk.");
+        clock.Timestamp = TimeSpan.FromSeconds(61).Ticks;
+        var receiveGate = fixture.RemoteReceiveGate;
+        await receiveGate.WaitAsync();
+        try
+        {
+            await fixture.AutomaticAsync();
+            var probed = fixture.Source.Views().Single().BackgroundTransfers!.Single().LastResult;
+            Require(fixture.Wire.LatestSeedRequests == 1 && fixture.Wire.LatestChunkRequests == 0 &&
+                probed is
+                {
+                    State: "Pending", Result: "SeedPaused", PublicationNumber: 11, ExactReceiptAccepted: false,
+                    RequestedFileIndex: null, RequestedOffset: null, SubmittedBytes: 0, ReceivedBytes: 0
+                } &&
+                fixture.RemoteHeadIsOther() && !fixture.OwnerReceipt(fixture.Latest.Version.VersionHash),
+                "An expired replay hint failed to allow one bounded probe, or the occupied real receive gate allowed duplicate payload/receipt.");
+        }
+        finally { receiveGate.Release(); }
+    }
+
     private enum ReceiptMode { Exact, Forwarded, SameNumberOtherHash }
     private static void Require([DoesNotReturnIf(false)] bool value, string message)
     { if (!value) throw new InvalidOperationException(message); }
@@ -163,6 +205,7 @@ internal static class WorldPeerPublicationPriorityChecks
         private readonly FriendService friends;
         private readonly string published;
         private readonly string incoming;
+        private readonly string remoteVault;
         private readonly SharedWorldRoster roster;
         private readonly SharedWorldPeerRoute route;
         private readonly byte[] latestBytes;
@@ -174,7 +217,7 @@ internal static class WorldPeerPublicationPriorityChecks
         internal WorldPeerSaveDescriptor Other { get; }
         internal SharedWorldReceipt ForwardedReceipt { get; }
 
-        internal DeliveryFixture(string parent, bool largeLatest = false)
+        internal DeliveryFixture(string parent, bool largeLatest = false, int latestNumber = 9, TimeProvider? pullClock = null)
         {
             copies = new(parent, "Branch");
             published = Path.GetDirectoryName(copies.DirectoryPath)!;
@@ -185,9 +228,9 @@ internal static class WorldPeerPublicationPriorityChecks
             hosting.ImportPkcs8PrivateKey(copies.B.LoadProtected(WorldAuthorityStore.HostingKeyName(Root.ProfileId))!, out _);
             var versions = new List<SharedWorldVersion> { branch.Offer.Version, copies.Descriptor.Version };
             var head = copies.Descriptor.Version;
-            for (var number = 3; number <= 9; number++)
+            for (var number = 3; number <= latestNumber; number++)
             {
-                var payload = number == 9 ? latestBytes : existingBytes;
+                var payload = number == latestNumber ? latestBytes : existingBytes;
                 head = SharedWorldService.SignVersion(head with
                 {
                     Number = number,
@@ -202,13 +245,13 @@ internal static class WorldPeerPublicationPriorityChecks
             Latest = new(head, branch);
             var sibling = SharedWorldService.SignVersion(head with { BackupId = Guid.NewGuid() }, hosting);
             var otherHead = largeLatest ? SharedWorldService.SignVersion(sibling with
-            { Number = 10, ParentHash = sibling.VersionHash, BackupId = Guid.NewGuid() }, hosting) : sibling;
+            { Number = latestNumber + 1, ParentHash = sibling.VersionHash, BackupId = Guid.NewGuid() }, hosting) : sibling;
             Other = new(otherHead, branch);
-            // The peer retains exact eight and a competing signed nine. It
+            // The peer retains exact eight and a competing signed continuation. It
             // cannot silently replace either history when our nine arrives.
-            var remoteVault = SharedWorldBranchVault.Root(copies.A, branch);
+            remoteVault = SharedWorldBranchVault.Root(copies.A, branch);
             Directory.CreateDirectory(remoteVault);
-            foreach (var version in versions.Where(version => version.Number <= 8))
+            foreach (var version in versions.Where(version => version.Number < latestNumber))
                 FriendLink.KeepSignedManifest(remoteVault, version);
             WriteCopy(remoteVault, Previous.Version, existingBytes);
             WriteCopy(remoteVault, sibling, latestBytes);
@@ -220,7 +263,7 @@ internal static class WorldPeerPublicationPriorityChecks
             // These are valid parent manifests only: no complete incoming copy,
             // latest pointer or receipt exists before the real receive path.
             Directory.CreateDirectory(incoming);
-            foreach (var version in versions.Where(version => version.Number <= 8))
+            foreach (var version in versions.Where(version => version.Number < latestNumber))
                 FriendLink.KeepSignedManifest(incoming, version);
             FriendLink.KeepSignedManifest(incoming, sibling);
             roster = (SharedWorldRoster)typeof(CopyFixture).GetField("roster", Private)!.GetValue(copies)!;
@@ -247,6 +290,9 @@ internal static class WorldPeerPublicationPriorityChecks
                     "The fake priority exchange crossed its exact origin or pin.");
                 return new(Wire, false) { BaseAddress = new Uri(route.Address + "/"), Timeout = TimeSpan.FromSeconds(30) };
             });
+            if (pullClock is not null)
+                typeof(WorldPeerService).GetField("inboundPulls", Private)!.SetValue(Source, new PeerPullOwnership(pullClock));
+            copies.SourceHandler.Service = Source;
         }
 
         internal Task AutomaticAsync(CancellationToken token = default)
@@ -273,6 +319,28 @@ internal static class WorldPeerPublicationPriorityChecks
             File.ReadAllBytes(Path.Combine(published, "latest.json")), Json)?.VersionHash;
         internal bool ReceivedOther() => File.Exists(Path.Combine(incoming, "latest.json")) &&
             FriendLink.ReadReceivedLatest(incoming)?.VersionHash == Other.Version.VersionHash;
+        internal SemaphoreSlim RemoteReceiveGate => FriendLink.ReceiveGateFor(remoteVault);
+        internal bool RemoteHeadIsOther() => FriendLink.ReadReceivedLatest(remoteVault)?.VersionHash == Other.Version.VersionHash;
+        internal Task<byte[]> RequestLatestChunkAsync()
+        {
+            var requester = copies.RequesterService;
+            var group = typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(requester, [Root.GroupKey])!;
+            return (Task<byte[]>)typeof(WorldPeerService).GetMethod("SendPeerAsync", Private)!
+                .Invoke(requester, [group, copies.SourceRoute, WorldPeerOperations.Chunk, CancellationToken.None, null, 0,
+                    Latest.Version.VersionHash, 0, 0L])!;
+        }
+        internal async Task RecordPreviousOwnerReceiptAsync()
+        {
+            var group = typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(Source, [Root.GroupKey])!;
+            var response = await (Task<WorldPeerSeedResponse>)typeof(WorldPeerService).GetMethod("SendSeedAsync", Private)!
+                .Invoke(Source, [group, route, Previous, null, null, null, null, CancellationToken.None])!;
+            Require(response is { Code: "SeedKnown", Receipt: not null } &&
+                response.Receipt.VersionHash == Previous.Version.VersionHash && SharedWorldReceiptTrust.VerifyPeerOwner(response.Receipt, Root),
+                "The genuine fake owner did not acknowledge its exact complete retained eighth copy.");
+            var accepted = (WorldPeerActionResult)typeof(WorldPeerService).GetMethod("AcceptReceipt", Private)!
+                .Invoke(Source, [group, JsonSerializer.SerializeToUtf8Bytes(response.Receipt, Json)])!;
+            Require(accepted.Ok, "The generated old owner receipt failed the actual current-scope receipt boundary.");
+        }
         internal string Diagnostic(Task flight)
         {
             var group = Source.Views().Single();
@@ -335,6 +403,13 @@ internal static class WorldPeerPublicationPriorityChecks
         File.WriteAllBytes(Path.Combine(directory, "version.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
         FriendLink.KeepSignedManifest(vault, version);
         File.WriteAllBytes(Path.Combine(vault, "latest.json"), JsonSerializer.SerializeToUtf8Bytes(version, Json));
+    }
+
+    private sealed class PullClock : TimeProvider
+    {
+        internal long Timestamp;
+        public override long GetTimestamp() => Timestamp;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
     }
 
     private sealed class Wire(HttpMessageHandler remote, WorldPeerSaveDescriptor latest,

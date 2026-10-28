@@ -13,6 +13,7 @@ const branchHash = 'B'.repeat(64)
 const address = 'https://192.0.2.10:5131'
 const otherAddress = 'https://192.0.2.20:5131'
 const stamp = '2026-10-19T20:00:00Z'
+const stoppedStamp = '2026-10-19T20:05:00Z'
 const props = { profileId, connectionId: 'saved-host-a' }
 const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
 
@@ -22,7 +23,7 @@ function group() {
     availableVersionHashes: [], announcedUtc: stamp, contact: null })
   const session = (deviceId: string, id: string, branch: string) => ({ deviceId, publicKey: `synthetic-key-${deviceId}`,
     hasConflict: false, authorized: true, session: { sessionId: id, branchHash: branch, revision: 1,
-      state: 'Hosting', baseVersionHash: 'E'.repeat(64), headVersionHash: null, startedUtc: stamp, endedUtc: null } })
+      state: 'Hosting', baseVersionHash: 'E'.repeat(64), headVersionHash: null, startedUtc: stamp, endedUtc: null as string | null } })
   return { groupKey, profileId, name: 'Weekend world', selfDeviceId: selfId, sharingEnabled: false,
     receiveConsented: false, canReceive: false, canReshare: false, canHost: false, warning: null as string | null,
     selection: null as { canChoose: boolean; needsChoice: boolean; heads: ReturnType<typeof defaultHead>[] } | null,
@@ -32,6 +33,13 @@ function group() {
       knownSessions: 1, announcementCount: 2,
       replication: { knownPeers: 2, peersWithRoutes: 2, peersLastSyncSucceeded: 0, claimedCopyPeers: 0,
         lastSuccessfulSyncUtc: null, hasConflicts: false, capacityReached: false, state: 'No peer sync recorded' } } }
+}
+function stoppedGroup() {
+  const current = group()
+  current.state.sessions[0].session.state = 'Stopped'
+  current.state.sessions[0].session.endedUtc = stoppedStamp
+  current.state.peers[0].announcedUtc = stoppedStamp
+  return current
 }
 function defaultHead(deviceId = remoteId, id = sessionId, branch = branchHash) {
   return { selectionHash: '9'.repeat(64), deviceId, publicKey: `synthetic-key-${deviceId}`, sessionId: id,
@@ -63,7 +71,7 @@ describe('Shared Host notice', () => {
     expect(screen.getByText('PC ending 333333')).toBeInTheDocument()
     expect(screen.getByText(address)).toBeInTheDocument()
     expect(screen.getByText(/Reachability is checked when you connect/)).toBeInTheDocument()
-    expect(screen.getByText(/Then use Join in the game/)).toBeInTheDocument()
+    expect(screen.getByText(/open Join for the current game's address and port/)).toBeInTheDocument()
     expect(fetch).toHaveBeenCalledTimes(1)
     expect(fetch.mock.calls[0]).toEqual(['/api/local/world-peers', expect.objectContaining({ cache: 'no-store', headers: { 'X-TogetherServer-Local': '1' } })])
     expect(connected).not.toHaveBeenCalled()
@@ -84,6 +92,95 @@ describe('Shared Host notice', () => {
     await waitFor(() => expect(connected).toHaveBeenCalledTimes(1))
     expect(mutations).toEqual([{ path: `/api/local/world-peers/${groupKey}/connect`, body: { deviceId: remoteId, sessionId }, signal: expect.any(AbortSignal) }])
     expect(await screen.findByRole('status')).toHaveTextContent('verified and saved')
+  })
+
+  it('labels companion port 5132 as TogetherServer HTTPS without inventing a game port 2456', async () => {
+    const current = group()
+    current.state.peers[0].routes[0].address = 'https://192.0.2.10:5132'
+    vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
+    render(<SharedHostNotice {...props} />)
+    const notice = await screen.findByRole('article', { name: 'Hosting reports for Weekend world' })
+    expect(within(notice).getByText('TogetherServer HTTPS')).toBeInTheDocument()
+    expect(within(notice).getByText('https://192.0.2.10:5132')).toBeInTheDocument()
+    expect(notice).toHaveTextContent('These HTTPS addresses connect the TogetherServer apps.')
+    expect(notice).toHaveTextContent("open Join for the current game's address and port")
+    expect(notice).not.toHaveTextContent('2456')
+    expect(notice).not.toHaveTextContent('Server IP')
+  })
+
+  it('follows Preparing, Hosting and Stopped reports through read-only polls without remounting', async () => {
+    vi.useFakeTimers()
+    const current = group()
+    current.state.sessions[0].session.state = 'Preparing'
+    const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => reply([current]))
+    vi.stubGlobal('fetch', fetch)
+    render(<SharedHostNotice {...props} />)
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Another PC is starting the server' })).toBeInTheDocument()
+    current.state.sessions[0].session.state = 'Hosting'
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByRole('heading', { name: 'Another PC reports hosting' })).toBeInTheDocument()
+    current.state.sessions[0].session.state = 'Stopped'
+    current.state.sessions[0].session.endedUtc = stoppedStamp
+    current.state.peers[0].announcedUtc = stoppedStamp
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeInTheDocument()
+    expect(screen.getByText('PC ending 333333 reported that this hosting session stopped.')).toBeInTheDocument()
+    expect(screen.getByText(/Other PCs may still be hosting/)).toHaveTextContent('Save delivery is checked separately.')
+    expect(document.querySelector('time')).toHaveAttribute('datetime', stoppedStamp)
+    expect(screen.queryByRole('button', { name: /^Connect|^Current saved Host/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('TogetherServer HTTPS')).not.toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(fetch.mock.calls.every(call => call[0] === '/api/local/world-peers' && call.length === 2 &&
+      !(call[1] as RequestInit | undefined)?.method)).toBe(true)
+    visibility('hidden')
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(screen.queryByRole('region', { name: 'Shared Host updates' })).not.toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('shows only the latest eligible stopped report and offers no connection for it', async () => {
+    const current = stoppedGroup()
+    current.state.sessions.push({ ...structuredClone(current.state.sessions[0]), deviceId: otherId,
+      publicKey: `synthetic-key-${otherId}`, session: { ...current.state.sessions[0].session,
+        sessionId: otherSessionId, endedUtc: '2026-10-19T20:10:00Z' } })
+    current.state.peers[1].announcedUtc = '2026-10-19T20:10:00Z'
+    vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
+    render(<SharedHostNotice {...props} currentHostAddress={otherAddress} currentHostSessionId={otherSessionId} />)
+    expect(await screen.findByRole('heading', { name: 'Another PC reported a stopped session' })).toBeInTheDocument()
+    expect(screen.getByText('PC ending 444444 reported that this hosting session stopped.')).toBeInTheDocument()
+    expect(screen.queryByText('PC ending 333333 reported that this hosting session stopped.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it.each(['session revoked', 'session conflict', 'peer revoked', 'peer conflict', 'wrong key', 'this PC', 'other world', 'later interrupted report'])(
+    'does not present a stopped report after %s', async reason => {
+      const current = stoppedGroup()
+      if (reason === 'session revoked') current.state.sessions[0].authorized = false
+      if (reason === 'session conflict') current.state.sessions[0].hasConflict = true
+      if (reason === 'peer revoked') current.state.peers[0].authorized = false
+      if (reason === 'peer conflict') current.state.peers[0].hasConflict = true
+      if (reason === 'wrong key') current.state.peers[0].publicKey = 'another-synthetic-key'
+      if (reason === 'this PC') current.selfDeviceId = remoteId
+      if (reason === 'other world') { current.profileId = otherId; current.state.root.profileId = otherId }
+      if (reason === 'later interrupted report') current.state.sessions.push({ ...structuredClone(current.state.sessions[0]),
+        session: { ...current.state.sessions[0].session, sessionId: otherSessionId, state: 'Interrupted', endedUtc: '2026-10-19T20:10:00Z' } })
+      vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
+      render(<SharedHostNotice {...props} />)
+      await flush()
+      expect(screen.queryByRole('region', { name: 'Shared Host updates' })).not.toBeInTheDocument()
+    })
+
+  it('retains an active independent choice instead of claiming the whole group stopped', async () => {
+    const current = stoppedGroup()
+    current.state.sessions.push({ ...structuredClone(current.state.sessions[0]), deviceId: otherId,
+      publicKey: `synthetic-key-${otherId}`, session: { ...current.state.sessions[0].session,
+        sessionId: otherSessionId, state: 'Hosting', endedUtc: null } })
+    vi.stubGlobal('fetch', vi.fn(async () => reply([current])))
+    render(<SharedHostNotice {...props} />)
+    expect(await screen.findByRole('heading', { name: 'Another PC reports hosting' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect to PC ending 444444' })).toBeEnabled()
+    expect(screen.queryByRole('heading', { name: 'Another PC reported a stopped session' })).not.toBeInTheDocument()
   })
 
   it('keeps concurrent hosting reports separate without showing a legacy preferred Host', async () => {
@@ -184,6 +281,28 @@ describe('Shared Host notice', () => {
     expect(screen.getByRole('button', { name: 'Connect to PC ending 333333' })).toBeEnabled()
   })
 
+  it('withdraws the stopped report after a failed read and restores it only from a new successful read', async () => {
+    let failed = false
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (failed) throw new Error('Offline')
+      return reply([stoppedGroup()])
+    }))
+    render(<SharedHostNotice {...props} />)
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeInTheDocument()
+    failed = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByRole('status')).toHaveTextContent('Shared Host updates unavailable')
+    expect(screen.queryByRole('heading', { name: 'Another PC reported a stopped session' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Connect/ })).not.toBeInTheDocument()
+    failed = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Host updates' }))
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('rejects malformed world replies rather than presenting them as verified hosting', async () => {
     const current = group()
     current.state.root.profileId = otherId
@@ -239,7 +358,7 @@ describe('Shared Host notice', () => {
       expect(screen.queryByText('Stale connection success.')).not.toBeInTheDocument()
     })
 
-  it('aborts stale reads and cannot restore a withdrawn Host from their late replies', async () => {
+  it.each(['hosting', 'stopped'])('aborts stale reads and cannot restore a withdrawn %s report from late replies', async kind => {
     const oldRead = deferred<Response>()
     let signal: AbortSignal | null | undefined
     const fetch = vi.fn().mockImplementationOnce((_url: string, init?: RequestInit) => { signal = init?.signal; return oldRead.promise })
@@ -248,8 +367,9 @@ describe('Shared Host notice', () => {
     const view = render(<SharedHostNotice {...props} />)
     view.rerender(<SharedHostNotice {...props} connectionId="saved-host-b" />)
     expect(signal?.aborted).toBe(true)
-    await act(async () => { oldRead.resolve(reply([group()])) })
+    await act(async () => { oldRead.resolve(reply([kind === 'stopped' ? stoppedGroup() : group()])) })
     expect(screen.queryByRole('button', { name: /^Connect/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Another PC reported a stopped session' })).not.toBeInTheDocument()
   })
 
   it('has bounded read and connection waits and never retries a connection automatically', async () => {

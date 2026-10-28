@@ -31,7 +31,7 @@ internal static class HostingCoordinationChecks
         Require(schedule.NextDelay(now) == TimeSpan.FromSeconds(60), "removed routes left a permanently due scheduling entry");
         var time = new TestClock();
         var ownership = new PeerPullOwnership(time);
-        ownership.Served("world", "save", "member");
+        ownership.Served("world", "save", "member", 0, 1);
         Require(ownership.Active("world", "save", "member") && !ownership.Active("world", "other", "member") &&
             !ownership.Active("world", "save", "other"), "pull scheduling crossed exact save/recipient identity");
         time.Advance(TimeSpan.FromSeconds(60));

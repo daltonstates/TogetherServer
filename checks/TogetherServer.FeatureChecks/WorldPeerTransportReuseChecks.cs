@@ -185,17 +185,43 @@ internal static class WorldPeerTransportReuseChecks
     {
         var time = new Clock();
         var ownership = new PeerPullOwnership(time);
-        ownership.Served("world", "version", "recipient");
+        ownership.Served("world", "version", "recipient", 0, 512);
         Require(ownership.Active("world", "version", "recipient") &&
             !ownership.Active("other-world", "version", "recipient") &&
             !ownership.Active("world", "other-version", "recipient") &&
             !ownership.Active("world", "version", "other-recipient"), "A pull hint escaped its exact world/version/recipient.");
         time.Timestamp = TimeSpan.FromSeconds(30).Ticks;
-        ownership.Served("world", "version", "recipient");
-        time.Timestamp = TimeSpan.FromSeconds(89).Ticks;
-        Require(ownership.Active("world", "version", "recipient"), "A progressing pull lost its bounded ownership hint.");
+        ownership.Served("world", "version", "recipient", 0, 512);
+        ownership.Served("world", "other-version", "recipient", 0, 512);
+        ownership.Served("world", "version", "other-recipient", 0, 512);
+        time.Timestamp = TimeSpan.FromSeconds(60).Ticks;
+        Require(!ownership.Active("world", "version", "recipient") &&
+            ownership.Active("world", "other-version", "recipient") && ownership.Active("world", "version", "other-recipient"),
+            "A replay or another exact version/recipient renewed an unprogressing pull.");
+        time.Timestamp = TimeSpan.FromSeconds(61).Ticks;
+        ownership.Served("world", "version", "recipient", 0, 512);
+        ownership.Served("world", "version", "recipient", 0, 256);
+        Require(!ownership.Active("world", "version", "recipient"), "An expired repeated/regressed position recreated a new ownership lease.");
+        time.Timestamp = TimeSpan.FromSeconds(62).Ticks;
+        ownership.Served("world", "version", "recipient", 0, 1024);
         time.Timestamp = TimeSpan.FromSeconds(90).Ticks;
+        Require(ownership.Active("world", "version", "recipient") &&
+            !ownership.Active("world", "other-version", "recipient") && !ownership.Active("world", "version", "other-recipient"),
+            "Advancing one exact pull renewed unrelated hints or failed to renew its own.");
+        time.Timestamp = TimeSpan.FromSeconds(121).Ticks;
+        Require(ownership.Active("world", "version", "recipient"), "A progressing pull lost its bounded ownership hint.");
+        time.Timestamp = TimeSpan.FromSeconds(122).Ticks;
         Require(!ownership.Active("world", "version", "recipient"), "An abandoned pull prevented later Seed fallback beyond its bound.");
+        time.Timestamp = TimeSpan.FromSeconds(123).Ticks;
+        ownership.Served("world", "version", "recipient", 1, 1);
+        time.Timestamp = TimeSpan.FromSeconds(124).Ticks;
+        ownership.Served("world", "version", "recipient", 0, 4096);
+        time.Timestamp = TimeSpan.FromSeconds(183).Ticks;
+        Require(!ownership.Active("world", "version", "recipient"), "Regressing to an earlier file renewed ownership.");
+        ownership.Served("world", "version", "recipient", 1, 1);
+        Require(!ownership.Active("world", "version", "recipient"), "Replaying an expired file endpoint renewed ownership.");
+        ownership.Served("world", "version", "recipient", 1, 2);
+        Require(ownership.Active("world", "version", "recipient"), "A genuinely advancing resumed pull did not regain ownership.");
     }
 
     private static SharedWorldPeerRoute Route(int suffix) => new($"https://192.0.2.{suffix}:5131", new string('A', 64));

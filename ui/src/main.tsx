@@ -2557,8 +2557,8 @@ export function App({ developmentDemoControls }: { developmentDemoControls?: Rea
                   <ActionFeedback notice={currentActionNotice(actionNotices[profile.id], snapshot, feedbackNowMs)} />
                 </div>
                 <div className="server-tab-content">
-                {hostServerTab === 'overview' && profile.kind !== 'Custom' && profile.sharedSavesEnabled && <SharedHostNotice
-                  profileId={profile.id} connectionId={null} disabled={!!pending} visible={workspacePage === 'host'}
+                {hostServerTab === 'overview' && sharingProfile.kind !== 'Custom' && sharingProfile.sharedSavesEnabled && <SharedHostNotice
+                  profileId={sharingProfile.id} connectionId={null} disabled={!!pending} visible={workspacePage === 'host'}
                   onConnected={async () => {
                     if (await switchMode('friend')) { setShowPairing(false); setJoinSection('play') }
                   }} />}

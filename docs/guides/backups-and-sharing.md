@@ -221,6 +221,12 @@ new completed save. When A returns, it can receive the newer continuation
 from C and use Start to continue from it. The original world stays preserved
 in its existing location while a newer continuation uses fresh managed storage.
 
+Start checks the available signed history and selects the newest complete
+verified descendant automatically. You do not need to choose a save file. If a
+newer announced save is still missing, keep an approved PC with that save
+reachable so catch-up can finish. A history or permission refusal keeps the
+existing saves for review.
+
 The app chooses by verified ancestry, rather than the original Host's identity,
 PC clocks or save numbers alone. You do not manage save permissions, forwarding,
 votes or a group-default Host. A PC that only received saves can forward them

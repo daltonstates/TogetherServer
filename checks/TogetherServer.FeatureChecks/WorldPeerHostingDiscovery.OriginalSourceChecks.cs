@@ -13,6 +13,10 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         await StaleBackgroundAdvertisementScheduleAsync(parent);
         await OriginalAdvertisementScheduleAsync(parent);
         await LocalAdvertisementIdentityChecksAsync(parent);
+        await ReturningOwnerMissingCopyChecksAsync(parent);
+        await OriginalPendingSelectionCompletenessChecksAsync();
+        await OriginalPendingAnchoredSelectionChecksAsync(parent);
+        await OriginalDiscoveryBudgetDiagnosticAsync(parent);
         using (var fixture = new OriginalPublicationFixture(parent, "two-new-publications"))
         {
             for (var attempt = 0; attempt < 2; attempt++)
@@ -33,12 +37,12 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 Require(released.CanWrite, "original Start leaked its held publication after the refusing driver returned");
             }
         }
-        foreach (var fault in new[] { "newer", "fork", "permission", "consent", "payload" })
+        foreach (var fault in new[] { "fork", "permission", "consent", "payload", "parent" })
         {
             using var fixture = new OriginalPublicationFixture(parent, "refuse-" + fault, fileCount: 3);
-            if (fault is "newer" or "fork")
+            if (fault == "fork")
             {
-                var basis = fault == "fork" ? fixture.Base.Target.Version : fixture.Current;
+                var basis = fixture.Base.Target.Version;
                 var claim = SharedWorldService.SignVersion(basis with
                 {
                     Number = basis.Number + 1,
@@ -52,6 +56,8 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             else if (fault == "consent")
                 Require(new WorldPeerReceiveConsentStore(fixture.Data).Set(fixture.Root, Guid.Empty, false),
                     "synthetic original consent withdrawal failed");
+            else if (fault == "parent") File.Delete(Path.Combine(fixture.Data.RootPath, "shared-worlds", fixture.Profile.Id.ToString("N"),
+                fixture.Root.GroupId.ToString("N"), "1", "version.json"));
             else File.WriteAllText(fixture.PublicationFile(fixture.Current), "synthetic changed publication");
             var result = await fixture.Owner.StartAsync(fixture.Profile.Id, default).WaitAsync(TimeSpan.FromSeconds(10));
             Require(!result.Ok && fixture.Driver.ValidationAttempts == 0 && fixture.Driver.StartAttempts == 0,
@@ -116,6 +122,301 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             fixture.RequireNoCopyOrTransfer();
             using var released = new FileStream(fixture.PublicationFile(fixture.Current), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             Require(released.CanWrite, "canceled original verification leaked its held payload");
+        }
+    }
+
+    private static async Task ReturningOwnerMissingCopyChecksAsync(string parent)
+    {
+        using (var fixture = new ReturningOwnerCopyFixture(parent))
+        {
+            await fixture.AnnounceAsync();
+            var original = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default);
+            Require(original is { Ok: true, RecoveryRequired: true, Source: null, Code: "SharedSaveCopyPending" } &&
+                fixture.Diagnostics.Any(item => item.Reason == "KnownProgressNotLocal"),
+                "An announced newer save without local payload did not route original Start into common catch-up.");
+            fixture.RequireNoReceivedCopy();
+            var latest = await fixture.Peers.ResolveLatestRecoverySourceAsync(fixture.Root, default);
+            Require(latest.Ok && latest.Source?.Descriptor.Version.VersionHash == fixture.Latest.VersionHash &&
+                fixture.Copies.SourceHandler.Operations.Contains(WorldPeerOperations.Catalog) &&
+                fixture.Copies.SourceHandler.Operations.Contains(WorldPeerOperations.Chunk),
+                "The routed returning owner did not receive and select the exact complete newer signed continuation.");
+            latest.Source!.Verify(fixture.Copies.A, fixture.Root);
+            fixture.RequireOriginalPreserved();
+        }
+        foreach (var unavailable in new[] { "Offline", "Revoked", "Expired", "Consent" })
+        {
+            using var fixture = new ReturningOwnerCopyFixture(parent);
+            await fixture.AnnounceAsync();
+            var original = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default);
+            Require(original is { RecoveryRequired: true, Source: null }, "The generated pending owner source was not classified.");
+            fixture.RequireNoReceivedCopy();
+            if (unavailable == "Offline") fixture.Offline = true;
+            else if (unavailable == "Consent")
+                Require(new WorldPeerReceiveConsentStore(fixture.Copies.A).Set(fixture.Root, Guid.Empty, false),
+                    "The generated returning-owner consent withdrawal failed.");
+            else fixture.RemoveSourceAccess(expired: unavailable == "Expired");
+            var result = await fixture.Peers.ResolveLatestRecoverySourceAsync(fixture.Root, default).WaitAsync(TimeSpan.FromSeconds(8));
+            Require(!result.Ok && result.Source is null && (unavailable == "Consent" ? result.Code == "HostingPermissionRequired" :
+                result.Code == "SharedSaveUnavailable" && result.Message.Contains("not complete and verified", StringComparison.Ordinal)),
+                "An unavailable newer save became a generic permission/history error or an old-world Start proof: " + unavailable + "/" + result.Code);
+            fixture.RequireNoReceivedCopy();
+            fixture.RequireOriginalPreserved();
+        }
+    }
+
+    private static async Task OriginalPendingSelectionCompletenessChecksAsync()
+    {
+        using var owner = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var root = new SharedWorldPeerRoot(Public(owner), Guid.NewGuid(), Guid.NewGuid());
+        var first = Version(root, owner, Encoding.UTF8.GetBytes("generated complete local origin"));
+        var second = SharedWorldService.SignVersion(first with { Number = 2, ParentHash = first.VersionHash, BackupId = Guid.NewGuid() }, owner);
+        var third = SharedWorldService.SignVersion(second with { Number = 3, ParentHash = second.VersionHash, BackupId = Guid.NewGuid() }, owner);
+        var fork = SharedWorldService.SignVersion(second with { BackupId = Guid.NewGuid() }, owner);
+        var laterFork = SharedWorldService.SignVersion(fork with { Number = 3, ParentHash = fork.VersionHash, BackupId = Guid.NewGuid() }, owner);
+        var versions = new Dictionary<string, SharedWorldVersion> { [first.VersionHash] = first, [second.VersionHash] = second };
+        Task<SharedWorldVersion?> Read(string hash, long number, CancellationToken _) => Task.FromResult(
+            versions.TryGetValue(hash, out var version) && version.Number == number ? version : null);
+        async Task Refuses(IReadOnlyList<WorldPeerSaveDescriptor> candidates, SharedWorldVersion known, bool pending,
+            Func<int, CancellationToken, Task>? verify = null)
+        {
+            try
+            {
+                await WorldPeerLatestSelection.SelectAsync(root, candidates, [known.VersionHash],
+                    verify ?? ((_, _) => Task.CompletedTask), Read, default, knownHeadNumbers:
+                    new Dictionary<string, long> { [known.VersionHash] = known.Number });
+            }
+            catch (InvalidDataException error)
+            {
+                Require((error.Data["WorldPeerLatestReason"] is "KnownProgressNotLocal") == pending,
+                    "Missing/corrupt/divergent local history was misclassified as fetchable missing progress.");
+                return;
+            }
+            throw new InvalidOperationException("Missing known progress granted a selected local Start source.");
+        }
+        await Refuses([new(second)], third, pending: true);
+        await Refuses([new(second)], laterFork, pending: true); // Unknown remote ancestry is only a catch-up hint.
+        versions.Add(fork.VersionHash, fork);
+        await Refuses([new(second), new(laterFork)], laterFork, pending: false); // Receiving it cannot merge the fork.
+        await Refuses([new(second)], fork, pending: false);
+        await Refuses([new(second), new(fork)], third, pending: false);
+        await Refuses([new(second)], third, pending: false, (_, _) => Task.FromException(new InvalidDataException("Generated corrupt local payload.")));
+        versions.Remove(first.VersionHash);
+        await Refuses([new(second)], third, pending: false);
+        var selected = await WorldPeerLatestSelection.SelectAsync(root, [new(second)], [], (_, _) => Task.CompletedTask, Read, default);
+        Require(selected == 0, "Completeness used for pending classification tightened an existing valid anchored selection.");
+    }
+
+    private static async Task OriginalDiscoveryBudgetDiagnosticAsync(string parent)
+    {
+        using var fixture = new OriginalPublicationFixture(parent, "discovery-budget-diagnostic", fileCount: 3);
+        Require((await fixture.Peers.EnsureOwnerHostingMembershipAsync(fixture.Root, default)).Ok,
+            "The generated original discovery budget check lacked membership.");
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var gates = typeof(WorldPeerService).GetMethod("ExchangeGatesFor", flags)!.Invoke(fixture.Peers, [fixture.Root])!;
+        var gate = (SemaphoreSlim)gates.GetType().GetProperty("LocalAdvertisement", flags)!.GetValue(gates)!;
+        var diagnostics = new List<WorldPeerLatestReviewDiagnostic>();
+        fixture.Peers.LatestReviewDiagnostic = diagnostics.Add;
+        await gate.WaitAsync();
+        try
+        {
+            var result = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default).WaitAsync(TimeSpan.FromSeconds(15));
+            Require(!result.Ok && !result.RecoveryRequired && result.Source is null && result.Code == "SharedSaveHistoryNeedsReview" &&
+                diagnostics.Any(item => item.Phase == "OriginalDiscovery" && item.Reason == "ReviewRequired" && item.ExceptionType == "InvalidDataException"),
+                "An unsettled original metadata budget entered payload catch-up or lost its fixed diagnostic phase.");
+            fixture.RequireNoCopyOrTransfer();
+        }
+        finally { gate.Release(); }
+    }
+
+    private static async Task OriginalPendingAnchoredSelectionChecksAsync(string parent)
+    {
+        using var fixture = new WorldPeerExistingCopyChecks.Fixture(parent, "Branch");
+        var bytes = File.ReadAllBytes(fixture.PayloadPath);
+        var first = fixture.Descriptor.Branch!.Offer.Version;
+        using var owner = ECDsa.Create();
+        owner.ImportPkcs8PrivateKey(fixture.A.LoadProtected("shared-world-signing-key.protected")!, out _);
+        var second = SharedWorldService.SignVersion(first with
+        { Number = 2, ParentHash = first.VersionHash, BackupId = Guid.NewGuid() }, owner);
+        var third = SharedWorldService.SignVersion(second with
+        { Number = 3, ParentHash = second.VersionHash, BackupId = Guid.NewGuid() }, owner);
+        var source = Path.Combine(fixture.B.RootPath, "synthetic-complete-anchor-source");
+        foreach (var version in new[] { first, second, third }) WriteCopy(source, version, bytes);
+        using var member = ECDsa.Create();
+        member.ImportPkcs8PrivateKey(fixture.B.LoadProtected(Path.GetFileName(fixture.KeyPath))!, out _);
+        var roster = fixture.Descriptor.Branch.Offer.Roster;
+        var offer = SharedWorldSeparateCopyStore.PrepareSoloOffer(source, roster,
+            new(roster.GroupId, roster.Epoch, roster.Revision, roster.Signature),
+            fixture.Descriptor.Branch.Offer.Proposal.ProposerDeviceId, member,
+            fixture.SourceRoute.Address, fixture.SourceRoute.CertificateSha256, new WorldAuthorityStore(fixture.B));
+        var branch = SharedWorldSeparateCopyStore.Sign(offer, member);
+        Require(SharedWorldSeparateCopyStore.Verify(branch) && branch.Offer.Version.VersionHash == third.VersionHash,
+            "The generated version3 anchor lacks an actual verified signed declaration.");
+        using var host = ECDsa.Create();
+        host.ImportPkcs8PrivateKey(fixture.B.LoadProtected(WorldAuthorityStore.HostingKeyName(fixture.Root.ProfileId))!, out _);
+        var retained = Path.Combine(fixture.B.RootPath, "synthetic-retained-anchor");
+        WriteCopy(retained, third, bytes);
+        var versions = new Dictionary<long, SharedWorldVersion> { [3] = third };
+        var current = third;
+        for (var number = 4; number <= 11; number++)
+        {
+            current = SharedWorldService.SignVersion(current with
+            { Number = number, ParentHash = current.VersionHash, BackupId = Guid.NewGuid() }, host);
+            versions.Add(number, current);
+            if (number <= 9) WriteCopy(retained, current, bytes);
+        }
+        var invalidOlder = false;
+        Task<SharedWorldVersion?> Read(string hash, long number, CancellationToken _) => Task.FromResult(
+            number == 2 && invalidOlder ? second with { Signature = "" } :
+                FriendLink.ReadRetainedSignedManifest(retained, number, hash));
+        var candidates = new WorldPeerSaveDescriptor[] { new(third), new(versions[9], branch) };
+        Task Verify(int index, CancellationToken token)
+        {
+            var descriptor = candidates[index];
+            using var lease = WorldPeerVerifiedCopy.Open(fixture.B.RootPath, Path.Combine(retained, descriptor.Version.VersionHash), descriptor.Version, token);
+            if (descriptor.Branch is not null) WorldPeerFileTransfer.VerifyHistory(retained, descriptor, third);
+            return Task.CompletedTask;
+        }
+        async Task Refuses(bool pending, bool requiredOlder = false)
+        {
+            try
+            {
+                await WorldPeerLatestSelection.SelectAsync(fixture.Root, candidates,
+                    requiredOlder ? [versions[11].VersionHash, first.VersionHash] : [versions[11].VersionHash], Verify, Read, default,
+                    knownHeadNumbers: new Dictionary<string, long> { [versions[11].VersionHash] = 11, [first.VersionHash] = 1 });
+            }
+            catch (InvalidDataException error)
+            {
+                Require((error.Data["WorldPeerLatestReason"] is "KnownProgressNotLocal") == pending,
+                    "Anchored pending routing hid missing/corrupt required ancestry or required unavailable pre-anchor history.");
+                return;
+            }
+            throw new InvalidOperationException("A missing announced version11 became a selected anchored Start source.");
+        }
+        Require(FriendLink.ReadRetainedSignedManifest(retained, 1, first.VersionHash) is null &&
+            FriendLink.ReadRetainedSignedManifest(retained, 2, second.VersionHash) is null,
+            "The anchored regression accidentally retained the pre-anchor manifests.");
+        await Refuses(pending: true);
+        await Refuses(pending: false, requiredOlder: true);
+        invalidOlder = true;
+        await Refuses(pending: false);
+        invalidOlder = false;
+        var parentPath = Directory.EnumerateFiles(Path.Combine(retained, "signed-history"),
+            "*" + versions[7].VersionHash + ".json", SearchOption.AllDirectories).Single();
+        var parentBytes = File.ReadAllBytes(parentPath);
+        File.WriteAllText(parentPath, "{damaged generated required parent7");
+        await Refuses(pending: false);
+        File.WriteAllBytes(parentPath, parentBytes);
+        File.Delete(parentPath);
+        File.Delete(Path.Combine(retained, versions[7].VersionHash, "version.json"));
+        await Refuses(pending: false);
+        Require(!Directory.Exists(Path.Combine(fixture.B.RootPath, "world-peer-recovery-sources")) &&
+            fixture.B.LoadSettings().Profiles.Count == 0 && fixture.A.LoadRuns().Count == 0 && fixture.B.LoadRuns().Count == 0 &&
+            fixture.SourceHandler.Operations.Count == 0 && fixture.RemoteHandler.Operations.Count == 0 &&
+            File.ReadAllBytes(Path.Combine(retained, versions[9].VersionHash, SharedWorldService.PayloadDirectory, "world.dat")).SequenceEqual(bytes),
+            "Anchored classification created a source/setup/run, used transport or changed the verified version9 payload.");
+    }
+
+    private sealed class ReturningOwnerCopyFixture : IDisposable
+    {
+        internal WorldPeerExistingCopyChecks.Fixture Copies { get; }
+        internal SharedWorldPeerRoot Root => Copies.Root;
+        internal WorldPeerService Peers { get; }
+        internal SharedWorldVersion Latest { get; }
+        internal List<WorldPeerLatestReviewDiagnostic> Diagnostics { get; } = [];
+        internal bool Offline { get; set; }
+        private readonly FriendService friends;
+        private readonly SharedWorldVersion original;
+        private readonly string originalPayload, liveMarker;
+        private readonly byte[] originalBytes;
+        private const System.Reflection.BindingFlags Private = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+
+        internal ReturningOwnerCopyFixture(string parent)
+        {
+            Copies = new(parent, "Branch");
+            var profile = Copies.A.LoadSettings().Profiles.Single();
+            original = Copies.Descriptor.Branch!.Offer.Version;
+            originalPayload = Path.Combine(Copies.A.RootPath, "shared-worlds", Root.ProfileId.ToString("N"), Root.GroupId.ToString("N"),
+                "1", SharedWorldService.PayloadDirectory, "world.dat");
+            originalBytes = File.ReadAllBytes(originalPayload);
+            liveMarker = Path.Combine(profile.WorldDirectory, "preserved-owner.synthetic");
+            File.WriteAllText(liveMarker, "generated original live world stays intact");
+            using (var host = ECDsa.Create())
+            {
+                host.ImportPkcs8PrivateKey(Copies.B.LoadProtected(WorldAuthorityStore.HostingKeyName(Root.ProfileId))!, out _);
+                var current = Copies.Descriptor.Version;
+                for (var number = 3; number <= 11; number++)
+                {
+                    current = SharedWorldService.SignVersion(current with
+                    { Number = number, ParentHash = current.VersionHash, BackupId = Guid.NewGuid() }, host);
+                    WriteCopy(Path.GetDirectoryName(Copies.DirectoryPath)!, current, originalBytes);
+                }
+                Latest = current;
+            }
+            HttpClient Client(string endpoint, IEnumerable<string> pins)
+            {
+                Require(endpoint.TrimEnd('/') == Copies.SourceRoute.Address && pins.SequenceEqual([Copies.SourceRoute.CertificateSha256]),
+                    "The generated returning owner changed its pinned approved source.");
+                return new(new ReturningOwnerWire(this, Copies.SourceHandler))
+                { BaseAddress = new Uri(Copies.SourceRoute.Address + "/"), Timeout = TimeSpan.FromSeconds(6) };
+            }
+            friends = new(Copies.A, Client);
+            var pairing = Read<PairingService>("pairing");
+            Peers = new(Copies.A, new HostManager(Copies.A), friends, pairing, Client);
+            Peers.LatestReviewDiagnostic = Diagnostics.Add;
+        }
+
+        private T Read<T>(string name) => (T)typeof(WorldPeerExistingCopyChecks.Fixture).GetField(name, Private)!.GetValue(Copies)!;
+        internal async Task AnnounceAsync()
+        {
+            var group = typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(Copies.TargetService, [Root.GroupKey])!;
+            var publication = (Task<bool>)typeof(WorldPeerService).GetMethod("PublishLocalAdvertisementAsync", Private)!
+                .Invoke(Copies.TargetService, [group, CancellationToken.None, false, false])!;
+            Require(await publication, "The generated peer could not publish its signed completed continuation.");
+        }
+
+        internal void RemoveSourceAccess(bool expired)
+        {
+            var roster = Read<SharedWorldRoster>("roster");
+            var members = roster.Members.Select(member => member with
+            { Revoked = !expired, AccessExpiresUtc = expired ? DateTimeOffset.UtcNow.AddMinutes(-1) : member.AccessExpiresUtc }).ToArray();
+            var draft = roster with
+            {
+                Epoch = roster.Epoch + 1,
+                Revision = roster.Revision + 1,
+                PreviousRosterHash = SharedWorldRosterTrust.Hash(roster),
+                Members = members,
+                OwnerLocalBaselineMembers = members,
+                Signature = ""
+            };
+            using var owner = ECDsa.Create();
+            owner.ImportPkcs8PrivateKey(Copies.A.LoadProtected("shared-world-signing-key.protected")!, out _);
+            var changed = draft with { Signature = Convert.ToBase64String(owner.SignData(SharedWorldRosterTrust.Basis(draft), HashAlgorithmName.SHA256)) };
+            typeof(WorldPeerExistingCopyChecks.Fixture).GetField("roster", Private)!.SetValue(Copies, changed);
+            Copies.SaveMemberships();
+        }
+
+        internal void RequireNoReceivedCopy() => Require(
+            !Directory.Exists(SharedWorldBranchVault.Root(Copies.A, Copies.Descriptor.Branch!)) &&
+            !Directory.Exists(Path.Combine(Copies.A.RootPath, "world-peer-recovery-sources")) &&
+            !Copies.SourceHandler.Operations.Any(operation => operation is WorldPeerOperations.Catalog or WorldPeerOperations.Chunk or WorldPeerOperations.Seed),
+            "A pending/unauthorized original Start received payload, copied a source or bypassed its metadata-only routing boundary.");
+        internal void RequireOriginalPreserved() => Require(
+            File.ReadAllBytes(originalPayload).SequenceEqual(originalBytes) &&
+            File.ReadAllText(liveMarker) == "generated original live world stays intact" &&
+            JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(Path.Combine(Copies.A.RootPath, "shared-worlds",
+                Root.ProfileId.ToString("N"), "latest.json")), Json)?.VersionHash == original.VersionHash &&
+            Copies.A.LoadSettings().Profiles.Count == 1 && !Copies.A.LoadSettings().CompanionListeningEnabled &&
+            Copies.A.LoadRuns().Count == 0 && Copies.B.LoadRuns().Count == 0,
+            "Returning-owner catch-up overwrote original progress, restored/setup a profile, enabled a listener or created a run.");
+        public void Dispose() { Peers.Dispose(); friends.Dispose(); Copies.Dispose(); }
+
+        private sealed class ReturningOwnerWire(ReturningOwnerCopyFixture fixture, HttpMessageHandler handler) : HttpMessageHandler
+        {
+            private readonly HttpMessageInvoker target = new(handler, disposeHandler: false);
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+                fixture.Offline ? Task.FromException<HttpResponseMessage>(new HttpRequestException("Generated approved peer is unreachable.")) :
+                    target.SendAsync(request, cancellationToken);
+            protected override void Dispose(bool disposing) { if (disposing) target.Dispose(); base.Dispose(disposing); }
         }
     }
 

@@ -7,6 +7,100 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## Integrated .21 returning-host and live report correction
+
+The owner reported both PCs on .20: a remote hosting session did not update the
+original PC's open Overview until navigation, app and game ports appeared to
+disagree, and returning-owner Start initially refused the newest save before
+later succeeding without a file picker. Ordinary Start selects an exact signed
+verified save automatically; a file picker is not part of that operation.
+
+The current .21 candidate keeps the original world as the sharing/report scope
+when a prepared continuation is selected. Local run controls remain on that
+concrete continuation. The existing read-only poll now remains mounted on the
+original peer group across Preparing, Hosting and Stopped reports. Stopped
+reports include their date and uncertainty about other PCs and save delivery.
+The displayed pinned HTTPS address is explicitly the TogetherServer app route;
+the game's address/port comes from fresh authenticated Host status after
+connecting, through Join. An app route such as 5132 does not establish the
+game port, and a signed Hosting report does not establish live game readiness.
+
+Original Start previously treated a known newer publication without a complete
+local payload as generic history/permission review before entering common
+catch-up. The candidate distinguishes pending progress only after verification
+of the available local payloads and their unambiguous ancestry. It grants no
+Start source: the existing bounded recovery transaction must still receive and
+verify the required history and repeat current permission, consent, expiry,
+revocation and exact-source checks. Missing copies receive a specific pending
+message. Corrupt copies, incomplete required ancestry and known forks retain
+their refusal. Unknown remote histories may be retained, then still fail the
+all-heads descendant selector. There is no older-save fallback or automatic
+merge, and planned-move requirements remain stricter.
+
+An authenticated incoming chunk request is only a scheduling hint. Repeated or
+regressing positions now cannot renew its bounded ownership indefinitely.
+Bounded high-water marks survive expiry, so replay cannot immediately recreate
+the hint. An active pull of the newest publication keeps that exact save pending
+instead of falling through to an older acknowledged copy. Incoming catch-up
+does not replace the pending publication's displayed totals/cursor; no bytes or
+receipt are invented. The existing single transfer flight, current request
+authentication, pinned connection reuse, adaptive backoff and exact signed
+receipt checks remain in force. This source correction addresses a provable
+liveness risk; it has not been established as the cause of the physical delay.
+
+Local validation is code-only. Strict Release solution compilation passes with
+zero warnings/errors. The 119 AppFlows checks and 47 SharedHostNotice checks
+pass, including unchanged-selection Preparing/Hosting/Stopped updates and the
+app/game port distinction; typecheck, production bundle and lint pass. Seven
+focused generated-file/fake-HTTP backend groups pass, including retained
+historical reuse, signed-anchor/missing-copy routing, current access refusals,
+publication priority, pull-hint expiry and scheduling. The final code-only
+rebuild has zero warnings/errors and formatting passes. Hosted Windows CI is
+pending. No general fixture, native/browser/installer or production hosting
+operation was run on this active laptop for this follow-up.
+
+The first focused backend pass had five successful groups and one discovery
+assertion still expecting the old generic review code for a missing newer save.
+The revised check distinguishes pending-copy from fork refusal and retains the
+same no-source, metadata-only, no-run and unchanged cached-payload assertions.
+The failed log and scratch data remain preserved for comparison.
+
+### Separate physical .20 observations
+
+These are read-only observations of the running .20 app, not .21 acceptance.
+The laptop EXE matches the published .20 SHA-256. Main-PC authenticated metadata
+reports .20; its installed files/native processes were not independently read.
+At 2026-10-28 00:26:54 UTC, publication 11 had valid signed metadata, branch
+proof, strict retained chain and current permission, with zero exact receipts.
+At 00:52:34 UTC, the unchanged private observer verified one exact valid receipt
+for 11 from the owner domain. Payloads were not inspected by that metadata-only
+observer. Intermediate signed metadata reports owner publication 12 with base
+and parent 11 and a Stopped session based on 11. This is consistent with a
+continuation, but does not independently establish native Ready, loaded game
+contents or a completed physical acceptance cycle. The receipt's exact arrival
+time is unknown between the observations. Earlier faulty PowerShell date/key
+and nested-variable comparisons are marked superseded/unreliable in private
+evidence and must not be interpreted as damaged history.
+
+One uncontrolled 148.091-second diagnostic interval used 29.890 parent-app CPU
+seconds on 16 logical processors: 1.261% of total machine CPU. It excludes game
+and WebView child processes and is not a healthy-idle or transfer benchmark.
+It recorded 21 inventory scopes (4.170 s aggregate), eight peer-request scopes
+(8.738 s), and no signed-registry/payload/working verification scopes. The
+dominant transfer bottleneck and a measured .21 improvement remain unknown.
+
+Only the laptop Codex host is connected here. The owner-authorized
+[main-PC read-only diagnostic handoff](development/main-pc-returning-host-check.txt)
+is available for the other PC; no other chat was messaged. Its earlier pending
+receipt statement is timestamped and superseded by the later receipt above.
+Evidence is retained privately/under ignored
+`local-data/hosting-return-followup/`. Existing worlds, histories, pairing and
+the installed app are preserved. Owner manual installation and fresh
+unattended/stopped confirmation remain necessary before a new physical cycle.
+Exact reachable-recipient delivery, saved restart and separate preparation,
+transfer, verification, game startup and CPU measurements remain acceptance
+requirements for the new candidate.
+
 ## Integrated .20 historical reuse, delivery and idle correction
 
 One integrated `0.3.3.20` candidate contains the historical-copy correction,

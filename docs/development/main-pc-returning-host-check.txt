@@ -21,6 +21,12 @@ The laptop's read-only observations on 2026-10-28 UTC established:
   head 3 is that exact base/ancestor. No peer-signature conflict was reported.
 - At 00:26:54 UTC there was no exact current-roster original-owner receipt for
   11. Main had not advertised a completed copy of 11 at 00:34:17 UTC.
+- Later, at 00:52:34 UTC, the unchanged private metadata observer verified one
+  exact valid owner-domain receipt for 11. Main's signed publication 12 reports
+  base and parent 11. This supersedes the earlier pending-delivery observation;
+  the exact receipt-arrival time and native/game-load evidence remain unknown.
+- The owner subsequently reported successful Start after navigating, without
+  choosing a save file. Ordinary Start selects a verified save automatically.
 - This does NOT independently inspect main's payload/filesystem, prove delivery
   never occurred, or prove a particular transfer bottleneck. Save numbers alone
   must never choose between histories.

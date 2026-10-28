@@ -67,7 +67,8 @@ internal sealed partial class WorldPeerService
                 return null;
             }
             if (transferAttempt.Value?.ResponderPublicKey is { } recipient &&
-                inboundPulls.Active(group.Root.GroupKey, descriptor.Version.VersionHash, recipient)) return null;
+                inboundPulls.Active(group.Root.GroupKey, descriptor.Version.VersionHash, recipient))
+                return new(WorldPeerTransferResult.SeedPaused, false, descriptor);
             offered = descriptor;
             var result = await SeedDescriptorsAsync(group, route, [descriptor], bounded.Token, (file, offset) =>
             {
@@ -76,7 +77,11 @@ internal sealed partial class WorldPeerService
             });
             var pending = progressed && result is WorldPeerTransferResult.WorkBudget or
                 WorldPeerTransferResult.ByteBudget or WorldPeerTransferResult.SeedHistoryPending;
-            return new(result, pending, pending ? descriptor : null, acceptedFile, acceptedOffset);
+            var incomplete = result is not (WorldPeerTransferResult.CompleteReceiptAccepted or WorldPeerTransferResult.KnownReceiptAccepted);
+            // A pull can begin between the initial hint check and the common
+            // Seed loop. Its skipped offer remains pending for this exact head.
+            if (result == WorldPeerTransferResult.NoPayload) result = WorldPeerTransferResult.SeedPaused;
+            return new(result, pending, incomplete ? descriptor : null, acceptedFile, acceptedOffset);
         }
         catch (OperationCanceledException) when (bounded.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {

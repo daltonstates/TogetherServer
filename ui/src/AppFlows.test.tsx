@@ -12,6 +12,7 @@ import type { DesktopUpdateDetails } from './desktopPreferencesWire'
 import type { LocalHostingStatus } from './FriendLocalHosting'
 import { App } from './main'
 import { directoryWithSnapshot } from './ServerDirectory'
+import { parseWorldPeerGroups } from './WorldPeerPanel'
 import themeCss from './theme.css?inline'
 import baseCss from './style.css?inline'
 import companionCss from './companion.css?inline'
@@ -928,6 +929,72 @@ describe('Host task structure', () => {
     expect(await within(workspace).findByRole('region', { name: 'Shared saves' })).toHaveAttribute('data-profile-id', id)
     expect(host().settings).toEqual(settings)
     expectNoMutation()
+  })
+
+  it('refreshes original-world hosting reports while its owner continuation stays selected', async () => {
+    const childId = '22222222-2222-4222-8222-222222222222'
+    const remoteId = '33333333-3333-4333-8333-333333333333'
+    const sessionId = '44444444-4444-4444-8444-444444444444'
+    const stamp = new Date().toISOString()
+    const original = host().settings.profiles[0]
+    original.sharedSavesEnabled = true
+    host().runs[0].processId = null
+    host().settings.profiles.push({ ...original, id: childId, name: 'Retained owner continuation',
+      sharedSavesEnabled: false, separateCopySourceProfileId: id, separateCopyBranchHash: 'B'.repeat(64) })
+    host().runs.push({ ...host().runs[0], profileId: childId, state: 'Ready', processId: 1234 })
+    localStorage.setItem('togetherserver.ui-preferences.v1', JSON.stringify({ selectedServer: childId }))
+    const groups = parseWorldPeerGroups([{
+      groupKey: 'A'.repeat(64), profileId: id, name: 'Original shared world',
+      selfDeviceId: '00000000-0000-0000-0000-000000000000', sharingEnabled: true,
+      receiveConsented: true, canReceive: true, canReshare: true, canHost: true, warning: null, selection: null,
+      state: { root: { ownerPublicKey: 'synthetic-owner-key', profileId: id, groupId: id }, groupKey: 'A'.repeat(64),
+        peers: [{ deviceId: remoteId, publicKey: 'synthetic-peer-key', revision: 1,
+          routes: [{ address: 'https://192.0.2.20:5132', certificateSha256: 'D'.repeat(64) }],
+          hasConflict: false, authorized: true, availableVersionHashes: [], announcedUtc: stamp, contact: null }],
+        branches: [], sessions: [{ deviceId: remoteId, publicKey: 'synthetic-peer-key', hasConflict: false, authorized: true,
+          session: { sessionId, branchHash: 'B'.repeat(64), revision: 1, state: 'Preparing',
+            baseVersionHash: 'E'.repeat(64), headVersionHash: null, startedUtc: stamp, endedUtc: null } }],
+        defaultChoices: [], needsChoice: false, knownSessions: 1, announcementCount: 2,
+        replication: { knownPeers: 1, peersWithRoutes: 1, peersLastSyncSucceeded: 1, claimedCopyPeers: 0,
+          lastSuccessfulSyncUtc: stamp, hasConflicts: false, capacityReached: false, state: 'Metadata checked' } }
+    }])
+    const read = transport.read.getMockImplementation()!
+    transport.read.mockImplementation(async (path: string, ...args: unknown[]) =>
+      path === '/api/local/world-peers' ? structuredClone(groups) : read(path, ...args))
+    const settings = structuredClone(host().settings)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const view = render(<App />)
+    try {
+      await act(async () => {})
+      const workspace = screen.getByRole('region', { name: 'Retained owner continuation workspace' })
+      const commands = within(workspace.querySelector('.server-command-header')!)
+      expect(within(workspace).getByRole('heading', { name: 'Another PC is starting the server' })).toBeVisible()
+      expect(commands.getByRole('button', { name: 'Stop server' })).toBeVisible()
+      expect(commands.queryByRole('button', { name: 'Start server' })).not.toBeInTheDocument()
+
+      const session = groups[0].state.sessions[0].session
+      session.state = 'Hosting'; session.revision = 2
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(screen.getByRole('region', { name: 'Retained owner continuation workspace' })).toBe(workspace)
+      expect(within(workspace).getByRole('heading', { name: 'Another PC reports hosting' })).toBeVisible()
+      expect(within(workspace).queryByRole('heading', { name: 'Another PC is starting the server' })).not.toBeInTheDocument()
+
+      session.state = 'Stopped'; session.revision = 3; session.endedUtc = new Date().toISOString()
+      session.headVersionHash = 'F'.repeat(64)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(screen.getByRole('region', { name: 'Retained owner continuation workspace' })).toBe(workspace)
+      expect(within(workspace).getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeVisible()
+      expect(within(workspace).queryByRole('heading', { name: 'Another PC reports hosting' })).not.toBeInTheDocument()
+      expect(within(workspace).queryByRole('button', { name: /^Connect to PC ending/ })).not.toBeInTheDocument()
+      expect(commands.getByRole('button', { name: 'Stop server' })).toBeVisible()
+      expect(commands.getByText('Ready', { selector: '.status' })).toBeVisible()
+      expect(transport.read.mock.calls.filter(([path]) => path === '/api/local/world-peers')).toHaveLength(3)
+      expect(host().settings).toEqual(settings)
+      expectNoMutation()
+    } finally {
+      view.unmount()
+      vi.useRealTimers()
+    }
   })
 
   it('starts an old owner continuation through the original root and selects the newly running continuation', async () => {

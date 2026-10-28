@@ -497,7 +497,8 @@ internal sealed partial class WorldPeerService : IDisposable
         if (result.Length > WorldPeerProtocol.ResponseLimit(request.Operation))
             throw new InvalidDataException("The world peer response is oversized.");
         if (request.Operation == WorldPeerOperations.Chunk)
-            inboundPulls.Served(groupKey, request.VersionHash!, request.Challenge.PublicKey);
+            inboundPulls.Served(groupKey, request.VersionHash!, request.Challenge.PublicKey,
+                request.FileIndex!.Value, checked(request.ChunkOffset!.Value + result.Length));
         if (request.Operation == WorldPeerOperations.Metadata)
             ObserveInboundContact(groupKey, request.Challenge.PublicKey);
         return result;
@@ -882,17 +883,15 @@ internal sealed partial class WorldPeerService : IDisposable
                             try { await PullCatalogAsync(current, route, cancellationToken); }
                             finally
                             {
-                                if (publication is
-                                    {
-                                        PendingProgress: true, Descriptor: { } pendingPublication,
-                                        File: { } acceptedFile, Offset: { } acceptedOffset
-                                    })
+                                if (publication is { Descriptor: { } pendingPublication })
                                 {
-                                    // Even a canceled incoming request must not
-                                    // hide an acknowledged outgoing cursor.
+                                    // Incoming history cannot replace the exact
+                                    // unacknowledged local publication. Null
+                                    // cursor means no outgoing progress was
+                                    // acknowledged; it does not invent bytes.
                                     observation.Expected(pendingPublication.Version.Files.Sum(file => file.Length),
                                         pendingPublication.Version.Files.Count, pendingPublication.Version.Number);
-                                    observation.Requested(acceptedFile, acceptedOffset);
+                                    observation.Requested(publication.File, publication.Offset);
                                 }
                             }
                             observation.Phase(WorldPeerTransferPhase.Offering);

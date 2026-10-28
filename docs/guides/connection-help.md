@@ -30,6 +30,10 @@ The game needs its own route. Use the game ports on the server card. Valheim
 Crossplay's game relay does not provide the TogetherServer control connection.
 Factorio's RCON port must stay unforwarded.
 
+Shared Host updates label peer addresses **TogetherServer HTTPS**. Connect to
+the Host, then open **Join** for its current game address and port. Those two
+ports can differ; a signed hosting report alone does not confirm game readiness.
+
 ## Check the connection in order
 
 Open **This PC settings > Network** for Host connection controls and help.

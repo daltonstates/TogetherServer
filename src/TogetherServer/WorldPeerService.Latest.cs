@@ -11,6 +11,10 @@ internal sealed record WorldPeerLatestReviewDiagnostic(string Phase, string Reas
 
 internal sealed partial class WorldPeerService
 {
+    private const string KnownProgressPendingMessage = "Announced progress is not complete and verified on this PC yet. Keep an approved PC with that save reachable, then retry hosting.";
+    private static bool KnownProgressNotLocal(Exception error) => error is InvalidDataException &&
+        error.Data["WorldPeerLatestReason"] is "KnownProgressNotLocal";
+
     // Original Start checks signed metadata and the same exact newest-save
     // selector before deciding whether recovery retention is needed at all.
     internal async Task<WorldPeerOriginalStartResult> ResolveLatestOriginalStartSourceAsync(
@@ -18,26 +22,34 @@ internal sealed partial class WorldPeerService
         Action<WorldPeerSourceProgress>? progress = null)
     {
         WorldPeerOriginalStartSource? source = null;
+        var phase = "OriginalDiscovery";
         try
         {
             using var preparation = BeginHostingPreparation(root);
             await DiscoverHostingMetadataAsync(root, cancellationToken);
+            phase = "OriginalMembership";
             var group = Find(root.GroupKey);
             if (group is null || group.Root != root)
                 return new(false, "WorldMembershipRequired", "Reconnect to this shared world before hosting its save.");
+            phase = "OriginalPermission";
             if (!await RecoveryAllowedAsync(group, cancellationToken))
                 return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
+            phase = "OriginalObservation";
             var observation = LatestObservationHash(root) ?? throw new InvalidDataException("The shared save observation changed.");
+            phase = "OriginalLatestSelection";
             var selected = await LatestLocalSaveAsync(group, cancellationToken, progress);
             if (selected is null)
                 return new(false, "SharedSaveUnavailable", "No complete shared save is available on this PC yet.");
             if (!selected.ProducedHere || selected.Vault is not null || selected.Descriptor.Branch is not null)
                 return new(true, "DifferentSharedSaveReady", "The newest completed save needs the existing recovery preparation.",
                     RecoveryRequired: true);
+            phase = "OriginalSource";
             source = WorldPeerOriginalStartSource.Open(data, root, selected.Descriptor.Version, cancellationToken, progress);
+            phase = "OriginalFinalSelection";
             if (!await LatestLocalSelectionCurrentAsync(root, observation, source.Descriptor.Version.VersionHash,
                 cancellationToken, progress))
                 return new(false, "LatestSaveChanged", "A shared save or permission changed. Check the latest save again before Start.");
+            phase = "OriginalFinalScope";
             source.RequireCurrent(data, root, cancellationToken);
             var result = new WorldPeerOriginalStartResult(true, "LatestSharedSaveReady",
                 "This PC's original publication matches the latest signed history.", source, observation);
@@ -45,8 +57,29 @@ internal sealed partial class WorldPeerService
             return result;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error) when (KnownProgressNotLocal(error))
+        {
+            ReportLatestReview(new(phase, "KnownProgressNotLocal", error.GetType().Name));
+            // This grants no source or Start proof. The existing bounded
+            // recovery transaction must receive and verify every required head,
+            // and still refuses an unknown remote fork after it is retained.
+            try
+            {
+                var current = Find(root.GroupKey);
+                if (current is null || current.Root != root || !await RecoveryAllowedAsync(current, cancellationToken))
+                    return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
+                return new(true, "SharedSaveCopyPending", KnownProgressPendingMessage, RecoveryRequired: true);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception changed) when (PeerFailure(changed) || SharedWorldBranchLiveSource.ExpectedFailure(changed))
+            {
+                ReportLatestReview(new("OriginalPendingScope", "ReviewRequired", changed.GetType().Name));
+                return new(false, "SharedSaveHistoryNeedsReview", "Current signed hosting permission needs review. Existing saves were kept.");
+            }
+        }
         catch (Exception error) when (PeerFailure(error) || SharedWorldBranchLiveSource.ExpectedFailure(error))
         {
+            ReportLatestReview(new(phase, "ReviewRequired", error.GetType().Name));
             return new(false, "SharedSaveHistoryNeedsReview",
                 "The newest known save or current signed permission needs review. Existing saves were kept.");
         }
@@ -164,6 +197,11 @@ internal sealed partial class WorldPeerService
                 return new(true, "LatestSharedSaveReady", "The newest verified continuation is ready.", source, observation);
             }
         }
+        catch (Exception error) when (KnownProgressNotLocal(error))
+        {
+            ReportLatestReview(new(phase, "KnownProgressNotLocal", error.GetType().Name));
+            return new(false, "SharedSaveUnavailable", KnownProgressPendingMessage);
+        }
         catch (Exception error) when (PeerFailure(error))
         {
             ReportLatestReview(new(phase, "ReviewRequired", error.GetType().Name));
@@ -245,6 +283,9 @@ internal sealed partial class WorldPeerService
         var candidates = local.Select(item => item.Descriptor).ToArray();
         var known = state.Branches.Select(item => item.Branch.HeadVersionHash)
             .Concat(state.Sessions.Select(item => item.Session.HeadVersionHash).OfType<string>()).Distinct(StringComparer.Ordinal).ToArray();
+        var knownNumbers = state.Branches.GroupBy(item => item.Branch.HeadVersionHash, StringComparer.Ordinal)
+            .Where(items => items.Select(item => item.Branch.VersionNumber).Distinct().Count() == 1)
+            .ToDictionary(items => items.Key, items => items.First().Branch.VersionNumber, StringComparer.Ordinal);
         ReportLatestReview(new("Inventory", "CandidatesRead", "None", local.Length,
             candidates.Count(item => item.Branch is null), candidates.Count(item => item.Branch is not null), known.Length));
         var chosen = await WorldPeerLatestSelection.SelectAsync(group.Root, candidates, known,
@@ -268,7 +309,7 @@ internal sealed partial class WorldPeerService
                         throw new InvalidDataException("The published source signer changed.");
                 }
             }, async (hash, number, token) => await FindManifestAsync(group, hash, number, token), cancellationToken,
-            ReportLatestReview);
+            ReportLatestReview, knownNumbers);
         return local[chosen];
     }
 
@@ -304,17 +345,21 @@ internal sealed partial class WorldPeerService
 // timestamps cannot choose between forks, and a returning owner has no priority.
 internal static class WorldPeerLatestSelection
 {
+    private sealed record Ancestry(HashSet<string> Hashes, bool ReachedOrigin, HashSet<string> VerifiedAnchors);
     internal static async Task<int> SelectAsync(SharedWorldPeerRoot root,
         IReadOnlyList<WorldPeerSaveDescriptor> candidates, IReadOnlyList<string> knownHeads,
         Func<int, CancellationToken, Task> verifyPayload,
         Func<string, long, CancellationToken, Task<SharedWorldVersion?>> readManifest,
-        CancellationToken cancellationToken, Action<WorldPeerLatestReviewDiagnostic>? diagnostic = null)
+        CancellationToken cancellationToken, Action<WorldPeerLatestReviewDiagnostic>? diagnostic = null,
+        IReadOnlyDictionary<string, long>? knownHeadNumbers = null)
     {
         if (!SharedWorldPeerTrust.ValidRoot(root) || candidates.Count is < 1 or > SharedWorldPeerStore.MaximumKnownBranches ||
             knownHeads.Any(hash => !SharedWorldPeerTrust.ValidHash(hash)))
             throw new InvalidDataException("The available histories crossed their world or capacity.");
         var required = candidates.Select(item => item.Version.VersionHash).Concat(knownHeads).ToHashSet(StringComparer.Ordinal);
+        var localHeads = candidates.Select(item => item.Version.VersionHash).ToHashSet(StringComparer.Ordinal);
         var winners = new Dictionary<string, int>(StringComparer.Ordinal);
+        var ancestries = new Dictionary<int, Ancestry>();
         var verifiedPayloads = 0;
         void Report(string phase, string reason, string exceptionType, string kind = "None")
         {
@@ -339,7 +384,8 @@ internal static class WorldPeerLatestSelection
                 verifiedPayloads++;
                 phase = "CandidateAncestry";
                 var ancestry = await AncestorsAsync(root, descriptor, readManifest, cancellationToken);
-                if (required.IsSubsetOf(ancestry)) winners.TryAdd(descriptor.Version.VersionHash, index);
+                ancestries.Add(index, ancestry);
+                if (required.IsSubsetOf(ancestry.Hashes)) winners.TryAdd(descriptor.Version.VersionHash, index);
                 else Report(phase, "KnownHeadNotAncestor", "None", kind);
             }
             catch (Exception error) when (error is IOException or InvalidDataException or
@@ -365,6 +411,32 @@ internal static class WorldPeerLatestSelection
         }
         if (winners.Count != 1)
         {
+            // This is a routing hint, never a source selection. An actual
+            // validated branch offer anchors its exact base after the full
+            // head-to-base segment verifies; unavailable older history need
+            // not disable catch-up. Truncation before that anchor or any
+            // supplied damaged manifest still refuses. Equal/older known heads
+            // remain review cases. Unknown remote history still has to pass
+            // this same all-heads selector after bounded catch-up completes.
+            var anchors = ancestries.Values.SelectMany(ancestry => ancestry.VerifiedAnchors).ToHashSet(StringComparer.Ordinal);
+            var complete = ancestries.Count == candidates.Count && ancestries.Values.All(ancestry =>
+                ancestry.ReachedOrigin || ancestry.Hashes.Overlaps(anchors));
+            var localHistories = ancestries.Where(pair => localHeads.IsSubsetOf(pair.Value.Hashes))
+                .GroupBy(pair => candidates[pair.Key].Version.VersionHash, StringComparer.Ordinal).ToArray();
+            if (winners.Count == 0 && verifiedPayloads == candidates.Count && complete && localHistories.Length == 1)
+            {
+                var local = localHistories[0].First();
+                var missing = knownHeads.Where(hash => !local.Value.Hashes.Contains(hash)).ToArray();
+                if (missing.Length > 0 && missing.All(hash => knownHeadNumbers is not null &&
+                    knownHeadNumbers.TryGetValue(hash, out var number) ? number > candidates[local.Key].Version.Number :
+                        local.Value.ReachedOrigin))
+                {
+                    Report("LatestSelection", "KnownProgressNotLocal", "InvalidDataException");
+                    var pending = new InvalidDataException("Known signed progress has no complete verified local copy.");
+                    pending.Data["WorldPeerLatestReason"] = "KnownProgressNotLocal";
+                    throw pending;
+                }
+            }
             Report("LatestSelection", "UniqueDescendantUnavailable", "InvalidDataException");
             throw new InvalidDataException("The newest history is incomplete or divergent. Keep all copies for review.");
         }
@@ -372,7 +444,7 @@ internal static class WorldPeerLatestSelection
         return winners.Values.Single();
     }
 
-    private static async Task<HashSet<string>> AncestorsAsync(SharedWorldPeerRoot root,
+    private static async Task<Ancestry> AncestorsAsync(SharedWorldPeerRoot root,
         WorldPeerSaveDescriptor descriptor,
         Func<string, long, CancellationToken, Task<SharedWorldVersion?>> readManifest,
         CancellationToken cancellationToken)
@@ -391,6 +463,8 @@ internal static class WorldPeerLatestSelection
             throw Invalid("SourceProofChanged", "The continuation's source proof changed.");
         var current = head;
         var segmentKey = current.SigningPublicKey;
+        var complete = false;
+        var anchors = new HashSet<string>(StringComparer.Ordinal);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -406,6 +480,7 @@ internal static class WorldPeerLatestSelection
                 {
                     // The signed offer authorizes this exact transition back
                     // into its source history, including repeated recoveries.
+                    anchors.Add(current.VersionHash);
                     branch = branch.SourceBranch;
                     segmentKey = current.SigningPublicKey;
                     continue;
@@ -417,6 +492,7 @@ internal static class WorldPeerLatestSelection
             if (current.Number == 1)
             {
                 if (current.ParentHash is not null) throw Invalid("FirstVersionHasParent", "The first save has a parent.");
+                complete = true;
                 break;
             }
             if (current.ParentHash is not { } parentHash) throw Invalid("MissingParentHash", "The save parent is missing.");
@@ -429,6 +505,6 @@ internal static class WorldPeerLatestSelection
                 throw Invalid("ParentIdentityChanged", "The signed save parent changed.");
             current = previous;
         }
-        return result;
+        return new(result, complete, anchors);
     }
 }

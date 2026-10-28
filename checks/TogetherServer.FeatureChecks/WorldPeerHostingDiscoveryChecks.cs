@@ -193,10 +193,14 @@ internal static partial class WorldPeerHostingDiscoveryChecks
                 "synthetic competing publication failed");
         }
         fixture.Target.Announce(claim);
+        var diagnostics = new List<WorldPeerLatestReviewDiagnostic>();
+        fixture.Service.LatestReviewDiagnostic = diagnostics.Add;
         var result = await fixture.Service.ResolveLatestPreparedSourceAsync(fixture.Target.Root, default);
-        Require(!result.Ok && result.Code == "SharedSaveHistoryNeedsReview" && result.Source is null &&
+        var expected = fork ? "SharedSaveHistoryNeedsReview" : "SharedSaveUnavailable";
+        Require(!result.Ok && result.Code == expected && result.Source is null &&
+            diagnostics.Any(item => item.Reason == "KnownProgressNotLocal") == !fork &&
             fixture.Target.Handler.OnlyMetadata && fixture.Data.LoadRuns().Count == 0,
-            "metadata-only prepared discovery started an older/incomplete/competing history or downloaded it silently");
+            $"metadata-only prepared discovery did not preserve pending/fork refusal without payload or Start: {result.Code}");
         fixture.Target.VerifyCachedCopy();
     }
 
