@@ -4,6 +4,24 @@ internal sealed record LocalHostingPortSelection(bool Ok, string Code, string Me
 
 internal sealed partial class FriendLocalHostingService
 {
+    // Preparation may outlive its page and no longer holds the app settings
+    // gate. Recheck this request's exact local approval, never today's preferred
+    // plan or the remote world's suggested ports after another action changes it.
+    internal async Task<LocalHostingPortSelection> RecheckChosenLocalPortsAsync(SharedWorldVersion version,
+        ServerProfile? existing, LocalHostingPortPlan chosen, CancellationToken cancellationToken)
+    {
+        LocalHostingPortSelection Refused(string code, string message) => new(false, code, message, chosen);
+        var approval = chosen.ApprovedPortId is { } id ? data.ApprovedGamePorts.Find(version.Game, id) : null;
+        if (approval is null || approval.GamePort != chosen.GamePort || approval.FactorioRconPort != chosen.FactorioRconPort)
+            return Refused("LocalPortApprovalRequired", "The selected local port approval changed during preparation. Review and approve this PC's game ports again.");
+        var current = await manager.LocalHostingPortsAsync(version, existing, cancellationToken, approval.Id);
+        if (current.ApprovedPortId != approval.Id || current.GamePort != chosen.GamePort ||
+            current.FactorioRconPort != chosen.FactorioRconPort || current.ControlPort != chosen.ControlPort)
+            return Refused("LocalPortChangeRequired", "This request's game or Friend connection ports changed during preparation. Review this PC's setup and retry.");
+        return current.Available ? new(true, "LocalPortsApproved", "This request's approved local game ports remain available.", current) :
+            new(false, "LocalPortsRequired", "The selected approved game port became unavailable during preparation. Review this PC's game ports and retry; no other plan was substituted.", current);
+    }
+
     private async Task<LocalHostingPortSelection> ChooseLocalPortsAsync(SharedWorldVersion version,
         ServerProfile? existing, LocalHostingPrepareRequest request, CancellationToken cancellationToken)
     {

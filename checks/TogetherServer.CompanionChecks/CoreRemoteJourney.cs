@@ -442,12 +442,9 @@ internal static partial class CoreRemoteJourney
     {
         var active = IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners()
             .Select(endpoint => endpoint.Port).ToHashSet();
-        for (var attempt = 0; attempt < 200; attempt++)
-        {
-            var port = Random.Shared.Next(36000, 50000);
-            if (!active.Contains(port) && !active.Contains(port + 1)) return port;
-        }
-        throw new Exception("no unused UDP pair was found for the disposable Valheim fixture");
+        return LocalPairingLabMode.SelectFixtureUdpPair(Enumerable.Range(0, 200).Select(_ => Random.Shared.Next(36000, 50000)),
+            active, port => GameServerRegistry.PortsAvailable(
+                [new("UDP", port, "Synthetic game"), new("UDP", port + 1, "Synthetic query")], PortProbeMode.LoopbackOnly));
     }
 
     private static void Require(bool condition, string message)

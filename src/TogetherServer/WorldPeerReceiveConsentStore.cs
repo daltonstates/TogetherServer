@@ -20,6 +20,8 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
     private static readonly ConditionalWeakTable<object, Failure> Failures = new();
     private static readonly ConditionalWeakTable<object,
         ConcurrentDictionary<(SharedWorldPeerRoot Root, Guid Device), WorldPeerReceiveConsentDecision>> Observations = new();
+    private static readonly ConditionalWeakTable<object,
+        ConcurrentDictionary<(SharedWorldPeerRoot Root, Guid Device), bool>> EffectiveObservations = new();
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     { MaxDepth = 12, UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
     private object Sync => SharedWorldMutationGate.For(data.RootPath);
@@ -31,8 +33,10 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
     internal bool? ObservedEnabled(SharedWorldPeerRoot root, Guid deviceId)
     {
         if (Failures.TryGetValue(Sync, out var failure) && failure.Denied) return false;
-        return Observations.TryGetValue(Sync, out var items) && items.TryGetValue((root, deviceId), out var item)
-            ? item.Enabled : null;
+        if (Observations.TryGetValue(Sync, out var items) && items.TryGetValue((root, deviceId), out var item) &&
+            item.Enabled is { } explicitDecision) return explicitDecision;
+        return EffectiveObservations.TryGetValue(Sync, out var effective) && effective.TryGetValue((root, deviceId), out var enabled)
+            ? enabled : null;
     }
     private WorldPeerReceiveConsentDecision Observe(SharedWorldPeerRoot root, Guid deviceId, WorldPeerReceiveConsentDecision decision)
     {
@@ -56,8 +60,16 @@ internal sealed class WorldPeerReceiveConsentStore(LocalData data)
         }
     }
 
-    internal bool Effective(SharedWorldPeerRoot root, Guid deviceId, bool legacyConsent) =>
-        Read(root, deviceId).Enabled ?? legacyConsent;
+    internal bool Effective(SharedWorldPeerRoot root, Guid deviceId, bool legacyConsent)
+    {
+        var enabled = Read(root, deviceId).Enabled ?? legacyConsent;
+        // A verified automatic/legacy decision is useful cached display state
+        // too. In particular, a busy link must not turn an already confirmed
+        // automatic Receive policy into a false local-consent refusal. Signed
+        // permission and transfer/launch checks still call this method fresh.
+        EffectiveObservations.GetValue(Sync, _ => new())[(root, deviceId)] = enabled;
+        return enabled;
+    }
 
     // expectedRevision prevents an older queued opt-in from undoing a newer
     // immediate withdrawal. A deny never depends on a previously captured view.

@@ -47,6 +47,22 @@ it('uses indeterminate progress for unknown totals and retains interruption/fail
   expect(screen.getByText('Result: NoProgress')).toBeInTheDocument()
 })
 
+it('closes review with Escape and restores the jobs trigger without stopping observation', async () => {
+  vi.useFakeTimers()
+  const fetcher = vi.fn(async () => response({ jobs: [job], activeCount: 1 }))
+  vi.stubGlobal('fetch', fetcher)
+  render(<BackgroundJobs />)
+  await act(async () => {})
+  const summary = screen.getByText('Background jobs', { selector: 'summary span' }).closest('summary')!
+  fireEvent.click(summary)
+  expect(summary.parentElement).toHaveAttribute('open')
+  fireEvent.keyDown(screen.getByRole('region', { name: 'Background jobs' }), { key: 'Escape' })
+  expect(summary.parentElement).not.toHaveAttribute('open')
+  expect(summary).toHaveFocus()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
 it.each([{ ...job, receivedBytes: 2048 }, { ...job, totalBytes: -1 }, { ...job, attempts: 0 },
   { ...job, state: 'Ready' }, { ...job, id: '../path' }])('rejects invalid backend progress %j', value => {
   expect(() => parseBackgroundJobs({ jobs: [value], activeCount: 1 })).toThrow()

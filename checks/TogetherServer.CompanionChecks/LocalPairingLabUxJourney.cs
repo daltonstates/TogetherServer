@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using TogetherServer;
 
 internal static partial class CoreRemoteJourney
 {
@@ -53,8 +54,14 @@ internal static partial class CoreRemoteJourney
             await job.StopAsync();
             throw new PairingLabFailure("UxRunnerTimedOut");
         }
-        LabRequire(runner.ExitCode == 0, "TwoEndedUxFailed");
         var reportPath = Path.Combine(root, "ux", "report.json");
+        if (runner.ExitCode != 0)
+        {
+            var safe = File.Exists(reportPath) && new FileInfo(reportPath).Length <= 256 * 1024
+                ? LocalPairingLabEvidence.UxFailure(await File.ReadAllBytesAsync(reportPath))
+                : LocalPairingLabEvidence.UxFailure([]);
+            throw new PairingLabFailure("TwoEndedUxFailed", ux: safe);
+        }
         LabRequire(File.Exists(reportPath) && new FileInfo(reportPath).Length <= 256 * 1024, "UxReportMissingOrOversized");
         using var report = JsonDocument.Parse(await File.ReadAllBytesAsync(reportPath));
         LabRequire(report.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True &&

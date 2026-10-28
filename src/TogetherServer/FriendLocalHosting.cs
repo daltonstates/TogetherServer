@@ -520,8 +520,9 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             var existing = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == status.LocalProfileId);
             var preferred = existing ?? snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == previousLocalProfileId);
             progress.Report("Ports", "Checking the local game and control ports.");
-            var ports = await manager.LocalHostingPortsAsync(branch.Offer.Version, preferred, cancellationToken);
-            if (!ports.Available) return await Result("LocalPortsRequired", "A complete local game-port plan is unavailable. Review the running servers and retry.");
+            var recheckedPorts = await RecheckChosenLocalPortsAsync(branch.Offer.Version, preferred, selectedPorts.Ports, cancellationToken);
+            if (!recheckedPorts.Ok) return await Result(recheckedPorts.Code, recheckedPorts.Message);
+            var ports = recheckedPorts.Ports;
             var setup = new TakeoverLocalSetup(status.ServerFile, branch.Offer.Version.PortableSetup.GameVersion,
                 branch.Offer.Version.PortableSetup.AddOns ?? [], true, ports.ControlPort, ports.GamePort);
             if (existing is null)

@@ -11,12 +11,12 @@ using TogetherServer.CompanionChecks;
 internal static partial class CoreRemoteJourney
 {
     private sealed record PairingLabStage(string Id, string State = "NotRun", string? Code = null, long DurationMs = 0,
-        IReadOnlyList<PairingLabOperation>? Operations = null);
+        IReadOnlyList<PairingLabOperation>? Operations = null, LocalPairingLabUxFailure? Ux = null);
     private sealed record PairingLabOperation(string Id, string State, long StartedMs, long DurationMs, long TimeoutMs,
         string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false,
         int? HttpStatus = null, string? HttpContentKind = null, string? JsonExceptionCategory = null,
         string? JsonPath = null, PairingLabReceivingObservation? Receiving = null,
-        PairingLabMembershipObservation? Membership = null);
+        PairingLabMembershipObservation? Membership = null, LocalPairingLabHostingObservation? Hosting = null);
     private sealed record PairingLabReceivingObservation(int PcOrdinal, int PollCount, bool? Consented,
         string StateCode, string ErrorCode, long? HostVersion, long? ThisPcVersion, long? RosterRevision);
     private sealed record PairingLabMembershipObservation(int PcOrdinal, int PollCount, bool GroupPresent,
@@ -30,10 +30,11 @@ internal static partial class CoreRemoteJourney
         bool CandidateHeadAdvertised, bool CandidateClaimsPayload, bool ObserverReceiveConsented, bool ObserverCanReceive,
         bool ObserverSeesHead, bool ObserverSeesPayload, bool ObserverSeesRoute, bool CandidateHasWarning,
         bool ObserverHasWarning, bool ObserverHasConflicts, bool PointerMatched);
-    private sealed class PairingLabFailure(string code, int? httpStatus = null) : Exception
+    private sealed class PairingLabFailure(string code, int? httpStatus = null, LocalPairingLabUxFailure? ux = null) : Exception
     {
         internal string Code { get; } = code;
         internal int? HttpStatus { get; } = httpStatus;
+        internal LocalPairingLabUxFailure? Ux { get; } = ux;
     }
 
     // Independent app identities exercise real pinned TLS on one Windows PC.
@@ -156,8 +157,8 @@ internal static partial class CoreRemoteJourney
                 var code = windowFailure != 0 ? windowFailure == 1 ? "VisibleOwnedWindowObserved" : "OwnedWindowObservationUnavailable" :
                     error is PairingLabFailure assertion ? assertion.Code : error.GetType().Name;
                 stages[index] = new(id, "Failed", code, timer.ElapsedMilliseconds,
-                    StageOperations(id));
-                throw new PairingLabFailure(code);
+                    StageOperations(id), (error as PairingLabFailure)?.Ux);
+                throw new PairingLabFailure(code, ux: (error as PairingLabFailure)?.Ux);
             }
         }
 
@@ -1337,7 +1338,8 @@ internal static partial class CoreRemoteJourney
             if (code is not { Length: > 0 and <= 64 } || !code.All(char.IsAsciiLetterOrDigit)) code = null;
             var boundary = httpBoundary?.Invoke();
             var observation = new PairingLabOperation(id, "Returned", startedMs, clock.ElapsedMilliseconds - startedMs, timeoutMs, code,
-                HttpStatus: boundary?.Status, HttpContentKind: boundary?.ContentKind);
+                HttpStatus: boundary?.Status, HttpContentKind: boundary?.ContentKind,
+                Hosting: result is LocalHostingStatus hosting ? LocalPairingLabEvidence.Hosting(hosting) : null);
             lock (observations) observations.Add(observation);
             Console.WriteLine(marker + JsonSerializer.Serialize(observation, Json));
             return result;

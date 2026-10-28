@@ -80,8 +80,10 @@ Local validation so far uses .NET 10.0.301 and SHA-256-verified Node 24.14.1:
 - Locked dependency installation/restore, TypeScript, lint and production UI
   bundling passed. Vite retains its large-chunk advisory. The solution builds
   with zero warnings/errors. No dependencies were added.
-- All 1,685 UI tests passed across 113 files in serial partitions: 120 shell
-  tests and 1,565 other tests. The 64 pure renderer/fixture checks passed.
+- All 1,685 initial UI tests passed across 113 files in serial partitions: 120
+  shell tests and 1,565 other tests. The added jobs Escape/focus regression and
+  both affected suites then passed (61 tests), bringing the total to 1,686.
+  The 64 pure renderer/fixture checks passed.
   Earlier integrated runs exposed stale large-banner assertions and async
   shell-test waits; the final tests await the actual actions without increasing
   their timeouts. Rendered/native review is separate.
@@ -89,8 +91,10 @@ Local validation so far uses .NET 10.0.301 and SHA-256-verified Node 24.14.1:
   progress-store test adapter, a priority timing budget, and an incorrect
   Offline-row shortcut through preparation. Corrected scope checks and typed
   launch expectations now pass; all six affected focused groups pass
-  across reruns, including the new Offline-row preparation guard. A fresh
-  99-group pass and hosted frozen-candidate verification are pending.
+  across reruns, including the new Offline-row preparation guard. The next
+  local run passed 98/99: random signature JSON escaping broke an equal-length
+  corruption fixture. Its mutation now chooses a fixed-width character.
+  Hosted QolApi passed all 99 groups on the first candidate.
 - Slow byte observations exercise actual signed fake-HTTP response streams,
   raw/gzip original downloads, original and successor forwarding pulls, and
   gzip peer push with interruption/resume. Corrupt complete staging files are
@@ -105,6 +109,33 @@ The candidate version is 0.3.3.24. Hosted compatibility now also pins and tests
 the exact published .23 portable digest, alongside the six existing lanes.
 This candidate has not been published; release readiness awaits the complete
 source and hosted results below.
+
+The [first .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40757052098)
+built and packaged exact source `dd431d14cb6c1a6d4ee2708e4aebcd3c1df95b17`.
+Its QolApi, automatic shared hosting, Rehearsal, server-access visual review,
+packaging and six earlier compatibility lanes passed. Core exposed a real
+status race: automatic Receive consent was projected as false when the link
+gate was busy and no transfer observation existed. The cached effective
+decision now survives that read; fresh authoritative consent and membership
+checks still govern all transfers and launches. The signed fake-HTTP test
+reproduces a held gate, automatic consent and immediate withdrawal/reallow;
+both affected source groups pass.
+
+The same run exposed stale five-button Browser assertions and a missing .23
+legacy-test allowlist, now corrected. The compact Host review is explicitly
+opened before the exact Connect action in the two-ended lab. The lab also
+reported `LocalPortsRequired`, whose exact cause was not retained in its old
+artifact. Its fixture now requires the same exclusive loopback bind probe as
+the product, rather than relying only on listener tables. New allowlisted
+stage/code/boolean evidence preserves future hosting and child-UI failures.
+Separately, asynchronous preparation now binds its final port check to the
+request's original approval; a later preference change cannot switch plans,
+and removing that approval refuses preparation. The port guard stays enforced.
+The solution rebuild and seven focused source groups pass, covering lab
+boundary/redaction evidence, port choice changes, guided and detached
+preparation, cache invalidation, bounded discovery and exact prepared Start.
+Desktop's independent window cases passed; Windows `QuietTime` again blocked
+native notification acceptance. Corrected-candidate hosted results are pending.
 
 Physical laptop/main-PC behavior, real network transfer timing, real-game
 joins/save-load/restart, rendered/native acceptance and a new frozen-candidate

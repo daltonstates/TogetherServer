@@ -131,6 +131,18 @@ internal static class ApprovedGamePortsChecks
         Require(!busy.Available && busy.GamePort == 2460 && busy.ApprovedPortId == remembered.ApprovedPortId,
             "a busy approved port silently searched for an unapproved port");
         available = true;
+        using var friends = new FriendService(data, (_, _) => throw new InvalidOperationException("Port-choice checks cannot make network requests."));
+        var hosting = new FriendLocalHostingService(data, friends, manager);
+        data.ApprovedGamePorts.Save(new(GameKinds.Valheim, 2468, null));
+        var boundChoice = await hosting.RecheckChosenLocalPortsAsync(version, null, remembered, CancellationToken.None);
+        Require(boundChoice.Ok && boundChoice.Ports.GamePort == remembered.GamePort &&
+            boundChoice.Ports.ApprovedPortId == remembered.ApprovedPortId &&
+            data.ApprovedGamePorts.Find(GameKinds.Valheim)?.GamePort == 2468,
+            "An asynchronous preparation changed this request's approved ports to a newer preference.");
+        data.ApprovedGamePorts.Delete(remembered.ApprovedPortId!.Value);
+        var removedChoice = await hosting.RecheckChosenLocalPortsAsync(version, null, remembered, CancellationToken.None);
+        Require(!removedChoice.Ok && removedChoice.Code == "LocalPortApprovalRequired" && data.LoadRuns().Count == 0,
+            "Removed request-bound port approval fell back to another approved/source port or changed runtime state.");
         var existing = new ServerProfile { Kind = GameKinds.Valheim, GamePort = 2470 };
         var legacy = await manager.LocalHostingPortsAsync(version, existing, CancellationToken.None);
         Require(legacy.GamePort == 2470 && legacy.ApprovedPortId is null, "legacy prepared setup acquired approval from another port plan");

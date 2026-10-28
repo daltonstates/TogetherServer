@@ -1722,7 +1722,7 @@ internal sealed partial class FriendLink
             if (sharedProgressRoots.TryGetValue(profileId, out var knownRoot) &&
                 SharedSaveTransferProgress.Read(data, knownRoot) is { } observed) return observed;
             if (!gate.Wait(0)) return sharedLocalObservations.GetValueOrDefault(profileId) ??
-                new(false, null, null, "Background save check pending");
+                new(observedConsent == true, null, null, "Background save check pending");
             try
             {
                 if (config is null) return new(false, null, null, "Not paired");

@@ -9,6 +9,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const expectedHeaderControlNames = ['Background jobs', 'Setup guides', 'Servers', 'Notifications', 'App Settings', 'Commands']
+const headerControlName = value => value?.replace(/^Background jobs(?:, [1-9]\d* active)?$/u, 'Background jobs')
+  .replace(/^Notifications.*$/u, 'Notifications')
 const options = parseArguments(process.argv.slice(2))
 if (!options.allowInteractive || process.platform !== 'win32') {
   throw new Error('ForegroundSafety: QoL browser smoke requires --allow-interactive-tests and explicit owner approval for a separate Windows test PC or unattended CI runner. Never run on the active owner desktop.')
@@ -737,8 +740,8 @@ async function screenshot(page, name, viewport, subject, { assertLayout = true }
   report.screenshots.push(`${name}.png`)
   if (!assertLayout) return // Baseline is observation-only, never a passing layout assertion.
   assert(metrics.documentWidth <= metrics.width + 1, `${name}: the rendered page must not overflow horizontally.`)
-  assert.deepEqual(metrics.headerControls.map(control => control.name?.replace(/^Notifications.*$/u, 'Notifications')),
-    ['Setup guides', 'Servers', 'Notifications', 'App Settings', 'Commands'], `${name}: all five header navigation controls must be present.`)
+  assert.deepEqual(metrics.headerControls.map(control => headerControlName(control.name)),
+    expectedHeaderControlNames, `${name}: all six header controls must be present.`)
   assert(metrics.headerControls.every(control => control.name && control.width > 0 && control.height > 0 &&
     control.left >= -1 && control.right <= metrics.width + 1), `${name}: named header controls must fit inside the viewport.`)
 }
@@ -1137,15 +1140,39 @@ async function headerOverlayRegression(page, host) {
         await box(close, `command-close-${suffix}`)
         await closeCommandPalette(palette, () => close.click(), 'Close commands button')
         if (viewport.width <= 700) {
-          const mobileControls = await navigation.locator(':scope > .header-guides-trigger, :scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
+          const mobileControls = await navigation.locator(':scope > .background-jobs-menu > summary, :scope > .header-guides-trigger, :scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
             const bounds = element.getBoundingClientRect(), icon = element.querySelector('svg')?.getBoundingClientRect()
-            return { name: element.getAttribute('aria-label')?.replace(/^Notifications.*$/u, 'Notifications'),
+            return { name: element.getAttribute('aria-label'),
               width: bounds.width, height: bounds.height, iconVisible: !!icon && icon.width > 0 && icon.height > 0 }
           }))
           report.layout.push({ name: `mobile-navigation-${suffix}`, mobileControls })
-          assert.deepEqual(mobileControls.map(control => control.name), ['Setup guides', 'Servers', 'Notifications', 'App Settings', 'Commands'])
+          assert.deepEqual(mobileControls.map(control => headerControlName(control.name)), expectedHeaderControlNames)
           assert(mobileControls.every(control => control.iconVisible && control.width >= 44 && control.height >= 44),
-            `${suffix}: header navigation retains five accessible names, painted icons and 44px touch targets.`)
+            `${suffix}: all six header controls retain accessible names, painted icons and 44px touch targets.`)
+          const jobsMenu = navigation.locator(':scope > .background-jobs-menu')
+          const jobsSummary = jobsMenu.locator(':scope > summary')
+          const jobsSummaryName = await jobsSummary.getAttribute('aria-label')
+          assert.equal(headerControlName(jobsSummaryName), 'Background jobs', `${suffix}: the jobs summary must have its accessible name.`)
+          assert.equal(await jobsMenu.evaluate(element => element.open), false, `${suffix}: the jobs menu starts closed.`)
+          await jobsSummary.click()
+          const jobsPanel = jobsMenu.getByRole('region', { name: 'Background jobs', exact: true })
+          await jobsPanel.waitFor({ state: 'visible' })
+          assert.equal(await jobsPanel.getAttribute('class'), 'background-jobs-panel', `${suffix}: the named jobs region must identify the actual popover.`)
+          assert.equal(await notifications.evaluate(element => element.parentElement.open), false, `${suffix}: opening jobs keeps Notifications closed.`)
+          const jobsBounds = await box(jobsPanel, `background-jobs-${suffix}`)
+          await screenshot(page, `background-jobs-${suffix}`, viewport, jobsPanel)
+          await jobsSummary.click()
+          await jobsPanel.waitFor({ state: 'hidden' })
+          assert.equal(await jobsMenu.evaluate(element => element.open), false, `${suffix}: clicking the jobs summary closes its popover.`)
+          await jobsSummary.click()
+          await jobsPanel.waitFor({ state: 'visible' })
+          await page.keyboard.press('Escape')
+          assert.equal(await jobsMenu.evaluate(element => element.open), false, `${suffix}: Escape closes the jobs popover.`)
+          const jobsFocusRecovered = await jobsSummary.evaluate(element => element === document.activeElement)
+          assert(jobsFocusRecovered, `${suffix}: Escape returns focus to the jobs summary.`)
+          report.layout.push({ name: `mobile-background-jobs-${suffix}`, summaryAccessibleName: jobsSummaryName,
+            panelAccessibleName: 'Background jobs', readOnlyMenu: true, openedBySummary: true, closedBySummary: true,
+            closedByEscape: true, focusRecovered: jobsFocusRecovered, bounds: jobsBounds })
         }
       }
     }

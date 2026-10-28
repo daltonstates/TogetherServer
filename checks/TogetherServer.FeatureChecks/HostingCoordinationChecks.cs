@@ -88,7 +88,11 @@ internal static class HostingCoordinationChecks
         var bytes = fixture.Target.LoadProtected("world-peer-memberships.protected")!;
         using var document = JsonDocument.Parse(bytes);
         var signature = document.RootElement.GetProperty("groups")[0].GetProperty("roster").GetProperty("signature").GetString()!;
-        var replacement = (signature[0] == 'A' ? "B" : "A") + signature[1..];
+        // '+' may be JSON-escaped; replace an ASCII alphanumeric so the
+        // encoded fixture length stays equal for every random signature.
+        var signatureIndex = signature.IndexOfAny("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".ToCharArray());
+        Require(signatureIndex >= 0, "the synthetic signature had no fixed-width mutation target");
+        var replacement = signature[..signatureIndex] + (signature[signatureIndex] == 'A' ? "B" : "A") + signature[(signatureIndex + 1)..];
         var changed = JsonNode.Parse(bytes)!;
         changed["groups"]![0]!["roster"]!["signature"] = replacement;
         var encoded = JsonSerializer.SerializeToUtf8Bytes(changed, new JsonSerializerOptions(JsonSerializerDefaults.Web));

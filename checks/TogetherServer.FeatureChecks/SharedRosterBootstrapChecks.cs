@@ -604,6 +604,7 @@ internal static class SharedRosterBootstrapChecks
 
     internal static async Task RunSlowReceiveProgressAsync(string root)
     {
+        await BusyAutomaticConsentObservationAsync(root);
         foreach (var gzip in new[] { false, true })
         {
             using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
@@ -639,6 +640,36 @@ internal static class SharedRosterBootstrapChecks
                 "The deliberately slow original-Host transfer failed full verification/receipt.");
         }
         await CorruptCompletedPartialProgressAsync(root);
+    }
+
+    private static async Task BusyAutomaticConsentObservationAsync(string root)
+    {
+        using var fixture = new Fixture(root, new(Receive: true, EligibleHost: true, Reshare: true));
+        fixture.Current = fixture.Child(fixture.Bootstrap);
+        fixture.RemoteHistory = [fixture.Legacy, fixture.Bootstrap, fixture.Current];
+        await fixture.ConnectAsync();
+        Require((await fixture.CheckAsync()).Available, "The automatic-consent fixture did not verify its signed roster.");
+        var link = fixture.Connection;
+        var memberships = await link.PeerMembershipsAsync(false, CancellationToken.None);
+        Require(memberships is [{ ReceiveConsented: true }] && fixture.SavedConfiguration.ConsentedSharedWorldProfiles.Count == 0,
+            "The fixture did not exercise automatic receiving without an explicit storage choice.");
+        link.ObserveSharedCatchUpScheduling(link.View()); // Material observation invalidates the old page cache.
+        var gate = (SemaphoreSlim)typeof(FriendLink).GetField("gate", System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.Instance)!.GetValue(link)!;
+        await gate.WaitAsync();
+        try
+        {
+            var pending = await Task.Run(() => fixture.ReceiveStatus).WaitAsync(TimeSpan.FromSeconds(5));
+            Require(pending is { Consented: true, HostVersion: null, ThisPcVersion: null },
+                "A busy link turned verified automatic receiving into false consent-off or invented a received save.");
+            var membership = memberships.Single();
+            var store = new WorldPeerReceiveConsentStore(fixture.Data);
+            Require(store.Set(membership.Root, membership.DeviceId, false) && !fixture.ReceiveStatus.Consented,
+                "Cached automatic receiving overrode a later canonical withdrawal.");
+            Require(store.Set(membership.Root, membership.DeviceId, true) && fixture.ReceiveStatus.Consented,
+                "A later canonical allow was lost while the link gate was busy.");
+        }
+        finally { gate.Release(); }
     }
 
     private static async Task CorruptCompletedPartialProgressAsync(string root)
@@ -921,6 +952,7 @@ internal static class SharedRosterBootstrapChecks
             Data.LoadProtected("friend.protected")!, Json)!;
         public ReceivedSharedWorldStatus ReceiveStatus =>
             (link ?? throw new InvalidOperationException("Check the synthetic connection first.")).SharedWorldStatus(ProfileId);
+        public FriendLink Connection => link ?? throw new InvalidOperationException("Connect the synthetic PC first.");
 
         public Fixture(string root, SharedWorldGrants? grants = null)
         {

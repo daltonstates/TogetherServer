@@ -65,7 +65,12 @@ export function BackgroundJobs() {
   }, [])
   const activeCount = result?.activeCount ?? 0
   const failed = result?.jobs.some(job => ['Failed', 'Interrupted', 'Stalled'].includes(job.state))
-  return <details className="background-jobs-menu">
+  return <details className="background-jobs-menu" onKeyDown={event => {
+    if (event.key !== 'Escape' || !event.currentTarget.open) return
+    event.preventDefault(); event.stopPropagation()
+    event.currentTarget.open = false
+    event.currentTarget.querySelector<HTMLElement>('summary')?.focus()
+  }}>
     <summary aria-label={`Background jobs${activeCount ? `, ${activeCount} active` : ''}`} title="Background jobs">
       <Icon name={activeCount ? 'loader' : failed ? 'warning' : 'archive'} size={18} /><span>Background jobs</span>
       {activeCount > 0 && <span className="background-jobs-count">{activeCount}</span>}

@@ -12,4 +12,8 @@
 .background-job small { color: var(--color-muted); font-size: .75rem; }
 .background-job progress { inline-size: 100%; }
 .background-job.job-failed > div span, .background-job.job-interrupted > div span, .background-job.job-stalled > div span { color: var(--color-warning, #e7ac69); }
-@media (max-width: 760px) { .background-jobs-menu > summary > span:first-of-type { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); } }
+@media (max-width: 760px) {
+  .background-jobs-menu > summary { min-inline-size: 44px; min-block-size: 44px; justify-content: center; }
+  .background-jobs-menu > summary > span:first-of-type { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); }
+  .background-jobs-panel { position: fixed; inset-inline: .75rem; inset-block-start: 4.5rem; inline-size: auto; max-block-size: calc(100dvh - 5.5rem); }
+}

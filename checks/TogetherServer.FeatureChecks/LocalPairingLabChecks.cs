@@ -9,6 +9,7 @@ internal static class LocalPairingLabChecks
 {
     internal static async Task RunAsync(string root)
     {
+        LocalPairingLabEvidenceChecks.Run();
         var args = new[] { "--local-pairing-lab", "--staging", "--host", "--port", "59101" };
         LocalPairingLabMode.ValidateArguments(args);
         foreach (var extras in new[]
@@ -25,6 +26,22 @@ internal static class LocalPairingLabChecks
             !LocalPairingLabMode.AllowsControlPolicy(new(AutoShutdownEnabled: true)) &&
             !LocalPairingLabMode.AllowsControlPolicy(new(KeepAwakeWhileHosting: true)), "lab control policy admitted automatic Stop or power changes");
         await NetworkPolicyChecksAsync();
+        var probed = new List<int>();
+        var chosenPort = LocalPairingLabMode.SelectFixtureUdpPair([36000, 36002, 36004, 36006], [36001], candidate =>
+        {
+            probed.Add(candidate);
+            return candidate == 36004;
+        });
+        Require(chosenPort == 36004 && probed.SequenceEqual([36002, 36004]),
+            "Fixture selection treated a table-free but bind-denied UDP pair as usable or ignored an observed query port.");
+        var probes = 0;
+        try
+        {
+            LocalPairingLabMode.SelectFixtureUdpPair(Enumerable.Repeat(37000, 201), [], _ => { probes++; return false; });
+            throw new InvalidDataException("Unbindable fixture ports were selected.");
+        }
+        catch (InvalidOperationException) { }
+        Require(probes == 200, "Unbindable fixture port selection was unbounded.");
         using (var recoveryData = new LocalData(Path.Combine(root, "lab-no-native-restart")))
         {
             var recovery = new StartupRecoveryService(recoveryData, [], "not-launched.exe", registerWindowsRestart: false);

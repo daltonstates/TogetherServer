@@ -292,7 +292,8 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
     </article> })}
     {message && <p className="shared-host-result" role={message.error ? 'alert' : 'status'}>{message.text}</p>}
   </section>}</>
-  return compact ? <details className="shared-host-compact">
+  return compact ? <details className="shared-host-compact" data-report-state={review.length === 0 && differentHosts.length > 0 &&
+    differentHosts.every(report => report.historical) ? 'historical' : 'reported'}>
     <summary aria-label={compactLabel} title={compactLabel}><Icon name={review.length ? 'warning' : 'clock'} size={17} /><span className="sr-only">{compactLabel}</span></summary>
     <div className="shared-host-popover" role="region" aria-label="Shared Host status details">{compactDetails}{content}</div>
   </details> : <><span className="shared-host-announcement" aria-live="polite" aria-atomic="true">{announcement}</span>{content}</>

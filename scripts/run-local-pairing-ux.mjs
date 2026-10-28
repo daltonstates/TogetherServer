@@ -686,9 +686,25 @@ try {
     const learned = groups.find(group => group.groupKey === candidate.groupKey);
     const peer = learned.state.peers.find(item => item.deviceId === candidate.deviceId);
     await ownerOverview(host);
+    const ownerSelection = await selectedLocalProfile(host);
+    const reviewSummary = visible(host.getByLabel('Reported Host differs from the original Host', { exact: true }));
+    await reviewSummary.waitFor({ state: 'visible', timeout });
+    if (await reviewSummary.count() !== 1) throw new Error('The exact signed Host review is missing or ambiguous');
+    const review = reviewSummary.locator('..');
+    if (!await review.evaluate(element => element.open)) await reviewSummary.click();
+    const reviewDetails = review.getByRole('region', { name: 'Shared Host status details', exact: true });
+    await reviewDetails.waitFor({ state: 'visible', timeout });
+    if ((await read(host)).mode !== 'Host' || await selectedLocalProfile(host) !== ownerSelection || hostingStartRequests !== 1)
+      throw new Error('Opening the compact hosting report changed the selected Host or repeated Start');
+    const connect = visible(reviewDetails.getByRole('button', {
+      name: `Connect to PC ending ${candidate.deviceId.slice(-6).toUpperCase()}`, exact: true
+    }));
+    await connect.waitFor({ state: 'visible', timeout });
+    if (await connect.count() !== 1) throw new Error('The exact candidate Connect action is missing or ambiguous');
+    await until(() => connect.isEnabled(), Boolean, 'explicit Connect enabled inside the signed Host review');
     const connecting = host.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname ===
       `/api/local/world-peers/${candidate.groupKey}/connect`);
-    await button(host, `Connect to PC ending ${candidate.deviceId.slice(-6).toUpperCase()}`);
+    await connect.click({ timeout: 15000 });
     const selected = (await connecting).postDataJSON();
     if (selected.deviceId !== candidate.deviceId || selected.sessionId !== candidate.runId) throw new Error('Connect selected another signed session');
     await until(() => read(host), snapshot => snapshot.mode === 'Friend' && ['Connected', 'Disabled'].includes(snapshot.state) &&
@@ -699,6 +715,7 @@ try {
     'owner connected to exact advertised candidate profile, session and endpoint');
     if (hostingStartRequests !== 1) throw new Error('Connect or polling repeated guided Start');
     report.signedDiscovery = { exactWorldRoot: true, exactCandidateSession: true, exactBranch: true,
+      compactReviewOpened: true, displayPreservedSelection: true,
       authorizedWithoutConflict: true, exactAdvertisedEndpoint: true, exactConnectSelection: true,
       sidebar: await verifyWorldSidebar(host, 'owner') };
     await shot(host, '07-owner-connected-new-host');
@@ -722,7 +739,12 @@ try {
   let detail = String(error?.message ?? error).split('\n').slice(0, 3).join(' ').slice(0, 1200);
   for (const text of privateText) detail = detail.replaceAll(text, '[private code]');
   report.diagnostic = detail;
-  report.failure = { stage: currentStage, message: 'The named UI stage did not satisfy its assertions. Inspect the masked screenshots and bounded request diagnostics.' };
+  const failureCode = report.errors.some(entry => ['download-refused', 'native-dialog-refused'].includes(entry.kind))
+    ? 'ForbiddenNativeInteraction' : error?.name === 'TimeoutError' ? 'UiTimeout'
+      : report.errors.length ? 'BrowserRuntimeError' : report.failedRequests.length ? 'BrowserRequestFailed'
+        : error instanceof Error ? 'UiAssertionFailed' : 'UiRunnerFailed';
+  report.failure = { stage: currentStage, code: failureCode,
+    message: 'The named UI stage did not satisfy its assertions. Inspect the masked screenshots and bounded request diagnostics.' };
   for (let index = 0; index < pages.length; index++) await shot(pages[index], `failure-${index}`).catch(() => {});
 } finally {
   closingBrowser = true;
