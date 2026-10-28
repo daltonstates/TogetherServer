@@ -7,7 +7,7 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## Owner-installed .21 physical results and unpublished performance follow-up
+## Owner-installed .21 physical results and integrated .22 prerelease
 
 The owner manually installed .21 on both PCs and confirmed both unattended with
 V1release stopped. The laptop's running EXE matches the exact public
@@ -137,7 +137,7 @@ publication's staging from matching files in another verified publication. This
 is a source-confirmed opportunity to avoid redundant downloads, not a measured
 wire-byte saving on either physical PC.
 
-One combined **unpublished .22** follow-up contains:
+The integrated **.22 prerelease** contains:
 
 - Keep the complete operation-local inventory during ancestry selection instead
   of rebuilding it per parent. Candidate filtering, exact parent verification
@@ -185,8 +185,14 @@ fixture; its log is retained, the unnecessary using was removed, and the strict
 focused rebuild has zero warnings/errors. The initial hosted failure is also
 retained.
 
-The corrected frozen application source is
-`5a78e67ced045a3c1793dd558a07039de46baaf1`, still **unpublished .22**.
+The frozen .22 application source is
+`5a78e67ced045a3c1793dd558a07039de46baaf1`.
+At the owner's request, [v0.3.3.22 prerelease](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.22)
+was published October 28, 2026 at 11:01 a.m. EDT, release `426814750`.
+Annotated tag `0a20f85578a097bf23c6d5619b5b69f1355c26c9` targets that exact
+application source. All four anonymous public downloads match the reviewed CI
+bytes, sizes, versions, checksum sidecars and GitHub digests. All 36 prior
+releases and their 126 assets remain intact; stable/latest remains `v0.3.3`.
 Its [exact-source Windows run](https://github.com/daltonstates/TogetherServer/actions/runs/40652368693)
 passes all 94 source groups and eight packaged API journeys, both ordinary
 automatic-hosting journeys, pairing/both-ended UX, six compatibility baselines,
@@ -195,26 +201,25 @@ lane also passes all 27 gates, including 1,597 UI tests in 109 files, Minecraft
 12/12, Companion 46/46 and Shared Worlds 11/11 with zero recovery scenarios
 skipped. The run completed with 16 successful jobs, one Desktop notification
 block and the expected dispatch-only skip. Both ordinary journeys use one normal
-preparation,
-one Friend Start and one returning-owner Start, exact selected signed progress
+preparation, one Friend Start and one returning-owner Start, exact selected signed progress
 and no repeated preparation or diagnostic replacement.
 
 The Desktop lane passes 12 required native cases and 14 window-control cases;
 one OS notification delivery/click case remains blocked by Windows QuietTime.
 Development-mode startup is explicitly skipped there; the separate
 production-mode startup, desktop and update-handoff gates pass in the broader
-lane. This is not fully green or full acceptance. The package passes six installer smoke
-cases and three actual wizard choices on its hosted runner. Local static review
+lane. This is not fully green or full acceptance. The package passes six
+installer smoke cases and three actual wizard choices on its hosted runner. Local static review
 matches both files, sidecars, version resources, source/run identity and artifact
 digests without launching either EXE. Portable: 66,282,406 bytes, SHA-256
 `b98a09337479c6ca4f866cf26b452f4e2233c0707e2d856eb35c86ff3b59b1fb`.
 Installer: 60,737,950 bytes, SHA-256
 `83304e92fa25c339f73f11651afdb86d9049b75211f70113dc65f25e3d8fd504`.
-Both are unsigned. Neither artifact is a public release or installed update;
-both physical PCs remain owner-installed .21, and no .22 physical speedup is
-claimed.
+Both are unsigned. Publication did not install either artifact. The last
+confirmed physical version on both PCs is owner-installed .21, and no .22
+physical speedup is claimed.
 
-No further physical cycle or installation is planned tonight. Delivery-time
+No additional physical cycle or installation accompanied publication. Delivery-time
 attribution still requires the original PC's receive cursor,
 accepted-byte progress, current errors and CPU work; the
 [read-only main-PC handoff](development/main-pc-returning-host-check.txt) remains

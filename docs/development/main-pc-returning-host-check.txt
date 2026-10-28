@@ -51,7 +51,7 @@ TCP connects to main succeeded, median27.9ms; no wire throughput/path proof.
 No tunnel/network change was made. The owner requires planning any tunnel when
 awake; do not configure one as part of this diagnostic.
 
-One combined UNPUBLISHED .22 source follow-up is being validated with code-only
+One combined .22 prerelease contains changes validated with code-only
 local checks and hosted Windows CI (inventory reuse, positive canonical-key parsing cache, real-flight
 scheduling completion ownership, cross-publication matching-file staging).
 Initial source298ab8c Windows run40649330591 found a fixture requiring Chunk
@@ -65,7 +65,12 @@ the separate production-mode startup/update-handoff checks. Final job outcomes:
 16success,1Desktopnotificationblock,1expecteddispatch-onlyskip.
 Desktop notification/click remains blocked by Windows QuietTime; no full
 acceptance or physical .22 improvement is claimed.
-It is NOT installed on either PC. Do not patch/install a separate candidate or
+.22 was published at the owner's request October28,2026 at11:01a.m.EDT:
+https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.22
+All4 anonymous public assets match the reviewed CI bytes/digests; stable/latest
+remainsv0.3.3. Publication did not install it; last confirmed physical version
+is.21 on both PCs. Confirm current installed version for future diagnosis.
+Do not patch/install a separate candidate or
 repeat the physical sequence. Keep this task READ-ONLY. Capture three bounded
 safe observations and existing incoming-stage metadata if needed; do not force
 Sync/Prepare, change sharing/consent, re-pair, choose a default/history or Start.
