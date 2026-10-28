@@ -180,6 +180,23 @@ the explicitly opted-in hosted runner. Whole-solution format verification and
 code-only compilation of the corrected general runner passed; no General
 runner entry point was invoked locally.
 
+The [third .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40766061721)
+built exact source `ce748bfadb6d134486d439be34cdf9e702b2d2c6`. Core remote
+controls, Rehearsal, all seven compatibility lanes, automatic shared hosting,
+server-access/hosting/sharing rendered review, packaging and all three pairing
+lab modes passed. Thus the earlier LAN sync refusal did not reproduce on this
+candidate; its discarded original result still prevents a root-cause claim.
+Desktop passed its independent native cases and remained blocked by Windows
+`QuietTime` for notification delivery/click. Browser reached a real tablet
+regression: at 768 px/150% text the new labeled jobs button pushed header
+controls 39 px past the viewport. The jobs control now uses its accessible
+icon layout through 960 px, with a viewport-bounded popover. Hosted coverage
+now opens/closes/checks that popover at 768 px/100% and 150%, alongside the
+existing narrow and short cases; 18 affected UI tests, types and lint pass.
+The final candidate must include this CSS correction. The first Existing
+runner was canceled at its timeout while the old serialized-Start assertion
+held its cleanup gate; it had passed all 1,685 initial UI tests beforehand.
+
 Physical laptop/main-PC behavior, real network transfer timing, real-game
 joins/save-load/restart, rendered/native acceptance and a new frozen-candidate
 hosted run remain separate requirements. The screenshot is unresolved physical

@@ -993,7 +993,7 @@ async function headerOverlayRegression(page, host) {
   const notifications = page.locator('.notification-menu > summary')
   const appSettings = page.locator('.header-tools .app-settings-trigger')
   const palette = page.getByRole('dialog', { name: 'Command palette', exact: true, includeHidden: true })
-  const viewports = [{ width: 1180, height: 774 }, { width: 1440, height: 900 }, { width: 641, height: 844 },
+  const viewports = [{ width: 1180, height: 774 }, { width: 1440, height: 900 }, { width: 768, height: 1024 }, { width: 641, height: 844 },
     { width: 700, height: 844 }, { width: 390, height: 844 }, { width: 900, height: 400 }]
   const box = async (locator, name, observeOnly = false) => {
     const metrics = await locator.evaluate(element => {
@@ -1139,7 +1139,7 @@ async function headerOverlayRegression(page, host) {
         const close = palette.getByRole('button', { name: 'Close commands', exact: true })
         await box(close, `command-close-${suffix}`)
         await closeCommandPalette(palette, () => close.click(), 'Close commands button')
-        if (viewport.width <= 700) {
+        if (viewport.width <= 960) {
           const mobileControls = await navigation.locator(':scope > .background-jobs-menu > summary, :scope > .header-guides-trigger, :scope > .header-servers-trigger, :scope > .notification-menu > summary, :scope > .app-settings-trigger, :scope > .command-trigger').evaluateAll(elements => elements.map(element => {
             const bounds = element.getBoundingClientRect(), icon = element.querySelector('svg')?.getBoundingClientRect()
             return { name: element.getAttribute('aria-label'),
