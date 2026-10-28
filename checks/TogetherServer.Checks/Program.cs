@@ -3130,6 +3130,7 @@ await Check("exact-run session evidence accumulates trusted player observations 
     var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly), clock);
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "settings failed");
     Require((await manager.StartAsync(profile.Id)).Ok, "start failed");
+    await WaitForFixtureIdentityAsync(data.LoadRuns().Single());
     await manager.RefreshObservationsAsync();
     var recorded = data.LoadRuns().Single();
     Require(recorded.WasReady && recorded.LastTrustedOnlinePlayers == 2 &&
@@ -3408,9 +3409,10 @@ await Check("hosting power request and resume revalidation stay scoped and fail 
     var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly), clock, power);
     Require((await manager.UpdateSettingsAsync(settings)).Ok && !power.IsActive,
         "the scoped power request activated while no managed server was running");
-    Require((await manager.StartAsync(profile.Id)).Ok && power.IsActive,
-        "the scoped power request did not activate for the exact managed process");
+    Require((await manager.StartAsync(profile.Id)).Ok, "the power fixture did not start");
+    await WaitForFixtureIdentityAsync(data.LoadRuns().Single());
     await manager.RefreshObservationsAsync();
+    Require(power.IsActive, "the scoped power request did not activate for the exact managed process");
     Require((await manager.ExtendAutoShutdownAsync(profile.Id, 5)).Ok, "could not save countdown time");
     var beforeResume = await manager.SnapshotAsync();
     Require(beforeResume.Runs.Single().AutoShutdownAtUtc is not null &&
@@ -3566,6 +3568,7 @@ await Check("graceful stop backup and offline restore protect the world", async 
     var backup = (await manager.BackupsAsync(profile.Id)).Backups.Single();
     File.WriteAllText(marker, "after backup");
     Require((await manager.StartAsync(profile.Id)).Ok, "second start failed");
+    await WaitForFixtureIdentityAsync(data.LoadRuns().Single());
     Require((await manager.RestoreBackupAsync(profile.Id, backup.Id)).Code == "ServerRunning",
         "restore was allowed while the exact managed process was running");
     profile.Backups.Enabled = false;
@@ -3783,8 +3786,9 @@ await Check("takeover readiness and rehearsal keep received saves isolated", asy
     var manager = new HostManager(data, new GameServerRegistry([new ObservationFixtureDriver()], PortProbeMode.ObserveOnly));
     Require((await manager.UpdateSettingsAsync(Settings(profile))).Ok, "fixture setup failed");
     await manager.PublishSharedWorldRosterAsync(profile.Id, []);
-    Require((await manager.StartAsync(profile.Id)).Ok && (await manager.StopAsync(profile.Id)).Ok,
-        "fixture Stop did not publish");
+    Require((await manager.StartAsync(profile.Id)).Ok, "the takeover fixture did not start");
+    await WaitForFixtureIdentityAsync(data.LoadRuns().Single());
+    Require((await manager.StopAsync(profile.Id)).Ok, "fixture Stop did not publish");
     var version = (await manager.SharedWorldStatusAsync(profile.Id)).Latest!;
     var vault = Path.Combine(data.RootPath, "received-shared-worlds", Guid.NewGuid().ToString("N"),
         profile.Id.ToString("N"));
@@ -9662,6 +9666,7 @@ static async Task DirectFixtureStop(ManagedRun run)
 
 static async Task KillFixture(ManagedRun run)
 {
+    await WaitForFixtureIdentityAsync(run);
     using var process = Process.GetProcessById(run.ProcessId!.Value);
     var actual = process.MainModule?.FileName;
     if (actual is null || !Path.GetFullPath(actual).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase) ||
@@ -9670,6 +9675,56 @@ static async Task KillFixture(ManagedRun run)
     process.Kill(entireProcessTree: true);
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
     await process.WaitForExitAsync(timeout.Token);
+}
+
+static async Task WaitForFixtureIdentityAsync(ManagedRun run)
+{
+    if (run.Kind != GameKinds.Fixture || run.ProcessId is not > 0 || run.StartTimeUtcTicks is not > 0 ||
+        !Path.GetFileName(run.ExecutablePath).Equals("TogetherServer.Fixture.exe", StringComparison.OrdinalIgnoreCase))
+        throw new Exception("an exact disposable fixture identity is required before waiting");
+    var timer = Stopwatch.StartNew();
+    var attempts = 0;
+    var state = "NotObserved";
+    var lastWaitingState = state;
+    void Diagnostic() => Console.WriteLine("FIXTURE_IDENTITY_WAIT " + JsonSerializer.Serialize(new
+    {
+        elapsedMs = Math.Min(timer.ElapsedMilliseconds, 60_000),
+        attempts,
+        state,
+        lastWaitingState
+    }));
+    // Windows can return from Process.Start before its module table is visible.
+    // Wait only for this recorded PID, creation time and executable; no Start,
+    // Stop, recovery or identity repair is retried or inferred from the wait.
+    while (timer.Elapsed < TimeSpan.FromSeconds(2))
+    {
+        attempts++;
+        try
+        {
+            using var process = Process.GetProcessById(run.ProcessId.Value);
+            if (process.HasExited) { state = "Exited"; break; }
+            if (process.StartTime.ToUniversalTime().Ticks != run.StartTimeUtcTicks)
+            { state = "StartTimeMismatch"; break; }
+            var actual = process.MainModule?.FileName;
+            state = actual is null ? "ModuleUnavailable" :
+                Path.GetFullPath(actual).Equals(Path.GetFullPath(run.ExecutablePath), StringComparison.OrdinalIgnoreCase)
+                    ? "Matched" : "ExecutableMismatch";
+            if (state == "Matched")
+            {
+                if (attempts > 1) Diagnostic();
+                return;
+            }
+            if (state == "ExecutableMismatch") break;
+        }
+        catch (ArgumentException) { state = "PidMissing"; break; }
+        catch (InvalidOperationException) { state = "ProcessUnavailable"; }
+        catch (System.ComponentModel.Win32Exception) { state = "ModuleUnavailable"; }
+        lastWaitingState = state;
+        var remaining = TimeSpan.FromSeconds(2) - timer.Elapsed;
+        if (remaining > TimeSpan.Zero) await Task.Delay(remaining < TimeSpan.FromMilliseconds(50) ? remaining : TimeSpan.FromMilliseconds(50));
+    }
+    Diagnostic();
+    throw new Exception("the recorded disposable fixture did not establish exact process identity within two seconds: " + state);
 }
 
 static void ValidateStringBounds(JsonElement element, int maximum)

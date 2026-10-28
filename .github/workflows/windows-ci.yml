@@ -18,6 +18,10 @@ on:
         description: Exact 64-hex SHA-256 of the frozen application
         required: true
         type: string
+      existing_checks:
+        description: Run corrected Existing checks against unchanged candidate bytes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -620,9 +624,9 @@ jobs:
 
   frozen-hosting-recheck:
     if: github.event_name == 'workflow_dispatch'
-    name: Recheck ordinary hosting with an existing frozen candidate
+    name: ${{ inputs.existing_checks && 'Recheck Existing with an unchanged candidate' || 'Recheck ordinary hosting with an existing frozen candidate' }}
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.existing_checks && 60 || 20 }}
     permissions:
       contents: read
       actions: read
@@ -630,6 +634,7 @@ jobs:
       CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
       CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
       CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+      EXISTING_CHECKS: ${{ inputs.existing_checks }}
     steps:
       - name: Validate inputs and original same-repository workflow run
         id: origin
@@ -667,13 +672,22 @@ jobs:
       - name: Check out the exact original application and dispatcher source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ steps.origin.outputs.source }}
+          ref: ${{ inputs.existing_checks && github.sha || steps.origin.outputs.source }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install the original source's pinned .NET SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           global-json-file: global.json
+
+      - name: Install pinned Node for corrected Existing checks
+        if: inputs.existing_checks
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
 
       - name: Download the existing candidate without rebuilding or replacing it
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -691,7 +705,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $origin = Get-Content (Join-Path $env:RUNNER_TEMP 'frozen-hosting-recheck-origin.json') -Raw | ConvertFrom-Json
           $head = git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0 -or $head -cne $origin.candidateSource) { throw 'Dispatcher checkout differs from the original application source.' }
+          $expectedHead = if ($env:EXISTING_CHECKS -eq 'true') { $origin.verificationRevision } else { $origin.candidateSource }
+          if ($LASTEXITCODE -ne 0 -or $head -cne $expectedHead) { throw 'Dispatcher checkout differs from the expected verification source.' }
+          if ($env:EXISTING_CHECKS -eq 'true') {
+            git merge-base --is-ancestor $origin.candidateSource HEAD
+            if ($LASTEXITCODE -ne 0) { throw 'The frozen source is not an ancestor of these corrected checks.' }
+            $productChanges = @(git diff --no-renames --name-only $origin.candidateSource HEAD -- src ui installer global.json .node-version Directory.Build.props Directory.Build.targets)
+            if ($LASTEXITCODE -ne 0 -or @($productChanges | Where-Object { $_ -notmatch '^ui/src/.+\.test\.tsx?$' }).Count) {
+              throw 'Product or build inputs changed after the frozen candidate.'
+            }
+          }
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           $identity = Get-Content local-data/release-candidate/candidate.json -Raw | ConvertFrom-Json
           $version = [string]([xml](Get-Content src/TogetherServer/TogetherServer.csproj -Raw)).Project.PropertyGroup.Version
@@ -713,6 +736,7 @@ jobs:
           Copy-Item -LiteralPath local-data/release-candidate/candidate.json -Destination (Join-Path $evidence.FullName 'original-candidate.json')
 
       - name: Compile only the dispatcher at the original source
+        if: ${{ !inputs.existing_checks }}
         shell: pwsh
         run: |
           dotnet restore checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj --locked-mode -p:CodeOnlyVerification=true
@@ -721,6 +745,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Frozen-source hosting dispatcher compilation failed.' }
 
       - name: Run two ordinary unchanged hosting cases and retain any failure
+        if: ${{ !inputs.existing_checks }}
         shell: pwsh
         run: |
           # Explicit hosted Windows opt-in. Never run these native fixtures on the owner's active desktop.
@@ -762,6 +787,21 @@ jobs:
             throw 'An ordinary frozen-candidate hosting case failed; diagnostic evidence cannot replace that failure.'
           }
 
+      - name: Install locked corrected-check dependencies
+        if: inputs.existing_checks
+        working-directory: ui
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run corrected Existing checks on the unchanged application
+        if: inputs.existing_checks
+        shell: pwsh
+        run: |
+          # Explicit opt-in for this dedicated hosted Windows desktop only.
+          # Build check runners, never rebuild or replace the downloaded candidate.
+          $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
+          ./scripts/verify-release.ps1 -AppPath $candidate -CandidateSourceRevision $env:CANDIDATE_SOURCE -Suite Existing -AllowInteractiveTests
+
       - name: Verify the same frozen bytes after every attempted case
         if: always() && steps.bound.outcome == 'success'
         shell: pwsh
@@ -781,6 +821,7 @@ jobs:
           path: |
             ${{ runner.temp }}/frozen-hosting-recheck-origin.json
             local-data/ci-evidence/frozen-hosting-recheck/*.json
+            local-data/ci-evidence/release-gate/*.json
             local-data/local-pairing-lab/simple-hosting-*/report.json
           if-no-files-found: warn
           retention-days: 7
