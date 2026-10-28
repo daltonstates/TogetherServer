@@ -2101,6 +2101,46 @@ it('disables dialog confirmation when a background transfer starts after the hos
   expect(writes).toEqual([])
 })
 
+it('shows one preparation progress panel and waits for the background receipt before its single authorized Start', async () => {
+  vi.useFakeTimers(); vi.setSystemTime('2026-10-28T12:00:00Z')
+  const began = new Date(Date.now()).toISOString()
+  let transferPhase: 'Receiving' | 'Receipt' | null = null
+  let finishPreparation!: (value: Response) => void
+  const writes: string[] = []
+  const open = vi.fn()
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === base) return response({ ...idleTransfer, transferPhase })
+    if (url.endsWith('/progress')) return response({ phase: 'Receiving', state: 'Working', message: 'Receiving the save.',
+      startedUtc: began, updatedUtc: new Date(Date.now()).toISOString(), receivedBytes: 25, totalBytes: 100, percent: 25 })
+    if (init?.method) {
+      writes.push(url)
+      if (url.endsWith('/prepare')) return new Promise<Response>(resolve => { finishPreparation = resolve })
+      return response({ ok: true, code: 'Starting', message: 'Start requested.' })
+    }
+    return response(initial)
+  }))
+  render(<FriendLocalHosting {...props} onOpenHost={open} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog', { name: 'Host locally' }))
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  transferPhase = 'Receiving'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(dialog.getByRole('region', { name: 'Hosting progress' })).toHaveTextContent('Receiving the save')
+  expect(dialog.queryByRole('region', { name: 'Save transfer progress' })).not.toBeInTheDocument()
+  transferPhase = 'Receipt'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  await act(async () => { finishPreparation(response(prepared)) })
+  expect(dialog.getByRole('region', { name: 'Save transfer progress' })).toHaveTextContent('Confirming save receipt')
+  expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
+  expect(writes).toEqual([`${base}/hosting/prepare`])
+  transferPhase = null
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(writes).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`])
+  expect(open).toHaveBeenCalledExactlyOnceWith(localProfileId)
+})
+
 it.each(['network', 'malformed', 'timeout'] as const)('keeps hosting disabled during %s background status failure and recovers only from a fresh read', async failure => {
   vi.useFakeTimers()
   let state: 'pending' | 'failed' | 'ready' = 'pending'

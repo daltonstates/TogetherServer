@@ -975,14 +975,14 @@ describe('Host task structure', () => {
 
       const session = groups[0].state.sessions[0].session
       session.state = 'Hosting'; session.revision = 2
-      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
       expect(screen.getByRole('region', { name: 'Retained owner continuation workspace' })).toBe(workspace)
       expect(within(workspace).getByRole('heading', { name: 'Another PC reports hosting' })).toBeVisible()
       expect(within(workspace).queryByRole('heading', { name: 'Another PC is starting the server' })).not.toBeInTheDocument()
 
       session.state = 'Stopped'; session.revision = 3; session.endedUtc = new Date().toISOString()
       session.headVersionHash = 'F'.repeat(64)
-      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
       expect(screen.getByRole('region', { name: 'Retained owner continuation workspace' })).toBe(workspace)
       expect(within(workspace).getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeVisible()
       expect(within(workspace).queryByRole('heading', { name: 'Another PC reports hosting' })).not.toBeInTheDocument()

@@ -54,17 +54,40 @@ internal static class SharedSaveTransferProgress
         }
     }
 
+    // Start can avoid resolving protected sharing identity when no transfer
+    // could affect it. A held flight still counts before its first report or
+    // after Clear, until the final activity lease has been disposed.
+    internal static bool HasPending(LocalData data)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+        {
+            var dataRoot = Path.GetFullPath(data.RootPath).ToUpperInvariant();
+            var now = DateTimeOffset.UtcNow;
+            var pending = false;
+            foreach (var item in copies.Where(item => item.Key.DataRoot == dataRoot))
+            {
+                if (Expired(item.Value, now)) copies.TryRemove(item);
+                else pending |= item.Value.Active > 0 || item.Value.Status is { } status && BlocksHosting(status);
+            }
+            return pending;
+        }
+    }
+
+    private static bool Expired(Copy copy, DateTimeOffset now) => copy.Active == 0 &&
+        now - copy.UpdatedUtc > TimeSpan.FromSeconds(30);
+
     internal static ReceivedSharedWorldStatus? Read(LocalData data, SharedWorldPeerRoot root)
     {
         lock (SharedWorldMutationGate.For(data.RootPath))
         {
             var dataRoot = Path.GetFullPath(data.RootPath).ToUpperInvariant();
+            var now = DateTimeOffset.UtcNow;
             foreach (var item in copies.Where(item => item.Key.DataRoot == dataRoot && item.Key.GroupKey == root.GroupKey))
             {
                 // Seed requests and bounded pull passes resume in separate
                 // flights. An abandoned flight ceases being an active transfer;
                 // latest-save selection still rejects incomplete payloads.
-                if (item.Value.Active == 0 && DateTimeOffset.UtcNow - item.Value.UpdatedUtc > TimeSpan.FromSeconds(30))
+                if (Expired(item.Value, now))
                     copies.TryRemove(item);
                 else if (item.Value.Status is { } status) return status;
                 else if (item.Value.Active > 0) return new(true, null, null, "Receiving", TransferPhase: "Receiving");

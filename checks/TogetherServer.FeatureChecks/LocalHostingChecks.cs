@@ -76,11 +76,25 @@ internal static partial class LocalHostingChecks
             $"profile={prepared.LocalProfileId.HasValue}, branch={prepared.BranchHash is not null}, " +
             $"ports={prepared.GamePort}/{prepared.ControlPort}/{fixture.ControlPort}, " +
             $"steps={string.Join(',', prepared.Steps.Select(step => step.Key + ':' + step.State))}; {prepared.Message}");
+        Require(!SharedSaveTransferProgress.HasPending(fixture.Data),
+            "preparation without a transfer invented pending activity");
+        using (fixture.BeginPeerTransfer())
+        {
+            Require(SharedSaveTransferProgress.HasPending(fixture.Data),
+                "a transfer flight before its first report was not pending");
+            fixture.ClearPeerTransfer();
+            Require(SharedSaveTransferProgress.HasPending(fixture.Data),
+                "clearing a held transfer hid its still-active flight");
+        }
+        Require(!SharedSaveTransferProgress.HasPending(fixture.Data),
+            "the disposed cleared transfer left pending activity");
         try
         {
             foreach (var phase in new[] { "Receiving", "Verifying", "Receipt" })
             {
                 fixture.ReportPeerTransfer(phase);
+                Require(SharedSaveTransferProgress.HasPending(fixture.Data),
+                    $"a fresh partial {phase} report was not pending between flights");
                 var transferPreparation = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
                 var transferStart = await fixture.Service.StartPreparedAsync(fixture.ProfileId,
                     new(prepared.LocalProfileId!.Value, prepared.BranchHash, null, true), CancellationToken.None);
@@ -96,6 +110,8 @@ internal static partial class LocalHostingChecks
             }
         }
         finally { fixture.ClearPeerTransfer(); }
+        Require(!SharedSaveTransferProgress.HasPending(fixture.Data),
+            "a completed transfer retained a pending Start guard");
         var passive = await fixture.Service.StatusAsync(fixture.ProfileId);
         var backupsBeforeInvalidShare = fixture.Data.LoadBackupCatalog().Records.Count;
         var invalidShare = await fixture.Service.ShareStoppedProgressAsync(fixture.ProfileId,
@@ -653,6 +669,8 @@ internal static partial class LocalHostingChecks
             friends.SetSharedWorldConsentAsync(ProfileId, false);
         internal void ReportPeerTransfer(string phase) => SharedSaveTransferProgress.Report(Data,
             new(Public(owner), ProfileId, GroupId), head, phase, 1, 2);
+        internal IDisposable BeginPeerTransfer() => SharedSaveTransferProgress.Begin(Data,
+            new(Public(owner), ProfileId, GroupId), head.VersionHash);
         internal void ClearPeerTransfer() => SharedSaveTransferProgress.Clear(Data,
             new(Public(owner), ProfileId, GroupId), head.VersionHash);
         internal WorldPeerLatestSourceResult LatestObservation(string branchHash, string observation) =>

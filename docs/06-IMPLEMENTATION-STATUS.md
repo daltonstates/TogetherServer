@@ -7,6 +7,26 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## 0.3.3.23 preview candidate
+
+The candidate retains the complete published .22 source and adds the transfer,
+approved-port and update-retention changes below. Final integrated local UI
+validation passes all 1,657 tests in 111 files without skips, plus whole lint,
+TypeScript, production bundling and 64 pure renderer/fixture checks. The .NET
+solution compiles with no warnings or errors. A common launch guard now skips
+protected sharing-identity reads when no transfer is pending, preserving prior
+proof-gate refusals; its three focused hosting/compression/guard groups pass.
+The original feature-only validation below remains separate evidence.
+
+Hosted candidate `6c34fb3` passed core remote controls, six earlier-version
+compatibility lanes, installer packaging, browser/hosting/sharing captures,
+local pairing including actual two-ended UI, and two automatic-sharing runs.
+Its Existing job caught a test expecting five-second polling after the notice
+moved to one second; the final UI tests correct that expectation. Its native
+notification gate remains blocked while independent native cases pass. Final
+publication uses the subsequent guarded candidate and its own recorded checks.
+No app, game, browser or installer was launched on the owner's active desktop.
+
 ## 2026-10-28: shared transfers, local ports and update retention
 
 - The Friend Play action now observes passive save-transfer progress every

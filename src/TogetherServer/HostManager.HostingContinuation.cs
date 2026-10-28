@@ -18,6 +18,7 @@ public sealed partial class HostManager
     // seen here, before any prepared game run or executable can be created.
     private ActionResult? SharedTransferStartIssue(ServerProfile profile)
     {
+        if (!SharedSaveTransferProgress.HasPending(data)) return null;
         try
         {
             SharedWorldPeerRoot? root = null;
@@ -36,7 +37,12 @@ public sealed partial class HostManager
                 Result(false, "SharedSaveTransferInProgress", "Wait for this world's save transfer, verification and receipt confirmation to finish before hosting.") : null;
         }
         catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
-        { return Result(false, "SharedSaveTransferReviewRequired", "This world's saved transfer or sharing identity needs review before hosting. Existing worlds were kept."); }
+        {
+            // The normal signed authority and preparation gates own an
+            // unavailable identity. An unrelated transfer must not replace
+            // their precise refusal or cause an original-owner key read.
+            return null;
+        }
     }
 
     internal async Task RecordHostingObservationAsync(Guid localProfileId, WorldPeerLatestSourceResult latest,
