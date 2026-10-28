@@ -1676,6 +1676,8 @@ internal sealed partial class FriendLink
                 if (config is null) return new(false, null, null, "Not paired");
                 if (sharedTransfers.TryGetValue(profileId, out var active) &&
                     HasSharedWorldReceiveConsent(profileId)) return active;
+                if (ReceiveConsentRoot(profileId) is { } peerRoot && HasSharedWorldReceiveConsent(profileId) &&
+                    SharedSaveTransferProgress.Read(data, peerRoot) is { } peerTransfer) return peerTransfer;
             }
             finally { gate.Release(); }
             var local = LocalSharedWorldStatus(profileId);
@@ -2080,6 +2082,9 @@ internal sealed partial class FriendLink
         Action<long, long>? reportProgress = null)
     {
         var entered = false;
+        SharedWorldPeerRoot? transferRoot = null;
+        string? transferHash = null;
+        IDisposable? transferActivity = null;
         try
         {
             await gate.WaitAsync(cancellationToken);
@@ -2188,6 +2193,12 @@ internal sealed partial class FriendLink
                 config.SharedWorldSigningKeys[profileId] = version.SigningPublicKey;
             var approvedGroup = config.ApprovedSharedWorldGroups?.GetValueOrDefault(profileId);
             var projectionRosterRevision = config.SharedRosterFloors?.GetValueOrDefault(profileId)?.Revision;
+            if (!conflict && ReceiveConsentRoot(profileId) is { } trackedRoot)
+            {
+                transferRoot = trackedRoot;
+                transferHash = version.VersionHash;
+                transferActivity = SharedSaveTransferProgress.Begin(data, trackedRoot, version.VersionHash);
+            }
             SaveConfig();
             gate.Release();
             entered = false;
@@ -2399,7 +2410,14 @@ internal sealed partial class FriendLink
         catch (Exception ex) when (ex is IOException or JsonException or
             CryptographicException or InvalidDataException or UnauthorizedAccessException or OverflowException)
         { return SharedFailure("TransferFailed", "The transfer stopped; verified copies were kept. " + ex.Message); }
-        finally { ClearSharedTransferStatus(profileId, attempt); if (entered) gate.Release(); }
+        finally
+        {
+            ClearSharedTransferStatus(profileId, attempt);
+            if (transferRoot is not null && transferHash is not null)
+                SharedSaveTransferProgress.Clear(data, transferRoot, transferHash);
+            transferActivity?.Dispose();
+            if (entered) gate.Release();
+        }
     }
 
     internal static bool HasReceiverReserve(long freeBytes, long remainingBytes) =>

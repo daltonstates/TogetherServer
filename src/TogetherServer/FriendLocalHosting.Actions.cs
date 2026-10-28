@@ -33,7 +33,8 @@ internal sealed partial class FriendLocalHostingService
             { Code: "SharedSaveRequired" or "WaitingForSuccessorCopy" or "SharedSaveUnavailable" } => new("GetSave", "Get a completed save", "Keep an approved PC with the save reachable. If no completed save has been shared, ask the current Host to stop the server safely, then retry."),
             { NeedsServerFile: true } => new("ChooseServer", "Find the game server on this PC", "Install the matching dedicated server or choose its installed file, then continue. Existing worlds stay intact."),
             { Code: "LocalServerSetupRequired" } => new("GameSetup", "Finish this PC's game setup", status.Message),
-            { Code: "LocalPortsRequired" or "GamePortInUse" or "PortInUse" or "PortConflict" } => new("Ports", "Free this PC's game ports", "Another app may be using a needed game port. Open local servers, stop the app using it if it is yours, or change this server's port in Setup. Then retry."),
+            { Code: "LocalPortApprovalRequired" } => new("Ports", "Approve this PC's game ports", "Choose a reusable approved port plan or approve the game ports shown here. Each Host PC can use different game ports."),
+            { Code: "LocalPortChangeRequired" or "LocalPortsRequired" or "GamePortInUse" or "PortInUse" or "PortConflict" } => new("Ports", "Review this PC's game ports", "Another app may be using a needed game port. Open local servers, stop the app using it if it is yours, or change this server's port in Setup. Then retry."),
             { Code: "LocalConnectionSetupRequired" or "RecipientConnectionRequired" or "PeerDiscoveryRequired" } => new("Connection", "Set up connections to this PC", status.Message),
             { Running: false, Consented: false } => new("ConfirmCopy", "Confirm local hosting", "Hosting keeps the latest verified save on this PC so approved friends can continue later."),
             { Running: false, BranchHash: null, HandoffRequest: null } => new("ConfirmCopy", "Confirm local hosting", "Other players will connect to this PC. The app checks the server, save and connection before starting."),
@@ -100,6 +101,8 @@ internal sealed partial class FriendLocalHostingService
         if (!access.Consented) return Refused("LocalConsentRequired", "Allow shared saves on this PC before hosting.");
         using var preparation = access.Root is { } preparationRoot ? beginPreparation?.Invoke(preparationRoot) : null;
         var sourceProfileId = access.Root?.ProfileId ?? profileId;
+        if (SharedSaveTransferProgress.BlocksHosting(connection.Link.SharedWorldStatus(profileId)))
+            return Refused("SharedSaveTransferInProgress", "Wait for this save to finish transferring, verification and receipt confirmation before hosting.");
         progress.Report("Verifying", "Repeating the prepared save, server and port checks.");
         var status = WithRemedy(await StatusForRetainedConnectionAsync(connection, profileId, cancellationToken,
             checkedAccess: access, checkRemoteHandoff: input.RequestId is not null));
@@ -195,6 +198,8 @@ internal sealed partial class FriendLocalHostingService
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
+            if (SharedSaveTransferProgress.BlocksHosting(connection.Link.SharedWorldStatus(profileId)))
+                return Refused("SharedSaveTransferInProgress", "A save transfer began during the hosting checks. Wait for it to finish before hosting.");
             progress.Report("Starting", "Starting the checked game server on this PC. Waiting for the Host's result.");
             if (input.RequestId is { } requestId)
             {
@@ -203,7 +208,10 @@ internal sealed partial class FriendLocalHostingService
                     return Refused("HostingRequestChanged", "The exact final hosting move needs review before starting.");
                 // StartUnderGate repeats signed authority, final-save/setup, route,
                 // source fencing, process identity and all declared port checks.
-                return Basic(await manager.StartAsync(input.LocalProfileId, cancellationToken));
+                var plannedStarted = await manager.StartAsync(input.LocalProfileId, cancellationToken);
+                if (plannedStarted.Ok && announceHostingState is not null)
+                    await announceHostingState(root, CancellationToken.None);
+                return Basic(plannedStarted);
             }
             if (!input.AcceptSplitWarning || status.BranchHash != input.BranchHash ||
                 !connection.Link.SeparateCopyBranches(profileId).Any(branch => branch.BranchHash == input.BranchHash))
@@ -211,6 +219,8 @@ internal sealed partial class FriendLocalHostingService
             var started = await manager.StartSeparateCopyAsync(input.LocalProfileId, input.BranchHash!, cancellationToken);
             if (!started.Ok && started.Code == "LatestSaveChanged" && status.BranchHash is { } refused)
                 await manager.InvalidateLocalHostingPreparationAsync(sourceProfileId, refused, cancellationToken);
+            if (started.Ok && announceHostingState is not null)
+                await announceHostingState(root, CancellationToken.None);
             return Basic(started);
         }
         finally { heldWorkingSource?.Dispose(); heldPreparedSource?.Dispose(); }

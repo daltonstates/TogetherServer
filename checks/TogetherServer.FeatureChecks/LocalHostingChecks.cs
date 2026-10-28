@@ -37,7 +37,7 @@ internal static partial class LocalHostingChecks
                 !(await automatic.Service.StatusAsync(automatic.ProfileId)).Consented,
                 "automatic receiving overrode a saved local withdrawal");
         }
-        using var fixture = new Fixture(root, granted: true);
+        using var fixture = new Fixture(root, granted: true, approvedPorts: false);
         var before = await fixture.Service.StatusAsync(fixture.ProfileId);
         Require(before.Allowed && !before.Consented && !before.ReadyForManualStart &&
             !before.NeedsServerFile && !before.NeedsPassword && before.BranchHash is null &&
@@ -47,7 +47,13 @@ internal static partial class LocalHostingChecks
         Require(!noConsent.Ok && !noConsent.Consented && noConsent.Code == "LocalConsentRequired" &&
             new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0,
             "preparation silently consented or declared a history without local approval");
-        var noWarning = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, false));
+        var unapproved = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
+        Require(!unapproved.Ok && unapproved.Code == "LocalPortApprovalRequired" && unapproved.NeedsPortApproval &&
+            new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0 &&
+            fixture.Data.LoadSettings().Profiles.Count == 0 && fixture.Driver.ProcessAttempts == 0,
+            "first hosting copied the source port or prepared a profile without local game-port approval");
+        var noWarning = await fixture.Service.PrepareAsync(fixture.ProfileId,
+            new(true, false, GamePort: fixture.ControlPort + 2, ApprovePorts: true));
         Require(!noWarning.Ok && noWarning.Code == "SplitWarningRequired" &&
             new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 0,
             "a fresh continuation bypassed its separate-history warning");
@@ -70,6 +76,26 @@ internal static partial class LocalHostingChecks
             $"profile={prepared.LocalProfileId.HasValue}, branch={prepared.BranchHash is not null}, " +
             $"ports={prepared.GamePort}/{prepared.ControlPort}/{fixture.ControlPort}, " +
             $"steps={string.Join(',', prepared.Steps.Select(step => step.Key + ':' + step.State))}; {prepared.Message}");
+        try
+        {
+            foreach (var phase in new[] { "Receiving", "Verifying", "Receipt" })
+            {
+                fixture.ReportPeerTransfer(phase);
+                var transferPreparation = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
+                var transferStart = await fixture.Service.StartPreparedAsync(fixture.ProfileId,
+                    new(prepared.LocalProfileId!.Value, prepared.BranchHash, null, true), CancellationToken.None);
+                // Simulate a transfer beginning after the service's final read:
+                // the canonical manager still refuses under its launch gate.
+                var canonicalStart = await fixture.Manager.StartSeparateCopyAsync(prepared.LocalProfileId.Value,
+                    prepared.BranchHash!, CancellationToken.None);
+                Require(transferPreparation.Code == "SharedSaveTransferInProgress" && !transferPreparation.Ok &&
+                    transferStart.Code == "SharedSaveTransferInProgress" && !transferStart.Ok &&
+                    canonicalStart.Code == "SharedSaveTransferInProgress" && !canonicalStart.Ok &&
+                    fixture.Driver.ProcessAttempts == 0 && fixture.Data.LoadRuns().Count == 0,
+                    $"an active peer {phase} allowed preparation or Start before save completion");
+            }
+        }
+        finally { fixture.ClearPeerTransfer(); }
         var passive = await fixture.Service.StatusAsync(fixture.ProfileId);
         var backupsBeforeInvalidShare = fixture.Data.LoadBackupCatalog().Records.Count;
         var invalidShare = await fixture.Service.ShareStoppedProgressAsync(fixture.ProfileId,
@@ -107,6 +133,7 @@ internal static partial class LocalHostingChecks
             fixture.Driver.ProcessAttempts == 0, "passive prepared status lost readiness or attempted a process operation");
         var repeated = await fixture.Service.PrepareAsync(fixture.ProfileId, new(true, true));
         Require(repeated.Ok && repeated.LocalProfileId == prepared.LocalProfileId && repeated.BranchHash == prepared.BranchHash &&
+            repeated.SelectedApprovedPortId == prepared.SelectedApprovedPortId && !repeated.NeedsPortApproval &&
             new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Count == 1 && fixture.Driver.ProcessAttempts == 0,
             "a repeated preparation created another signed branch or tried to start a process");
         var branch = new SharedWorldSeparateCopyStore(fixture.Data).Read(fixture.ProfileId).Single();
@@ -482,6 +509,19 @@ internal static partial class LocalHostingChecks
             saved.Profiles.Single().Backups.RetentionCount == 13 && saved.Profiles.Single().Backups.MinimumFreeSpaceMb == 2048 &&
             !saved.CompanionListeningEnabled && !saved.RemoteControlsEnabled && driver.ProcessAttempts == 0,
             $"the owner switch failed to preserve storage/network choices: {enabled.Code}; {enabled.Message}");
+        var roster = await manager.PublishSimpleSharedHostingRosterAsync(profile.Id);
+        var rootKey = new SharedWorldPeerRoot(roster.OwnerPublicKey, profile.Id, roster.GroupId);
+        var receiving = new SharedWorldVersion(4, roster.GroupId, 1, null, profile.Id, GameKinds.Fixture,
+            profile.WorldId, DateTimeOffset.UtcNow, SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(),
+            new(profile.GamePort, false, "Unknown", [], []), [], "", "", new string('A', 64));
+        try
+        {
+            SharedSaveTransferProgress.Report(data, rootKey, receiving, "Verifying", 1, 1);
+            var blocked = await manager.StartAsync(profile.Id);
+            Require(!blocked.Ok && blocked.Code == "SharedSaveTransferInProgress" && driver.ProcessAttempts == 0 && data.LoadRuns().Count == 0,
+                "canonical original-owner Start ignored active verification for its exact world");
+        }
+        finally { SharedSaveTransferProgress.Clear(data, rootKey, receiving.VersionHash); }
         Require((await manager.SetSimpleSharedHostingAsync(profile.Id, false, CancellationToken.None)).Ok &&
             !data.LoadSettings().Profiles.Single().SharedSavesEnabled && data.LoadSettings().Profiles.Single().Backups.Enabled &&
             driver.ProcessAttempts == 0, "turning sharing off also disabled backup protection or attempted a process operation");
@@ -543,7 +583,7 @@ internal static partial class LocalHostingChecks
         private SharedWorldVersion head;
 
         internal Fixture(string root, bool granted, bool automaticReceiving = false, int fileCount = 1, int initialVersion = 1,
-            bool alternateConnection = false)
+            bool alternateConnection = false, bool approvedPorts = true)
         {
             this.fileCount = fileCount;
             Data = new(Path.Combine(root, "local-hosting-" + Guid.NewGuid().ToString("N")));
@@ -551,6 +591,7 @@ internal static partial class LocalHostingChecks
             var occupied = properties.GetActiveTcpListeners().Concat(properties.GetActiveUdpListeners()).Select(item => item.Port).ToHashSet();
             ControlPort = Enumerable.Range(50000, 8000).First(port => Enumerable.Range(port, 4).All(item => !occupied.Contains(item)));
             Data.SaveSettings(new HostSettings { CompanionPort = ControlPort, Profiles = [] });
+            if (approvedPorts) Data.ApprovedGamePorts.Save(new(GameKinds.Fixture, ControlPort + 2, null));
             var draft = new SharedWorldRoster(3, GroupId, ProfileId, 1, 1, true, Public(owner),
                 [new(DeviceId, Public(member), new(Receive: granted, EligibleHost: granted, Reshare: automaticReceiving), false)], "",
                 SignerDeviceId: Guid.Empty, SignerPublicKey: Public(owner));
@@ -610,6 +651,10 @@ internal static partial class LocalHostingChecks
         }
         internal Task<ReceivedSharedWorldResult> WithdrawReceivingAsync() =>
             friends.SetSharedWorldConsentAsync(ProfileId, false);
+        internal void ReportPeerTransfer(string phase) => SharedSaveTransferProgress.Report(Data,
+            new(Public(owner), ProfileId, GroupId), head, phase, 1, 2);
+        internal void ClearPeerTransfer() => SharedSaveTransferProgress.Clear(Data,
+            new(Public(owner), ProfileId, GroupId), head.VersionHash);
         internal WorldPeerLatestSourceResult LatestObservation(string branchHash, string observation) =>
             new(true, "LatestSharedSaveReady", "Synthetic latest-save observation.",
                 new(new(Public(owner), ProfileId, GroupId), branchHash, new(head), vault), observation);

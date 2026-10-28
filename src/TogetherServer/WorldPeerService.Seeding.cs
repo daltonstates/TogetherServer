@@ -218,6 +218,7 @@ internal sealed partial class WorldPeerService
                 inventory: localCopies,
                 additionalAuthorization: () => SeedSenderAllowed(group, request)) is { } reused)
             return new("SeedKnown", version.VersionHash, Receipt: reused.Receipt);
+        using var activity = SharedSaveTransferProgress.Begin(data, group.Root, version.VersionHash);
         var vault = descriptor.Branch is { } branch ? SharedWorldBranchVault.Root(data, branch) : ReceivedRoot(data, group);
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, vault);
         var receiveGate = FriendLink.ReceiveGateFor(vault);
@@ -232,6 +233,7 @@ internal sealed partial class WorldPeerService
                 WorldPeerFileTransfer.KnownDescendant(vault, version, existing))
             {
                 using var verified = VerifyReceiptPayload(vault, existing!, cancellationToken);
+                SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
                 return new("SeedKnown", version.VersionHash, Receipt: existing.VersionHash == version.VersionHash
                     ? await RetainedReceiptForVerifiedCopyAsync(group, descriptor, vault, verified, cancellationToken) : null);
             }
@@ -252,6 +254,7 @@ internal sealed partial class WorldPeerService
                     if (ReadPeerPointer(retained)?.VersionHash == version.VersionHash)
                     {
                         using var verified = VerifyReceiptPayload(retained, version, cancellationToken);
+                        SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
                         return new("SeedKnown", version.VersionHash,
                             Receipt: await RetainedReceiptForVerifiedCopyAsync(group, descriptor, retained, verified, cancellationToken));
                     }
@@ -261,6 +264,11 @@ internal sealed partial class WorldPeerService
                 finally { retainedGate.Release(); }
             }
             return await AcceptSeedPayloadAsync(group, request, seed, vault, anchor, cancellationToken, localCopies);
+        }
+        catch
+        {
+            SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
+            throw;
         }
         finally { receiveGate.Release(); }
     }
@@ -296,7 +304,11 @@ internal sealed partial class WorldPeerService
         var version = descriptor.Version;
         var total = SharedWorldService.BoundedTotalBytes(version.Files);
         if (new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace < total * 2 + 1024L * 1024 * 1024)
+        {
+            SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
             return new("SeedPaused", version.VersionHash);
+        }
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", 0, total);
         var stage = SharedWorldService.SafeChild(vault, ".partial-" + version.VersionHash);
         var payload = Path.Combine(stage, SharedWorldService.PayloadDirectory);
         SharedWorldService.EnsureUnlinkedRoot(data.RootPath, payload);
@@ -307,6 +319,7 @@ internal sealed partial class WorldPeerService
             await ReuseMatchingFilesAsync(group, descriptor, vault, payload, anchor, localCopies, cancellationToken,
                 () => SeedSenderAllowed(group, request));
         }
+        long received = 0;
         if (!Directory.Exists(Path.Combine(vault, version.VersionHash)))
             for (var index = 0; index < version.Files.Count; index++)
             {
@@ -315,22 +328,31 @@ internal sealed partial class WorldPeerService
                 SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 using var output = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
-                if (output.Length == file.Length) continue;
+                if (output.Length == file.Length) { received += file.Length; continue; }
                 var offset = output.Length <= file.Length ? output.Length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes : 0;
                 output.SetLength(offset);
+                received += offset;
+                SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
                 if (seed.Chunk is null || request.FileIndex != index || request.ChunkOffset != offset)
                     return new("SeedChunk", version.VersionHash, FileIndex: index, ChunkOffset: offset);
                 if (seed.Chunk.Length != Math.Min(SharedWorldService.ChunkBytes, file.Length - offset))
                     throw new InvalidDataException("The seeded save chunk has the wrong length.");
                 if (!SeedSenderAllowed(group, request) || !await ReceiveAllowedAsync(group, cancellationToken))
+                {
+                    SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
                     return new("SeedPaused", version.VersionHash);
+                }
                 output.Position = offset;
                 await output.WriteAsync(seed.Chunk, cancellationToken);
+                received += seed.Chunk.Length;
+                SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
                 if (output.Position < file.Length)
                     return new("SeedChunk", version.VersionHash, FileIndex: index, ChunkOffset: output.Position);
             }
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Verifying", total, total);
         var receipt = await CompletePeerSaveAsync(group, descriptor, vault, stage, anchor, cancellationToken,
             () => SeedSenderAllowed(group, request));
+        SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
         return new("SeedComplete", version.VersionHash, Receipt: receipt);
     }
 

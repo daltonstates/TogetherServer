@@ -124,9 +124,10 @@ it.each(['friend-players-online', 'friend-players-checking'] as const)('keeps %s
   controller?.reset(scene)
   render(<DemoApp />)
   const play = await screen.findByRole('region', { name: 'Play' })
-  // Hosting access has its own lookup before the granted action appears.
-  // Keep the quiet player-count assertions after that lookup has finished.
-  await within(play).findByRole('button', { name: 'Host locally' })
+  // Hosting access and the cached receiver have independent passive reads.
+  // Keep the quiet player-count assertions after both have finished.
+  const localHosting = await within(play).findByRole('button', { name: 'Host locally' })
+  await waitFor(() => expect(localHosting).toBeEnabled())
   expect(within(play).getByRole('button', { name: 'Stop server' })).toBeDisabled()
   expect(within(play).queryByRole('status')).not.toBeInTheDocument()
   // Requirements are deliberately unavailable in this fixture. A count

@@ -7,6 +7,56 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## 2026-10-28: shared transfers, local ports and update retention
+
+- The Friend Play action now observes passive save-transfer progress every
+  second. Receiving, verification and receipt stages disable **Host locally**;
+  missing or stale progress also blocks the action. Original-Host downloads and
+  peer pull/seed transfers share an exact-world activity projection. The final
+  canonical launch check uses the shared membership mutation gate, so a
+  transfer beginning after a UI/status check still prevents Start.
+- Save downloads negotiate gzip; outbound peer seeding compresses only after
+  the pinned peer advertises support. Compression is skipped when it grows the
+  payload. Encoded and decoded request limits, exact chunk lengths, original
+  offsets, signatures and file hashes remain enforced. Older peers retain
+  uncompressed transport.
+- Successful shared Start sends signed session metadata separately from save
+  payload scheduling, and visible Host notices poll every second. Short peer
+  request exchanges serialize within each world so concurrent status and save
+  requests cannot invalidate one another's single-use challenges.
+- **App Settings > Game ports** stores reusable per-game local choices with
+  add/edit/remove controls. First shared preparation explicitly approves or
+  chooses local ports; later preparation reuses them. Ordinary owner setup
+  records its selected ports, and a one-time migration imports existing
+  ordinary owner profiles. Received/rehearsal/authority profiles do not supply
+  inferred approval. Deleting an approval stays deleted across restart.
+  Prepared servers retain their saved ports until changed in local setup.
+- Update checks and checkpoint creation prune only recognized flat app update
+  artifacts. Completed matching downloads are eligible immediately; abandoned
+  downloads/staging wait 24 hours. Exclusive leases protect active helpers.
+  Retention keeps the newest two completed checkpoints plus current/pending
+  and previous-EXE-matching recovery material. Unknown/linked artifacts stay
+  intact. Each pass removes at most eight folders of each kind.
+
+Before integration with published .22, source `661899d` used pinned .NET
+10.0.301 and Node 24.14.1, locked dependency
+installation/restore, full UI lint, TypeScript, production bundling, and a
+bundled app build with zero warnings/errors. All 1,542 UI tests passed with no
+skips. The full 75-group source run passed 73 groups; two changed fixture
+expectations were corrected and both groups passed on focused rerun. The
+synthetic source-link cases remain skipped because this account cannot create
+symbolic links. Whitespace and desktop diagnostic isolation checks passed.
+
+Validation was code-only on the owner's active desktop. No production update
+cache was manually removed. Native/viewport review, an actual update handoff,
+separate-PC save transfers, same-router port routing, real-game joins and saved
+restarts remain external acceptance checks. Workers used the coordinator's
+inherited model configuration without a model override.
+
+The .23 prerelease integrates this work with the complete published .22 source.
+Its candidate validation and hosted packaging are recorded separately below;
+the preceding measurements describe the original feature commit.
+
 ## Owner-installed .21 physical results and unpublished performance follow-up
 
 The owner manually installed .21 on both PCs and confirmed both unattended with

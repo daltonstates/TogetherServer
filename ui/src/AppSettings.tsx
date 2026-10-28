@@ -10,10 +10,11 @@ import { ActionFeedback, AppearancePreferences } from './QolWidgets'
 import type { UiPreferences } from './qolPreferences'
 import { SettingsSectionHeading } from './SettingsPresentation'
 import { useAppSettingsSections, type AppSettingsScrollRequest } from './useAppSettingsSections'
+import { ApprovedGamePortsPanel } from './ApprovedGamePorts'
 import './TaskFirstPages.css'
 import './AppSettings.css'
 
-export type AppSettingsSection = 'profile' | 'appearance' | 'notifications' | 'windows' | 'updates' | 'shortcuts'
+export type AppSettingsSection = 'profile' | 'appearance' | 'notifications' | 'game-ports' | 'windows' | 'updates' | 'shortcuts'
 
 export type AppSettingsProps = {
   profile?: ProfileEditorState
@@ -39,10 +40,11 @@ export type AppSettingsProps = {
   onQuit: () => void
 }
 
-const sections: Record<AppSettingsSection, { title: string; description: string; icon: 'users' | 'palette' | 'bell' | 'monitor' | 'refresh' | 'keyboard' }> = {
+const sections: Record<AppSettingsSection, { title: string; description: string; icon: 'users' | 'palette' | 'bell' | 'plug' | 'monitor' | 'refresh' | 'keyboard' }> = {
   profile: { title: 'Profile', description: 'The name you share when hosting and joining.', icon: 'users' },
   appearance: { title: 'Appearance', description: 'How TogetherServer looks on this PC.', icon: 'palette' },
   notifications: { title: 'Notifications', description: 'Defaults for Windows alerts on this PC.', icon: 'bell' },
+  'game-ports': { title: 'Game ports', description: 'Ports you approve for local shared hosting on this PC.', icon: 'plug' },
   windows: { title: 'Windows behavior', description: 'Choose how TogetherServer opens and closes.', icon: 'monitor' },
   updates: { title: 'App updates', description: 'Review an update before downloading or restarting.', icon: 'refresh' },
   shortcuts: { title: 'Keyboard shortcuts', description: 'Move between pages and actions from the keyboard.', icon: 'keyboard' }
@@ -55,11 +57,12 @@ export function AppSettings({ profile, section, scrollRequest, onSectionChange, 
   const [notificationBusy, setNotificationBusy] = useState(false)
   const [reminderBusy, setReminderBusy] = useState(false)
   const [updatePreferenceBusy, setUpdatePreferenceBusy] = useState(false)
+  const [gamePortsBusy, setGamePortsBusy] = useState(false)
   const [savedUpdate, setSavedUpdate] = useState<{ source: DesktopUpdateDetails | null; value: DesktopUpdateDetails } | null>(null)
   const [updatePreferenceNotice, setUpdatePreferenceNotice] = useState<{ error: boolean; text: string } | null>(null)
   const updatePreferenceRequest = useRef<AbortController | null>(null)
   const updatePreferenceHelpId = useId()
-  const nestedBusy = notificationBusy || reminderBusy || updatePreferenceBusy
+  const nestedBusy = notificationBusy || reminderBusy || updatePreferenceBusy || gamePortsBusy
   useEffect(() => { onBusyChange?.(nestedBusy) }, [nestedBusy, onBusyChange])
   useEffect(() => () => { onBusyChange?.(false) }, [onBusyChange])
   useEffect(() => () => { updatePreferenceRequest.current?.abort() }, [])
@@ -111,10 +114,13 @@ export function AppSettings({ profile, section, scrollRequest, onSectionChange, 
         <AppearancePreferences value={preferences} onChange={onPreferencesChange} />
         <p className="helper-text">Changes save automatically.</p></fieldset>}
       {key === 'notifications' && <fieldset className="app-settings-controls"
-        disabled={busy || desktopBusy || updateBusy || !!profile?.saving || updatePreferenceBusy || reminderBusy}>
+        disabled={busy || desktopBusy || updateBusy || !!profile?.saving || updatePreferenceBusy || reminderBusy || gamePortsBusy}>
         <DesktopPreferencesPanel quietMode={preferences.quietMode}
           onQuietModeChange={quietMode => onPreferencesChange(current => ({ ...current, quietMode }))} onBusyChange={setNotificationBusy} />
         <p className="helper-text">For alerts about one server, open that server’s settings.</p></fieldset>}
+      {key === 'game-ports' && <ApprovedGamePortsPanel active={page === 'game-ports'}
+        disabled={busy || desktopBusy || updateBusy || !!profile?.saving || notificationBusy || reminderBusy || updatePreferenceBusy}
+        onBusyChange={setGamePortsBusy} />}
       {key === 'windows' && <div className="settings-dialog-stack">
         <label className="setting-toggle"><span><strong>Open at Windows sign-in</strong><small>{instance?.isStaging ? 'Disabled in staging so the stable app keeps its sign-in setting.' : 'Starts quietly in the tray.'}</small></span>
           <Input type="checkbox" checked={desktop?.launchAtLogin ?? false} disabled={!desktop?.available || !desktop.startupAvailable || pageBusy} onChange={event => onDesktopChange({ launchAtLogin: event.target.checked })} /></label>
@@ -141,7 +147,7 @@ export function AppSettings({ profile, section, scrollRequest, onSectionChange, 
         {update && <><p className="helper-text">Update verification: {update.publisherTrust}. Stop your servers and resolve any server status issues before updating.</p>
           <DismissibleNotice as="p" className={update.state === 'Unavailable' || update.publisherTrust === 'Signature rejected' ? 'warning-text' : 'helper-text'} role="status">{update.message}</DismissibleNotice>
           {update.state === 'Available' && <Button className="secondary" disabled={pageBusy || instance?.updatesAvailable === false} onClick={onReviewUpdate}><Icon name="refresh" />Review update</Button>}
-          <fieldset className="app-settings-controls" disabled={busy || desktopBusy || !!profile?.saving || notificationBusy || updatePreferenceBusy}>
+          <fieldset className="app-settings-controls" disabled={busy || desktopBusy || !!profile?.saving || notificationBusy || updatePreferenceBusy || gamePortsBusy}>
             <UpdateDetailsPanel update={update} busy={updateBusy} onSnoozed={onReloadUpdate} onBusyChange={setReminderBusy} /></fieldset></>}
       </div>}
       {key === 'shortcuts' && <dl className="settings-shortcuts">

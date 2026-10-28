@@ -1,7 +1,7 @@
 namespace TogetherServer;
 
 internal sealed record LocalHostingPortPlan(int GamePort, int ControlPort,
-    int? FactorioRconPort, bool Available);
+    int? FactorioRconPort, bool Available, Guid? ApprovedPortId = null);
 
 public sealed partial class HostManager
 {
@@ -177,7 +177,7 @@ public sealed partial class HostManager
     }
 
     internal async Task<LocalHostingPortPlan> LocalHostingPortsAsync(SharedWorldVersion version,
-        ServerProfile? existing, CancellationToken cancellationToken)
+        ServerProfile? existing, CancellationToken cancellationToken, Guid? approvedPortId = null)
     {
         await gate.WaitAsync(cancellationToken);
         try
@@ -186,39 +186,36 @@ public sealed partial class HostManager
             {
                 var owned = runs.Any(run => run.ProfileId == existing.Id && Identity(run) == "Matched");
                 var available = owned || games.TryGet(existing.Kind, out var existingDriver) &&
+                    existingDriver.Ports(existing).All(port => port.Port != settings.CompanionPort) &&
                     games.PortsAvailableForStart(existingDriver.Ports(existing));
+                var approval = data.ApprovedGamePorts.Matching(existing.Kind, existing.GamePort,
+                    existing.Kind == GameKinds.Factorio ? existing.Factorio?.RconPort : null);
                 return new(existing.GamePort, settings.CompanionPort,
-                    existing.Factorio?.RconPort, available);
+                    existing.Factorio?.RconPort, available, approval?.Id);
             }
-            var first = version.PortableSetup.GamePort;
-            if (first is < 1024 or > 65534) first = 2456;
+            var approved = data.ApprovedGamePorts.Find(version.Game, approvedPortId);
+            var first = approved?.GamePort ?? version.PortableSetup.GamePort;
+            if (first is < 1024 or > 65535 || version.Game == GameKinds.Valheim && first == 65535) first = 2456;
             if (!games.TryGet(version.Game, out var driver))
                 return new(first, settings.CompanionPort, null, false);
             var reserved = new HashSet<int> { settings.CompanionPort };
             foreach (var saved in settings.Profiles.Where(saved => runs.Any(run => run.ProfileId == saved.Id)))
                 if (games.TryGet(saved.Kind, out var savedDriver))
                     foreach (var port in savedDriver.Ports(saved)) reserved.Add(port.Port);
-            // A bounded search uses every port declared by the actual driver,
-            // including Valheim's query and Factorio's private RCON port.
-            for (var attempt = 0; attempt < 256; attempt++)
+            // Reuse only this PC's explicit choice. Source ports are a display
+            // suggestion until approved; a busy approved port never triggers
+            // silent selection of a different unapproved port.
+            var candidate = new ServerProfile
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var gamePort = 1024 + (first - 1024 + attempt * 2) % (65534 - 1024);
-                var rconPort = 27015 + attempt;
-                if (version.Game == GameKinds.Factorio && (rconPort == gamePort || rconPort == settings.CompanionPort)) continue;
-                var candidate = new ServerProfile
-                {
-                    Kind = version.Game,
-                    GamePort = gamePort,
-                    Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = rconPort } : null
-                };
-                var ports = driver.Ports(candidate);
-                if (ports.Any(port => reserved.Contains(port.Port)) ||
-                    !games.PortsAvailableForStart(ports)) continue;
-                return new(gamePort, settings.CompanionPort,
-                    candidate.Factorio?.RconPort, true);
-            }
-            return new(first, settings.CompanionPort, null, false);
+                Kind = version.Game, GamePort = first,
+                Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = approved?.FactorioRconPort ?? 27015 } : null
+            };
+            cancellationToken.ThrowIfCancellationRequested();
+            var ports = driver.Ports(candidate).ToList();
+            if (version.Game == GameKinds.MinecraftBedrock)
+                ports.Add(new("UDP", first == 65535 ? first - 1 : first + 1, "IPv6 game", "IPv6"));
+            return new(first, settings.CompanionPort, candidate.Factorio?.RconPort,
+                ports.All(port => !reserved.Contains(port.Port)) && games.PortsAvailableForStart(ports), approved?.Id);
         }
         finally { gate.Release(); }
     }

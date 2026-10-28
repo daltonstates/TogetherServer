@@ -260,6 +260,8 @@ internal static class AdoptedLocalHostingChecks
         {
             this.preparation = preparation;
             Data = new(Path.Combine(root, "adopted-hosting-" + Guid.NewGuid().ToString("N")));
+            if (preparation) Require(Data.ApprovedGamePorts.Save(new(GameKinds.Fixture, 2456, null)).Ok,
+                "the generated PC's explicit local port approval failed");
             Root = new(Public(Owner), Guid.NewGuid(), Guid.NewGuid());
             MemberId = owner ? Guid.Empty : Guid.NewGuid();
             LocalProfileId = adopted ? Guid.NewGuid() : Root.ProfileId;

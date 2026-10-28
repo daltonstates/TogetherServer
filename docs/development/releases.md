@@ -99,6 +99,17 @@ version, and storage schema. Both app and helper validate it. The helper
 keeps `.previous` beside the running EXE, restores it if post-replacement
 verification fails, and reopens the same filename.
 
+Update checks clean recognized flat update artifacts only. Completed handoff
+downloads become removable when the installed EXE matches their target hash;
+abandoned downloads and staging checkpoints have a 24-hour grace period.
+Exclusive artifact leases protect downloading and running helpers. Each pass
+removes at most eight download folders and eight checkpoint folders. Recovery
+retains the newest two completed checkpoints, the current checkpoint, pending
+handoff checkpoints, and the newest checkpoint matching the `.previous` EXE.
+Unknown contents, linked paths, and malformed handoff metadata are preserved;
+malformed handoff metadata also prevents checkpoint pruning. Failed download
+cleanup uses the same nonrecursive, allowlisted artifact deletion.
+
 ## Data and rollback
 
 Updates keep settings, pairings, worlds, and completed backups in their

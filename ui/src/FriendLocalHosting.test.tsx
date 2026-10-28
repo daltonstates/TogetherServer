@@ -32,6 +32,13 @@ const stoppedProgress: LocalHostingStatus = {
   steps: prepared.steps.map(step => step.key === 'save' ? { ...step, state: 'ActionRequired', message: 'Share the last stopped save before hosting.' } : step)
 }
 const response = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
+// Existing hosting tests keep their access/check fixtures independent of the
+// separate cached receiver read. Transfer behavior has explicit tests below.
+const idleTransfer = { state: 'Ready', transferPhase: null, receivedBytes: 0, totalBytes: 0 }
+function stubFetch(fetcher: (url: string, init?: RequestInit) => Promise<Response>) {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) =>
+    url.endsWith('/shared-world') ? response(idleTransfer) : fetcher(url, init)))
+}
 const props = { profileId, connectionId: 'first', worldName: 'Shared world', available: true, onOpenHost: vi.fn() }
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
@@ -51,7 +58,9 @@ describe('local hosting response trust', () => {
 })
 
 async function openHosting() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+  const entry = await screen.findByRole('button', { name: 'Host locally' })
+  await waitFor(() => expect(entry).toBeEnabled())
+  fireEvent.click(entry)
   const dialog = screen.getByRole('dialog', { name: 'Host locally' })
   await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
   return within(dialog)
@@ -68,7 +77,7 @@ async function pendingPreparation(progressAtPoll: () => HostingProgress) {
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/progress')) return response(progressAtPoll())
     if (init?.method) {
       writes.push(url)
@@ -91,7 +100,7 @@ async function pendingStart(progressAtPoll: () => HostingProgress | null, status
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/progress')) return response(progressAtPoll())
     if (init?.method) {
       writes.push(url)
@@ -133,7 +142,7 @@ it('preserves an unconfirmed Start when an already-pending access read cancels i
   let signal: AbortSignal | null | undefined
   let began = Date.now()
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/access')) return ++accessReads === 1 ? response(prepared) : new Promise<Response>(resolve => { finishAccess = resolve })
     if (url.endsWith('/progress')) return response({ phase: 'Verifying', state: 'Working', message: 'Checking this attempt.',
       startedUtc: new Date(began).toISOString(), updatedUtc: new Date(Date.now()).toISOString(), receivedBytes: 0, totalBytes: 0, percent: null })
@@ -302,7 +311,7 @@ it('does not extend the original Start intent after eight minutes of advancing p
   let finishPreparation!: (value: Response) => void
   let startSignal: AbortSignal | null | undefined
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/progress')) return response({ phase: 'Verifying', state: 'Working', message: 'Checking this attempt.',
       startedUtc: new Date(startBegan ?? intentBegan).toISOString(), updatedUtc: new Date(Date.now()).toISOString(),
       receivedBytes: Date.now() - (startBegan ?? intentBegan), totalBytes: 1_000_000, percent: null })
@@ -332,7 +341,7 @@ it('shares stopped progress only on an explicit click, then requires a separate 
   let finishSharing!: (value: Response) => void
   const writes: { url: string; body: unknown }[] = []
   const opened = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
     if (url.endsWith('/share-stopped-progress')) return new Promise<Response>(resolve => { finishSharing = resolve })
     if (url.endsWith('/start')) return response({ ok: true, code: 'Starting', message: 'Start requested.' })
@@ -369,7 +378,7 @@ it.each(['StoppedProgressProofRequired', 'StoppedProgressSetupChanged', 'Stopped
     let latest = stoppedProgress
     const writes: string[] = []
     const failure = 'The stopped save needs review. Existing worlds and backups were kept.'
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method) { writes.push(url); return response({ ok: false, code, message: failure }) }
       return response(latest)
     }))
@@ -390,7 +399,7 @@ it.each(['StoppedProgressProofRequired', 'StoppedProgressSetupChanged', 'Stopped
   })
 
 it.each(['StoppedProgressProofRequired', 'UnreviewedFailure'])('retains safe sharing failure guidance for HTTP refusal %s', async code => {
-  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => init?.method
+  stubFetch(vi.fn(async (_url: string, init?: RequestInit) => init?.method
     ? new Response(JSON.stringify({ ok: false, code, message: 'Synthetic private path C:/private/backup/detail.txt' }), { status: 409 })
     : response(stoppedProgress)))
   render(<FriendLocalHosting {...props} />)
@@ -408,7 +417,7 @@ it('times out one pending sharing request without replay after a late success, r
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const opened = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { finishSharing = resolve }) }
     return response(stoppedProgress)
   }))
@@ -441,7 +450,7 @@ it('aborts sharing on a connection change and ignores its late result without re
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const opened = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { finishSharing = resolve }) }
     return response(stoppedProgress)
   }))
@@ -461,7 +470,7 @@ it('lets the user pause sharing and keeps its unconfirmed result after reopening
   let finishSharing!: (value: Response) => void
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { finishSharing = resolve }) }
     return response(stoppedProgress)
   }))
@@ -481,7 +490,7 @@ it('retains the typed sharing remedy and failed Start result when later status p
   vi.useFakeTimers()
   let latest = prepared
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(url); latest = stoppedProgress; return response({ ok: false, code: stoppedProgress.code, message: stoppedProgress.message }) }
     return response(latest)
   }))
@@ -508,7 +517,7 @@ it.each([
 ])('gives current permission, history and running checks priority over a retained stopped-sharing result: $code', async patch => {
   let latest = stoppedProgress
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response(latest)
   }))
@@ -529,7 +538,7 @@ it.each([{ branchHash: 'B'.repeat(64) }, { localProfileId: '33333333-3333-4333-8
     vi.useFakeTimers()
     let latest = stoppedProgress
     const writes: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(latest) }))
+    stubFetch(vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(latest) }))
     render(<FriendLocalHosting {...props} />)
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
@@ -549,7 +558,7 @@ it('shows current withdrawn copy consent instead of a retained sharing remedy an
   vi.useFakeTimers()
   let latest = stoppedProgress
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(latest) }))
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(latest) }))
   render(<FriendLocalHosting {...props} />)
   await act(async () => {})
   fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
@@ -577,7 +586,7 @@ it.each(['action', 'card'] as const)('waits for confirmed permission before offe
     if (url.endsWith('/access')) return new Promise<Response>(resolve => { finishPermission = resolve })
     return response({ ...initial, needsServerFile: true, serverFile: null })
   })
-  vi.stubGlobal('fetch', fetcher)
+  stubFetch(fetcher)
   render(<FriendLocalHosting {...props} presentation={presentation} />)
   expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
   expect(screen.queryByRole('region', { name: 'Host locally' })).not.toBeInTheDocument()
@@ -600,7 +609,7 @@ it.each(['action', 'card'] as const)('waits for confirmed permission before offe
 
 it.each(['action', 'card'] as const)('hides the %s entry after a failed permission lookup', async presentation => {
   const calls: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  stubFetch(vi.fn(async (url: string) => {
     calls.push(url)
     if (url.endsWith('/access')) throw new Error('Permission lookup unavailable.')
     return response(initial)
@@ -619,7 +628,7 @@ it('shows elapsed indeterminate feedback for a stalled status check without poll
   vi.useFakeTimers()
   const calls: { url: string; method?: string }[] = []
   let finishChecks!: (value: Response) => void
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method })
     if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })
     return new Promise<Response>(resolve => { finishChecks = resolve })
@@ -643,7 +652,7 @@ it('shows a current progress failure while the preparation POST is pending witho
     startedUtc: began, updatedUtc: began, receivedBytes: 0, totalBytes: 0, percent: null }
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/progress')) return response(progressState)
     if (init?.method) { writes.push(url); return new Promise<Response>(() => {}) }
     return response(initial)
@@ -673,7 +682,7 @@ it('retains an interrupted latest-save attempt and its phase after refreshing pr
   const canceled = 'Hosting was canceled or interrupted. Existing saves were kept.'
   const writes: string[] = []
   let finishPreparation!: (value: Response) => void
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/access')) return response(initial)
     if (url.endsWith('/progress')) return response({ phase: 'LatestSave', state: 'Failed', message: canceled,
       startedUtc: began, updatedUtc: began, receivedBytes: 0, totalBytes: 0, percent: null })
@@ -737,7 +746,7 @@ it.each(['network', 'http', 'malformed'] as const)('checks %s permission failure
   let accessReads = 0
   const calls: { url: string; method?: string; headers?: HeadersInit }[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method, headers: init?.headers })
     if (++accessReads > 1) return response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })
     if (failure === 'network') throw new Error('Unavailable.')
@@ -766,7 +775,7 @@ it.each(['action', 'card'] as const)('keeps a timed-out %s entry hidden when the
   let finishPermission!: (value: Response) => void
   let signal: AbortSignal | null | undefined
   const calls: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url); signal = init?.signal
     return new Promise<Response>(resolve => { finishPermission = resolve })
   }))
@@ -788,7 +797,7 @@ it.each(['Unknown', 'RosterUnavailable', 'SharingReviewRequired'])('waits for %s
   let restored = false
   const calls: string[] = []
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url)
     if (init?.method) writes.push(url)
     return response(restored ? { allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' }
@@ -812,7 +821,7 @@ it('keeps a retry result when a timed-out access read returns allowed later', as
   let release!: (value: Response) => void
   let accessReads = 0
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return ++accessReads === 1 ? new Promise<Response>(resolve => { release = resolve })
       : response({ allowed: false, code: 'HostingPermissionRequired', message: 'The owner has not allowed hosting.' })
@@ -836,7 +845,7 @@ it.each(['profile', 'connection'] as const)('cancels a manual access retry when 
   let accessReads = 0
   const calls: string[] = []
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url)
     if (init?.method) writes.push(url)
     if (++accessReads === 2) {
@@ -867,7 +876,7 @@ it.each(['profile', 'connection'] as const)('cancels a manual access retry when 
 it('returns to read-only permission polling after one explicit access check', async () => {
   vi.useFakeTimers()
   const calls: { url: string; method?: string; body?: BodyInit | null }[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method, body: init?.body })
     return response({ allowed: false, code: 'SharingPermissionUnknown', message: 'Check signed permission.' })
   }))
@@ -889,7 +898,7 @@ it.each(['unavailable', 'blocked'] as const)('keeps hosting access hidden and ca
     signal = init?.signal
     return new Promise<Response>(resolve => { release = resolve })
   })
-  vi.stubGlobal('fetch', fetcher)
+  stubFetch(fetcher)
   const view = render(<FriendLocalHosting {...props} available={false} />)
   expect(view.container).toBeEmptyDOMElement()
   expect(fetcher).not.toHaveBeenCalled()
@@ -907,7 +916,7 @@ it.each(['RosterRollback', 'HostingPermissionRequired', 'RosterUnavailable'])('m
   const blocked: LocalHostingStatus = { ...initial, ok: false, allowed: false, code,
     message: 'Current hosting access needs review.',
     steps: initial.steps.map(step => ({ ...step, state: 'ActionRequired' })) }
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response(url.endsWith('/access') ? { allowed: true, code: 'HostingAllowed', message: 'Sharing was allowed.' } : blocked)
   }))
@@ -934,7 +943,7 @@ it('reports an unchanged history failure after a pending retry, then shows the a
   const blocked: LocalHostingStatus = { ...initial, ok: false, allowed: false, code: 'RosterRollback',
     message: 'The saved sharing history changed unexpectedly.',
     steps: initial.steps.map(step => ({ ...step, state: 'ActionRequired' })) }
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
     return pending ? new Promise<Response>(resolve => { release = resolve }) : response(blocked)
@@ -974,7 +983,7 @@ it('cancels preparation when the pending permission lookup returns an explicit d
   let finishPreparation!: (value: Response) => void
   let preparationSignal: AbortSignal | null | undefined
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/access')) return ++accessReads === 1 ? response(initial)
       : new Promise<Response>(resolve => { finishPermission = resolve })
     if (init?.method) {
@@ -1005,7 +1014,7 @@ it('cancels preparation when the pending permission lookup returns an explicit d
 it('uses one network confirmation to prepare and Start the exact checked save', async () => {
   const calls: { url: string; body?: Record<string, unknown> }[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, ...(init?.method ? { body: JSON.parse(String(init.body)) } : {}) })
     return response(url.endsWith('/prepare') ? prepared : url.endsWith('/start') ?
       { ok: true, code: 'Starting', message: 'Start requested.' } : initial)
@@ -1027,7 +1036,7 @@ it('starts the freshly checked prepared copy once after confirmation without pre
   const writes: { url: string; body: Record<string, unknown> }[] = []
   let finishStart!: (value: Response) => void
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
     if (url.endsWith('/start')) return new Promise<Response>(resolve => { finishStart = resolve })
     return response(prepared)
@@ -1058,7 +1067,7 @@ it('starts an ordinary prepared branch once while its connection warning remains
   const open = vi.fn()
   const connectionHelp = vi.fn()
   const gameSetup = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
     if (url.endsWith('/start')) return new Promise<Response>(resolve => { finishStart = resolve })
     return response(url.endsWith('/progress') ? null : ready)
@@ -1100,7 +1109,7 @@ it.each(['Prepared', 'Completed'] as const)('keeps an active %s planned move blo
       receiptConfirmed: recipientState === 'Completed', canComplete: false, canCancel: recipientState !== 'Completed' },
     steps: prepared.steps.map(step => step.key === 'connection' ? { ...step, state: 'ActionRequired' } : step) }
   const calls: { url: string; method?: string }[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method })
     return response(blocked)
   }))
@@ -1119,7 +1128,7 @@ it.each(['SharingPermissionUnknown', 'HostingPermissionRequired', 'SharingReview
   'does not expose a prepared branch through %s hosting access', async code => {
     vi.useFakeTimers()
     const calls: { url: string; method?: string }[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, method: init?.method })
       return response(url.endsWith('/access') ? { allowed: false, code, message: 'Current signed hosting access is not confirmed.' }
         : { ...prepared, steps: prepared.steps.map(step => step.key === 'connection' ? { ...step, state: 'ActionRequired' } : step) })
@@ -1192,7 +1201,7 @@ it('starts an already completed planned move with its exact request instead of p
   } }
   const writes: { url: string; body: Record<string, unknown> }[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
     return response(url.endsWith('/start') ? { ok: true, code: 'Starting', message: 'Start requested.' } : moved)
   }))
@@ -1209,7 +1218,7 @@ it('cancels an explicit prepared-copy Start on navigation and ignores its late r
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     if (url.endsWith('/start')) { signal = init?.signal; return new Promise<Response>(resolve => { finishStart = resolve }) }
     return response(prepared)
@@ -1234,7 +1243,7 @@ it.each([
   const writes: string[] = []
   const blocked: LocalHostingStatus = { ...prepared, code,
     remedy: { kind, title: 'Review before hosting', message: 'Resolve the current hosting check before starting.' } }
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(blocked) }))
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(blocked) }))
   render(<FriendLocalHosting {...props} />)
   const dialog = await openHosting()
   expect(dialog.getByRole('button', { name: 'Start hosting' })).toBeDisabled()
@@ -1254,7 +1263,7 @@ it('explains preparation before confirmation, then preserves an actual save fail
   let latest = unprepared
   const calls: { url: string; method?: string }[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method })
     if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'The owner allows hosting.' })
     if (url.endsWith('/prepare')) latest = failed
@@ -1289,7 +1298,7 @@ it('explains preparation before confirmation, then preserves an actual save fail
 
 it.each(['action', 'card'] as const)('hides the %s affordance when permission is denied', async presentation => {
   const fetcher = vi.fn(async () => response({ ...initial, allowed: false, code: 'HostingPermissionRequired' }))
-  vi.stubGlobal('fetch', fetcher)
+  stubFetch(fetcher)
   const view = render(<FriendLocalHosting {...props} presentation={presentation} />)
   await waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
   expect(screen.queryByRole('button', { name: 'Host locally' })).not.toBeInTheDocument()
@@ -1304,7 +1313,7 @@ it.each(['action', 'card'] as const)('updates the %s entry when the owner enable
   let enabled = false
   const calls: string[] = []
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url)
     if (init?.method) writes.push(url)
     return response({ allowed: enabled, code: enabled ? 'HostingAllowed' : 'HostingPermissionRequired',
@@ -1335,7 +1344,7 @@ it.each(['profile', 'connection'] as const)('does not carry confirmed permission
   const writes: string[] = []
   const entryAtCommit: boolean[] = []
   const continueAtCommit: (boolean | null)[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(url)
     if (init?.method) writes.push(url)
     if (!url.endsWith('/access')) return response(initial)
@@ -1372,7 +1381,7 @@ it.each(['action', 'card'] as const)('keeps an open guide recoverable after the 
   vi.useFakeTimers()
   let enabled = true
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response(url.endsWith('/access') ? { allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' }
       : enabled ? initial : { ...initial, ok: false, allowed: false, code: 'HostingPermissionRequired', message: 'The owner disabled shared hosting.' })
@@ -1401,7 +1410,7 @@ it.each(['action', 'card'] as const)('keeps an open guide recoverable after the 
 it('shows the missing install and continues with the selected file without a separate save permission', async () => {
   const missing: LocalHostingStatus = { ...initial, ok: false, code: 'InstalledServerRequired', needsServerFile: true, serverFile: null }
   const writes: { url: string; body: Record<string, unknown> }[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
     return response(missing)
   }))
@@ -1422,7 +1431,7 @@ it.each([true, false])('opens the server picker from the guide and reports its r
   const writes: string[] = []
   const missing: LocalHostingStatus = { ...initial, needsServerFile: true, serverFile: null,
     steps: initial.steps.map(step => step.key === 'server' ? { ...step, state: 'ActionRequired' } : step) }
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response(missing)
   }))
@@ -1444,7 +1453,7 @@ it.each([true, false])('opens the server picker from the guide and reports its r
 })
 
 it('explains manual file entry when the server picker is unavailable', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => response({ ...initial, needsServerFile: true, serverFile: null,
+  stubFetch(vi.fn(async () => response({ ...initial, needsServerFile: true, serverFile: null,
     steps: initial.steps.map(step => step.key === 'server' ? { ...step, state: 'ActionRequired' } : step) })))
   render(<FriendLocalHosting {...props} />)
   const dialog = await openHosting()
@@ -1457,7 +1466,7 @@ it('explains manual file entry when the server picker is unavailable', async () 
 
 it('requires Minecraft terms to be accepted locally before the network confirmation can proceed', async () => {
   const writes: { url: string; body: Record<string, unknown> }[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push({ url, body: JSON.parse(String(init.body)) })
     return response({ ...initial, game: 'MinecraftJava' })
   }))
@@ -1485,7 +1494,7 @@ it('shows acceptance progress, then a retryable timeout without accepting or sta
     recipientState: 'Requested', preparedVersionHash: null, finalVersion: null,
     receiptConfirmed: false, canComplete: false, canCancel: true
   } }
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) {
       writes.push(url); signal = init.signal
       return new Promise<Response>(resolve => { release = resolve })
@@ -1515,7 +1524,7 @@ it('shows acceptance progress, then a retryable timeout without accepting or sta
 it('offers Connection help before a profile exists without changing the network from a status read', async () => {
   const help = vi.fn()
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response({ ...initial, remedy: { kind: 'Connection', title: 'Let friends connect to this PC', message: 'Review the incoming address.' } })
   }))
@@ -1529,7 +1538,7 @@ it('offers Connection help before a profile exists without changing the network 
 
 it.each([true, false])('offers port setup only for an existing local profile (%s)', async hasProfile => {
   const setup = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async () => response({ ...initial, consented: true, branchHash,
+  stubFetch(vi.fn(async () => response({ ...initial, consented: true, branchHash,
     localProfileId: hasProfile ? localProfileId : null, code: 'PortInUse' })))
   render(<FriendLocalHosting {...props} onOpenGameSetup={setup} />)
   const dialog = await openHosting()
@@ -1541,7 +1550,7 @@ it.each([true, false])('offers port setup only for an existing local profile (%s
 
 it.each(['HostingHistoryChoiceRequired', 'WorldHistoryReviewRequired'])('keeps %s protected behind one comprehensible blocker', async code => {
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response({ ...initial, code })
   }))
@@ -1559,7 +1568,7 @@ it('uses general save review for SharedSaveHistoryNeedsReview without asserting 
   const status: LocalHostingStatus = { ...initial, ok: false, code: 'SharedSaveHistoryNeedsReview',
     message: 'The available shared save could not be selected and verified. Keep its source PC reachable and retry.' }
   expect(localHostingAttention(status)?.kind).toBe('Review')
-  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => { if (init?.method) writes.push('POST'); return response(status) }))
+  stubFetch(vi.fn(async (_url: string, init?: RequestInit) => { if (init?.method) writes.push('POST'); return response(status) }))
   render(<FriendLocalHosting {...props} />)
   const dialog = await openHosting()
   const guide = within(dialog.getByRole('region', { name: 'Local hosting setup guide' }))
@@ -1575,7 +1584,7 @@ it.each(['connection changed', 'actions disabled', 'access removed'] as const)('
   let release!: (value: Response) => void
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(url); return new Promise<Response>(resolve => { release = resolve }) }
     return response(initial)
   }))
@@ -1592,7 +1601,7 @@ it.each(['connection changed', 'actions disabled', 'access removed'] as const)('
 it('never starts or accepts terms or installs anything from polling', async () => {
   vi.useFakeTimers()
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(prepared) }))
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => { if (init?.method) writes.push(url); return response(prepared) }))
   render(<FriendLocalHosting {...props} />)
   await act(async () => { await vi.advanceTimersByTimeAsync(40000) })
   expect(writes).toEqual([])
@@ -1602,7 +1611,7 @@ it('never starts or accepts terms or installs anything from polling', async () =
 it('does not repeat Start after a failure and a later ready poll', async () => {
   vi.useFakeTimers()
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response(url.endsWith('/start') ? { ok: false, code: 'PortInUse', message: 'A game port is busy.' } : prepared)
   }))
@@ -1623,7 +1632,7 @@ it('keeps Start busy beyond 30 seconds and accepts a delayed reply exactly once'
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     if (url.endsWith('/start')) {
       signal = init?.signal
@@ -1660,7 +1669,7 @@ it.each([true, false])('expires inactive Start at exactly 120 seconds and ignore
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
   const open = vi.fn()
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     if (url.endsWith('/start')) {
       signal = init?.signal
@@ -1702,7 +1711,7 @@ it('bounds preparation and ignores a late result without retrying Start', async 
   let release!: (value: Response) => void
   let signal: AbortSignal | null | undefined
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(url); signal = init.signal; return new Promise<Response>(resolve => { release = resolve }) }
     return response(initial)
   }))
@@ -1829,7 +1838,7 @@ it('withdraws stale permission when an automatic check stalls', async () => {
   vi.useFakeTimers()
   let reads = 0
   let release!: (value: Response) => void
-  vi.stubGlobal('fetch', vi.fn(async () => ++reads <= 2 ? response(initial) : new Promise<Response>(resolve => { release = resolve })))
+  stubFetch(vi.fn(async () => ++reads <= 2 ? response(initial) : new Promise<Response>(resolve => { release = resolve })))
   render(<FriendLocalHosting {...props} />)
   await act(async () => {})
   fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
@@ -1843,7 +1852,7 @@ it('always shows all automatic check results and rejects unreviewed action desti
   expect(() => parseLocalHostingStatus({ ...prepared, remedy: { kind: 'https://untrusted', title: 'Click', message: 'Click' } })).toThrow()
   expect(localHostingAttention(initial)).toBeNull()
   expect(localHostingAttention(prepared)).toBeNull()
-  vi.stubGlobal('fetch', vi.fn(async () => response(initial)))
+  stubFetch(vi.fn(async () => response(initial)))
   render(<FriendLocalHosting {...props} />)
   const dialog = await openHosting()
   expect(dialog.getByRole('heading', { name: 'Automatically checked results' }).closest('details')).toBeNull()
@@ -1855,7 +1864,7 @@ it('retains the same check rows and timestamp through a failed retry, then recov
   let result: 'ready' | 'waiting' | 'error' = 'ready'
   let release!: (value: Response) => void
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
     if (result === 'error') return new Response(JSON.stringify({ code: 'HostUnavailable', message: 'The Host could not be reached.' }), { status: 503 })
@@ -1894,7 +1903,7 @@ it('retains the same check rows and timestamp through a failed retry, then recov
 it('keeps the list visible on the first pending read and updates a last-checked timer without hiding it', async () => {
   vi.useFakeTimers()
   let release!: (value: Response) => void
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/access')
+  stubFetch(vi.fn(async (url: string) => url.endsWith('/access')
     ? response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
     : new Promise<Response>(resolve => { release = resolve })))
   render(<FriendLocalHosting {...props} />)
@@ -1916,7 +1925,7 @@ it('preserves displayed checks after an automatic timeout and ignores a late res
   let reads = 0
   let release!: (value: Response) => void
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
     return ++reads === 1 ? response(initial) : new Promise<Response>(resolve => { release = resolve })
@@ -1940,7 +1949,7 @@ it('explains unprepared checks without claiming a save failure or changing stabl
   const status: LocalHostingStatus = { ...initial, code: 'LocalHostingPreparationRequired',
     steps: initial.steps.map(step => step.key === 'save' ? { ...step, state: 'Unknown' } : step) }
   const writes: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
     return response(status)
   }))
@@ -1963,7 +1972,7 @@ it('explains unprepared checks without claiming a save failure or changing stabl
 it('shows a safe retryable refresh failure without reflecting an unexpected error, path or identifier', async () => {
   let fail = false
   const privateError = 'InternalLatestSelectionException C:\\Private\\save 33333333-3333-4333-8333-333333333333'
-  vi.stubGlobal('fetch', vi.fn(async () => fail
+  stubFetch(vi.fn(async () => fail
     ? new Response(JSON.stringify({ code: 'UnexpectedInternalFailure', message: privateError }), { status: 500 })
     : response(initial)))
   render(<FriendLocalHosting {...props} />)
@@ -1980,7 +1989,7 @@ it.each(['failed', 'timed out'])('keeps the entry hidden when a later permission
   vi.useFakeTimers()
   let accessReads = 0
   const calls: string[] = []
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  stubFetch(vi.fn(async (url: string) => {
     calls.push(url)
     if (!url.endsWith('/access')) return response(initial)
     if (++accessReads === 1) return response({ allowed: false, code: 'HostingPermissionRequired', message: 'Sharing was off.' })
@@ -2002,7 +2011,7 @@ it('waits for an in-flight automatic check before letting Browse change the sele
   let release!: (value: Response) => void
   const missing = { ...initial, needsServerFile: true, serverFile: null }
   const browse = vi.fn(async () => 'C:/Selected/valheim_server.exe')
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  stubFetch(vi.fn(async (url: string) => {
     if (url.endsWith('/access')) return response({ allowed: true, code: 'HostingAllowed', message: 'Sharing is on.' })
     if (++statusReads === 1) return response(missing)
     return new Promise<Response>(resolve => { release = resolve })
@@ -2022,4 +2031,177 @@ it('waits for an in-flight automatic check before letting Browse change the sele
   await act(async () => {})
   expect(browse).toHaveBeenCalledOnce()
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+})
+
+it.each(['action', 'card'] as const)('disables the %s entry through receive, verification and receipt without dispatching any action', async presentation => {
+  vi.useFakeTimers()
+  let phase: 'Receiving' | 'Verifying' | 'Receipt' | null = 'Receiving'
+  const calls: { url: string; method?: string; headers?: HeadersInit }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method, headers: init?.headers })
+    if (url === base) return response({ state: phase ?? 'Ready', transferPhase: phase, receivedBytes: 100, totalBytes: 100 })
+    return response(initial)
+  }))
+  const open = vi.fn()
+  render(<FriendLocalHosting {...props} presentation={presentation} onOpenHost={open} />)
+  await act(async () => {})
+  const entry = screen.getByRole('button', { name: 'Host locally' })
+  expect(entry).toBeDisabled()
+  const progress = within(screen.getByRole('region', { name: 'Save transfer progress' }))
+  expect(progress.getByText('100% received')).toBeInTheDocument()
+  expect(progress.getByRole('list', { name: 'Save transfer stages' }).querySelector('[aria-current="step"]')).toHaveTextContent('Receive save')
+  fireEvent.click(entry)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  phase = 'Verifying'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(entry).toBeDisabled()
+  expect(progress.getByText('Verifying the shared save')).toBeInTheDocument()
+  expect(progress.queryByText('100% received')).not.toBeInTheDocument()
+  expect(progress.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
+  phase = 'Receipt'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(entry).toBeDisabled()
+  expect(progress.getByText('Confirming save receipt')).toBeInTheDocument()
+  phase = null
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(entry).toBeEnabled()
+  expect(screen.queryByRole('region', { name: 'Save transfer progress' })).not.toBeInTheDocument()
+  expect(calls.every(call => call.method === undefined)).toBe(true)
+  expect(calls.filter(call => call.url === base)).toHaveLength(4)
+  expect(calls.filter(call => call.url === base).every(call => JSON.stringify(call.headers) === JSON.stringify({ 'X-TogetherServer-Local': '1' }))).toBe(true)
+  expect(open).not.toHaveBeenCalled()
+})
+
+it('disables dialog confirmation when a background transfer starts after the hosting checks', async () => {
+  vi.useFakeTimers()
+  let transferPhase: 'Verifying' | 'Receipt' | null = null
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    return response(url === base ? { ...idleTransfer, transferPhase } : prepared)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  fireEvent.click(screen.getByRole('button', { name: 'Host locally' }))
+  await act(async () => {})
+  const dialog = within(screen.getByRole('dialog', { name: 'Host locally' }))
+  const confirm = dialog.getByRole('button', { name: 'Start hosting' })
+  expect(confirm).toBeEnabled()
+  transferPhase = 'Verifying'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(confirm).toBeDisabled()
+  expect(dialog.getByRole('region', { name: 'Save transfer progress' })).toHaveTextContent('Verifying the shared save')
+  fireEvent.click(confirm)
+  transferPhase = 'Receipt'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(confirm).toBeDisabled()
+  transferPhase = null
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(confirm).toBeEnabled()
+  expect(writes).toEqual([])
+})
+
+it.each(['network', 'malformed', 'timeout'] as const)('keeps hosting disabled during %s background status failure and recovers only from a fresh read', async failure => {
+  vi.useFakeTimers()
+  let state: 'pending' | 'failed' | 'ready' = 'pending'
+  let finish!: (value: Response) => void
+  const writes: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method) writes.push(url)
+    if (url !== base) return response(initial)
+    if (state === 'ready') return response(idleTransfer)
+    if (failure === 'network') throw new Error('Unavailable.')
+    if (failure === 'malformed') return response({ ...idleTransfer, transferPhase: 'Finished' })
+    return new Promise<Response>(resolve => { finish = resolve })
+  }))
+  render(<FriendLocalHosting {...props} />)
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeDisabled()
+  if (failure === 'timeout') await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+  expect(screen.getByRole('region', { name: 'Save transfer progress' })).toHaveTextContent('Save transfer status unavailable')
+  state = 'ready'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  if (failure === 'timeout') {
+    await act(async () => { finish(response({ ...idleTransfer, transferPhase: 'Receiving' })) })
+    expect(screen.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  }
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(writes).toEqual([])
+})
+
+const approvedPort = { id: '44444444-4444-4444-8444-444444444444', game: 'Valheim' as const, gamePort: 2460, factorioRconPort: null }
+const portApprovalRequired: LocalHostingStatus = { ...initial, code: 'LocalPortApprovalRequired', needsPortApproval: true,
+  selectedApprovedPortId: null, approvedPorts: [], factorioRconPort: null }
+
+it.each([
+  { needsPortApproval: 'yes' }, { approvedPorts: null }, { selectedApprovedPortId: 'bad' },
+  { selectedApprovedPortId: approvedPort.id }, { approvedPorts: [{ ...approvedPort, game: 'MinecraftJava' }] },
+  { approvedPorts: [{ ...approvedPort, gamePort: 65535 }] }
+])('refuses invalid local port approvals %j', patch => {
+  expect(() => parseLocalHostingStatus({ ...portApprovalRequired, ...patch })).toThrow()
+})
+
+it('keeps a suggested game port unapproved until the local checkbox is chosen, then remembers only that deliberate choice', async () => {
+  const bodies: unknown[] = []
+  const calls: string[] = []
+  stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push(url)
+    if (url.endsWith('/start')) return response({ ok: true, code: 'Started', message: 'Started.' })
+    if (init?.method === 'POST') {
+      bodies.push(JSON.parse(String(init.body)))
+      return response({ ...prepared, gamePort: 2460, needsPortApproval: false, selectedApprovedPortId: approvedPort.id,
+        approvedPorts: [approvedPort], factorioRconPort: null })
+    }
+    return response(portApprovalRequired)
+  }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  const confirm = dialog.getByRole('button', { name: 'Host locally' })
+  expect(confirm).toBeDisabled()
+  expect(dialog.getByRole('spinbutton', { name: 'Local hosting game port' })).toHaveValue(2456)
+  fireEvent.change(dialog.getByRole('spinbutton', { name: 'Local hosting game port' }), { target: { value: '2460' } })
+  expect(confirm).toBeDisabled()
+  expect(bodies).toEqual([])
+  fireEvent.click(dialog.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' }))
+  expect(confirm).toBeEnabled()
+  fireEvent.click(confirm)
+  await waitFor(() => expect(calls).toContain(`${base}/hosting/start`))
+  expect(bodies).toEqual([expect.objectContaining({ gamePort: 2460, factorioRconPort: null, approvePorts: true })])
+  expect(bodies[0]).not.toHaveProperty('approvedPortId')
+})
+
+it('offers approved plans for reuse without another approval and keeps an existing prepared server’s selector fixed', async () => {
+  const writes: unknown[] = []
+  stubFetch(vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method) { writes.push(JSON.parse(String(init.body))); return new Promise<Response>(() => {}) }
+    return response({ ...portApprovalRequired, approvedPorts: [approvedPort] })
+  }))
+  const view = render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  fireEvent.change(dialog.getByRole('combobox', { name: 'Approved local game ports' }), { target: { value: approvedPort.id } })
+  expect(dialog.queryByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' })).not.toBeInTheDocument()
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  await waitFor(() => expect(writes).toHaveLength(1))
+  expect(writes[0]).toHaveProperty('approvedPortId', approvedPort.id)
+  expect(writes[0]).not.toHaveProperty('gamePort')
+  view.unmount()
+  stubFetch(vi.fn(async () => response({ ...prepared, gamePort: 2460, needsPortApproval: false,
+    selectedApprovedPortId: approvedPort.id, approvedPorts: [approvedPort], factorioRconPort: null })))
+  render(<FriendLocalHosting {...props} />)
+  const existing = await openHosting()
+  expect(existing.getByRole('combobox', { name: 'Approved local game ports' })).toBeDisabled()
+  expect(existing.getByText('This prepared server keeps its saved ports. Open its local Setup to change them.')).toBeInTheDocument()
+})
+
+it('clears a draft game-port approval when the saved Host connection changes', async () => {
+  stubFetch(vi.fn(async () => response(portApprovalRequired)))
+  const view = render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  fireEvent.click(dialog.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' }))
+  expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled()
+  view.rerender(<FriendLocalHosting {...props} connectionId="second" />)
+  const next = await openHosting()
+  expect(next.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' })).not.toBeChecked()
+  expect(next.getByRole('button', { name: 'Host locally' })).toBeDisabled()
 })

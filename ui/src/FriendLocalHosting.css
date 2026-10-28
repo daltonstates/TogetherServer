@@ -17,6 +17,9 @@
 .local-hosting-phase-timings dl { display: grid; gap: .4rem; margin-block: .6rem; }
 .local-hosting-phase-timings dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem 1rem; }
 .local-hosting-phase-timings dd { margin: 0; font-variant-numeric: tabular-nums; }
+.local-hosting-background-transfer { flex: 1 1 100%; }
+.local-hosting-transfer-steps { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; margin: 0; padding-inline-start: 1.25rem; color: var(--color-text-muted); font-size: .8rem; }
+.local-hosting-transfer-steps [aria-current="step"] { color: var(--color-text); font-weight: 600; }
 .local-hosting-indeterminate { background: var(--color-border-subtle); }
 .local-hosting-indeterminate > span { display: block; inline-size: 35%; block-size: 100%; border-radius: inherit; background: var(--color-accent); animation: local-hosting-progress-pulse 1.8s ease-in-out infinite alternate; }
 @keyframes local-hosting-progress-pulse { from { transform: translateX(-25%); } to { transform: translateX(210%); } }

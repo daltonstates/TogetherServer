@@ -515,6 +515,7 @@ internal sealed class StateCheckpointService(LocalData data, TimeProvider clock)
             if (!TryValidate(data.RootPath, destination, manifestHash, out var reason))
                 throw new CryptographicException(reason);
             data.TryAudit($"update-checkpoint-complete {id} files={copied.Count} bytes={total} target={targetVersion} {manifest.CreatedUtc:O}");
+            UpdateArtifactCleanup.Run(data.RootPath, executablePath, protectedCheckpoint: destination);
             return new(true, "CheckpointReady",
                 $"Verified a same-user recovery checkpoint with {copied.Count} local state files.",
                 new(id, destination, manifestHash, manifest.CreatedUtc, copied.Count, total));

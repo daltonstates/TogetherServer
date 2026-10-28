@@ -47,7 +47,7 @@ network settings.
 | Friend server workspace | Play, Chat, Logs, Shared saves, and Settings, subject to access and feature availability. |
 | **This PC settings** | Access, Shutdown, Network, and Advanced settings for hosting on this PC. |
 | **Notifications** | Recent notices and **Open Attention Center** for items that need review. |
-| **App Settings** | Profile, appearance, notifications, Windows behavior, updates, and keyboard shortcuts. |
+| **App Settings** | Profile, game ports, appearance, notifications, Windows behavior, updates, and keyboard shortcuts. |
 
 Hosting and connecting to other Hosts run together. Selecting another server
 or opening App Settings does not stop a game or its Friend connection.
@@ -83,6 +83,11 @@ Review the release notes, then choose **Update and restart**. Stop hosted
 servers first: active or unresolved runs block the update. You can defer
 reminders or skip a version's reminder and still update later. The app never
 installs or restarts unattended.
+
+The app removes obsolete update downloads after a successful replacement and
+expires abandoned download/staging folders after 24 hours. It retains the
+previous executable and a bounded set of recovery checkpoints. Active updates,
+settings, pairings, worlds, and world backups are preserved.
 
 Previews use your normal settings, pairings, servers, and worlds. Preview
 enrollment does not create an isolated test app. Contributors who need that

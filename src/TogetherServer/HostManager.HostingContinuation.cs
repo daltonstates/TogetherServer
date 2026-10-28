@@ -13,6 +13,32 @@ public sealed partial class HostManager
     private readonly Dictionary<Guid, object> workingStartOwners = [];
     internal Action? WorkingSaveVerifiedForChecks { get; set; }
 
+    // StartUnderGate holds the same mutation gate used to begin a transfer.
+    // A receive that starts after the service's last status read must still be
+    // seen here, before any prepared game run or executable can be created.
+    private ActionResult? SharedTransferStartIssue(ServerProfile profile)
+    {
+        try
+        {
+            SharedWorldPeerRoot? root = null;
+            if (profile.SeparateCopySourceProfileId is { } source && profile.SeparateCopyBranchHash is { } hash)
+            {
+                var branch = CurrentSeparateBranch(source, hash);
+                if (branch is not null) root = new(branch.Offer.Roster.OwnerPublicKey, source, branch.Offer.Roster.GroupId);
+                else if (hostingObservations.TryGetValue(profile.Id, out var observation)) root = observation.Root;
+            }
+            else if (authority.LocalAuthorizedHead(profile.Id) is { } record)
+                root = new(record.Roster.OwnerPublicKey, profile.Id, record.Proposal.GroupId);
+            else if (profile.SharedSavesEnabled && sharedWorlds.ReadRoster(profile) is { } roster)
+                root = new(roster.OwnerPublicKey, profile.Id, roster.GroupId);
+            return root is not null && SharedSaveTransferProgress.Read(data, root) is { } transfer &&
+                SharedSaveTransferProgress.BlocksHosting(transfer) ?
+                Result(false, "SharedSaveTransferInProgress", "Wait for this world's save transfer, verification and receipt confirmation to finish before hosting.") : null;
+        }
+        catch (Exception error) when (SharedWorldBranchLiveSource.ExpectedFailure(error))
+        { return Result(false, "SharedSaveTransferReviewRequired", "This world's saved transfer or sharing identity needs review before hosting. Existing worlds were kept."); }
+    }
+
     internal async Task RecordHostingObservationAsync(Guid localProfileId, WorldPeerLatestSourceResult latest,
         CancellationToken cancellationToken)
     {

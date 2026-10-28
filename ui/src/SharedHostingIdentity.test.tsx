@@ -58,6 +58,13 @@ describe('Shared hosting identity', () => {
     await act(async () => {})
     expect(screen.queryByRole('region', { name: 'Shared world Host' })).not.toBeInTheDocument()
   })
+  it('labels the original Host as this PC without claiming that shared hosting has not moved', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => reply({ enabled: true, latest: {}, authority: { state: 'NoTakeover' } })))
+    render(<SharedHostingIdentity profileId={deviceId} host serverState="Offline" serverStatusFresh />)
+    expect(await screen.findByText('Original Host PC · this PC’s server')).toBeInTheDocument()
+    expect(screen.getByText('This PC’s server status: Offline')).toBeInTheDocument()
+    expect(screen.queryByText(/hosting has not moved/)).not.toBeInTheDocument()
+  })
   it('retains a known shared identity as Unknown when capability disappears and the local read fails', async () => {
     let fail = false
     vi.stubGlobal('fetch', vi.fn(async () => { if (fail) throw new Error('offline'); return reply(quorum) }))
@@ -115,9 +122,9 @@ describe('Shared hosting identity', () => {
     render(<SharedHostingIdentity profileId={deviceId} host serverState="Ready" serverStatusFresh
       observedHostAddress={head.hostAddress} />)
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
-    expect(screen.getByText('Current Host status: Ready · game join not tested')).toBeInTheDocument()
+    expect(screen.getByText('This PC’s server status: Ready · game join not tested')).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(screen.getByText(/Last known: This PC · approved Host/)).toBeInTheDocument()
-    expect(screen.getByText('Current Host status: Unknown · latest Host check failed')).toBeInTheDocument()
+    expect(screen.getByText('This PC’s server status: Unknown · latest Host check failed')).toBeInTheDocument()
   })
 })

@@ -118,12 +118,12 @@ describe('Shared Host notice', () => {
     await flush()
     expect(screen.getByRole('heading', { name: 'Another PC is starting the server' })).toBeInTheDocument()
     current.state.sessions[0].session.state = 'Hosting'
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByRole('heading', { name: 'Another PC reports hosting' })).toBeInTheDocument()
     current.state.sessions[0].session.state = 'Stopped'
     current.state.sessions[0].session.endedUtc = stoppedStamp
     current.state.peers[0].announcedUtc = stoppedStamp
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByRole('heading', { name: 'Another PC reported a stopped session' })).toBeInTheDocument()
     expect(screen.getByText('PC ending 333333 reported that this hosting session stopped.')).toBeInTheDocument()
     expect(screen.getByText(/Other PCs may still be hosting/)).toHaveTextContent('Save delivery is checked separately.')
@@ -260,6 +260,26 @@ describe('Shared Host notice', () => {
     }))
   })
 
+  it('shows another PC starting and then hosting within the next visible second without a page refresh', async () => {
+    vi.useFakeTimers()
+    const current = group()
+    current.state.sessions[0].session.state = 'Preparing'
+    const fetch = vi.fn().mockResolvedValueOnce(reply([])).mockImplementation(async () => reply([current]))
+    vi.stubGlobal('fetch', fetch)
+    render(<SharedHostNotice {...props} connectionId={null} />)
+    await flush()
+    expect(screen.queryByRole('region', { name: 'Shared Host updates' })).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('heading', { name: 'Another PC is starting the server' })).toBeInTheDocument()
+    expect(screen.getByText(/Game readiness has not been confirmed/)).toBeInTheDocument()
+    current.state.sessions[0].session.state = 'Hosting'
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('heading', { name: 'Another PC reports hosting' })).toBeInTheDocument()
+    expect(screen.queryByText('Starting')).not.toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(fetch.mock.calls.every(([, init]) => !(init as RequestInit | undefined)?.method)).toBe(true)
+  })
+
   it('withdraws cached actions on unknown replies and restores them only after a successful retry', async () => {
     let failed = false
     vi.useFakeTimers()
@@ -271,7 +291,7 @@ describe('Shared Host notice', () => {
     await flush()
     expect(screen.getByRole('button', { name: 'Connect to PC ending 333333' })).toBeEnabled()
     failed = true
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByRole('status')).toHaveTextContent('Shared Host updates unavailable')
     expect(screen.getByRole('status')).toHaveTextContent('Saved reports cannot confirm who is hosting now')
     expect(screen.queryByRole('button', { name: /^Connect/ })).not.toBeInTheDocument()
@@ -312,7 +332,7 @@ describe('Shared Host notice', () => {
     expect(screen.queryByRole('button', { name: /^Connect/ })).not.toBeInTheDocument()
   })
 
-  it('polls every five visible seconds and pauses without overlapping a pending read', async () => {
+  it('polls every visible second and pauses without overlapping a pending read', async () => {
     vi.useFakeTimers()
     const pending = deferred<Response>()
     const fetch = vi.fn().mockResolvedValueOnce(reply([group()])).mockImplementationOnce(() => pending.promise)
@@ -320,9 +340,9 @@ describe('Shared Host notice', () => {
     vi.stubGlobal('fetch', fetch)
     render(<SharedHostNotice {...props} />)
     await flush()
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(fetch).toHaveBeenCalledTimes(2)
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(fetch).toHaveBeenCalledTimes(2)
     await act(async () => { pending.resolve(reply([group()])) })
     visibility('hidden')

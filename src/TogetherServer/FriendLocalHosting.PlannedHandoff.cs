@@ -57,7 +57,9 @@ internal sealed partial class FriendLocalHostingService
         var restored = request.RecipientState == "Completed" ?
             await manager.RecordedPlannedHostingStatusAsync(profileId, local?.Setup, cancellationToken) : null;
         var running = snapshot.Runs.Any(run => run.ProfileId == profileId && run.ProcessId is not null);
-        var ready = access.Allowed && access.Consented && local?.Prepared == true && restored?.ReadyForManualStart == true && !running;
+        var localApproval = local is null ? null : data.ApprovedGamePorts.Matching(
+            request.Source?.Game ?? access.Version?.Game ?? access.Game ?? "", local.Setup.GamePort, local.FactorioRconPort);
+        var ready = access.Allowed && access.Consented && local?.Prepared == true && localApproval is not null && restored?.ReadyForManualStart == true && !running;
         var version = access.Version ?? PreflightMetadata(profileId, request);
         var ports = version is null ? new LocalHostingPortPlan(2456, snapshot.Settings.CompanionPort, null, false) :
             await manager.LocalHostingPortsAsync(version, snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId), cancellationToken);
@@ -65,7 +67,7 @@ internal sealed partial class FriendLocalHostingService
         var current = routeCheck is null ? null : await routeCheck.CurrentAsync(cancellationToken);
         var connected = current?.Identity is { Enabled: true, Active: true, ListenerOwned: true } &&
             SharedWorldPeerTrust.ValidRoute(new(current.Identity.Endpoint, current.Identity.CertificateFingerprint ?? ""));
-        var prepared = request.RecipientState == "Prepared" && local?.Prepared == true &&
+        var prepared = request.RecipientState == "Prepared" && local?.Prepared == true && localApproval is not null &&
             (!request.Pending || request.PreparedVersionHash == access.Version?.VersionHash);
         var state = Unavailable(request.Code, request.Message) with
         {
@@ -83,6 +85,10 @@ internal sealed partial class FriendLocalHostingService
             ReadyForManualStart = ready,
             Running = running,
             HandoffRequest = request,
+            NeedsPortApproval = local is null ? ports.ApprovedPortId is null : localApproval is null,
+            SelectedApprovedPortId = local is null ? ports.ApprovedPortId : localApproval?.Id,
+            ApprovedPorts = data.ApprovedGamePorts.View().ApprovedPorts.Where(plan => plan.Game == (version?.Game ?? access.Game)).ToArray(),
+            FactorioRconPort = local?.FactorioRconPort ?? ports.FactorioRconPort,
             Steps = [new("permission", HostingPermissionState(access.Allowed, access.Code), access.Message),
                 new("server", local?.Prepared == true ? "Ready" : "ActionRequired", local?.Prepared == true ?
                     "This PC's installed game setup passed preparation. Current files are checked again before restore and Start." :
@@ -92,7 +98,10 @@ internal sealed partial class FriendLocalHostingService
                     restored?.Restored == true ? "The final signed save is restored in fresh managed storage." :
                     request.Pending ? "Receive and prepare the exact final post-Stop save. Existing worlds stay intact." :
                     "Preparation verifies the available signed save before the current Host stops."),
-                new("ports", ports.Available || running ? "Ready" : "ActionRequired", $"Local game port {local?.Setup.GamePort ?? ports.GamePort}; Start repeats the driver port checks."),
+                new("ports", (ports.Available && (local is null ? ports.ApprovedPortId is not null : localApproval is not null)) || running ? "Ready" : "ActionRequired",
+                    (local is null ? ports.ApprovedPortId is null : localApproval is null) ?
+                        "Choose and approve this PC's game ports once. Other Hosts may use different ports, including on the same LAN." :
+                        $"Approved local game port {local?.Setup.GamePort ?? ports.GamePort}; Start repeats the driver port checks."),
                 new("connection", connected ? "Ready" : "ActionRequired", connected ?
                     "This PC's deliberate HTTPS listener is ready to share its signed address. The old Host verifies a pinned round trip after restore; game joins remain separate." :
                     "Configure and deliberately enable this PC's Friend connection before hosting moves.")]
@@ -154,6 +163,13 @@ internal sealed partial class FriendLocalHostingService
             var local = ReadPlannedLocal(profileId, request.RequestId!.Value);
             if (local is not null && local.SetupIdentity != PortableSetupIdentity(version))
                 return await Result("LocalServerSetupRequired", "The shared game's required setup changed. Review this PC's matching installation before the move continues.");
+            var localProfile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
+                (local is null ? null : new ServerProfile { Kind = version.Game, GamePort = local.Setup.GamePort,
+                    WorldDirectory = local.PreparedServerRoot ?? "",
+                    Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = local.FactorioRconPort ?? 27015 } : null });
+            progress.Report("Ports", "Checking this PC's approved game ports before preparing the hosting move.");
+            var selectedPorts = await ChooseLocalPortsAsync(version, localProfile, input, cancellationToken);
+            if (!selectedPorts.Ok) return await Result(selectedPorts.Code, selectedPorts.Message);
             if (local is null)
             {
                 if (snapshot.Settings.Profiles.Any(item => item.Id == profileId))
@@ -161,7 +177,7 @@ internal sealed partial class FriendLocalHostingService
                 var server = await Task.Run(() => FindServer(version, snapshot.Settings.Profiles, input.ServerFile), cancellationToken);
                 if (server is null) return await Result("InstalledServerRequired", "Install or select the matching dedicated server, then prepare again. No game software was downloaded.");
                 progress.Report("Ports", "Checking the local game and control ports.");
-                var ports = await manager.LocalHostingPortsAsync(version, null, cancellationToken);
+                var ports = selectedPorts.Ports;
                 if (!ports.Available) return await Result("LocalPortsRequired", "The game's complete local port plan needs attention.");
                 var password = version.Game == GameKinds.Valheim ? input.GamePassword ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(12)) : null;
                 var setup = new TakeoverLocalSetup(server, version.PortableSetup.GameVersion,

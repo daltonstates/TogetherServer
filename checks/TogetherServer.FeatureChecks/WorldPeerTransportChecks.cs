@@ -82,6 +82,63 @@ internal static class WorldPeerTransportChecks
         Require(ownerHandler.RequestCount >= 2 && firstView.State.Replication.LastSuccessfulSyncUtc is not null,
             "the real fixed signed challenge/exchange path was not exercised through fake HTTP");
 
+        // A long payload pass holds refreshGate. A freshly changed local
+        // announcement still reaches the original owner through metadata only.
+        var refresh = (SemaphoreSlim)(typeof(WorldPeerService).GetField("refreshGate",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(firstService)
+            ?? throw new InvalidOperationException("the peer transfer gate seam is unavailable"));
+        var localSettings = firstData.LoadSettings();
+        localSettings.CompanionBindAddress = "127.0.0.1";
+        Require((await firstManager.UpdateSettingsAsync(localSettings)).Ok, "the synthetic route change failed");
+        var operationsBeforeAnnouncement = ownerHandler.Operations.Count;
+        await refresh.WaitAsync();
+        try
+        {
+            await firstService.AnnounceLocalHostingStateAsync(source, default).WaitAsync(TimeSpan.FromSeconds(2));
+            var reported = ownerService.Views().Single().State.Peers.Single(peer => peer.DeviceId == first.DeviceId);
+            Require(reported.Authorized && reported.Routes.Count == 0 && reported.Revision > 1 &&
+                ownerHandler.Operations.Skip(operationsBeforeAnnouncement).SequenceEqual([WorldPeerOperations.Metadata]),
+                "a busy save-transfer pass delayed the new signed report or triggered save payload work");
+        }
+        finally { refresh.Release(); }
+        localSettings.CompanionBindAddress = "0.0.0.0";
+        Require((await firstManager.UpdateSettingsAsync(localSettings)).Ok, "the synthetic route restoration failed");
+        await firstService.AnnounceLocalHostingStateAsync(source, default);
+        Require(ownerService.Views().Single().State.Peers.Single(peer => peer.DeviceId == first.DeviceId)
+            .Routes.Contains(firstRoute), "the next exact signed route report was not delivered without an owner refresh");
+
+        // Hold a direct fixed request between challenge and exchange. This
+        // bypasses the metadata-pass gate just as a payload request does, using
+        // only signed directory state rather than a game/save fixture.
+        var challenged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChallenge = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ownerHandler.PauseNextChallenge = async token =>
+        {
+            challenged.SetResult();
+            await releaseChallenge.Task.WaitAsync(token);
+        };
+        var groupObject = typeof(WorldPeerService).GetMethod("Find", System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)!.Invoke(firstService, [source.GroupKey]);
+        var send = typeof(WorldPeerService).GetMethod("SendPeerAsync", System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.NonPublic)!;
+        var fixedPayload = JsonSerializer.SerializeToUtf8Bytes(new WorldPeerMetadataRequest(), SharedWorldPeerTrust.Json);
+        var firstRequest = (Task<byte[]>)send.Invoke(firstService,
+            [groupObject, ownerRoute, WorldPeerOperations.Metadata, CancellationToken.None, fixedPayload, 0, null, null, null])!;
+        await challenged.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var challengeCount = ownerHandler.Challenges.Count;
+        var priorityMetadata = firstService.AnnounceLocalHostingStateAsync(source, default);
+        await Task.Yield();
+        Require(ownerHandler.Challenges.Count == challengeCount,
+            "priority metadata overwrote another outbound request's still-pending signed challenge");
+        releaseChallenge.SetResult();
+        await Task.WhenAll(firstRequest, priorityMetadata).WaitAsync(TimeSpan.FromSeconds(2));
+        Require(WorldPeerProtocol.DecodeEnvelope<WorldPeerMetadataResponse>(await firstRequest,
+            WorldPeerProtocol.ResponseLimit(WorldPeerOperations.Metadata)).Page.Root == source,
+            "the first serialized fixed request failed to return its verified world metadata");
+        Require(ownerHandler.Challenges.Count > challengeCount && ownerHandler.Operations.TakeLast(2)
+            .SequenceEqual([WorldPeerOperations.Metadata, WorldPeerOperations.Metadata]),
+            "priority metadata did not resume immediately after one signed request completed");
+
         // This peer goes offline before the owner enrolls the returning PC.
         // The returning PC received the newer signed chain from the owner; the
         // old peer has never seen its device ID/key or the second roster.
@@ -524,6 +581,7 @@ internal static class WorldPeerTransportChecks
         internal List<WorldPeerChallengeResponse> Replies { get; } = [];
         internal int LargestChallengeReply { get; private set; }
         internal Func<WorldPeerChallengeResponse, WorldPeerChallengeResponse>? RewriteChallenge { get; set; }
+        internal Func<CancellationToken, Task>? PauseNextChallenge { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -542,6 +600,11 @@ internal static class WorldPeerTransportChecks
                 var reply = service.PrepareChallenge(root.GroupKey, input, route.CertificateSha256);
                 if (RewriteChallenge is not null) reply = RewriteChallenge(reply);
                 Replies.Add(reply);
+                if (PauseNextChallenge is { } pause)
+                {
+                    PauseNextChallenge = null;
+                    await pause(cancellationToken);
+                }
                 LargestChallengeReply = Math.Max(LargestChallengeReply,
                     JsonSerializer.SerializeToUtf8Bytes(reply, SharedWorldPeerTrust.Json).Length);
                 if (reply.Code == "PeerRosterCatchUpRequired") PendingRosterAcks++;

@@ -26,6 +26,10 @@ const local: LocalHostingStatus = { ok: true, code: 'WaitingForRecipient', messa
     { key: 'connection', state: 'Unknown', message: 'Incoming connection must be reviewed.' }
   ], handoffRequest: requested }
 const response = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
+function stubFetch(fetcher: (url: string, init?: RequestInit) => Promise<Response>) {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => url === friendBase
+    ? response({ state: 'Ready', transferPhase: null, receivedBytes: 0, totalBytes: 0 }) : fetcher(url, init)))
+}
 const friendProps = { profileId, connectionId: 'first', worldName: 'Shared world', available: true, onOpenHost: vi.fn() }
 afterEach(() => vi.useRealTimers())
 
@@ -52,7 +56,7 @@ describe('existing hosting invitations', () => {
   it('does not accept or prepare an invitation from polling', async () => {
     vi.useFakeTimers()
     const writes: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method) writes.push(url)
       return response(local)
     }))
@@ -67,7 +71,7 @@ describe('existing hosting invitations', () => {
     let current = local
     const writes: { url: string; body: Record<string, unknown> }[] = []
     const openHost = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
       if (!init?.method) return response(current)
       const body = JSON.parse(String(init.body))
       writes.push({ url, body })
@@ -112,12 +116,14 @@ describe('existing hosting invitations', () => {
   it('does not apply acceptance from a previously selected connection', async () => {
     let release!: (value: Response) => void
     const writes: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    stubFetch(vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method) { writes.push(url); return new Promise<Response>(resolve => { release = resolve }) }
       return response(local)
     }))
     const view = render(<FriendLocalHosting {...friendProps} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+    const entry = await screen.findByRole('button', { name: 'Host locally' })
+    await waitFor(() => expect(entry).toBeEnabled())
+    fireEvent.click(entry)
     await waitFor(() => expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-busy', 'true'))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Host locally' }))
     view.rerender(<FriendLocalHosting {...friendProps} connectionId="second" />)

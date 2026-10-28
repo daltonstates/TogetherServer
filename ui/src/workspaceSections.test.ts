@@ -36,7 +36,7 @@ describe('workspace destinations', () => {
     expect(workspaceDestination({ workspace: 'host', section: 'diagnostics', profileId, connectionId: null }))
       .toEqual({ workspace: 'host', scope: 'pc', section: 'diagnostics', profileId })
   })
-  it.each(['appearance', 'notifications', 'windows', 'updates', 'shortcuts'])('accepts the explicit App Settings %s destination', section => {
+  it.each(['appearance', 'notifications', 'game-ports', 'windows', 'updates', 'shortcuts'])('accepts the explicit App Settings %s destination', section => {
     const parsed = parseDesktopNotification({ type: 'together-notification', destination: {
       workspace: 'settings', section, profileId: null, connectionId: null
     } })

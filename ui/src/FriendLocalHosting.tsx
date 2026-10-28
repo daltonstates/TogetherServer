@@ -8,6 +8,9 @@ import { parsePlannedHandoffStatus, type PlannedHandoffStatus } from './plannedH
 import { LocalHostingGuide, localHostingAccessBlocker } from './LocalHostingGuide'
 import { HostingPhaseTimings, hostingProgressFilesLabel, hostingProgressPhaseLabel, LocalHostingProgress, type HostingProgress } from './LocalHostingProgress'
 import { formatSharedBytes } from './sharedWorldUx'
+import { FriendSaveTransferProgress, useFriendSaveTransfer } from './FriendSaveTransfer'
+import { parseApprovedGamePorts, type ApprovedGamePort } from './ApprovedGamePorts'
+import { LocalHostingPorts, useLocalHostingPorts } from './LocalHostingPorts'
 import './FriendLocalHosting.css'
 
 const stepKeys = ['permission', 'server', 'save', 'ports', 'connection'] as const
@@ -19,6 +22,8 @@ export type LocalHostingStatus = {
   localProfileId: string | null; branchHash: string | null; readyForManualStart: boolean; running: boolean
   steps: { key: CheckKey; state: 'Ready' | 'ActionRequired' | 'Unknown'; message: string }[]
   handoffRequest?: PlannedHandoffStatus | null
+  needsPortApproval?: boolean; selectedApprovedPortId?: string | null; approvedPorts?: ApprovedGamePort[]
+  factorioRconPort?: number | null
   remedy?: { kind: HostingRemedyKind; title: string; message: string } | null
 }
 export type LocalHostingPermission = { allowed: boolean; code: string; message: string }
@@ -49,6 +54,18 @@ export function parseLocalHostingPermission(value: unknown): LocalHostingPermiss
 export function parseLocalHostingStatus(value: unknown): LocalHostingStatus {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Local hosting checks could not be read.')
   const item = value as Record<string, unknown>
+  if (item.needsPortApproval !== undefined || item.selectedApprovedPortId !== undefined || item.approvedPorts !== undefined) {
+    const ports = item.approvedPorts === null && item.allowed === false && item.game === null ? [] : parseApprovedGamePorts(item.approvedPorts)
+    if (typeof item.needsPortApproval !== 'boolean' || item.selectedApprovedPortId !== null &&
+      (typeof item.selectedApprovedPortId !== 'string' || !guidPattern.test(item.selectedApprovedPortId)) ||
+      ports.some(plan => plan.game !== item.game) || item.selectedApprovedPortId !== null &&
+        !ports.some(plan => plan.id === item.selectedApprovedPortId) || item.readyForManualStart === true &&
+        (item.needsPortApproval || !item.selectedApprovedPortId)) throw new Error('Choose this PC’s approved game ports before starting.')
+  }
+  if (item.factorioRconPort !== undefined && item.factorioRconPort !== null &&
+    (item.game !== 'Factorio' || typeof item.factorioRconPort !== 'number' || !Number.isInteger(item.factorioRconPort) ||
+      item.factorioRconPort < 1024 || item.factorioRconPort > 65535 || item.factorioRconPort === item.gamePort))
+    throw new Error('The private RCON port could not be checked.')
   const handoffRequest = item.handoffRequest == null ? null : parsePlannedHandoffStatus(item.handoffRequest)
   if (item.remedy != null) {
     if (typeof item.remedy !== 'object' || Array.isArray(item.remedy)) throw new Error('The hosting action could not be read.')
@@ -110,6 +127,7 @@ const stoppedSharingFailures: Record<string, string> = {
 function checkFingerprint(status: LocalHostingStatus): string {
   return JSON.stringify([status.code, status.message, status.allowed, status.consented, status.game, status.gameVersion,
     status.needsServerFile, status.needsPassword, status.serverFile, status.gamePort, status.controlPort,
+    status.needsPortApproval, status.selectedApprovedPortId, status.approvedPorts, status.factorioRconPort,
     status.localProfileId, status.branchHash, status.readyForManualStart, status.running,
     status.steps.map(step => [step.key, step.state, step.message]), status.remedy,
     status.handoffRequest?.requestId, status.handoffRequest?.recipientState, status.handoffRequest?.finalVersion,
@@ -191,7 +209,9 @@ export function localHostingAttention(status: LocalHostingStatus | null, accepte
     return { kind: 'Terms', title: 'Review Minecraft’s terms', message: 'Read the terms and choose whether to accept them on this PC before continuing.' }
   if (['LocalConnectionSetupRequired', 'RecipientConnectionRequired', 'PeerDiscoveryRequired'].includes(status.code))
     return { kind: 'Connection', title: 'Let friends connect to this PC', message: status.message }
-  if (['PortConflict', 'PortInUse', 'GamePortInUse', 'LocalPortsRequired'].includes(status.code))
+  if (status.needsPortApproval || status.code === 'LocalPortApprovalRequired')
+    return { kind: 'Ports', title: 'Choose this PC’s game ports', message: 'Choose an approved game-port plan or approve a new choice below before hosting.' }
+  if (['PortConflict', 'PortInUse', 'GamePortInUse', 'LocalPortsRequired', 'LocalPortChangeRequired'].includes(status.code))
     return { kind: 'Ports', title: 'Free the game ports on this PC', message: status.message }
   if (['PeerMembershipRequired', 'HostingPermissionChanged', 'HostingRequestChanged', 'SeparateCopyReviewRequired', 'SuccessorChecksPending', 'DataRecoveryRequired'].includes(status.code))
     return { kind: 'Review', title: 'Review this PC’s shared save', message: status.message }
@@ -250,10 +270,14 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }, [scope])
   const [scopedPermission, setPermission] = useState<(LocalHostingPermission & { scope: string }) | null>(null)
   const permission = scopedPermission?.scope === scope ? scopedPermission : null
+  const transfer = useFriendSaveTransfer({ endpoint: base, scope,
+    enabled: available && !accessBlocked && permission?.allowed === true })
+  const canHostAfterTransfer = transfer.canHost
   const [permissionCheck, setPermissionCheck] = useState<{ scope: string; pending: boolean; message: string } | null>(null)
   const [permissionRetry, setPermissionRetry] = useState(0)
   const explicitPermissionCheck = useRef(false)
   const [status, setStatus] = useState<LocalHostingStatus | null>(null)
+  const ports = useLocalHostingPorts(status, scope)
   const [checksCurrent, setChecksCurrent] = useState(false)
   const [checking, setChecking] = useState(false)
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
@@ -332,6 +356,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
 
   useEffect(() => {
     mutation.current = false
+    dialogOpen.current = false
+    currentStatus.current = null
     startIntent.current = null
     setPermission(null)
     explicitPermissionCheck.current = false
@@ -485,7 +511,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
   }
   const prepareStatus = useCallback(async (target: LocalHostingStatus, authorization: typeof plannedOperation) => {
-    if (mutation.current || disabled || unconfirmedStartRef.current || !target.allowed || stoppedSharingStatus || needsStoppedProgressSharing(target)) return
+    if (mutation.current || disabled || unconfirmedStartRef.current || !target.allowed || stoppedSharingStatus || needsStoppedProgressSharing(target)
+      || !canHostAfterTransfer() || !ports.ready) return
     const planned = activeHostingRequest(target)
     if (planned?.recipientState === 'Requested') return
     if (planned?.requestId && ['MinecraftJava', 'MinecraftBedrock'].includes(target.game ?? '') && !acceptedTerms) return
@@ -539,6 +566,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       const next = await changeJson(`${base}/hosting/prepare`, 'POST', parseLocalHostingStatus, {
         allowReceiving: true, acceptSplitWarning: !planned?.requestId, requirePeerConnection: true,
         serverFile: serverFile.trim() || null, gamePassword: password || null,
+        ...(ports.selection ?? {}),
         ...(planned?.requestId ? { requestId: planned.requestId, acceptedTerms } :
           ['MinecraftJava', 'MinecraftBedrock'].includes(target.game ?? '') ? { acceptedTerms } : {})
       }, abort.signal)
@@ -568,7 +596,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       clearWatch()
       if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
     }
-  }, [base, disabled, serverFile, password, acceptedTerms, acceptStatus, stoppedSharingStatus])
+  }, [base, disabled, serverFile, password, acceptedTerms, acceptStatus, stoppedSharingStatus, canHostAfterTransfer, ports.ready, ports.selection])
   const prepare = () => {
     const invitation = activeHostingRequest(status)
     if (!status?.allowed) return
@@ -583,7 +611,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }
   const respond = async (accept: boolean) => {
     const invitation = status?.handoffRequest
-    if (mutation.current || disabled || !invitation?.requestId || invitation.recipientState !== 'Requested') return
+    if (mutation.current || disabled || !canHostAfterTransfer() || !invitation?.requestId || invitation.recipientState !== 'Requested') return
     mutation.current = true
     const sequence = ++request.current
     const abort = new AbortController()
@@ -661,7 +689,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
   }
   useEffect(() => {
-    if (!open || !plannedOperation || !status?.handoffRequest || mutation.current || disabled) return
+    if (!open || !plannedOperation || !status?.handoffRequest || mutation.current || disabled || transfer.blocked || !ports.ready) return
     const invitation = status.handoffRequest
     if (invitation.requestId !== plannedOperation.requestId || ['Requested', 'Declined', 'Canceled'].includes(invitation.recipientState ?? '')) {
       plannedAuthorization.current = null; setPlannedOperation(null)
@@ -675,7 +703,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     if (plannedAttempt.current === attempt) return
     plannedAttempt.current = attempt
     void prepareStatus(status, plannedOperation)
-  }, [status, open, plannedOperation, disabled, serverFile, password, acceptedTerms, prepareStatus])
+  }, [status, open, plannedOperation, disabled, serverFile, password, acceptedTerms, prepareStatus, transfer.blocked, ports.ready])
   useEffect(() => {
     if (!plannedOperation) return
     const timeout = window.setTimeout(() => {
@@ -690,7 +718,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
   }, [plannedOperation])
   const startPrepared = useCallback(async (target: LocalHostingStatus) => {
     const intent = startIntent.current
-    if (mutation.current || disabled || stoppedSharingStatus || unconfirmedStartRef.current || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
+    if (mutation.current || disabled || stoppedSharingStatus || unconfirmedStartRef.current || !canHostAfterTransfer()
+      || !checksCurrent || !intent || intent.scope !== scope || intent.until <= Date.now()
       || !target.allowed || !target.readyForManualStart || target.running || !target.localProfileId
       || intent.requestId !== (activeHostingRequest(target)?.requestId ?? null)
       || localHostingAttention(target, acceptedTerms, serverFile)) return
@@ -773,15 +802,15 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
       clearWatch()
       if (sequence === request.current) { mutation.current = false; setBusy(false); setPendingAction(null) }
     }
-  }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus, stoppedSharingStatus])
+  }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus, stoppedSharingStatus, canHostAfterTransfer])
   useEffect(() => {
-    if (busy || checking || disabled || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
+    if (busy || checking || disabled || transfer.blocked || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
     if (localHostingAttention(status, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
     void startPrepared(status)
-  }, [status, busy, checking, disabled, checksCurrent, acceptedTerms, serverFile, startPrepared])
+  }, [status, busy, checking, disabled, checksCurrent, acceptedTerms, serverFile, startPrepared, transfer.blocked])
 
   const host = () => {
-    if (mutation.current || disabled || unconfirmedStartRef.current || !checksCurrent || checking || !status?.allowed) return
+    if (mutation.current || disabled || unconfirmedStartRef.current || !canHostAfterTransfer() || !ports.ready || !checksCurrent || checking || !status?.allowed) return
     if (status.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setError(''); setActionMessage('')
     const attention = localHostingAttention(status, acceptedTerms, serverFile)
@@ -902,12 +931,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     pause(); onOpenGameSetup(status.game, status.localProfileId ?? undefined)
   }
   const trigger = () => {
-    if (disabled || busy || !permissionAllowed) return
+    if (disabled || busy || !permissionAllowed || !canHostAfterTransfer()) return
     if (status?.running && status.localProfileId) { onOpenHost(status.localProfileId); return }
     setOpen(true); setNetworkConfirmed(false); setError(''); setActionMessage('')
     void refresh()
   }
-  const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !historyChoice
+  const canContinue = permissionAllowed && allowed && checksCurrent && !checking && !busy && !disabled && !transfer.blocked && ports.ready && !historyChoice
     && !(minecraftTerms && !acceptedTerms) && !(status?.needsServerFile && !serverFile.trim())
     && !(status?.needsPassword && !password) && attention?.kind !== 'Permission'
     && !(status?.readyForManualStart && attention) && !startUnconfirmed && !sharingRequired && !(stoppedSharingStatus && !sharingRequired)
@@ -931,9 +960,11 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     {permissionAllowed && (presentation === 'card' ? <section className="local-hosting-card" aria-label="Host locally">
       <Icon name="server" size={24} /><div><h3>Host locally</h3>
         <p>{status?.running ? 'This server is already hosted on this PC.' : 'Use the latest available save to host this server on your PC.'}</p></div>
-      <Button className="secondary" disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>
+      <Button className="secondary" disabled={disabled || busy || transfer.blocked} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>
     </section> : <Button className="secondary server-play-action local-hosting-trigger" title="Host locally"
-      disabled={disabled || busy} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>)}
+      disabled={disabled || busy || transfer.blocked} onClick={trigger}><Icon name={busy ? 'loader' : 'server'} />Host locally</Button>)}
+    {permissionAllowed && transfer.blocked && !open && <FriendSaveTransferProgress status={transfer.status}
+      fresh={transfer.fresh} unavailable={transfer.unavailable} />}
     {open && <SettingsDialog title="Host locally" description={worldName} busy={busy}
       onClose={pause} footer={status?.running && status.localProfileId ?
         <Button onClick={() => onOpenHost(status.localProfileId!)}>Open local server</Button> :
@@ -943,6 +974,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
         <Button disabled={!canContinue} onClick={() => { setNetworkConfirmed(true); if (requestOffered) void respond(true); else host() }}><Icon name={busy ? 'loader' : 'play'} />
           {busy ? hostingActions[pendingAction ?? 'checks'].label : status?.readyForManualStart ? 'Start hosting' : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
       <div className="local-hosting-flow" aria-busy={busy}>
+        {transfer.blocked && !(busy && (pendingAction === 'prepare' || pendingAction === 'start') || startUnconfirmed || waitingForHost) &&
+          <FriendSaveTransferProgress status={transfer.status} fresh={transfer.fresh} unavailable={transfer.unavailable} />}
         {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. {sharingRequired
           ? 'Share stopped progress keeps hosting stopped. Start hosting remains a separate choice after sharing and current checks finish.' : status?.readyForManualStart
           ? 'Start checks this PC and the prepared save again before starting.'
@@ -995,6 +1028,8 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
             <span>I have read and accept the terms for preparing this Minecraft server.
               <small>Review the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer">Minecraft EULA</a> and{' '}
                 <a href="https://www.microsoft.com/en-us/privacy/privacystatement" target="_blank" rel="noreferrer">Microsoft Privacy Statement</a>.</small></span></label>}
+          {!status?.running && <LocalHostingPorts ports={ports} existing={!!status?.localProfileId} busy={busy || checking || disabled}
+            onChange={() => { startIntent.current = null; plannedAuthorization.current = null; setPlannedOperation(null) }} />}
           {attention?.kind === 'Connection' && <div className="local-hosting-fix"><p>Use Connection help to check this PC's address and the port friends need. It explains any Windows, router or provider problem that needs your action.</p>
             {onOpenConnectionHelp && <Button className="secondary" disabled={busy || disabled} onClick={connectionHelp}><Icon name="plug" />Connection help</Button>}
           </div>}

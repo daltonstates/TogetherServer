@@ -11,10 +11,13 @@ public sealed record LocalHostingStatus(bool Ok, string Code, string Message,
     bool NeedsPassword, string? ServerFile, string? GameVersion, int GamePort, int ControlPort,
     Guid? LocalProfileId, string? BranchHash, bool ReadyForManualStart, bool Running,
     IReadOnlyList<LocalHostingStep> Steps, PlannedHandoffStatus? HandoffRequest = null,
-    LocalHostingRemedy? Remedy = null);
+    LocalHostingRemedy? Remedy = null, bool NeedsPortApproval = false,
+    Guid? SelectedApprovedPortId = null, IReadOnlyList<ApprovedGamePort>? ApprovedPorts = null,
+    int? FactorioRconPort = null);
 public sealed record LocalHostingPrepareRequest(bool AllowReceiving, bool AcceptSplitWarning,
     string? ServerFile = null, string? GamePassword = null, Guid? RequestId = null,
-    bool AcceptedTerms = false, bool RequirePeerConnection = false);
+    bool AcceptedTerms = false, bool RequirePeerConnection = false, Guid? ApprovedPortId = null,
+    int? GamePort = null, int? FactorioRconPort = null, bool ApprovePorts = false);
 
 // Preparation composes the existing signed-grant, receive, fresh restore and
 // Finish gates. Only the explicit Start action launches; reads never do.
@@ -25,7 +28,8 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     Func<SharedWorldPeerRoot, CancellationToken, Task<WorldPeerLatestSourceResult>>? latestSource = null,
     Func<SharedWorldPeerRoot, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerLatestSourceResult>>? latestSourceProgress = null,
     Func<SharedWorldPeerRoot, Guid, string, CancellationToken, Action<WorldPeerSourceProgress>?, Task<WorldPeerPreparedStartResult>>? preparedStartSource = null,
-    Func<SharedWorldPeerRoot, IDisposable>? beginPreparation = null)
+    Func<SharedWorldPeerRoot, IDisposable>? beginPreparation = null,
+    Func<SharedWorldPeerRoot, CancellationToken, Task>? announceHostingState = null)
 {
     private bool HasLatestSource => latestSource is not null || latestSourceProgress is not null;
 
@@ -81,12 +85,18 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var fields = new HashSet<string>(StringComparer.Ordinal);
         foreach (var field in root.EnumerateObject())
         {
-            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword" or "requestId" or "acceptedTerms" or "requirePeerConnection"))
+            if (!fields.Add(field.Name) || field.Name is not ("allowReceiving" or "acceptSplitWarning" or "serverFile" or "gamePassword" or "requestId" or "acceptedTerms" or "requirePeerConnection" or "approvedPortId" or "gamePort" or "factorioRconPort" or "approvePorts"))
                 throw new InvalidDataException("The preparation request contains unexpected fields.");
-            if (field.Name is "allowReceiving" or "acceptSplitWarning" or "acceptedTerms" or "requirePeerConnection")
+            if (field.Name is "allowReceiving" or "acceptSplitWarning" or "acceptedTerms" or "requirePeerConnection" or "approvePorts")
             {
                 if (field.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                     throw new InvalidDataException("The preparation choices must be explicit.");
+            }
+            else if (field.Name is "gamePort" or "factorioRconPort")
+            {
+                if (field.Value.ValueKind != JsonValueKind.Null && (field.Value.ValueKind != JsonValueKind.Number ||
+                    !field.Value.TryGetInt32(out var port) || port is < 1024 or > 65535))
+                    throw new InvalidDataException("Choose valid local game ports.");
             }
             else if (field.Value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
                 throw new InvalidDataException("The local setup field is invalid.");
@@ -102,9 +112,20 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var requestText = Optional("requestId");
         Guid? requestId = requestText is null ? null : Guid.TryParse(requestText, out var parsed) && parsed != Guid.Empty ? parsed :
             throw new InvalidDataException("Choose the exact hosting request.");
+        var approvedText = Optional("approvedPortId");
+        Guid? approvedPortId = approvedText is null ? null : Guid.TryParse(approvedText, out var approved) && approved != Guid.Empty ? approved :
+            throw new InvalidDataException("Choose a saved approved game-port plan.");
+        int? Port(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : null;
+        var gamePort = Port("gamePort");
+        var rconPort = Port("factorioRconPort");
+        var approvePorts = root.TryGetProperty("approvePorts", out var approval) && approval.GetBoolean();
+        if (approvedPortId is not null && (gamePort is not null || rconPort is not null || approvePorts) ||
+            (gamePort is not null || rconPort is not null) && (!approvePorts || gamePort is null))
+            throw new InvalidDataException("Select approved ports or explicitly approve one local port plan.");
         return new(root.GetProperty("allowReceiving").GetBoolean(), root.GetProperty("acceptSplitWarning").GetBoolean(), path, password,
             requestId, root.TryGetProperty("acceptedTerms", out var terms) && terms.GetBoolean(),
-            root.TryGetProperty("requirePeerConnection", out var peerConnection) && peerConnection.GetBoolean());
+            root.TryGetProperty("requirePeerConnection", out var peerConnection) && peerConnection.GetBoolean(),
+            approvedPortId, gamePort, rconPort, approvePorts);
     }
 
     internal async Task<LocalHostingStatus> StatusAsync(Guid profileId,
@@ -182,7 +203,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
         var saveReady = !stoppedProgressPending && hosted is { Restored: true, ReviewRequired: false } &&
             (hosted.ReadyForManualStart || running);
         var preparationReady = access.Allowed && access.Consented && !ambiguous && !running &&
-            saveReady && ports.Available && serverFile is not null && !manualSetup &&
+            saveReady && ports.Available && ports.ApprovedPortId is not null && serverFile is not null && !manualSetup &&
             hosted is { ReadyForManualStart: true };
         var endpointValid = HostIdentity.TryEndpoint(snapshot.Settings.CompanionEndpoint, out var endpoint);
         var localOnly = endpointValid && System.Net.IPAddress.IsLoopback(System.Net.IPAddress.Parse(endpoint.Host));
@@ -207,6 +228,7 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             stoppedProgressPending ? StoppedProgressCode :
             ready ? "LocalHostingPrepared" :
             running ? "LocalHostingRunning" : manualSetup ? "LocalServerSetupRequired" :
+            ports.ApprovedPortId is null ? "LocalPortApprovalRequired" :
             !access.Consented ? "LocalConsentRequired" : !saveReady ? "LocalHostingPreparationRequired" :
             serverFile is null ? "InstalledServerRequired" : !ports.Available ? "LocalPortsRequired" : "LocalHostingPreparationRequired";
         var message = ambiguous ? "More than one local history is available. Choose a history in shared-save setup; every save is preserved." :
@@ -229,10 +251,14 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
                 hosted?.Restored == true ? "The existing local world is preserved. Prepare again to repeat its verification checks." :
                 !access.Consented ? "Prepare can allow shared saves on this PC after your consent." :
                 "Choose Host locally to receive or reuse the latest completed save, verify its files and prepare this PC's hosting copy."),
-             new("ports", ports.Available ? "Ready" : "ActionRequired", running ?
+             new("ports", ports.Available && ports.ApprovedPortId is not null ? "Ready" : "ActionRequired", running ?
                 $"This PC's running server uses game port {ports.GamePort}." : ports.Available ?
-                $"Local game port {ports.GamePort} is selected; Start repeats every declared game-port check." : "Local game ports need attention before preparation."),
-             connectionStep]);
+                ports.ApprovedPortId is not null ? $"Approved local game port {ports.GamePort} is selected; Start repeats every declared game-port check." :
+                    "Choose and approve this PC's game ports once. Other Hosts can use different ports, including on the same LAN." : "Local game ports need attention before preparation."),
+             connectionStep], NeedsPortApproval: ports.ApprovedPortId is null,
+            SelectedApprovedPortId: ports.ApprovedPortId,
+            ApprovedPorts: data.ApprovedGamePorts.View().ApprovedPorts.Where(plan => plan.Game == game).ToArray(),
+            FactorioRconPort: ports.FactorioRconPort);
         return friend.CurrentLocalHostingConnection(connection) ? result :
             Unavailable("ConnectionChanged", "The selected Host changed. Review the shared server again.");
     }
@@ -248,6 +274,8 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
     {
         using var connection = friend.RetainLocalHostingConnection();
         if (connection is null) return Unavailable("NotPaired", "Choose a saved Host connection first.");
+        if (SharedSaveTransferProgress.BlocksHosting(connection.Link.SharedWorldStatus(profileId)))
+            return Unavailable("SharedSaveTransferInProgress", "Wait for the current shared save to finish receiving and verifying before preparing hosting.");
         using var progress = hostingProgress.Begin(connection.Link, profileId);
         var result = await PrepareForConnectionAsync(connection, profileId, request, progress, cancellationToken);
         progress.Complete(result.Ok, result.Message);
@@ -362,6 +390,13 @@ internal sealed partial class FriendLocalHostingService(LocalData data, FriendSe
             if (status.LocalProfileId is null && selectedSource is null && !access.SaveVerified)
                 return await Result("SharedSaveRequired", "A complete verified save is not available yet. Keep an approved source reachable and retry.");
             var nextGame = selectedSource?.Descriptor.Version.Game ?? status.Game;
+            var portVersion = selectedSource?.Descriptor.Version ?? access.Version;
+            if (portVersion is null) return await Result("SharedSaveRequired", "Receive the shared server's setup before choosing local ports.");
+            var portSnapshot = await manager.CompanionSnapshotAsync();
+            var priorProfile = portSnapshot.Settings.Profiles.SingleOrDefault(item => item.Id == status.LocalProfileId);
+            progress.Report("Ports", "Checking this PC's approved game ports.");
+            var selectedPorts = await ChooseLocalPortsAsync(portVersion, priorProfile, request, cancellationToken);
+            if (!selectedPorts.Ok) return await Result(selectedPorts.Code, selectedPorts.Message);
             if ((status.LocalProfileId is null || createBranch) && nextGame is GameKinds.MinecraftJava or GameKinds.MinecraftBedrock && !request.AcceptedTerms)
                 return await Result("MinecraftTermsRequired", "Read and accept Minecraft's terms on this PC before preparing its server. No terms were accepted for you.");
             if (!request.AcceptSplitWarning && createBranch)

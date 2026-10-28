@@ -211,9 +211,17 @@ internal static partial class PlannedHandoffRequestChecks
         using var offlineFriend = new FriendService(recipientData, (_, _) => throw new InvalidOperationException("Offline projection must not access a network."));
         var service = new FriendLocalHostingService(recipientData, offlineFriend, recipient, _ => [server]);
         var beforeOffline = File.ReadAllBytes(Path.Combine(destination, "world.dat"));
+        var unapproved = await service.StatusAsync(fixture.Profile.Id);
+        Require(unapproved.HandoffRequest?.RecipientState == "Completed" && unapproved.LocalProfileId == fixture.Profile.Id &&
+            !unapproved.ReadyForManualStart && unapproved.NeedsPortApproval && unapproved.BranchHash is null &&
+            recipientDriver.ProcessAttempts == 0 && File.ReadAllBytes(Path.Combine(destination, "world.dat")).SequenceEqual(beforeOffline),
+            "a completed inherited move silently approved its source game ports or lost the retained save");
+        Require(recipientData.ApprovedGamePorts.Save(new(GameKinds.Fixture, setup.GamePort, null)).Ok,
+            "the recipient's explicit local game-port approval failed");
         var offline = await service.StatusAsync(fixture.Profile.Id);
         Require(offline.HandoffRequest?.RecipientState == "Completed" && offline.HandoffRequest.RequestId == requestId &&
-            offline.LocalProfileId == fixture.Profile.Id && offline.ReadyForManualStart && offline.BranchHash is null &&
+            offline.LocalProfileId == fixture.Profile.Id && offline.ReadyForManualStart && !offline.NeedsPortApproval &&
+            offline.SelectedApprovedPortId is not null && offline.BranchHash is null &&
             new SharedWorldSeparateCopyStore(recipientData).Read(fixture.Profile.Id).Count == 0 &&
             recipientData.LoadRuns().Count == 0 && recipientDriver.ProcessAttempts == 0 &&
             File.ReadAllBytes(Path.Combine(destination, "world.dat")).SequenceEqual(beforeOffline),

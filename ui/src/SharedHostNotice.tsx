@@ -32,6 +32,7 @@ type StoppedReport = { deviceId: string; endedUtc: string }
 type HostGroup = { group: WorldPeerGroup; choices: HostChoice[]; stopped: StoppedReport | null; competing: boolean; needsReview: boolean }
 type View = { state: 'checking' | 'ready' | 'unknown'; groups: WorldPeerGroup[]; error?: string }
 const hidden = () => document.visibilityState === 'hidden'
+const pollMilliseconds = 1000
 
 function hostAddress(value: string | null | undefined): string | null {
   if (!value) return null
@@ -114,7 +115,7 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
       window.clearTimeout(timer)
       if (!active || hidden()) return
       if (read.current || write.current) {
-        timer = window.setTimeout(() => void poll(), 5000)
+        timer = window.setTimeout(() => void poll(), pollMilliseconds)
         return
       }
       const request = new AbortController()
@@ -126,7 +127,7 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
         read.current = null
         groups.current = []
         setView({ state: 'unknown', groups: [], error: 'Host updates took too long. Retry to check again.' })
-        if (active && !hidden()) timer = window.setTimeout(() => void poll(), 5000)
+        if (active && !hidden()) timer = window.setTimeout(() => void poll(), pollMilliseconds)
       }, 12000)
       try {
         const next = await getLocalJson('/api/local/world-peers', parseWorldPeerGroups, request.signal)
@@ -141,7 +142,7 @@ function SharedHostNoticeScope({ profileId, currentHostAddress, currentHostSessi
         window.clearTimeout(timeout)
         if (read.current === request) {
           read.current = null
-          if (active && !hidden()) timer = window.setTimeout(() => void poll(), 5000)
+          if (active && !hidden()) timer = window.setTimeout(() => void poll(), pollMilliseconds)
         }
       }
     }

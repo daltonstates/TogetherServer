@@ -151,6 +151,7 @@ beforeEach(() => {
     if (path === '/api/local/network/ports') return ports
     if (path === '/api/local/desktop/preferences') return { available: false, launchAtLogin: false, closeToTray: false, startupAvailable: false }
     if (path === '/api/local/desktop/notifications') return structuredClone(notificationPreferences)
+    if (/\/api\/local\/friend\/[^/]+\/shared-world$/.test(path)) return { state: 'Ready', transferPhase: null, receivedBytes: 0, totalBytes: 0 }
     if (path.endsWith('/shared-world/hosting/access')) return { allowed: false, code: 'HostingPermissionRequired', message: 'The owner has not allowed hosting.' }
     throw new Error('Synthetic leaf data unavailable')
   })
@@ -561,7 +562,7 @@ describe('Task-first app and Host PC navigation', () => {
       expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
       const sections = within(within(settings).getByRole('navigation', { name: 'App settings sections' }))
       expect(sections.getAllByRole('button').map(button => button.textContent)).toEqual([
-        'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+        'Profile', 'Appearance', 'Notifications', 'Game ports', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
       ])
       await act(async () => { fireEvent.click(sections.getByRole('button', { name: 'Windows behavior' })) })
       expect(await within(settings).findByRole('heading', { name: 'Windows behavior' })).toBeVisible()
@@ -584,7 +585,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
     const sections = within(settings).getByRole('navigation', { name: 'App settings sections' })
     expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+      'Profile', 'Appearance', 'Notifications', 'Game ports', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
     ])
     expect(within(sections).getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'location')
     expect(within(settings).getByRole('combobox', { name: 'Theme' })).toBeVisible()
@@ -606,7 +607,7 @@ describe('Task-first app and Host PC navigation', () => {
     expect(within(settings).getByRole('heading', { name: 'Appearance' })).toBeVisible()
     const sections = within(settings).getByRole('navigation', { name: 'App settings sections' })
     expect(within(sections).getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Profile', 'Appearance', 'Notifications', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
+      'Profile', 'Appearance', 'Notifications', 'Game ports', 'Windows behavior', 'Updates', 'Keyboard shortcuts'
     ])
     expect(within(sections).getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'location')
     expect(within(settings).getByRole('combobox', { name: 'Theme' })).toHaveValue('dark')
@@ -1824,7 +1825,7 @@ describe('Friend task structure', () => {
     const play = await screen.findByRole('region', { name: 'Play' })
     const local = await within(play).findByRole('button', { name: 'Host locally' })
     expect(local.closest('.friend-primary-actions')).not.toBeNull()
-    expect(local).toBeEnabled()
+    await waitFor(() => expect(local).toBeEnabled())
     expect(local).toHaveAccessibleName('Host locally')
     expect(screen.queryByRole('dialog', { name: 'Host locally' })).not.toBeInTheDocument()
     expectNoMutation()

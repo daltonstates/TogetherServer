@@ -35,7 +35,7 @@ describe('continuous App Settings', () => {
     const input = props()
     render(<AppSettings {...input} />)
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeInTheDocument()
-    for (const title of ['Profile', 'Notifications', 'Windows behavior', 'App updates', 'Keyboard shortcuts'])
+    for (const title of ['Profile', 'Notifications', 'Game ports', 'Windows behavior', 'App updates', 'Keyboard shortcuts'])
       expect(screen.getByRole('heading', { name: title })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'light' } })
@@ -56,6 +56,17 @@ describe('continuous App Settings', () => {
     expect(screen.getByRole('textbox', { name: 'Notification draft' })).toBe(draft)
     expect(draft).toHaveValue('Keep this choice')
     expect(onSectionChange).not.toHaveBeenCalled()
+  })
+
+  it('loads the reusable approved game ports editor when its settings section is selected', async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ approvedPorts: [] }))
+    vi.stubGlobal('fetch', fetcher)
+    const view = render(<AppSettings {...props()} section="profile" />)
+    expect(fetcher).not.toHaveBeenCalled()
+    view.rerender(<AppSettings {...props()} section="game-ports" />)
+    expect(await screen.findByText('No game ports have been approved on this PC.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve ports' })).toBeDisabled()
+    expect(fetcher).toHaveBeenCalledOnce()
   })
 
   it('offers location navigation while global notifications receive only PC defaults', () => {

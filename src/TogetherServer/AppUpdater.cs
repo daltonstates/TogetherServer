@@ -137,6 +137,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             if (!IsStandalone)
                 return SetView(new("Unsupported", FormatVersion(currentVersion), null, "Updates apply to the published Windows EXE.",
                     "Development build"));
+            UpdateArtifactCleanup.Run(dataRoot, executablePath, preparedPath);
             var installedSignature = signatureVerifier.Verify(executablePath);
             var signed = installedSignature.Valid && !string.IsNullOrWhiteSpace(installedSignature.PublisherKey);
             if (!signed && !installedSignature.IsUnsigned)
@@ -233,6 +234,7 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             var valid = false;
             try
             {
+                using var artifactLease = UpdateArtifactCleanup.Lease(directory);
                 preparation = new("Downloading", "Downloading the reviewed Windows update.", 0, available.Size);
                 using var request = new HttpRequestMessage(HttpMethod.Get, available.DownloadUrl);
                 request.Headers.UserAgent.ParseAdd("TogetherServer/" + FormatVersion(currentVersion));
@@ -280,9 +282,9 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
             {
                 if (!valid)
                 {
-                    try { Directory.Delete(directory, true); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    { /* A failed temporary file can be removed later. */ }
+                    // The exact owned download may be discarded immediately;
+                    // unknown or linked contents remain for later review.
+                    UpdateArtifactCleanup.DiscardIncomplete(dataRoot, directory);
                 }
             }
         }
@@ -326,6 +328,9 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 return PreparationResult(false, "InvalidSignature", "The updater copy failed publisher verification.");
             var ready = Path.Combine(Path.GetDirectoryName(preparedPath)!, "ready.signal");
             if (File.Exists(ready)) File.Delete(ready);
+            var artifactDirectory = Path.GetDirectoryName(preparedPath)!;
+            File.Delete(Path.Combine(artifactDirectory, "failed.signal"));
+            UpdateArtifactCleanup.MarkPending(artifactDirectory, available.Sha256, checkpoint);
             using var process = Process.GetCurrentProcess();
             var start = new ProcessStartInfo(helper) { UseShellExecute = false, CreateNoWindow = true };
             foreach (var argument in new[] { "--apply-update", process.Id.ToString(CultureInfo.InvariantCulture),
@@ -339,18 +344,26 @@ public sealed class AppUpdater(HttpClient client, string dataRoot, string execut
                 start.ArgumentList.Add(checkpoint.ManifestSha256);
             }
             using var launched = Process.Start(start);
-            if (launched is null) return PreparationResult(false, "LaunchFailed", "Could not start the updater.");
+            if (launched is null)
+            {
+                UpdateArtifactCleanup.MarkFailed(artifactDirectory);
+                return PreparationResult(false, "LaunchFailed", "Could not start the updater.");
+            }
             for (var attempt = 0; attempt < 100 && !File.Exists(ready) && !launched.HasExited; attempt++)
                 Thread.Sleep(50);
             if (!File.Exists(ready) || launched.HasExited)
             {
                 if (!launched.HasExited) launched.Kill();
+                UpdateArtifactCleanup.MarkFailed(artifactDirectory);
                 return PreparationResult(false, "LaunchFailed", "The update helper could not start safely. Your current app keeps running.");
             }
             return PreparationResult(true, "Restarting", "TogetherServer is closing to install the update.");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
-        { return PreparationResult(false, "LaunchFailed", "Could not start the updater. Your current app keeps running."); }
+        {
+            if (preparedPath is not null) UpdateArtifactCleanup.MarkFailed(Path.GetDirectoryName(preparedPath)!);
+            return PreparationResult(false, "LaunchFailed", "Could not start the updater. Your current app keeps running.");
+        }
     }
 
     public static UpdateRelease? ParseRelease(string json, bool includePrereleases = false)

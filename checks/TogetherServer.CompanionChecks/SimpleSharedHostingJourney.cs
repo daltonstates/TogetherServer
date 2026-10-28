@@ -211,7 +211,8 @@ internal static partial class CoreRemoteJourney
             var preparationStartedMs = timer.ElapsedMilliseconds;
             prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
                 $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
+                new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true,
+                    GamePort: FreeUdpPair(), ApprovePorts: true));
             initialFriendPreparationObservation = new
             {
                 elapsedMs = timer.ElapsedMilliseconds - preparationStartedMs,
@@ -239,6 +240,8 @@ internal static partial class CoreRemoteJourney
             Console.WriteLine("SIMPLE_SHARED_HOSTING_INITIAL_PREPARATION " + JsonSerializer.Serialize(initialFriendPreparationObservation, Json));
             LabRequire(prepared.ReadyForManualStart && prepared.LocalProfileId is not null && prepared.BranchHash is not null,
                 "SimpleFriendPreparationRejected");
+            LabRequire(prepared.SelectedApprovedPortId is not null && !prepared.NeedsPortApproval,
+                "SimpleFriendLocalPortApprovalMissing");
             var preparedLocalId = prepared.LocalProfileId;
             var preparedBranchHash = prepared.BranchHash;
             var repeatPreparation = false;
@@ -252,7 +255,8 @@ internal static partial class CoreRemoteJourney
                     // not the normal recovery flow and cannot test another Start.
                     prepared = await PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(first,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                        new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true));
+                        new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true,
+                            ApprovedPortId: prepared.SelectedApprovedPortId));
                     LabRequire(prepared.Ok && prepared.Allowed && prepared.Consented && prepared.ReadyForManualStart &&
                         !prepared.Running && prepared.LocalProfileId == preparedLocalId && prepared.BranchHash == preparedBranchHash,
                         "SimpleFriendFreshPreparationRejected");

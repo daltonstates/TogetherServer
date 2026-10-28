@@ -1146,7 +1146,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
                     statusCode: StatusCodes.Status403Forbidden);
             if (latest.Latest?.VersionHash != versionHash)
                 return Results.NotFound(new { code = "SharedVersionUnavailable" });
-            return Results.Bytes(chunk, "application/octet-stream");
+            return SharedSaveCompression.Chunk(context, chunk);
         });
         companion.MapGet("/servers/{profileId:guid}/requirements", async (HttpContext context, Guid profileId) =>
         {

@@ -412,7 +412,22 @@ public sealed partial class HostManager
     public async Task<ActionResult> UpdateSettingsAsync(HostSettings next)
     {
         await gate.WaitAsync();
-        try { return UpdateSettingsLocked(next); }
+        try
+        {
+            // Only this explicit owner setup/settings entry point records a
+            // reusable approval. Received save restore and internal policy
+            // writes must never turn a remote source port into local consent.
+            var changedPorts = next.Profiles?.Where(profile => profile.SeparateCopySourceProfileId is null &&
+                profile.WorldLoadRehearsalId is null && ApprovedGamePortsStore.Supported(profile.Kind) &&
+                !settings.Profiles.Any(prior => prior.Id == profile.Id && prior.Kind == profile.Kind &&
+                    prior.GamePort == profile.GamePort && prior.Factorio?.RconPort == profile.Factorio?.RconPort)).ToArray() ?? [];
+            var saved = UpdateSettingsLocked(next);
+            if (saved.Ok)
+                foreach (var profile in changedPorts)
+                    data.ApprovedGamePorts.Save(new(profile.Kind, profile.GamePort,
+                        profile.Kind == GameKinds.Factorio ? profile.Factorio?.RconPort : null));
+            return saved;
+        }
         finally { gate.Release(); }
     }
 
@@ -1124,6 +1139,7 @@ public sealed partial class HostManager
             data.SaveCrashRecoveryStates(crashRecovery);
         var profile = settings.Profiles.SingleOrDefault(p => p.Id == profileId);
         if (profile is null) return Result(false, "UnknownProfile", "Choose a saved server.");
+        if (SharedTransferStartIssue(profile) is { } transferIssue) return transferIssue;
         if (SharedHostingStartIssue(profile) is { } sharedHostingIssue)
             return Result(false, "NewerSharedSaveAvailable", sharedHostingIssue);
         if (SharedContinuationStartIssue(profile, out var requireOriginalSource, out var workingSource) is { } continuationIssue)

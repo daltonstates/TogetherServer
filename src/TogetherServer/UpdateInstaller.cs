@@ -19,6 +19,8 @@ public static class UpdateInstaller
         var signatureVerifier = authenticodeVerifier ?? new WindowsAuthenticodeVerifier();
         string? target = null;
         string? originalHash = null;
+        string? artifactDirectory = null;
+        FileStream? artifactLease = null;
         try
         {
             target = Path.GetFullPath(args[3]);
@@ -36,6 +38,8 @@ public static class UpdateInstaller
                 requirePublisher && (!HasPublisher(target, args[8], signatureVerifier) ||
                 !HasPublisher(payload, args[8], signatureVerifier) ||
                 !HasPublisher(helper, args[8], signatureVerifier))) return 2;
+            artifactDirectory = Path.GetDirectoryName(helper)!;
+            artifactLease = UpdateArtifactCleanup.Lease(artifactDirectory);
             originalHash = await AppUpdater.HashAsync(target);
             if (args.Length == 11 &&
                 !StateCheckpointService.TryValidate(root, args[9], args[10], out _, originalHash,
@@ -61,6 +65,7 @@ public static class UpdateInstaller
                    InvalidOperationException or System.ComponentModel.Win32Exception or TimeoutException or
                    CryptographicException)
         {
+            if (artifactDirectory is not null) UpdateArtifactCleanup.MarkFailed(artifactDirectory);
             DesktopLaunch.ShowError("TogetherServer could not finish the update. Check the app and its previous EXE beside it.\n\n" + ex.Message);
             if (target is not null && originalHash is not null && File.Exists(target) &&
                 (await AppUpdater.HasHashAsync(target, args[5]) || await AppUpdater.HasHashAsync(target, originalHash)) &&
@@ -71,6 +76,7 @@ public static class UpdateInstaller
             }
             return 1;
         }
+        finally { artifactLease?.Dispose(); }
     }
 
     public static void ReplaceVerified(string target, string payload, string sha256, string publisherKey,

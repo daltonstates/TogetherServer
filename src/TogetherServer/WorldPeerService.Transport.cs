@@ -190,6 +190,7 @@ internal sealed partial class WorldPeerService : IDisposable
         var validity = new PeerCertificateWindow(pins);
         var handler = new HttpClientHandler
         {
+            AutomaticDecompression = System.Net.DecompressionMethods.GZip,
             AllowAutoRedirect = false,
             UseProxy = false,
             UseCookies = false,
@@ -743,6 +744,7 @@ internal sealed partial class WorldPeerService : IDisposable
         var observationContext = transferAttempt.Value;
         var observation = observationContext?.Attempt;
         WorldPeerChallenge? challenge = null;
+        var acceptsCompressedSeed = false;
         var expectedIdentity = announced.Length == 1 ? announced[0] : manualIdentity;
         var maySendRosters = expectedIdentity is not null && CurrentPeerKey(group, expectedIdentity);
         for (var batch = 0; batch < 2 && challenge is null; batch++)
@@ -787,6 +789,8 @@ internal sealed partial class WorldPeerService : IDisposable
             }
             expectedIdentity ??= reply.ResponderPublicKey;
             challenge = reply.Challenge;
+            acceptsCompressedSeed = challengeResponse.Headers.TryGetValues(SharedSaveCompression.SeedCapabilityHeader, out var encodings) &&
+                encodings.SequenceEqual(["gzip"], StringComparer.OrdinalIgnoreCase);
         }
         if (challenge is null) throw new InvalidDataException("The peer's signed membership is still catching up.");
         // A bootstrap origin was pinned during the existing Host pairing. Its
@@ -806,7 +810,9 @@ internal sealed partial class WorldPeerService : IDisposable
         var body = payload ?? [];
         var request = WorldPeerProtocol.Sign(challenge, operation, key, offset, versionHash, fileIndex, chunkOffset, body);
         using var exchange = new HttpRequestMessage(HttpMethod.Post, prefix + "exchange")
-        { Content = JsonContent.Create(new WorldPeerExchangeRequest(request, body), options: SharedWorldPeerTrust.Json) };
+        { Content = SharedSaveCompression.SeedContent(JsonSerializer.SerializeToUtf8Bytes(
+            new WorldPeerExchangeRequest(request, body), SharedWorldPeerTrust.Json),
+            operation == WorldPeerOperations.Seed && acceptsCompressedSeed) };
         AddPeerHeaders(exchange);
         observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Exchange);
         using var response = await client.SendAsync(exchange, HttpCompletionOption.ResponseHeadersRead, cancellationToken);

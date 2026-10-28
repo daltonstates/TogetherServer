@@ -243,6 +243,8 @@ ProtectionSettingsLocalRoutes.Map(app, manager, modeGate,
     () => !friendMode && !updatePending && !shutdownPending);
 UserProfileLocalRoutes.Map(app, data.UserProfile, modeGate,
     () => !updatePending && !shutdownPending);
+ApprovedGamePortsLocalRoutes.Map(app, data.ApprovedGamePorts, modeGate,
+    () => !updatePending && !shutdownPending);
 RequiredFeatureSetupLocalRoutes.Map(app, new RequiredFeatureSetupService(data), modeGate,
     () => !updatePending && !shutdownPending);
 GettingStartedLocalRoutes.Map(app, new GettingStartedService(data), modeGate,

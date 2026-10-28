@@ -40,8 +40,9 @@ public sealed partial class CompanionServer
                 if (!SharedWorldRosterTrust.ValidKey(request.PublicKey)) return Results.BadRequest(new { code = "PeerRequestRejected" });
                 if (!peerDeviceRateLimiter.TryAcquire(request.DeviceId))
                     return Results.Json(new { code = "PeerRateLimited" }, statusCode: 429);
-                return Results.Json(PeerWorlds!.PrepareChallenge(groupKey, request,
-                    pin));
+                var reply = PeerWorlds!.PrepareChallenge(groupKey, request, pin);
+                context.Response.Headers[SharedSaveCompression.SeedCapabilityHeader] = "gzip";
+                return Results.Json(reply);
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 UnauthorizedAccessException or CryptographicException or ArgumentException)
@@ -54,11 +55,10 @@ public sealed partial class CompanionServer
             var pin = ActivePin();
             if (!Available(context, pin) || !SharedWorldPeerTrust.ValidHash(groupKey))
                 return Results.Json(new { code = "PeerUnavailable" }, statusCode: 403);
-            var bytes = await SharedWorldReceiptTrust.ReadBoundedAsync(context.Request.Body,
-                context.Request.ContentLength, 2 * 1024 * 1024, context.RequestAborted);
-            if (bytes is null) return Results.BadRequest(new { code = "PeerRequestRejected" });
             try
             {
+                var bytes = await SharedSaveCompression.ReadPeerRequestAsync(context, 2 * 1024 * 1024);
+                if (bytes is null) return Results.BadRequest(new { code = "PeerRequestRejected" });
                 var envelope = WorldPeerProtocol.DecodeEnvelope<WorldPeerExchangeRequest>(bytes, 2 * 1024 * 1024);
                 if (envelope.Request is null || envelope.Payload is null || envelope.Payload.Length > SharedWorldPeerTrust.MaximumPageBytes)
                     return Results.BadRequest(new { code = "PeerRequestRejected" });
@@ -67,7 +67,8 @@ public sealed partial class CompanionServer
                     return Results.Json(new { code = "PeerRateLimited" }, statusCode: 429);
                 var result = await PeerWorlds!.ExchangeAsync(groupKey, request, envelope.Payload,
                     context.RequestAborted, pin);
-                return Results.Bytes(result, request.Operation == WorldPeerOperations.Chunk ? "application/octet-stream" : "application/json");
+                return request.Operation == WorldPeerOperations.Chunk ? SharedSaveCompression.Chunk(context, result) :
+                    Results.Bytes(result, "application/json");
             }
             catch (Exception error) when (error is IOException or InvalidDataException or JsonException or
                 UnauthorizedAccessException or CryptographicException or ArgumentException)

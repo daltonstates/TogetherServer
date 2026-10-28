@@ -36,7 +36,7 @@ export function parseSharedHostingIdentity(value: unknown, host: boolean): Hosti
       label: 'Sharing is off', address: null, local: false, warning: null, hidden: true }
     if (!authority) return { label: 'Host decision not checked', address: null, local: false, warning: null }
     if (authority.state === 'NoTakeover') return {
-      label: 'Original Host PC · hosting has not moved', address: null, local: true, warning: null }
+      label: 'Original Host PC · this PC’s server', address: null, local: true, warning: null }
     if (authority.state === 'CompetingHistories' || authority.state === 'ReviewRequired') return {
       label: 'Host decision needs review', address: null, local: false,
       warning: 'Keep this world stopped until the hosting decisions are resolved.' }
@@ -132,7 +132,7 @@ export function SharedHostingIdentityView({ identity, failed = false, host, scop
     serverState === 'Ready' ? 'Ready · game join not tested' : serverState : 'Unknown'
   return <section className="shared-hosting-identity" aria-label="Shared world Host">
     <p className="shared-hosting-identity-row"><span>{failed && identity ? `Last known: ${identity.label}` : identity?.label ?? 'Host decision not checked'}</span>
-      <small>Current Host status: {observed}{failed ? ' · latest Host check failed' : ''}</small>
+      <small>{host ? 'This PC’s server status' : 'Current Host status'}: {observed}{failed ? ' · latest Host check failed' : ''}</small>
       {!host && serverState && identity?.label === 'Host decision not checked' && <small>Connected server: {serverStatusFresh ?
         serverState === 'Ready' ? 'Ready · game join not tested' : serverState : 'Unknown'}</small>}
     </p>

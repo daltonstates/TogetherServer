@@ -532,7 +532,9 @@ try {
     await nav(friend, 'Play'); await button(friend, 'Host locally');
     const dialog = friend.getByRole('dialog', { name: 'Host locally', exact: true });
     await dialog.waitFor({ state: 'visible', timeout });
-    if (await dialog.locator('.local-hosting-warning').count() !== 1 || await dialog.getByRole('checkbox').count()
+    const portApproval = dialog.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.', exact: true });
+    if (await dialog.locator('.local-hosting-warning').count() !== 1 ||
+      await dialog.getByRole('checkbox').count() !== await portApproval.count()
       || hostingPrepareRequests || hostingStartRequests) throw new Error('Opening hosting did not preserve its single network confirmation');
     await shot(friend, '03-explicit-network-confirmation');
     await dialog.getByRole('button', { name: 'Close Host locally', exact: true }).click();
@@ -600,8 +602,10 @@ try {
       || hostingPrepareRequests || hostingStartRequests) throw new Error('A missing installed server did not block local hosting');
     await shot(friend, '06-installed-server-required');
     await server.fill(input.fixturePath);
+    const portApproval = dialog.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.', exact: true });
+    if (await portApproval.count()) await portApproval.check();
     const confirm = dialog.getByRole('button', { name: 'Host locally', exact: true });
-    await until(() => confirm.isEnabled(), Boolean, 'explicit network confirmation enabled after choosing server');
+    await until(() => confirm.isEnabled(), Boolean, 'explicit network confirmation enabled after choosing server and local ports');
     // Product preparation and Start each allow 120 seconds. One shared
     // 255-second deadline covers their automatic sequence without another click.
     const hostingDeadline = Date.now() + 255000;

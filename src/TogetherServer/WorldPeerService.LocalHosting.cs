@@ -2,6 +2,55 @@ namespace TogetherServer;
 
 internal sealed partial class WorldPeerService
 {
+    // A successful Start already recorded its exact managed operation. Publish
+    // that Preparing session immediately, without waiting behind save bytes or
+    // the round-robin background pass. This never starts or reconfigures a game.
+    internal async Task AnnounceLocalHostingStateAsync(SharedWorldPeerRoot root,
+        CancellationToken cancellationToken)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bounded.CancelAfter(TimeSpan.FromSeconds(12));
+        try
+        {
+            var group = Find(root.GroupKey);
+            if (group is null || group.Root != root || !group.SharingEnabled) return;
+            using var key = LocalKey(group);
+            if (key is null) return;
+            if (!await PublishLocalAdvertisementAsync(group, bounded.Token)) return;
+            var publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+            var store = Store(group);
+            var targetOffset = store.ReadPage().Total;
+            var peers = store.Project().Peers.Where(peer => peer.Authorized && !peer.HasConflict && peer.PublicKey != publicKey)
+                .SelectMany(peer => peer.Routes);
+            // The original Host bootstrap goes first, including when this PC
+            // has never received a current peer directory from another member.
+            var routes = (group.Bootstrap is null ? peers : peers.Prepend(group.Bootstrap)).Concat(AdditionalRoutes(group))
+                .GroupBy(RouteKey).Select(routes => routes.First()).Take(4).ToArray();
+            foreach (var route in routes)
+            {
+                using var routeBudget = CancellationTokenSource.CreateLinkedTokenSource(bounded.Token);
+                routeBudget.CancelAfter(TimeSpan.FromSeconds(2));
+                try
+                {
+                    for (var page = 0; page < SharedWorldPeerStore.MaximumAnnouncements; page++)
+                    {
+                        var before = ReadCursor(group, route).SentOffset;
+                        await SyncPeerMetadataAsync(group, route, routeBudget.Token);
+                        var after = ReadCursor(group, route);
+                        if (after.SentOffset >= targetOffset || after.SentOffset <= before) break;
+                    }
+                }
+                catch (OperationCanceledException) when (routeBudget.IsCancellationRequested && !bounded.IsCancellationRequested)
+                { SetPeerWarning(root.GroupKey, "A known peer could not receive the latest hosting report. Background discovery will retry."); }
+                catch (Exception error) when (PeerFailure(error))
+                { SetPeerWarning(root.GroupKey, "A known peer could not receive the latest hosting report. Background discovery will retry."); }
+            }
+        }
+        catch (OperationCanceledException) when (bounded.IsCancellationRequested) { }
+        catch (Exception error) when (PeerFailure(error))
+        { SetPeerWarning(root.GroupKey, "The latest hosting report could not be shared yet. Background discovery will retry."); }
+    }
+
     // Called only by an explicit local Host instruction. Reuse the signed
     // registry and existing discovery transport without enabling any listener,
     // changing network policy or choosing the group's default on its behalf.

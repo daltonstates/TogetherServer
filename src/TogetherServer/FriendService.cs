@@ -1224,6 +1224,7 @@ internal sealed partial class FriendLink : IDisposable
         if (pins.Count == 0) throw new AuthenticationException("No valid Host certificate pin is saved.");
         var handler = new HttpClientHandler
         {
+            AutomaticDecompression = System.Net.DecompressionMethods.GZip,
             AllowAutoRedirect = !restricted,
             UseProxy = !restricted,
             ServerCertificateCustomValidationCallback = (_, certificate, _, _) => certificate is not null &&

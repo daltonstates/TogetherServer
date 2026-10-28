@@ -29,6 +29,11 @@ function install() {
 async function snapshot() { return getJson('/api/local/snapshot', parseSnapshot) }
 async function hosting() { return getLocalJson(`${base}/hosting`, parseLocalHostingStatus) }
 async function mode(value: 'host' | 'friend') { await changeJson(`/api/local/mode/${value}`, 'POST', parseBasicResult) }
+async function openLocalHosting() {
+  const entry = await screen.findByRole('button', { name: 'Host locally' })
+  await waitFor(() => expect(entry).toBeEnabled())
+  fireEvent.click(entry)
+}
 async function prepare() {
   return changeJson(`${base}/hosting/prepare`, 'POST', parseLocalHostingStatus, {
     allowReceiving: true, acceptSplitWarning: true, requirePeerConnection: true, serverFile: null, gamePassword: null
@@ -236,7 +241,7 @@ it('prepares and starts once after one consented Host locally entirely through f
   install().reset('friend-hosting')
   const openHost = vi.fn()
   render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Meadow · DEMO" available onOpenHost={openHost} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+  await openLocalHosting()
   const dialog = screen.getByRole('dialog', { name: 'Host locally' })
   await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
   expect(within(dialog).getByRole('button', { name: 'Host locally' })).toBeEnabled()
@@ -258,7 +263,7 @@ it('lets the missing-install flow select a fake file and continue into hosting w
       const response = await changeJson('/api/local/shared-worlds/browse-server-file', 'POST', value => value as { path: string }, { game })
       return response.path
     }} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+  await openLocalHosting()
   const dialog = screen.getByRole('dialog', { name: 'Host locally' })
   await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
   expect(within(dialog).getByRole('button', { name: 'Host locally' })).toBeDisabled()
@@ -275,7 +280,7 @@ it('runs ordinary Minecraft consent and one Host locally without dispatching an 
   install().reset('friend-minecraft')
   const openHost = vi.fn()
   render(<FriendLocalHosting profileId={primary} worldName="Morgan’s Lantern · DEMO" available onOpenHost={openHost} />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Host locally' }))
+  await openLocalHosting()
   const dialog = screen.getByRole('dialog', { name: 'Host locally' })
   await waitFor(() => expect(dialog).not.toHaveAttribute('aria-busy', 'true'))
   expect(within(dialog).getByRole('button', { name: 'Host locally' })).toBeDisabled()

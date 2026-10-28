@@ -225,6 +225,8 @@ internal static class StoppedSavePublicationChecks
         {
             Data = new(Path.Combine(root, "stopped-save-" + Guid.NewGuid().ToString("N")));
             Data.SaveSettings(new HostSettings { CompanionPort = 53310, Profiles = [] });
+            Require(Data.ApprovedGamePorts.Save(new(GameKinds.Fixture, 53312, null)).Ok,
+                "the generated stopped world's local port approval failed");
             var draft = new SharedWorldRoster(3, groupId, SourceId, 1, 1, true, Public(owner),
                 [new(DeviceId, Public(member), new(Receive: true, EligibleHost: true), false)], "",
                 SignerDeviceId: Guid.Empty, SignerPublicKey: Public(owner));

@@ -500,12 +500,13 @@ internal static partial class CoreRemoteJourney
                     LabRequire(checkedPermission.Allowed && checkedPermission.Code == "HostingAllowed", "ExplicitHostingAccessRejected");
                     prepared = await ObserveAsync("PrepareLocal", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                         $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                        new(true, true, ServerFile: Path.GetFullPath(fixturePath))));
+                        new(true, true, ServerFile: Path.GetFullPath(fixturePath), GamePort: FreeUdpPair(), ApprovePorts: true)));
                     // This ordinary action prepares the local copy without
                     // incoming consent. The route warning remains visible;
                     // valid local hosting does not enable incoming connections.
                     LabRequire(prepared.LocalProfileId is not null && prepared.LocalProfileId != Guid.Empty &&
                         prepared.BranchHash is not null && prepared.Ok && prepared.Allowed && prepared.Consented &&
+                        prepared.SelectedApprovedPortId is not null && !prepared.NeedsPortApproval &&
                         prepared.ReadyForManualStart && !prepared.Running &&
                         prepared.Code == "LocalHostingPrepared" && prepared.Remedy is null &&
                         prepared.Steps.Select(step => step.Key).SequenceEqual(["permission", "server", "save", "ports", "connection"]) &&
@@ -531,7 +532,8 @@ internal static partial class CoreRemoteJourney
                             "/api/local/mode/friend", new { }))).GetProperty("ok").GetBoolean(), "CandidateListenerRestoreRejected");
                         prepared = await ObserveAsync("PrepareIncoming", prepareClient, () => PostAsync<LocalHostingPrepareRequest, LocalHostingStatus>(prepareClient,
                             $"/api/local/friend/{profile.Id}/shared-world/hosting/prepare",
-                            new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true)));
+                            new(true, true, ServerFile: Path.GetFullPath(fixturePath), RequirePeerConnection: true,
+                                ApprovedPortId: prepared.SelectedApprovedPortId)));
                         LabRequire(prepared.Ok && prepared.Code == "LocalHostingPrepared" && prepared.ReadyForManualStart &&
                             !prepared.Running && prepared.Allowed && prepared.Consented &&
                             prepared.LocalProfileId == exactLocalProfile && prepared.BranchHash == exactBranchHash &&

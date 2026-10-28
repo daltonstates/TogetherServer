@@ -38,14 +38,14 @@ function scrollingPage(settings: ComponentProps<typeof AppSettings>) {
   const content = screen.getByTestId('content-scroll')
   let activeRoot = content
   for (const root of [content, outer]) {
-    Object.defineProperties(root, { clientHeight: { configurable: true, value: 500 }, scrollHeight: { configurable: true, value: 2150 } })
+    Object.defineProperties(root, { clientHeight: { configurable: true, value: 500 }, scrollHeight: { configurable: true, value: 2350 } })
     vi.spyOn(root, 'getBoundingClientRect').mockImplementation(() => ({ top: root === content ? 80 : 0 } as DOMRect))
   }
-  const offsets = [0, 300, 700, 1100, 1500, 1850]
+  const offsets = [0, 300, 700, 1000, 1300, 1700, 2050]
   const blocks = screen.getAllByRole('region').filter(block => block.hasAttribute('data-settings-section'))
   blocks.forEach((block, index) => vi.spyOn(block, 'getBoundingClientRect').mockImplementation(() => ({
     top: activeRoot.getBoundingClientRect().top + 16 + offsets[index] - activeRoot.scrollTop,
-    height: index === 5 ? 220 : 300
+    height: index === offsets.length - 1 ? 220 : 300
   } as DOMRect)))
   const contentScroll = vi.fn()
   const outerScroll = vi.fn()
@@ -81,7 +81,7 @@ describe('App Settings section scrolling', () => {
     view.flush()
     expect(view.content.scrollTop).toBe(720)
     expect(view.contentScroll).not.toHaveBeenCalled()
-    view.scroll(1650)
+    view.scroll(1850)
     expect(onSectionChange).toHaveBeenLastCalledWith('shortcuts')
     expect(view.outer.scrollTop).toBe(0)
     expect(view.outerScroll).not.toHaveBeenCalled()
@@ -93,7 +93,7 @@ describe('App Settings section scrolling', () => {
     view.flush()
     view.rerenderSettings({ ...settings, section: 'updates', scrollRequest: { section: 'updates', requestId: 1 } })
     view.flush(); view.flush()
-    expect(view.contentScroll).toHaveBeenCalledExactlyOnceWith({ top: 1500, behavior: 'smooth' })
+    expect(view.contentScroll).toHaveBeenCalledExactlyOnceWith({ top: 1700, behavior: 'smooth' })
     expect(screen.getByRole('region', { name: 'App updates' })).toHaveFocus()
     view.rerenderSettings({ ...settings, section: 'windows', scrollRequest: { section: 'updates', requestId: 1 }, updateBusy: true })
     view.flush(); view.flush()
@@ -109,7 +109,7 @@ describe('App Settings section scrolling', () => {
     const view = scrollingPage(input())
     view.flush()
     fireEvent.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }))
-    expect(view.contentScroll).toHaveBeenCalledExactlyOnceWith({ top: 1650, behavior: 'instant' })
+    expect(view.contentScroll).toHaveBeenCalledExactlyOnceWith({ top: 1850, behavior: 'instant' })
     expect(screen.getByRole('region', { name: 'Keyboard shortcuts' })).toHaveFocus()
   })
 
@@ -118,11 +118,11 @@ describe('App Settings section scrolling', () => {
     const view = scrollingPage({ ...input(), onSectionChange })
     view.flush()
     view.narrow()
-    view.scroll(1120)
+    view.scroll(1320)
     expect(onSectionChange).toHaveBeenLastCalledWith('windows')
     expect(screen.getByRole('button', { name: 'Windows behavior' })).toHaveAttribute('aria-current', 'location')
     fireEvent.click(screen.getByRole('button', { name: 'App updates' }))
-    expect(view.outerScroll).toHaveBeenCalledExactlyOnceWith({ top: 1500, behavior: 'smooth' })
+    expect(view.outerScroll).toHaveBeenCalledExactlyOnceWith({ top: 1700, behavior: 'smooth' })
     expect(view.contentScroll).not.toHaveBeenCalled()
     view.unmount()
     fireEvent.scroll(view.outer)

@@ -244,6 +244,11 @@ function demoRoute(session: DemoSession, path: string, method: string, body: Rec
     authority: { state: 'NoTakeover', message: demoBoundary, head: null, competingHeads: [], exactManagedProcessRunning: false },
     liveSave: { available: false, message: demoBoundary } })
   const friendBase = `/api/local/friend/${ids.primary}/shared-world`
+  if (path === friendBase && method === 'GET') return reply({ consented: state.consented, hostVersion: 5,
+    thisPcVersion: state.consented ? 5 : null, state: state.consented ? 'Ready' : 'Consent required', error: null,
+    transferPhase: null, receivedBytes: 0, totalBytes: 0, completedUtc: '2026-10-10T15:00:00Z',
+    receivedUtc: state.consented ? '2026-10-10T15:01:00Z' : null, receiptConfirmed: state.consented,
+    rosterRevision: session.rosterRevision, trust: 'DEMO: fake verified roster' })
   if (path === `${friendBase}/hosting/access` && method === 'GET' ||
     path === `${friendBase}/hosting/access/check` && method === 'POST' && Object.keys(body).length === 0) {
     const { allowed, code, message } = hostingStatus(session)

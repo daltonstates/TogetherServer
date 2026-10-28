@@ -79,6 +79,9 @@ and assigned. Repeating the local game or port checks cannot grant permission.
 
 On a permitted Friend PC, choose the **Host locally** icon beside Start.
 If the icon is missing, check the hosting-access message on the Friend page.
+During a save transfer, the Play page shows received bytes and the receive,
+verification, and receipt stages. **Host locally** stays disabled through all
+three stages and when current transfer status is unavailable.
 An unavailable permission check has a **Check hosting access again** action;
 it does not mean the owner turned sharing off. If the owner has not granted
 hosting, check the original Host's setting and this PC's assigned access.
@@ -94,6 +97,18 @@ hashes, the matching installed server, free space, local ports and the saved
 connection. It prepares the world and starts when the checks pass. If something
 needs your action, such as installing the server or fixing its connection,
 the dialog explains it and lets you continue. Game terms remain your choice.
+
+Choose this PC's game ports the first time you host a shared server. Each PC
+can use different ports, including PCs on the same network. Ports chosen while
+setting up your own server are remembered, so you can reuse that approval.
+Manage reusable choices in **App Settings > Game ports**. A busy approved port
+needs your attention; the app does not silently choose another port. Changing
+a prepared server's ports uses that server's local setup.
+
+Updated PCs negotiate gzip compression for save downloads and peer forwarding
+when it reduces the transmitted size. Already compressed saves can travel at
+their original size. File hashes and resumable offsets still use the original
+save bytes. Older peers continue using their existing uncompressed transport.
 
 The five hosting checks stay visible while they refresh. The check result says
 whether anything changed, when the check finished, and what to do next.
@@ -169,6 +184,11 @@ Confirmation can enable that saved app connection; TogetherServer never changes
 Windows Firewall, router forwards or DNS. Once the ordinary copy is prepared,
 its local Start does not depend on an outside connection check. Local port and
 outside TCP checks do not prove that a particular player can join the game.
+
+After a shared Host starts, its signed hosting report is sent separately from
+save transfers. An open Host notice refreshes every second, so reachable peers
+can show the new Host without a page refresh. Offline or unreachable PCs learn
+the update when a connection becomes available.
 
 ## If another PC has never received a save
 
