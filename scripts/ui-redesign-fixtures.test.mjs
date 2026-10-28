@@ -1700,6 +1700,76 @@ test('renderer teardown exempts only a validated exact passive jobs fetch cancel
     'the canceled observation remains separate evidence rather than disappearing from the report');
 });
 
+test('synthetic request tracking waits for browser body completion independently of route fulfillment', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'createSyntheticRequestTracker');
+  const create = runInNewContext(`${helper.getText(ast)}\n;createSyntheticRequestTracker`);
+  const pending = new Set();
+  let revision = 0;
+  const tracker = create(pending, () => { revision++; });
+  const request = {};
+  tracker.begin(request, { method: 'GET', path: '/api/local/background-jobs' });
+  const token = [...pending][0];
+  let bodyFinished = false;
+  token.done.then(() => { bodyFinished = true; });
+  await Promise.resolve(); // The fixture handler has already returned its JSON.
+  assert.equal(bodyFinished, false);
+  assert.equal(pending.size, 1, 'route fulfillment cannot pretend the browser consumed the response body');
+  tracker.begin(request, { method: 'GET', path: '/api/local/background-jobs' });
+  assert.equal(pending.size, 1, 'one request owns exactly one browser lifetime');
+  tracker.complete(request);
+  await token.done;
+  assert.equal(bodyFinished, true);
+  assert.equal(pending.size, 0);
+  tracker.complete(request);
+  assert.equal(revision, 2, 'duplicate terminal events cannot complete another request');
+  assert.match(source, /page\.on\('requestfinished', request => browserRequests\.complete\(request\)\)/u);
+  assert.match(source, /page\.on\('requestfailed', request => \{\s*browserRequests\.complete\(request\)/u,
+    'a failed body drains the wait while its error is still recorded by the existing failure collector');
+});
+
+test('synthetic clock advancement drains outstanding jobs bodies before and after the hosting poll', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helpers = ['createSyntheticRequestTracker', 'waitForSyntheticResponses'].map(name => ast.statements.find(statement =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === name).getText(ast)).join('\n');
+  const { create, quiet } = runInNewContext(`${helpers}\n;({create:createSyntheticRequestTracker,quiet:waitForSyntheticResponses})`,
+    { performance, setTimeout, clearTimeout });
+  const pending = new Set();
+  let revision = 0, clockAdvances = 0, completed = false;
+  const tracker = create(pending, () => { revision++; });
+  const before = {}, during = {};
+  tracker.begin(before, { method: 'GET', path: '/api/local/background-jobs' });
+  const response = { ok: () => true, finished: async () => {} };
+  const page = { evaluate: async () => {}, waitForResponse: () => Promise.resolve(response),
+    waitForFunction: async predicate => assert.equal(predicate({ isConnected: true, disabled: false }), true),
+    clock: { fastForward: async ticks => {
+      assert.equal(ticks, 10001); clockAdvances++;
+      tracker.begin(during, { method: 'GET', path: '/api/local/background-jobs' });
+    } } };
+  const modal = { getByRole: role => role === 'button' ? { elementHandle: async () => ({}) } : { count: async () => 0 } };
+  const settle = () => quiet(page, pending, () => revision, 1000);
+  const flight = advancePreparedHostingCheck(page, modal, 10001, 'Start hosting', false, settle).then(value => {
+    completed = true; return value;
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(clockAdvances, 0, 'a known outstanding jobs read cannot be advanced across its timeout');
+  tracker.complete(before);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(clockAdvances, 1);
+  assert.equal(completed, false, 'a completed hosting response alone cannot settle the new jobs body');
+  tracker.complete(during);
+  assert.equal(await flight, response);
+  assert.equal(pending.size, 0);
+  const failure = new Error('Synthetic transport did not settle');
+  await assert.rejects(advancePreparedHostingCheck(page, modal, 10001, 'Start hosting', false,
+    async () => { throw failure; }), error => error === failure);
+  assert.equal(clockAdvances, 1, 'a settling failure propagates instead of advancing or hiding it');
+  assert.match(source, /assertSimpleHostingUi\(page, testCase, record, state,\s*\(\) => waitForSyntheticResponses/u,
+    'the actual renderer injects its bounded browser-lifetime coordinator into hosting clock journeys');
+});
+
 test('clock-driven hosting captures install before polling and wait for settled responses after advancing time', async () => {
   const installs = [];
   for (const testCase of simpleHostingCases) {

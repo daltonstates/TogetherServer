@@ -158,7 +158,8 @@ export async function assertUnconfirmedStart(page, modal) {
 
 // Clock advancement dispatches the automatic read; it does not await its
 // response or React's loading/result paint. Finish both before scroll capture.
-export async function advancePreparedHostingCheck(page, modal, ticks, buttonName = 'Start hosting', unconfirmed = false) {
+export async function advancePreparedHostingCheck(page, modal, ticks, buttonName = 'Start hosting', unconfirmed = false, settle) {
+  if (settle) await settle();
   const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
     response.request().method() === 'GET', { timeout: 8000 });
   await page.clock.fastForward(ticks);
@@ -171,6 +172,7 @@ export async function advancePreparedHostingCheck(page, modal, ticks, buttonName
     await page.waitForFunction(button => button.isConnected && !button.disabled, await start.elementHandle(), { timeout: 8000 });
   }
   await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+  if (settle) await settle();
   if (!unconfirmed && await modal.getByRole('region', { name: 'Hosting progress', exact: true }).count())
     throw new Error('The final automatic hosting check is still changing the captured dialog');
   return response;
@@ -209,7 +211,7 @@ export function assertRemovedAccessBounds({ label, checkbox, text, display }) {
     throw new Error('Removed-access checkbox and text must share an inline row with a full-height label target');
 }
 
-export async function assertSimpleHostingUi(page, testCase, record, state) {
+export async function assertSimpleHostingUi(page, testCase, record, state, settle) {
   if (!testCase.id.startsWith('simple-hosting-')) return;
   const writes = hostingWrites(state);
   if (testCase.fixture?.hostingProgress) {
@@ -346,11 +348,13 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await assertHidden(1);
     }
     for (let poll = 0; poll < 2; poll++) {
+      if (settle) await settle();
       const polled = page.waitForResponse(response => response.url().endsWith(accessPath) &&
         response.request().method() === 'GET' && response.ok(), { timeout: 8000 });
       await page.clock.fastForward(10001);
       await (await polled).finished();
       await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+      if (settle) await settle();
       await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
       await assertHidden(Number(retryExpected));
     }
@@ -409,7 +413,7 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       if (refused) {
         if (result.ok !== false || result.code !== 'StoppedProgressProofRequired' || result.message !== stoppedProgressMessages.proofRequired)
           throw new Error('The explicit proof refusal must retain its fixed production result contract');
-        const refreshed = await advancePreparedHostingCheck(page, modal, 10001, 'Share stopped progress');
+        const refreshed = await advancePreparedHostingCheck(page, modal, 10001, 'Share stopped progress', false, settle);
         const current = await refreshed.json();
         if (!current.readyForManualStart || current.code !== 'LocalHostingPrepared' ||
             !await attempt.getByText(stoppedProgressMessages.proofRequired, { exact: true }).isVisible() ||
@@ -452,13 +456,15 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await start.click();
       await modal.getByRole('button', { name: 'Requesting Start...', exact: true }).waitFor({ state: 'visible', timeout: 8000 });
       assertPreparedHostingRequests(state, 1);
+      if (settle) await settle();
       await page.clock.fastForward(120001);
+      if (settle) await settle();
       const failure = modal.getByRole('alert');
       await failure.waitFor({ state: 'visible', timeout: 8000 });
       if (!/No new Start progress was reported for 2 minutes/u.test(await failure.textContent() ?? '') ||
           !/The Start result is unconfirmed/u.test(await failure.textContent() ?? ''))
         throw new Error('The pending prepared-copy Start did not expose its timeout result');
-      const automatic = await advancePreparedHostingCheck(page, modal, 30001, 'Start hosting', true);
+      const automatic = await advancePreparedHostingCheck(page, modal, 30001, 'Start hosting', true, settle);
       if (!(await automatic.json()).readyForManualStart)
         throw new Error('The timeout fixture must exercise an automatic generic Prepared response');
       assertPreparedHostingRequests(state, 1);
@@ -475,7 +481,7 @@ export async function assertSimpleHostingUi(page, testCase, record, state) {
       await page.getByRole('region', { name: 'Play', exact: true }).getByRole('button', { name: 'Host locally', exact: true }).click();
       await (await reopened).finished();
       await assertUnconfirmedStart(page, modal);
-      await advancePreparedHostingCheck(page, modal, 30001, 'Start hosting', true);
+      await advancePreparedHostingCheck(page, modal, 30001, 'Start hosting', true, settle);
       assertPreparedHostingRequests(state, 1);
       if (state.simpleHostingStarted) throw new Error('A timed-out synthetic Start must not claim a running server');
       await page.clock.resume();

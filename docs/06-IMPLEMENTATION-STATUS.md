@@ -75,159 +75,38 @@ and owner-member identity. Other-host information is a compact accessible
 action-adjacent icon with current/historical reports, observation time and
 preserved authority/conflict review; viewing it does not select a Host.
 
-Local validation so far uses .NET 10.0.301 and SHA-256-verified Node 24.14.1:
+Validation uses pinned .NET 10.0.301 and SHA-256-verified Node 24.14.1. No dependencies were added.
 
-- Locked dependency installation/restore, TypeScript, lint and production UI
-  bundling passed. Vite retains its large-chunk advisory. The solution builds
-  with zero warnings/errors. No dependencies were added.
-- All 1,685 initial UI tests passed across 113 files in serial partitions: 120
-  shell tests and 1,565 other tests. The added jobs Escape/focus regression and
-  both affected suites then passed (61 tests), bringing the total to 1,686.
-  The 65 pure renderer/fixture checks passed, including the added teardown
-  cancellation boundary test.
-  Earlier integrated runs exposed stale large-banner assertions and async
-  shell-test waits; the final tests await the actual actions without increasing
-  their timeouts. Rendered/native review is separate.
-- An early full source run completed 95/99 groups. Its failures exposed a
-  progress-store test adapter, a priority timing budget, and an incorrect
-  Offline-row shortcut through preparation. Corrected scope checks and typed
-  launch expectations now pass; all six affected focused groups pass
-  across reruns, including the new Offline-row preparation guard. The next
-  local run passed 98/99: random signature JSON escaping broke an equal-length
-  corruption fixture. Its mutation now chooses a fixed-width character.
-  Hosted QolApi passed all 99 groups on the first candidate. The fresh local
-  `verify-code-only.ps1` run on `63b7b64` also passed all 99 groups, locked
-  dependency checks, build, lint, types, whitespace and diagnostic isolation.
-  Its exact log is `local-data/shared-hosting-24-final-code-only.log`.
-- Slow byte observations exercise actual signed fake-HTTP response streams,
-  raw/gzip original downloads, original and successor forwarding pulls, and
-  gzip peer push with interruption/resume. Corrupt complete staging files are
-  rebased before retransmission; progress never exceeds the signed total.
-  A deliberately held job checkpoint leaves status/job reads responsive.
-  Unreadable job history is preserved while current jobs continue in memory.
-  No timing limits were increased. Expected fault-injection diagnostic messages
-  are not production failures. Source-link cases remain skipped when this test
-  account cannot create symbolic links.
+- Local locked restore/install, type checking, lint, production bundling and solution compilation passed. Builds have zero warnings/errors; Vite retains its existing chunk-size advisory. Whole-solution formatting passed after the final cache correction.
+- The complete local `verify-code-only.ps1` run passed 99/99 groups on `63b7b64`, including whitespace and diagnostic isolation (`local-data/shared-hosting-24-final-code-only.log`). Earlier local runs passed 95/99 and 98/99; corrected cases included the Offline-row preparation shortcut, progress-store adapter and random JSON-escaping corruption fixture. Expected fault-injection diagnostics are not production failures. Symbolic-link subcases remain skipped when the account cannot create links.
+- All 1,686 UI tests in 113 files passed on hosted runs after the initial 1,685-test baseline. The 67 pure renderer checks and 18 affected jobs/chrome tests passed. Tests await actual actions; timing limits were not increased. Rendered/native checks are separate from these DOM/source checks.
+- Final focused groups passed for cache revocation/tamper behavior, shared consent and roster bootstrap. The solution rebuild has zero warnings/errors. Exact logs are `local-data/shared-hosting-revoked-history-final-build.log` and `local-data/shared-hosting-revoked-history-focused.log`. Earlier five-group completion/requirements checks passed (`local-data/shared-hosting-job-finalization-focused.log`).
+- Actual signed response streams through injected HTTP handlers exercise slow raw/gzip original downloads, original and successor forwarding pulls, multi-file counters, gzip seed interruption/resume, corrupt completed staging rebasing, long-history continuation, low-space failure/retry and intermediate nonzero bytes before completion. These do not claim a physical network transfer or real-game save load. A held durable checkpoint leaves status/job reads responsive; unreadable optional job history is preserved while current jobs continue in memory.
 
-The candidate version is 0.3.3.24. Hosted compatibility now also pins and tests
-the exact published .23 portable digest, alongside the six existing lanes.
-This candidate has not been published; release readiness awaits the complete
-source and hosted results below.
+Each hosted run freezes one application and verifies its digest throughout its independent lanes. Packaging is explicitly not a full-acceptance claim.
 
-The [first .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40757052098)
-built and packaged exact source `dd431d14cb6c1a6d4ee2708e4aebcd3c1df95b17`.
-Its QolApi, automatic shared hosting, Rehearsal, server-access visual review,
-packaging and six earlier compatibility lanes passed. Core exposed a real
-status race: automatic Receive consent was projected as false when the link
-gate was busy and no transfer observation existed. The cached effective
-decision now survives that read; fresh authoritative consent and membership
-checks still govern all transfers and launches. The signed fake-HTTP test
-reproduces a held gate, automatic consent and immediate withdrawal/reallow;
-both affected source groups pass.
+| Run and source | Actual result and corrections |
+| --- | --- |
+| [40757052098](https://github.com/daltonstates/TogetherServer/actions/runs/40757052098), `dd431d1` | 12 successful jobs, five failed, Existing canceled at its timeout, one dispatch-only skip. QolApi passed all 99 groups and UI passed 1,685 tests. Core found the effective-consent display race; Browser and .23 compatibility exposed stale harness assumptions. Pairing lacked useful failure details. Desktop hit QuietTime. Existing hung when an obsolete serialized-Start assertion failed before releasing a held task. |
+| [40762221108](https://github.com/daltonstates/TogetherServer/actions/runs/40762221108), `63b7b64` | Ten successful jobs, eight failed, one skip. All seven compatibility lanes, automatic sharing and packaging passed. Loopback and all ten two-ended UI stages passed; LAN API's first sync failed without retaining its result code. An attempted fixture bind preflight violated the runner isolation guard and blocked six suites; it was removed without weakening the guard. Hosting rendering retained one aborted jobs read with zero layout findings. |
+| [40766061721](https://github.com/daltonstates/TogetherServer/actions/runs/40766061721), `ce748bf` | 15 successful jobs, three failed, one skip. Core, QolApi, all compatibility/pairing modes, automatic sharing and rendered review passed. Existing passed 1,686 UI tests, 115 General checks, driver checks and early packaged journeys before the retained-version cache assertion. Browser found the 768 px/150% header overflow; Desktop remained blocked by QuietTime. |
+| [40767721350](https://github.com/daltonstates/TogetherServer/actions/runs/40767721350), `984a255` | 17 successful jobs, two failed, one skip. Browser now passes the expanded tablet/popover matrix. Only the known retained-version assertion in Existing and QuietTime in Desktop failed. |
+| [40771485699](https://github.com/daltonstates/TogetherServer/actions/runs/40771485699), `4a536d188db1080c71e607f31ac656e290cd851e` | Cache-corrected candidate: 15 successful jobs so far, including all source/API, Browser/Core, compatibility and pairing lanes. Desktop hit QuietTime. Hosting capture retained one jobs-read abort during a synthetic clock jump; Existing is still running. |
 
-The same run exposed stale five-button Browser assertions and a missing .23
-legacy-test allowlist, now corrected. The compact Host review is explicitly
-opened before the exact Connect action in the two-ended lab. The lab also
-reported `LocalPortsRequired`, whose exact cause was not retained in its old
-artifact. New allowlisted stage/code/boolean evidence preserves future hosting
-and child-UI failures. An attempted harness bind preflight violated the existing
-check-runner socket-isolation guard; it was removed without weakening the guard.
-Separately, asynchronous preparation now binds its final port check to the
-request's original approval; a later preference change cannot switch plans,
-and removing that approval refuses preparation. The port guard stays enforced.
-The solution rebuild and seven focused source groups pass, covering lab
-boundary/redaction evidence, port choice changes, guided and detached
-preparation, cache invalidation, bounded discovery and exact prepared Start.
-Desktop's independent window cases passed; Windows `QuietTime` again blocked
-native notification acceptance. Corrected-candidate hosted results are pending.
+Corrections established by these checks:
 
-The [second .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40762221108)
-used exact source `63b7b64125bacc3b4454e144937e9a60604493bb`. All seven
-compatibility lanes, automatic shared hosting and packaging passed. Loopback
-hosting passed, and the independent two-ended UI passed all ten stages,
-including exact compact-review Connect, one prepare/Start and cleanup. The
-separate LAN API mode failed its initial peer sync; the old report omitted the
-returned code. That refusal remains unresolved. Its next report retains the
-typed result, duration and bounded existing route/work observations, with the
-success assertion unchanged. Six release suites were blocked by the harness
-probe guard above. Hosting rendering captured 108/108 cases and found no layout
-issues, but retained one aborted background-jobs read. Only validated reads
-canceled after explicit context teardown are now classified separately;
-active-capture failures remain failures and record their phase.
+- A held link gate no longer turns previously verified automatic Receive consent into a false refusal. The observation cache is display-only; authoritative consent/membership reads still govern transfers, receipts and launches.
+- Clearing a transfer observation no longer implies success. Only an explicit verified receipt path completes a download job. Pending signed history waits; low-space and verification failures retain their actual result. Actual pending-history and seeded pause/resume regressions passed.
+- Asynchronous local preparation keeps the exact approved port plan selected by that request. Preference changes cannot substitute another plan; removed approvals refuse safely. The original `LocalPortsRequired` report did not retain enough detail to establish its cause. Later loopback/UX cases passed; safe typed port-phase evidence now survives a future failure.
+- Requirements for a managed continuation preserve the original assigned server ID expected by the strict Friend decoder, reject a changed mapping after the read and repeat current authorization. Tests cover alias success, foreign identity, changed target and revoked access.
+- Consent-off status retains historical completed metadata while remaining unconsented. Restarted signed-transfer tests prove that withdrawal preserves the old pointer/receipt and committed partial bytes. Cold status succeeds with the old payload exclusively locked, proving it does no payload hash. Explicit failed verification replaces cached success with Error; consent/material invalidation cannot revive that known failure from a signed manifest. Actual tamper/withdraw/reallow/repair tests pass. The packaged tamper case now requests explicit verification before judging its cached response and keeps its refusal/independent-copy assertions.
+- General FIFO/disposal checks use serialized Restart/Stop; separate source coverage proves independent Start preparation, duplicate/cap limits and unrelated Stop. Held test tasks release in `finally`, so a failed assertion cannot deadlock cleanup.
+- The jobs control uses an accessible 44 px icon through 960 px, retaining its label on wider windows. Hosted coverage checks 768 px at 100%/150%, narrow/short popovers, all six header controls, clipping, Escape and focus recovery. Renderer teardown only classifies validated exact read-only jobs requests canceled after explicit cleanup separately; active-capture aborts remain failures with phase evidence.
+- Capture-phase evidence then identified the remaining abort: synthetic ten-second clock jumps could expire a jobs read after route fulfillment but before browser body completion. The harness now tracks requests through browser `requestfinished`/`requestfailed` and settles complete bodies plus paint before and after each clock jump. Pure regressions hold pre-/post-jump bodies and prove bounded settling and failure propagation. No additional abort exemptions, app changes or timing increases were made; a new frozen hosted run must confirm this harness correction.
 
-Final review corrected two further concrete issues. A cleared observation was
-incorrectly treated as successful download completion, including pending
-history and low-space pauses. Completion now requires an explicit verified
-receipt path; pending history waits, and low-space failures remain failures.
-Actual signed long-history and paused seed/resume regressions cover these
-outcomes. Continuation requirements also now preserve the original assigned
-server ID expected by the strict Friend decoder, reject a changed mapping
-after asynchronous reads, and repeat current authorization before returning
-data. In-memory transport/client regressions cover alias success, mapping
-changes, foreign identity and revoked access.
-The final solution build has zero warnings/errors and all five affected source
-groups pass, including actual transfer outcomes, exact-copy reuse, offline-owner
-forwarding and the strict requirements client. Logs are
-`local-data/shared-hosting-job-finalization-build.log` and
-`local-data/shared-hosting-job-finalization-focused.log`.
+The earlier LAN API sync refusal lacked its result code, so its original cause remains unconfirmed despite subsequent successful frozen runs. Future reports preserve the typed result, duration and bounded existing route/work observations; assertions remain unchanged. These reports contain fixed stages/codes/booleans, not private request bodies, credentials or world contents.
 
-The general runner also retained two assertions that assumed every Start used
-the serialized queue. Its FIFO/disposal checks now use serialized Restart/Stop
-actions; the separate source check proves independent Start preparation and
-unrelated Stop. Held test tasks are released in `finally`, so a failed assertion
-cannot deadlock the runner's cleanup. General/process acceptance runs only on
-the explicitly opted-in hosted runner. Whole-solution format verification and
-code-only compilation of the corrected general runner passed; no General
-runner entry point was invoked locally.
-
-The [third .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40766061721)
-built exact source `ce748bfadb6d134486d439be34cdf9e702b2d2c6`. Core remote
-controls, Rehearsal, all seven compatibility lanes, automatic shared hosting,
-server-access/hosting/sharing rendered review, packaging and all three pairing
-lab modes passed. Thus the earlier LAN sync refusal did not reproduce on this
-candidate; its discarded original result still prevents a root-cause claim.
-Desktop passed its independent native cases and remained blocked by Windows
-`QuietTime` for notification delivery/click. Browser reached a real tablet
-regression: at 768 px/150% text the new labeled jobs button pushed header
-controls 39 px past the viewport. The jobs control now uses its accessible
-icon layout through 960 px, with a viewport-bounded popover. Hosted coverage
-now opens/closes/checks that popover at 768 px/100% and 150%, alongside the
-existing narrow and short cases; 18 affected UI tests, types and lint pass.
-The final candidate must include this CSS correction. The first Existing
-runner was canceled at its timeout while the old serialized-Start assertion
-held its cleanup gate; it had passed all 1,685 initial UI tests beforehand.
-
-The [fourth .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40767721350)
-used `984a2555b0077a62fc35aa750bc1f5ca74d77c60` and completed with 17
-successful jobs. Browser now passes tablet/150% header bounds and the expanded
-jobs-popover matrix. Desktop retains the known notification block. Existing
-passed all 1,686 UI tests, 115 general checks, driver checks and early packaged
-journeys, then exposed a cache regression in the shared-world revocation case.
-The refusal shortcut hid the earlier completed version; it did not promote the
-pending save or discard committed partial bytes. Consent-off status now keeps
-historical completed metadata while remaining explicitly unconsented, without
-payload hashing, network work or waiting on the transfer gate. Explicit failed
-copy verification publishes an Error observation and removes the cached copy
-claim. Consent/material invalidation cannot revive that known failure from a
-signed manifest alone; successful verification or a new verified commit clears
-it. The packaged tamper check now asks for explicit verification before judging
-the passive cached response, preserving its refusal and independent-copy checks.
-
-The final solution rebuild passed with zero warnings/errors. Three focused
-groups pass, including a restarted signed fake-HTTP transfer paused after a
-committed chunk, owner withdrawal, unchanged pointer/receipt, retained partial
-data, cold status with an exclusively locked old payload, and explicit
-tamper/withdraw/reallow/repair transitions. Exact logs are
-`local-data/shared-hosting-revoked-history-final-build.log` and
-`local-data/shared-hosting-revoked-history-focused.log`. These changes await the
-next frozen-candidate hosted run; no interactive acceptance was run locally.
-
-Physical laptop/main-PC behavior, real network transfer timing, real-game
-joins/save-load/restart, rendered/native acceptance and a new frozen-candidate
-hosted run remain separate requirements. The screenshot is unresolved physical
-evidence until those PCs verify the new source; prior .23 passes do not accept
-these fixes.
-
+The candidate version is 0.3.3.24 and has not been published. Final prerelease readiness awaits the last frozen run above. Native notification delivery/click remains blocked by hosted Windows QuietTime; independent window/picker/draft cases passed. Physical laptop/main-PC behavior, real LAN/WAN timing, real-game joins/save-load/restart and save integrity remain unverified. The user's screenshot remains unresolved physical evidence until those PCs exercise this source; prior .23 passes do not accept these fixes. All interactive checks ran on explicitly opted-in hosted Windows runners, never the owner's desktop.
 ## 0.3.3.23 preview release
 
 [0.3.3.23 Preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.23)

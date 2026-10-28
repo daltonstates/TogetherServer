@@ -384,6 +384,23 @@ function expectedRendererCleanupAbort(cleaningUp, origin, failure) {
     return url.origin === origin && url.pathname === '/api/local/background-jobs' && !url.search && !url.hash;
   } catch { return false; }
 }
+function createSyntheticRequestTracker(pending, changed) {
+  const active = new WeakMap();
+  return {
+    begin(request, metadata) {
+      if (active.has(request)) return;
+      let complete;
+      const token = { ...metadata, done: new Promise(resolve => { complete = resolve; }) };
+      active.set(request, { token, complete });
+      pending.add(token); changed();
+    },
+    complete(request) {
+      const entry = active.get(request);
+      if (!entry) return;
+      active.delete(request); pending.delete(entry.token); changed(); entry.complete();
+    }
+  };
+}
 // networkidle may describe an earlier lifecycle event. Observe these exact
 // intercepted responses and a stable painted interval before judging capture.
 async function waitForSyntheticResponses(page, pending, revision, timeoutMs = 8000, now = () => performance.now()) {
@@ -1333,6 +1350,7 @@ try {
       const pending = new Set(), deliberatelyFailedURLs = new Set(), deliberatelyPendingURLs = new Set();
       const validatedPassiveReads = new WeakSet();
       let responseRevision = 0;
+      const browserRequests = createSyntheticRequestTracker(pending, () => { responseRevision++; });
       await context.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
         if (url.origin !== origin) {
@@ -1351,6 +1369,9 @@ try {
             record.apiRequests.push({ method: request.method(), path: `${url.pathname}${url.search}`, status: fixture?.status ?? 501 });
             if (fixture?.pending) {
               deliberatelyPendingURLs.add(request.url());
+              // Intentional loading fixtures remain unresolved by design. They
+              // are separately recorded and cannot hold the quiet coordinator.
+              browserRequests.complete(request);
               record.deliberateFailures.push({ kind: 'intentional-pending-request', method: request.method(), path: url.pathname,
                 evidence: 'Synthetic loading state; request deliberately remains unresolved until this isolated context closes.' });
               return;
@@ -1379,6 +1400,12 @@ try {
       await context.routeWebSocket('**/*', socket => { record.blockedNetwork.push({ url: socket.url(), reason: 'WebSocket forbidden' }); socket.close(); });
       const page = await context.newPage();
       page.setDefaultTimeout(8000);
+      page.on('request', request => {
+        const url = new URL(request.url());
+        if (url.origin === origin && url.pathname.startsWith('/api/local/'))
+          browserRequests.begin(request, { method: request.method(), path: `${url.pathname}${url.search}` });
+      });
+      page.on('requestfinished', request => browserRequests.complete(request));
       page.on('pageerror', error => record.jsErrors.push(error.message));
       page.on('console', message => {
         if (message.type() !== 'error') return;
@@ -1387,6 +1414,7 @@ try {
         else record.consoleErrors.push(entry);
       });
       page.on('requestfailed', request => {
+        browserRequests.complete(request);
         if (deliberatelyPendingURLs.has(request.url())) return;
         const failedUrl = new URL(request.url());
         const failure = { method: request.method(), path: `${failedUrl.pathname}${failedUrl.search}`, error: request.failure()?.errorText };
@@ -1499,7 +1527,8 @@ try {
         }
       }
       await setupPolishEvidence(page, testCase, variant, record);
-      await assertSimpleHostingUi(page, testCase, record, state);
+      await assertSimpleHostingUi(page, testCase, record, state,
+        () => waitForSyntheticResponses(page, pending, () => responseRevision));
       await assertServerAccessUi(page, testCase, record, state);
       await assertSharingDeliveryUi(page, testCase, record);
       record.screenBounds = await screen.boundingBox();
