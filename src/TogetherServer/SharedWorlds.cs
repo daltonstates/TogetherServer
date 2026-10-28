@@ -731,6 +731,33 @@ internal sealed partial class SharedWorldService
             }
     }
 
+    // A reviewed replacement source keeps the previous group's signed pointer
+    // until its first completed publication. Pristine is scoped to the exact
+    // currently bound group, never to the whole profile's retained history.
+    internal bool HasNoPublishedSaveForRoot(ServerProfile profile, SharedWorldPeerRoot root)
+    {
+        lock (sync)
+        {
+            var binding = ReadBinding(profile.Id);
+            var roster = ReadRoster(profile, requireRetainedSigningKey: true);
+            if (!profile.SharedSavesEnabled || profile.Id != root.ProfileId || binding is null ||
+                binding.GroupId != root.GroupId || !BindingMatches(binding, profile) ||
+                roster?.GroupId != root.GroupId || roster.ProfileId != root.ProfileId ||
+                roster.OwnerPublicKey != root.OwnerPublicKey || Authority.HasState(profile.Id)) return false;
+            var group = Path.Combine(Root(profile.Id), root.GroupId.ToString("N"));
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, group);
+            if (Path.Exists(group)) return false;
+            var pointer = LatestPath(profile.Id);
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, pointer);
+            if (!Path.Exists(pointer))
+            {
+                var status = Status(profile);
+                return status.Latest is null && status.Error is null;
+            }
+            return File.Exists(pointer) && VerifiedPreviousGroupPointer(profile, binding);
+        }
+    }
+
     private bool VerifiedPreviousGroupPointer(ServerProfile profile, SourceBinding binding)
     {
         var path = LatestPath(profile.Id);

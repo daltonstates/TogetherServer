@@ -41,12 +41,7 @@ internal sealed partial class WorldPeerService
             if (selected is null)
             {
                 phase = "OriginalPristineCheck";
-                var published = await manager.SharedWorldStatusAsync(root.ProfileId).WaitAsync(cancellationToken);
-                var publication = Path.Combine(data.RootPath, "shared-worlds", root.ProfileId.ToString("N"));
-                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, publication);
-                if (published.Latest is not null || published.Error is not null ||
-                    Path.Exists(Path.Combine(publication, "latest.json")) ||
-                    Path.Exists(Path.Combine(publication, root.GroupId.ToString("N"))))
+                if (!manager.PeerHasNoPublishedSave(root))
                     throw new InvalidDataException("The absent original publication is ambiguous or needs review.");
                 if (!await RecoveryAllowedAsync(group, cancellationToken) || LatestObservationHash(root) != observation)
                     return new(false, "LatestSaveChanged", "Signed save information or permission changed. Check the current save before Start.");
@@ -81,7 +76,7 @@ internal sealed partial class WorldPeerService
                 if (current is null || current.Root != root || !await RecoveryAllowedAsync(current, cancellationToken))
                     return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
                 var published = await manager.SharedWorldStatusAsync(root.ProfileId).WaitAsync(cancellationToken);
-                if (published.Error is not null)
+                if (published.Error is not null && !manager.PeerHasNoPublishedSave(root))
                     throw new InvalidDataException("The current original publication needs review before catch-up.");
                 return new(true, "SharedSaveCopyPending", KnownProgressPendingMessage, RecoveryRequired: true);
             }

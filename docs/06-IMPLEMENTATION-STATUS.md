@@ -110,6 +110,26 @@ cleanup, so a failed assertion cannot bypass cleanup and cause later file-lock
 cascades. Native verification remains hosted. Both earlier .21 packages are
 withheld; no .21 release, tag or installation exists at this checkpoint.
 
+The `8539a13c401a20918b041bc4c2621918a62ccbe8`
+[run](https://github.com/daltonstates/TogetherServer/actions/runs/40620498133)
+passes all 94 source groups, eight API journeys, 1,597 UI tests, both ordinary
+nine-stage hosting journeys without diagnostic replacement, pairing and all 12
+Minecraft groups. Its broader lane then exposes an overbroad pristine check:
+after an explicit owner-reviewed source change signs a new group, the retained
+old-group pointer makes the new group's first Start return
+`SharedSaveHistoryNeedsReview`. This candidate is also withheld.
+
+The correction scopes unpublished-source proof to the exact current binding and
+signed roster. It reuses the publication path's existing previous-group pointer
+verifier, fences the durable profile before/after the read, and requires absent
+current-group metadata. A healthy retained old group can coexist with a
+legitimate first Start of the explicitly reviewed new source; malformed or
+unpointed current-group publication state and known-progress refusals remain
+protected. A generated regression retains old manifest/payload/roster bytes,
+performs the explicit source review and verifies new-group publication 1 without
+touching those old files. Strict compilation passes with zero warnings/errors;
+focused verification and final-source hosted CI remain pending.
+
 ### Separate physical .20 observations
 
 These are read-only observations of the running .20 app, not .21 acceptance.

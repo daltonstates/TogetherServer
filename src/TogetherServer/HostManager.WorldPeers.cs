@@ -56,6 +56,18 @@ public sealed partial class HostManager
         string? versionHash = null, long? number = null) =>
         Task.FromResult(PeerPublishedVersion(root, versionHash, number));
 
+    internal bool PeerHasNoPublishedSave(SharedWorldPeerRoot root)
+    {
+        lock (SharedWorldMutationGate.For(data.RootPath))
+        {
+            var profile = DurablePeerProfile(root.ProfileId);
+            if (profile is null || !sharedWorlds.HasNoPublishedSaveForRoot(profile, root)) return false;
+            var current = DurablePeerProfile(root.ProfileId);
+            return current is not null && SamePeerSource(profile, current) &&
+                sharedWorlds.HasNoPublishedSaveForRoot(current, root);
+        }
+    }
+
     // The same fenced read is also needed by an exact-copy receipt commit,
     // which already holds the membership mutation monitor and cannot await.
     internal SharedWorldVersion? PeerPublishedVersion(SharedWorldPeerRoot root,

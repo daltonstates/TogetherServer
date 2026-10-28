@@ -15,6 +15,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         await LocalAdvertisementIdentityChecksAsync(parent);
         await ReturningOwnerMissingCopyChecksAsync(parent);
         await OriginalNoPublicationFallbackChecksAsync(parent);
+        await ReviewedOriginalSourceRotationChecksAsync(parent);
         await OriginalPendingSelectionCompletenessChecksAsync();
         await OriginalPendingAnchoredSelectionChecksAsync(parent);
         await OriginalDiscoveryBudgetDiagnosticAsync(parent);
@@ -271,6 +272,61 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             fixture.RequireNoCopyOrTransfer();
         }
         finally { gate.Release(); }
+    }
+
+    private static async Task ReviewedOriginalSourceRotationChecksAsync(string parent)
+    {
+        using var data = new LocalData(Path.Combine(parent, "reviewed-original-source-" + Guid.NewGuid().ToString("N")));
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        data.SaveProtected("shared-world-signing-key.protected", key.ExportPkcs8PrivateKey());
+        var profile = new ServerProfile
+        {
+            Kind = GameKinds.Fixture,
+            SharedSavesEnabled = true,
+            WorldId = "ReviewedSameWorldId",
+            WorldDirectory = Path.Combine(data.RootPath, "original-world"),
+            ExecutablePath = Path.Combine(data.RootPath, "never-executed-reviewed-source.synthetic")
+        };
+        File.WriteAllText(profile.ExecutablePath, "Generated refusing driver only; never execute.");
+        data.SaveSettings(new() { Profiles = [profile] });
+        var oldCapture = new OriginalFilesCapture(data.RootPath, profile, 3);
+        var publisher = new SharedWorldService(data, oldCapture);
+        var oldRoster = publisher.PublishRoster(profile, []);
+        var oldPublication = publisher.PublishAfterStop(profile, Guid.NewGuid()).Version ??
+            throw new InvalidOperationException("The generated old source did not publish.");
+        var oldDirectory = Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), oldRoster.GroupId.ToString("N"), "1");
+        var oldManifest = File.ReadAllBytes(Path.Combine(oldDirectory, "version.json"));
+        var oldPayload = File.ReadAllBytes(Path.Combine(oldDirectory, SharedWorldService.PayloadDirectory, "world.dat"));
+        profile.WorldDirectory = Path.Combine(data.RootPath, "reviewed-replacement-world");
+        _ = new OriginalFilesCapture(data.RootPath, profile, 3);
+        data.SaveSettings(new() { Profiles = [profile] });
+        var reviewed = publisher.PublishRoster(profile, [], reviewSourceChange: true);
+        var root = new SharedWorldPeerRoot(reviewed.OwnerPublicKey, profile.Id, reviewed.GroupId);
+        Require(root.GroupId != oldPublication.GroupId && publisher.Status(profile) is { Latest: null, Error: not null },
+            "The reviewed source fixture did not retain the healthy old-group pointer across the new binding.");
+        HttpClient NoNetwork(string _, IEnumerable<string> __) => throw new InvalidOperationException("Reviewed source classification must use local signed metadata only.");
+        using var friends = new FriendService(data, NoNetwork);
+        var driver = new OriginalStartDriver();
+        var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
+        using var peers = new WorldPeerService(data, manager, friends, new PairingService(data), NoNetwork);
+        Require((await peers.EnsureOwnerHostingMembershipAsync(root, default)).Ok,
+            "The explicit reviewed source could not register its current signed root.");
+        var pristine = await peers.ResolveLatestOriginalStartSourceAsync(root, default);
+        Require(pristine is { Code: "NoPublishedSave", Source: null, RecoveryRequired: false },
+            "A healthy previous group's pointer blocked the explicitly reviewed pristine current source: " + pristine.Code);
+        var owner = new SimpleOwnerHostingService(data, manager, peers,
+            () => throw new InvalidOperationException("Reviewed source Start must not enable a listener."));
+        var started = await owner.StartAsync(profile.Id, default);
+        Require(started.Code == "OriginalSourceVerified" && driver.ValidationAttempts == 1 && driver.PrepareAttempts == 0 && driver.StartAttempts == 0,
+            "The reviewed source did not reach only its deliberately refusing local driver: " + started.Code);
+        var current = publisher.PublishAfterStop(profile, Guid.NewGuid());
+        Require(current is { Ok: true, Version.Number: 1 } && current.Version.GroupId == root.GroupId &&
+            current.Version.WorldId == oldPublication.WorldId && SharedWorldService.VerifySignature(current.Version) &&
+            File.ReadAllBytes(Path.Combine(oldDirectory, "version.json")).SequenceEqual(oldManifest) &&
+            File.ReadAllBytes(Path.Combine(oldDirectory, SharedWorldService.PayloadDirectory, "world.dat")).SequenceEqual(oldPayload) &&
+            File.Exists(Path.Combine(data.RootPath, "shared-worlds", profile.Id.ToString("N"), oldRoster.GroupId.ToString("N") + ".roster.json")) &&
+            data.LoadRuns().Count == 0 && data.LoadSettings().Profiles.Count == 1 && !data.LoadSettings().CompanionListeningEnabled,
+            "New-group publication did not restart numbering or changed the retained old source/setup/lifecycle.");
     }
 
     private static async Task OriginalPendingAnchoredSelectionChecksAsync(string parent)
