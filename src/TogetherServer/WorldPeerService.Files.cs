@@ -33,6 +33,9 @@ internal sealed partial class WorldPeerService
     // built. It supplies no path/proof and cannot authorize serving a chunk.
     internal Action? LocalSaveInventoryForChecks { get; set; }
     internal Action? ChunkPayloadReadForChecks { get; set; }
+    internal Func<long>? ReceiveFreeBytesForChecks { get; set; }
+    private long ReceiveFreeBytes(string vault) => ReceiveFreeBytesForChecks?.Invoke() ??
+        new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace;
 
     private WorldPeerVerifiedCopy VerifyReceiptPayload(string vault, SharedWorldVersion version,
         CancellationToken cancellationToken) => VerifyReceiptPayloadDirectory(
@@ -569,12 +572,14 @@ internal sealed partial class WorldPeerService
         if (!await StagePeerHistoryAsync(group, route, descriptor, vault, cancellationToken))
         {
             if (transferAttempt.Value is { } pending) pending.PendingPayload = true;
+            SharedSaveTransferProgress.Pending(data, group.Root, version.VersionHash, "SharedHistoryPending",
+                "Signed save history is still being checked. No completed copy or receipt has been confirmed; the next background pass can continue.");
             SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
             return;
         }
         if (descriptor.Branch is not null && !WorldPeerFileTransfer.KnownDescendant(vault, existing, version))
             throw new InvalidDataException("The peer branch does not extend the completed local branch; both signed histories were kept.");
-        if (new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace < total * 2 + 1024L * 1024 * 1024)
+        if (ReceiveFreeBytes(vault) < total * 2 + 1024L * 1024 * 1024)
             throw new IOException("The peer copy needs space for complete verification and the disk reserve.");
         var stage = SharedWorldService.SafeChild(vault, ".partial-" + version.VersionHash);
         Directory.CreateDirectory(stage);
@@ -638,7 +643,7 @@ internal sealed partial class WorldPeerService
         SharedSaveTransferProgress.Report(data, group.Root, version, "Receipt", total, total);
         if (receipt is not null)
             await DeliverReceiptAsync(group, route, receipt, JsonSerializer.SerializeToUtf8Bytes(receipt, Json), cancellationToken);
-        SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
+        SharedSaveTransferProgress.Complete(data, group.Root, version.VersionHash);
     }
 
     // Pull and outbound-only seeding use the same full-payload verification,

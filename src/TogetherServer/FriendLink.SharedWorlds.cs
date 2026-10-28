@@ -2319,6 +2319,7 @@ internal sealed partial class FriendLink
                     CompletedUtc: ReceivedSharedWorldProjection.CompletedUtc(old),
                     ReceivedUtc: observation?.ReceivedUtc, TransferPhase: "Receipt",
                     ReceiptConfirmed: observation?.HostConfirmed));
+                if (transferRoot is not null) SharedSaveTransferProgress.Report(data, transferRoot, old, "Receipt", verifiedBytes, verifiedBytes);
                 var alreadyConfirmed = await SendSharedReceiptAsync(profileId, old, deviceId,
                     transferClient, transferToken, verifiedInThisTransfer: true);
                 transferCompleted = true;
@@ -2547,7 +2548,8 @@ internal sealed partial class FriendLink
             {
                 if (!transferCompleted) SharedSaveTransferProgress.Fail(data, transferRoot, transferHash,
                     "TransferIncomplete", "The save transfer did not finish verification or receipt processing. Existing verified saves were kept; a later check may retry.");
-                SharedSaveTransferProgress.Clear(data, transferRoot, transferHash);
+                if (transferCompleted) SharedSaveTransferProgress.Complete(data, transferRoot, transferHash);
+                else SharedSaveTransferProgress.Clear(data, transferRoot, transferHash);
             }
             transferActivity?.Dispose();
             if (entered) gate.Release();

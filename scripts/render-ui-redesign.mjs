@@ -376,6 +376,14 @@ function locatorFor(page, screen) {
   return screen.css ? page.locator(screen.css).filter({ hasText: screen.text }) : page.getByRole(screen.role, { name: screen.name, exact: typeof screen.name === 'string' });
 }
 async function visible(locator) { await locator.first().waitFor({ state: 'visible', timeout: 8000 }); return locator.first(); }
+function expectedRendererCleanupAbort(cleaningUp, origin, failure) {
+  if (!cleaningUp || failure.method !== 'GET' || failure.resourceType !== 'fetch' ||
+      failure.error !== 'net::ERR_ABORTED' || failure.validatedFixture !== true || failure.bodyBytes !== 0) return false;
+  try {
+    const url = new URL(failure.url);
+    return url.origin === origin && url.pathname === '/api/local/background-jobs' && !url.search && !url.hash;
+  } catch { return false; }
+}
 // networkidle may describe an earlier lifecycle event. Observe these exact
 // intercepted responses and a stable painted interval before judging capture.
 async function waitForSyntheticResponses(page, pending, revision, timeoutMs = 8000, now = () => performance.now()) {
@@ -1310,9 +1318,10 @@ try {
     const record = { id: `${testCase.id}--${variant.id}`, scenario: testCase.scenario, workspace: testCase.workspace,
       viewport: variant.viewport, theme: variant.theme, scale: variant.scale, density: variant.density ?? 'comfortable', status: 'running',
       actions: [], assertions: [], skippedSelectors: [], failedSelectors: [], jsErrors: [], consoleErrors: [],
-      unhandledFixtures: [], deliberateFailures: [], blockedNetwork: [], failedRequests: [], httpFailures: [], layoutFindings: [], screenshots: [], apiRequests: [] };
+      unhandledFixtures: [], deliberateFailures: [], cleanupCancellations: [], blockedNetwork: [], failedRequests: [], httpFailures: [], layoutFindings: [], screenshots: [], apiRequests: [] };
     manifest.cases.push(record);
     let context;
+    let cleaningUp = false;
     try {
       const state = createFixtureState({ id: testCase.scenario, ...testCase.fixture });
       applySharingDeliveryFixture(state, testCase, fixtureNow);
@@ -1322,6 +1331,7 @@ try {
       }
       context = await browser.newContext({ viewport: variant.viewport, colorScheme: variant.theme, deviceScaleFactor: 1, serviceWorkers: 'block', acceptDownloads: false, locale: 'en-US', timezoneId: 'UTC', reducedMotion: variant.reducedMotion ?? 'reduce' });
       const pending = new Set(), deliberatelyFailedURLs = new Set(), deliberatelyPendingURLs = new Set();
+      const validatedPassiveReads = new WeakSet();
       let responseRevision = 0;
       await context.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
@@ -1350,6 +1360,11 @@ try {
               await route.fulfill({ status: 501, json: { code: 'UnhandledVisualFixture', message: 'No synthetic fixture for this route; no application call made.' } });
             } else {
               if (fixture.deliberateFailure) { deliberatelyFailedURLs.add(request.url()); record.deliberateFailures.push({ method: request.method(), path: `${url.pathname}${url.search}`, status: fixture.status, reason: fixture.deliberateFailure, evidence: 'Intentional synthetic error state; no success claim for this API surface.' }); }
+              if (request.method() === 'GET' && request.resourceType() === 'fetch' &&
+                  request.headers()['x-togetherserver-local'] === '1' && !url.search &&
+                  url.pathname === '/api/local/background-jobs' && fixture.status === 200 &&
+                  Array.isArray(fixture.body?.jobs) && fixture.body.jobs.length === 0 && fixture.body.activeCount === 0)
+                validatedPassiveReads.add(request);
               await route.fulfill({ status: fixture.status, json: fixture.body });
             }
           } catch (error) {
@@ -1375,6 +1390,13 @@ try {
         if (deliberatelyPendingURLs.has(request.url())) return;
         const failedUrl = new URL(request.url());
         const failure = { method: request.method(), path: `${failedUrl.pathname}${failedUrl.search}`, error: request.failure()?.errorText };
+        if (expectedRendererCleanupAbort(cleaningUp, origin, { ...failure, url: request.url(),
+          resourceType: request.resourceType(), bodyBytes: request.postDataBuffer()?.length ?? 0,
+          validatedFixture: validatedPassiveReads.has(request) })) {
+          record.cleanupCancellations.push({ kind: 'context-cleanup-passive-read-abort', ...failure,
+            evidence: 'The isolated context closed after capture and canceled its validated read-only jobs observation.' });
+          return;
+        }
         // The clock-driven abort can precede route interception. Recognize
         // only the exact passive GET belonging to the validated pending Start.
         if (expectedFixtureRequestAbort(state, failure)) {
@@ -1382,7 +1404,7 @@ try {
             evidence: 'Synthetic pending Start: the UI canceled its passive progress read during the bounded timeout; no mutation was replayed.' });
           return;
         }
-        record.failedRequests.push({ url: request.url(), error: failure.error });
+        record.failedRequests.push({ url: request.url(), error: failure.error, phase: cleaningUp ? 'cleanup' : 'capture' });
       });
       page.on('response', response => {
         if (response.status() >= 400 && !deliberatelyFailedURLs.has(response.url())) record.httpFailures.push({ url: response.url(), status: response.status() });
@@ -1573,6 +1595,7 @@ try {
       }
     } finally {
       if (context) {
+        cleaningUp = true;
         try { await context.close(); }
         catch (error) { record.status = 'failed'; record.cleanupError = error.message; }
       }

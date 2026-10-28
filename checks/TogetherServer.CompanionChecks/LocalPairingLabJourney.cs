@@ -16,7 +16,8 @@ internal static partial class CoreRemoteJourney
         string? Code = null, string? ExceptionType = null, string? InnerExceptionType = null, bool HttpClientTimeout = false,
         int? HttpStatus = null, string? HttpContentKind = null, string? JsonExceptionCategory = null,
         string? JsonPath = null, PairingLabReceivingObservation? Receiving = null,
-        PairingLabMembershipObservation? Membership = null, LocalPairingLabHostingObservation? Hosting = null);
+        PairingLabMembershipObservation? Membership = null, LocalPairingLabHostingObservation? Hosting = null,
+        LocalPairingLabPeerSyncObservation? PeerSync = null);
     private sealed record PairingLabReceivingObservation(int PcOrdinal, int PollCount, bool? Consented,
         string StateCode, string ErrorCode, long? HostVersion, long? ThisPcVersion, long? RosterRevision);
     private sealed record PairingLabMembershipObservation(int PcOrdinal, int PollCount, bool GroupPresent,
@@ -367,7 +368,7 @@ internal static partial class CoreRemoteJourney
                             pc.Ordinal, membershipClock, membershipOperations);
                         if (lanAddress is null)
                             await ExpectLoopbackPeerSyncInconclusiveAsync(pc.Client, pc.Id == deviceA ? "LoopbackFriendA" : "LoopbackFriendB");
-                        else await SyncPeersAsync(pc.Client);
+                        else await SyncPeersAsync(pc.Client, pc.Id == deviceA ? "LanFriendA" : "LanFriendB");
                         var enrolledRoster = await PairingLabGetAsync<SharedWorldRoster>(owner,
                             $"/api/local/profiles/{profile.Id}/shared-world/governance");
                         LabRequire(SharedWorldRosterTrust.Verify(enrolledRoster) && enrolledRoster.Members.Any(member =>
@@ -1264,7 +1265,7 @@ internal static partial class CoreRemoteJourney
             LabRequire(!result.Ok && result.Code == "WorldPeerSyncInconclusive", "LoopbackPeerSyncDidNotStayInconclusive");
         }
 
-        async Task SyncPeersAsync(HttpClient client)
+        async Task SyncPeersAsync(HttpClient client, string? membershipId = null)
         {
             LabRequire(groupKey is not null, "SignedWorldRootMissing");
             // Peer synchronization has its own reviewed 45-second transport
@@ -1272,7 +1273,37 @@ internal static partial class CoreRemoteJourney
             // a real multi-peer copy plus its signed receipt and queued sync.
             using var syncClient = LocalClient(client.BaseAddress!.Port);
             syncClient.Timeout = TimeSpan.FromSeconds(65);
-            var result = await PostAsync<object, WorldPeerActionResult>(syncClient, $"/api/local/world-peers/{groupKey}/sync", new { });
+            var result = membershipId is null
+                ? await PostAsync<object, WorldPeerActionResult>(syncClient, $"/api/local/world-peers/{groupKey}/sync", new { })
+                : await ObserveLabOperationAsync("Membership", membershipId, membershipClock, membershipOperations,
+                    (long)syncClient.Timeout.TotalMilliseconds, () => PostAsync<object, WorldPeerActionResult>(syncClient,
+                        $"/api/local/world-peers/{groupKey}/sync", new { }));
+            if (membershipId is not null && (!result.Ok || result.Code != "WorldPeersChecked"))
+            {
+                // Extra reads diagnose the already returned failure. They do
+                // not sync, enroll, change consent or turn an inconclusive
+                // request into a successful acceptance result.
+                WorldPeerGroupView? observed = null;
+                HostingMembershipDiagnostic? registration = null;
+                using var bounded = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                try
+                {
+                    var groupsRead = ReadMembershipDiagnosticAsync<WorldPeerGroupView[]>(client, "/api/local/world-peers", bounded.Token);
+                    var workRead = ReadMembershipDiagnosticAsync<HostingWorkSnapshot>(client, "/api/local/world-peers/work", bounded.Token);
+                    await Task.WhenAll(groupsRead, workRead);
+                    observed = groupsRead.Result?.SingleOrDefault(item => item.GroupKey == groupKey && item.ProfileId == profile.Id);
+                    registration = workRead.Result?.Membership;
+                }
+                catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or IOException or InvalidDataException)
+                { /* Missing diagnostics never replace the original failure. */ }
+                var evidence = LocalPairingLabEvidence.PeerSync(observed, registration);
+                lock (membershipOperations)
+                {
+                    var index = membershipOperations.FindLastIndex(item => item.Id == membershipId && item.State == "Returned");
+                    if (index >= 0) membershipOperations[index] = membershipOperations[index] with { PeerSync = evidence };
+                }
+                Console.WriteLine("LOCAL_PAIRING_MEMBERSHIP_SYNC_OBSERVATION " + JsonSerializer.Serialize(evidence, Json));
+            }
             LabRequire(result.Ok && result.Code == "WorldPeersChecked", "PeerSyncRequestRejected");
         }
 

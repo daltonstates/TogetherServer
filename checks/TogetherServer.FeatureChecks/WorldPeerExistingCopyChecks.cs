@@ -442,20 +442,24 @@ internal static class WorldPeerExistingCopyChecks
                 .Invoke(Sender, [Group(Sender), TargetRoute, new[] { descriptor }, token, null])!;
         internal string IncomingDirectory => Path.Combine(DuplicateVault, descriptor.Version.VersionHash);
         internal string IncomingStage => Path.Combine(DuplicateVault, ".partial-" + descriptor.Version.VersionHash, SharedWorldService.PayloadDirectory);
-        internal void PrepareChangedForwardedSave()
+        internal void PrepareChangedForwardedSave(int descendants = 1)
         {
             var branch = descriptor.Branch ?? throw new InvalidOperationException("A forwarded successor branch is required.");
             var bytes = RandomNumberGenerator.GetBytes(SharedWorldService.ChunkBytes + 29);
             using var hosting = ECDsa.Create();
             hosting.ImportPkcs8PrivateKey(B.LoadProtected(WorldAuthorityStore.HostingKeyName(Root.ProfileId))!, out _);
-            var next = SharedWorldService.SignVersion(descriptor.Version with
+            var next = descriptor.Version;
+            for (var index = 0; index < descendants; index++)
             {
-                Number = descriptor.Version.Number + 1,
-                ParentHash = descriptor.Version.VersionHash,
-                BackupId = Guid.NewGuid(),
-                Files = [Fact(bytes)]
-            }, hosting);
-            WriteCopy(new SharedWorldSeparateCopyStore(B).PublishedRoot(branch), next, bytes);
+                next = SharedWorldService.SignVersion(next with
+                {
+                    Number = next.Number + 1,
+                    ParentHash = next.VersionHash,
+                    BackupId = Guid.NewGuid(),
+                    Files = [Fact(bytes)]
+                }, hosting);
+                WriteCopy(new SharedWorldSeparateCopyStore(B).PublishedRoot(branch), next, bytes);
+            }
             descriptor = new(next, branch);
         }
         internal WorldPeerSaveDescriptor PrepareMatchingPublication(bool caseOnlyPath = false, bool forceLargeChanged = false)

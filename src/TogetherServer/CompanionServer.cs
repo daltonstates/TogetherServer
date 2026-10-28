@@ -1181,8 +1181,9 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             if (context.Request.QueryString.HasValue ||
                 context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>()?.CanHaveBody == true)
                 return Results.BadRequest(new { code = "InvalidRequirementsRequest", message = "Choose only an assigned saved server." });
-            var targetId = manager.CompanionProfileId(await manager.CompanionSnapshotAsync(), profileId);
-            var result = await manager.GameRequirementsAsync(targetId, context.RequestAborted);
+            var result = await CompanionGameRequirements.ReadAsync(profileId,
+                async _ => manager.CompanionProfileId(await manager.CompanionSnapshotAsync(), profileId),
+                manager.GameRequirementsAsync, context.RequestAborted);
             decision = pairing.AuthorizeGameRequirements(current.Id, profileId, out _);
             if (!decision.Ok)
                 return Results.Json(decision, statusCode: decision.Code == "PermissionDenied" ? 403 : AuthenticationStatus(decision));

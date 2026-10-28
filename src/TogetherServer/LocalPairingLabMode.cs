@@ -187,20 +187,6 @@ internal sealed class LocalPairingLabMode
 
     internal GameServerRegistry Registry() => new([new LabFixtureDriver(this)], PortProbeMode.LoopbackOnly);
 
-    // An absent UDP listener is not proof that Windows permits an exclusive
-    // bind (excluded/reserved ports can still refuse it). The unattended lab
-    // selects only inputs passing the same probe used by its actual app driver.
-    // The injected probe lets source checks exercise this without opening sockets.
-    internal static int SelectFixtureUdpPair(IEnumerable<int> candidates, IEnumerable<int> observedPorts,
-        Func<int, bool> canBindPair)
-    {
-        var observed = observedPorts.ToHashSet();
-        foreach (var candidate in candidates.Take(200))
-            if (candidate is >= 1024 and < 65535 && !observed.Contains(candidate) &&
-                !observed.Contains(candidate + 1) && canBindPair(candidate)) return candidate;
-        throw new InvalidOperationException("No unused bindable UDP pair was available for the disposable fixture.");
-    }
-
     internal static HttpClient OfflineClient(TimeSpan timeout) => new(new OfflineHandler()) { Timeout = timeout };
     internal static HttpMessageHandler GuardLoopback(HttpMessageHandler inner) => LocalPairingLabNetwork.Resolve(null).GuardClient(inner);
     private sealed class OfflineHandler : HttpMessageHandler

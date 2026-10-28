@@ -103,7 +103,7 @@ internal static class SharedSaveCompressionChecks
             Require(SharedSaveTransferProgress.Read(data, other) is null,
                 "Transfer progress leaked into a different pinned world.");
         }
-        SharedSaveTransferProgress.Clear(data, group, version.VersionHash);
+        SharedSaveTransferProgress.Complete(data, group, version.VersionHash);
         Require(SharedSaveTransferProgress.Read(data, group) is { } finishing && SharedSaveTransferProgress.BlocksHosting(finishing),
             "Completion removed an operation that still holds its transfer lease.");
         using var overlapping = SharedSaveTransferProgress.Begin(data, group, version.VersionHash);
@@ -112,5 +112,7 @@ internal static class SharedSaveCompressionChecks
             "Completing one flight removed another flight's active verification.");
         overlapping.Dispose();
         Require(SharedSaveTransferProgress.Read(data, group) is null, "Completed transfer progress remained active.");
+        Require(BackgroundJobs.For(data).Read().Jobs is [{ State: "Succeeded", ResultCode: "SaveReceived" }],
+            "Explicit completion did not finalize its coalesced job after every transfer lease ended.");
     }
 }

@@ -207,6 +207,13 @@ internal sealed partial class WorldPeerService
             seed.Chunk is null && (request.FileIndex is not null || request.ChunkOffset is not null))
             throw new InvalidDataException("The offered peer save is not an authorized fixed copy.");
         var version = descriptor.Version;
+        WorldPeerSeedResponse PendingHistory(WorldPeerSeedResponse response)
+        {
+            SharedSaveTransferProgress.Pending(data, group.Root, version.VersionHash, response.Code,
+                "Signed save history needs another bounded check before payload completion or receipt confirmation. Background work may continue it.");
+            SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
+            return response;
+        }
         if (!await ReceiveAllowedAsync(group, cancellationToken)) return new("SeedPaused", version.VersionHash);
         lock (stateSync)
             if (worldExchangeGates.TryGetValue(group.Root.GroupKey, out var preparation) && preparation.Preparations > 0)
@@ -233,14 +240,26 @@ internal sealed partial class WorldPeerService
                 WorldPeerFileTransfer.KnownDescendant(vault, version, existing))
             {
                 using var verified = VerifyReceiptPayload(vault, existing!, cancellationToken);
-                SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
-                return new("SeedKnown", version.VersionHash, Receipt: existing.VersionHash == version.VersionHash
-                    ? await RetainedReceiptForVerifiedCopyAsync(group, descriptor, vault, verified, cancellationToken) : null);
+                var receipt = existing.VersionHash == version.VersionHash
+                    ? await RetainedReceiptForVerifiedCopyAsync(group, descriptor, vault, verified, cancellationToken) : null;
+                if (existing.VersionHash == version.VersionHash)
+                {
+                    var verifiedBytes = SharedWorldService.BoundedTotalBytes(version.Files);
+                    SharedSaveTransferProgress.Report(data, group.Root, version, "Receipt", verifiedBytes, verifiedBytes);
+                    SharedSaveTransferProgress.Complete(data, group.Root, version.VersionHash);
+                }
+                else
+                {
+                    SharedSaveTransferProgress.Pending(data, group.Root, version.VersionHash, "NewerLocalCopyAvailable",
+                        "This PC already has a verified newer descendant. The older offered copy was not downloaded or acknowledged.");
+                    SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
+                }
+                return new("SeedKnown", version.VersionHash, Receipt: receipt);
             }
             var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
             var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
             var pending = await StageSeedHistoryAsync(group, descriptor, seed.Manifest, vault, anchor, cancellationToken);
-            if (pending is not null) return pending;
+            if (pending is not null) return PendingHistory(pending);
             if (existing is not null && !WorldPeerFileTransfer.KnownDescendant(vault, existing, version))
             {
                 // A fork is retained in its own exact-hash vault. It cannot
@@ -254,12 +273,15 @@ internal sealed partial class WorldPeerService
                     if (ReadPeerPointer(retained)?.VersionHash == version.VersionHash)
                     {
                         using var verified = VerifyReceiptPayload(retained, version, cancellationToken);
-                        SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
-                        return new("SeedKnown", version.VersionHash,
-                            Receipt: await RetainedReceiptForVerifiedCopyAsync(group, descriptor, retained, verified, cancellationToken));
+                        var receipt = await RetainedReceiptForVerifiedCopyAsync(group, descriptor, retained, verified, cancellationToken);
+                        var verifiedBytes = SharedWorldService.BoundedTotalBytes(version.Files);
+                        SharedSaveTransferProgress.Report(data, group.Root, version, "Receipt", verifiedBytes, verifiedBytes);
+                        SharedSaveTransferProgress.Complete(data, group.Root, version.VersionHash);
+                        return new("SeedKnown", version.VersionHash, Receipt: receipt);
                     }
                     pending = await StageSeedHistoryAsync(group, descriptor, seed.Manifest, retained, anchor, cancellationToken);
-                    return pending ?? await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken, localCopies);
+                    return pending is not null ? PendingHistory(pending) :
+                        await AcceptSeedPayloadAsync(group, request, seed, retained, anchor, cancellationToken, localCopies);
                 }
                 finally { retainedGate.Release(); }
             }
@@ -305,8 +327,10 @@ internal sealed partial class WorldPeerService
         var descriptor = seed.Descriptor;
         var version = descriptor.Version;
         var total = SharedWorldService.BoundedTotalBytes(version.Files);
-        if (new DriveInfo(Path.GetPathRoot(vault)!).AvailableFreeSpace < total * 2 + 1024L * 1024 * 1024)
+        if (ReceiveFreeBytes(vault) < total * 2 + 1024L * 1024 * 1024)
         {
+            SharedSaveTransferProgress.Fail(data, group.Root, version.VersionHash, "InsufficientSpace",
+                "This PC needs space for the completed save, verification and disk reserve. No completed copy or receipt was confirmed.");
             SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
             return new("SeedPaused", version.VersionHash);
         }
@@ -350,6 +374,8 @@ internal sealed partial class WorldPeerService
                     throw new InvalidDataException("The seeded save chunk has the wrong length.");
                 if (!SeedSenderAllowed(group, request) || !await ReceiveAllowedAsync(group, cancellationToken))
                 {
+                    SharedSaveTransferProgress.Pending(data, group.Root, version.VersionHash, "SeedPaused",
+                        "Receiving or forwarding permission changed. The save is paused; no completed copy or receipt was confirmed.");
                     SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
                     return new("SeedPaused", version.VersionHash);
                 }
@@ -363,7 +389,7 @@ internal sealed partial class WorldPeerService
         SharedSaveTransferProgress.Report(data, group.Root, version, "Verifying", total, total);
         var receipt = await CompletePeerSaveAsync(group, descriptor, vault, stage, anchor, cancellationToken,
             () => SeedSenderAllowed(group, request));
-        SharedSaveTransferProgress.Clear(data, group.Root, version.VersionHash);
+        SharedSaveTransferProgress.Complete(data, group.Root, version.VersionHash);
         return new("SeedComplete", version.VersionHash, Receipt: receipt);
     }
 

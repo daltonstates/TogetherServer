@@ -83,7 +83,8 @@ Local validation so far uses .NET 10.0.301 and SHA-256-verified Node 24.14.1:
 - All 1,685 initial UI tests passed across 113 files in serial partitions: 120
   shell tests and 1,565 other tests. The added jobs Escape/focus regression and
   both affected suites then passed (61 tests), bringing the total to 1,686.
-  The 64 pure renderer/fixture checks passed.
+  The 65 pure renderer/fixture checks passed, including the added teardown
+  cancellation boundary test.
   Earlier integrated runs exposed stale large-banner assertions and async
   shell-test waits; the final tests await the actual actions without increasing
   their timeouts. Rendered/native review is separate.
@@ -94,7 +95,10 @@ Local validation so far uses .NET 10.0.301 and SHA-256-verified Node 24.14.1:
   across reruns, including the new Offline-row preparation guard. The next
   local run passed 98/99: random signature JSON escaping broke an equal-length
   corruption fixture. Its mutation now chooses a fixed-width character.
-  Hosted QolApi passed all 99 groups on the first candidate.
+  Hosted QolApi passed all 99 groups on the first candidate. The fresh local
+  `verify-code-only.ps1` run on `63b7b64` also passed all 99 groups, locked
+  dependency checks, build, lint, types, whitespace and diagnostic isolation.
+  Its exact log is `local-data/shared-hosting-24-final-code-only.log`.
 - Slow byte observations exercise actual signed fake-HTTP response streams,
   raw/gzip original downloads, original and successor forwarding pulls, and
   gzip peer push with interruption/resume. Corrupt complete staging files are
@@ -125,9 +129,9 @@ The same run exposed stale five-button Browser assertions and a missing .23
 legacy-test allowlist, now corrected. The compact Host review is explicitly
 opened before the exact Connect action in the two-ended lab. The lab also
 reported `LocalPortsRequired`, whose exact cause was not retained in its old
-artifact. Its fixture now requires the same exclusive loopback bind probe as
-the product, rather than relying only on listener tables. New allowlisted
-stage/code/boolean evidence preserves future hosting and child-UI failures.
+artifact. New allowlisted stage/code/boolean evidence preserves future hosting
+and child-UI failures. An attempted harness bind preflight violated the existing
+check-runner socket-isolation guard; it was removed without weakening the guard.
 Separately, asynchronous preparation now binds its final port check to the
 request's original approval; a later preference change cannot switch plans,
 and removing that approval refuses preparation. The port guard stays enforced.
@@ -136,6 +140,45 @@ boundary/redaction evidence, port choice changes, guided and detached
 preparation, cache invalidation, bounded discovery and exact prepared Start.
 Desktop's independent window cases passed; Windows `QuietTime` again blocked
 native notification acceptance. Corrected-candidate hosted results are pending.
+
+The [second .24 hosted run](https://github.com/daltonstates/TogetherServer/actions/runs/40762221108)
+used exact source `63b7b64125bacc3b4454e144937e9a60604493bb`. All seven
+compatibility lanes, automatic shared hosting and packaging passed. Loopback
+hosting passed, and the independent two-ended UI passed all ten stages,
+including exact compact-review Connect, one prepare/Start and cleanup. The
+separate LAN API mode failed its initial peer sync; the old report omitted the
+returned code. That refusal remains unresolved. Its next report retains the
+typed result, duration and bounded existing route/work observations, with the
+success assertion unchanged. Six release suites were blocked by the harness
+probe guard above. Hosting rendering captured 108/108 cases and found no layout
+issues, but retained one aborted background-jobs read. Only validated reads
+canceled after explicit context teardown are now classified separately;
+active-capture failures remain failures and record their phase.
+
+Final review corrected two further concrete issues. A cleared observation was
+incorrectly treated as successful download completion, including pending
+history and low-space pauses. Completion now requires an explicit verified
+receipt path; pending history waits, and low-space failures remain failures.
+Actual signed long-history and paused seed/resume regressions cover these
+outcomes. Continuation requirements also now preserve the original assigned
+server ID expected by the strict Friend decoder, reject a changed mapping
+after asynchronous reads, and repeat current authorization before returning
+data. In-memory transport/client regressions cover alias success, mapping
+changes, foreign identity and revoked access.
+The final solution build has zero warnings/errors and all five affected source
+groups pass, including actual transfer outcomes, exact-copy reuse, offline-owner
+forwarding and the strict requirements client. Logs are
+`local-data/shared-hosting-job-finalization-build.log` and
+`local-data/shared-hosting-job-finalization-focused.log`.
+
+The general runner also retained two assertions that assumed every Start used
+the serialized queue. Its FIFO/disposal checks now use serialized Restart/Stop
+actions; the separate source check proves independent Start preparation and
+unrelated Stop. Held test tasks are released in `finally`, so a failed assertion
+cannot deadlock the runner's cleanup. General/process acceptance runs only on
+the explicitly opted-in hosted runner. Whole-solution format verification and
+code-only compilation of the corrected general runner passed; no General
+runner entry point was invoked locally.
 
 Physical laptop/main-PC behavior, real network transfer timing, real-game
 joins/save-load/restart, rendered/native acceptance and a new frozen-candidate

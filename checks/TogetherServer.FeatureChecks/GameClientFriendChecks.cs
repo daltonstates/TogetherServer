@@ -53,6 +53,28 @@ internal static class GameClientFriendChecks
         var compatibility = await link.ReadGameCompatibilityAsync(profileId, discover: (_, _) => new("0.219.16", "Observed"));
         Require(compatibility.Ok && compatibility.VersionComparison == "Match" && compatibility.ClientVersionSource == "Observed" && adapter.Uris.Count == count,
             "poll/read either lost comparison or launched a game");
+        host.RequirementsTargetId = Guid.NewGuid();
+        var aliased = await link.ReadGameCompatibilityAsync(profileId, discover: (_, _) => new("0.219.16", "Observed"));
+        Require(aliased.Ok && aliased.Requirements?.ProfileId == profileId && aliased.VersionComparison == "Match" &&
+            host.LastRequirementsReadTarget == host.RequirementsTargetId && adapter.Uris.Count == count,
+            "Original assigned-server requirements rejected the current continuation or exposed its internal profile ID.");
+        host.RequirementsTargetChangesDuringRead = true;
+        var changedTarget = await link.ReadGameCompatibilityAsync(profileId, discover: (_, _) => new("0.219.16", "Observed"));
+        Require(!changedTarget.Ok && changedTarget.Requirements is null && host.LastRequirementsCode == "ProfileChanged" &&
+            adapter.Uris.Count == count, "An asynchronous requirements read returned data after its canonical continuation changed.");
+        host.RequirementsTargetChangesDuringRead = false;
+        host.InvalidRequirementsReadIdentity = true;
+        var unrelated = await link.ReadGameCompatibilityAsync(profileId, discover: (_, _) => new("0.219.16", "Observed"));
+        Require(!unrelated.Ok && unrelated.Requirements is null && host.LastRequirementsCode == "InvalidRequirements",
+            "The public alias projection relabeled requirements from a different internal profile.");
+        host.InvalidRequirementsReadIdentity = false;
+        host.AfterRequirements = () => host.Denial = "Revoked";
+        var revokedAlias = await link.ReadGameCompatibilityAsync(profileId, discover: (_, _) => new("0.219.16", "Observed"));
+        Require(!revokedAlias.Ok && revokedAlias.Code == "Revoked" && revokedAlias.Requirements is null,
+            "Original-server revocation during a continuation requirements read returned retained data.");
+        host.Denial = null;
+        host.AfterRequirements = null;
+        host.RequirementsTargetId = null;
         var manual = await link.ReadGameCompatibilityAsync(profileId, new("0.219.16"), discover: (_, _) => new(null, "Unknown"));
         Require(manual.Ok && manual.ClientVersionSource == "Manual" && manual.VersionComparison == "Match", "manual fallback lost its source label");
         Require((await link.OpenGameAsync(profileId, adapter)).Ok && adapter.Uris.Count == count + 1, "explicit authenticated open did not use the fake adapter once");
@@ -147,6 +169,11 @@ internal static class GameClientFriendChecks
         public int RequirementsRequests { get; private set; }
         public bool MalformedStatusProfile { get; set; }
         public Action? AfterRequirements { get; set; }
+        public Guid? RequirementsTargetId { get; set; }
+        public bool RequirementsTargetChangesDuringRead { get; set; }
+        public bool InvalidRequirementsReadIdentity { get; set; }
+        public Guid? LastRequirementsReadTarget { get; private set; }
+        public string? LastRequirementsCode { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             if (request.Headers.Authorization?.Parameter != credential ||
@@ -171,13 +198,27 @@ internal static class GameClientFriendChecks
                 RequirementsRequests++;
                 if (!request.Headers.TryGetValues("X-TogetherServer-Capability", out var capabilities) || capabilities.Single() != CompanionProtocol.GameRequirementsCapability)
                     throw new Exception("requirements request omitted feature capability");
-                AfterRequirements?.Invoke();
                 if (HugeRequirements) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[GameCompatibility.MaximumWireBytes + 1]) });
-                return Task.FromResult(Reply(new GameRequirementsResult(true, "RequirementsRead", "Synthetic requirements.",
-                    new(profileId, GameKinds.Valheim, "Valheim", "0.219.16", "OwnerReported", "NotReviewed", [], DateTimeOffset.UtcNow,
-                        "Use the Host's required game version. Mod loaders for this game are outside reviewed support."))));
+                return RequirementsAsync(ct);
             }
             throw new Exception("unreviewed feature request path");
+        }
+        private async Task<HttpResponseMessage> RequirementsAsync(CancellationToken ct)
+        {
+            var targetId = RequirementsTargetId ?? profileId;
+            var resolutions = 0;
+            var result = await CompanionGameRequirements.ReadAsync(profileId, _ => Task.FromResult(
+                ++resolutions > 1 && RequirementsTargetChangesDuringRead ? Guid.NewGuid() : targetId), (selected, _) =>
+                {
+                    LastRequirementsReadTarget = selected;
+                    AfterRequirements?.Invoke();
+                    return Task.FromResult(new GameRequirementsResult(true, "RequirementsRead", "Synthetic requirements.",
+                        new(InvalidRequirementsReadIdentity ? Guid.NewGuid() : selected, GameKinds.Valheim, "Valheim", "0.219.16", "OwnerReported",
+                            "NotReviewed", [], DateTimeOffset.UtcNow,
+                            "Use the Host's required game version. Mod loaders for this game are outside reviewed support.")));
+                }, ct);
+            LastRequirementsCode = result.Code;
+            return Reply(result);
         }
         private static HttpResponseMessage Reply<T>(T value, HttpStatusCode code = HttpStatusCode.OK) => new(code) { Content = JsonContent.Create(value, options: Json) };
     }

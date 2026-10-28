@@ -7,11 +7,41 @@ internal sealed record LocalPairingLabHostingObservation(bool Allowed, bool Cons
     string PortState, string PortFailure);
 internal sealed record LocalPairingLabUxFailure(string Stage, string Code, int PassedStages,
     string LastHostingCode, int FailedRequests, int BrowserErrors);
+internal sealed record LocalPairingLabPeerProgress(string State, string Phase, string Operation,
+    string HttpStep, int? HttpStatus, string Result, string Error, long ElapsedMilliseconds);
+internal sealed record LocalPairingLabPeerRoute(string RecipientRole, LocalPairingLabPeerProgress? Current,
+    LocalPairingLabPeerProgress? LastResult, LocalPairingLabPeerProgress? LastFailure);
+internal sealed record LocalPairingLabPeerSyncObservation(bool GroupPresent, bool? ReceiveConsented, bool? CanReceive,
+    bool? CanHost, bool? CanReshare, int AuthorizedPeers, int RoutedPeers, int ConflictedPeers, bool HasWarning,
+    IReadOnlyList<LocalPairingLabPeerRoute> Transfers, HostingMembershipDiagnostic? Registration);
 
 // The child report contains private masked-browser diagnostics. Only reviewed
 // stage/code values, counts and booleans may enter the parent lab report.
 internal static class LocalPairingLabEvidence
 {
+    internal static LocalPairingLabPeerSyncObservation PeerSync(WorldPeerGroupView? group, HostingMembershipDiagnostic? membership)
+    {
+        static string Token<T>(string value) where T : struct, Enum => Enum.TryParse<T>(value, out var parsed) &&
+            Enum.IsDefined(parsed) ? parsed.ToString() : "Other";
+        static long Count(long value) => Math.Clamp(value, 0, 1_000_000);
+        static LocalPairingLabPeerProgress? Progress(WorldPeerTransferProgress? value) => value is null ? null : new(
+            value.State is "Working" or "Failed" or "Canceled" or "Succeeded" or "Pending" ? value.State : "Other",
+            Token<WorldPeerTransferPhase>(value.Phase), Token<WorldPeerTransferOperation>(value.Operation),
+            Token<WorldPeerTransferHttpStep>(value.HttpStep), value.HttpStatus is >= 100 and <= 599 ? value.HttpStatus : null,
+            Token<WorldPeerTransferResult>(value.Result), Token<WorldPeerTransferError>(value.Error),
+            Math.Clamp(value.ElapsedMilliseconds, 0, 86_400_000));
+        var peers = group?.State.Peers.Take(128).ToArray() ?? [];
+        var registration = membership is null ? null : new HostingMembershipDiagnostic(Count(membership.PassesStarted),
+            Count(membership.PassesCompleted), Token<PeerMembershipPassOutcome>(membership.PassOutcome),
+            Math.Clamp(membership.PassElapsedMilliseconds, 0, 86_400_000), Count(membership.LookupsStarted),
+            Count(membership.LookupsCompleted), Token<PeerMembershipLookupOutcome>(membership.LookupOutcome), membership.LookupReturnedRoster);
+        return new(group is not null, group?.ReceiveConsented, group?.CanReceive, group?.CanHost, group?.CanReshare,
+            peers.Count(peer => peer.Authorized), peers.Count(peer => peer.Routes.Count > 0), peers.Count(peer => peer.HasConflict),
+            group?.Warning is not null, (group?.BackgroundTransfers ?? []).Take(8).Select(route => new LocalPairingLabPeerRoute(
+                Token<WorldPeerTransferRecipientRole>(route.RecipientRole), Progress(route.Current), Progress(route.LastResult), Progress(route.LastFailure))).ToArray(),
+            registration);
+    }
+
     private static readonly Dictionary<string, string> Stages = new(StringComparer.Ordinal)
     {
         ["launch"] = "Launch",

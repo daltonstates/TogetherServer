@@ -2968,64 +2968,68 @@ await Check("remote operations persist idempotency and interrupt unfinished work
     var executions = 0;
     var secondExecutions = 0;
     var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-    var submitted = coordinator.Submit(deviceId, requestId, profileId, "restart", async () =>
+    try
     {
-        Interlocked.Increment(ref executions);
-        await release.Task;
-        return new RemoteOperationOutcome(true, "ServerRestarted",
-            @"Restart completed using C:\private\world and secret script output.");
-    });
-    Require(submitted.Accepted && submitted.Operation is not null, "operation was not accepted");
-    var unknown = coordinator.Submit(deviceId, Guid.NewGuid(), profileId, "arbitrary-action", () =>
-        Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "must not execute")));
-    Require(!unknown.Accepted && unknown.Code == "UnknownAction",
-        "an unsupported remote action entered the durable queue");
-    var submittedOperation = submitted.Operation ?? throw new Exception("accepted operation had no view");
-    var retry = coordinator.Submit(deviceId, requestId, profileId, "restart", () =>
-        Task.FromResult(new RemoteOperationOutcome(false, "Duplicate", "must not execute")));
-    for (var attempt = 0; attempt < 100 && executions == 0; attempt++) await Task.Delay(10);
-    Require(retry.Accepted && retry.Existing && retry.Operation?.Id == submittedOperation.Id && executions == 1,
-        "idempotent retry did not return the original operation");
-    var conflict = coordinator.Submit(deviceId, requestId, profileId, "stop", () =>
-        Task.FromResult(new RemoteOperationOutcome(true, "Wrong", "must not execute")));
-    Require(!conflict.Accepted && conflict.Code == "IdempotencyConflict",
-        "request ID reuse for another action was accepted");
-    var second = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", () =>
-    {
-        Interlocked.Increment(ref secondExecutions);
-        return Task.FromResult(new RemoteOperationOutcome(true, "FixtureStarted", "Second operation completed."));
-    });
-    Require(second.Accepted && second.Operation is not null, "second queued operation was not accepted");
-    await Task.Delay(100);
-    Require(secondExecutions == 0 && coordinator.Find(deviceId, second.Operation!.Id)?.State == RemoteOperationStates.Pending,
-        "the in-process executor ran more than one remote operation at a time or skipped Pending");
-    release.SetResult();
-    RemoteOperationView? completed = null;
-    for (var attempt = 0; attempt < 100; attempt++)
-    {
-        completed = coordinator.Find(deviceId, submittedOperation.Id);
-        if (completed is not null && RemoteOperationStates.Terminal(completed.State)) break;
-        await Task.Delay(20);
+        var submitted = coordinator.Submit(deviceId, requestId, profileId, "restart", async () =>
+        {
+            Interlocked.Increment(ref executions);
+            await release.Task;
+            return new RemoteOperationOutcome(true, "ServerRestarted",
+                @"Restart completed using C:\private\world and secret script output.");
+        });
+        Require(submitted.Accepted && submitted.Operation is not null, "operation was not accepted");
+        var unknown = coordinator.Submit(deviceId, Guid.NewGuid(), profileId, "arbitrary-action", () =>
+            Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "must not execute")));
+        Require(!unknown.Accepted && unknown.Code == "UnknownAction",
+            "an unsupported remote action entered the durable queue");
+        var submittedOperation = submitted.Operation ?? throw new Exception("accepted operation had no view");
+        var retry = coordinator.Submit(deviceId, requestId, profileId, "restart", () =>
+            Task.FromResult(new RemoteOperationOutcome(false, "Duplicate", "must not execute")));
+        for (var attempt = 0; attempt < 100 && executions == 0; attempt++) await Task.Delay(10);
+        Require(retry.Accepted && retry.Existing && retry.Operation?.Id == submittedOperation.Id && executions == 1,
+            "idempotent retry did not return the original operation");
+        var conflict = coordinator.Submit(deviceId, requestId, profileId, "stop", () =>
+            Task.FromResult(new RemoteOperationOutcome(true, "Wrong", "must not execute")));
+        Require(!conflict.Accepted && conflict.Code == "IdempotencyConflict",
+            "request ID reuse for another action was accepted");
+        var second = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "stop", () =>
+        {
+            Interlocked.Increment(ref secondExecutions);
+            return Task.FromResult(new RemoteOperationOutcome(true, "FixtureStopped", "Second operation completed."));
+        });
+        Require(second.Accepted && second.Operation is not null, "second queued operation was not accepted");
+        await Task.Delay(100);
+        Require(secondExecutions == 0 && coordinator.Find(deviceId, second.Operation!.Id)?.State == RemoteOperationStates.Pending,
+            "the serialized control executor ran more than one queued action at a time or skipped Pending");
+        release.TrySetResult();
+        RemoteOperationView? completed = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            completed = coordinator.Find(deviceId, submittedOperation.Id);
+            if (completed is not null && RemoteOperationStates.Terminal(completed.State)) break;
+            await Task.Delay(20);
+        }
+        RemoteOperationView? secondCompleted = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            secondCompleted = coordinator.Find(deviceId, second.Operation!.Id);
+            if (secondCompleted is not null && RemoteOperationStates.Terminal(secondCompleted.State)) break;
+            await Task.Delay(20);
+        }
+        Require(completed is { State: RemoteOperationStates.Succeeded, Code: "ServerRestarted", Ok: true } &&
+            !completed.Message.Contains("private", StringComparison.OrdinalIgnoreCase) &&
+            !completed.Message.Contains("script output", StringComparison.OrdinalIgnoreCase) &&
+            secondCompleted is { State: RemoteOperationStates.Succeeded } && executions == 1 && secondExecutions == 1,
+            "FIFO execution, one terminal execution, or operation-result redaction failed");
+        await coordinator.DisposeAsync();
+        Require(coordinator.Submit(deviceId, Guid.NewGuid(), profileId, "start", () =>
+                Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."))).Code ==
+            "OperationCoordinatorStopped", "a disposed operation worker accepted new work");
+        await using var reloadedCoordinator = new RemoteOperationCoordinator(data);
+        var reloaded = reloadedCoordinator.Find(deviceId, submittedOperation.Id);
+        Require(reloaded is { State: RemoteOperationStates.Succeeded }, "terminal operation did not survive reload");
     }
-    RemoteOperationView? secondCompleted = null;
-    for (var attempt = 0; attempt < 100; attempt++)
-    {
-        secondCompleted = coordinator.Find(deviceId, second.Operation!.Id);
-        if (secondCompleted is not null && RemoteOperationStates.Terminal(secondCompleted.State)) break;
-        await Task.Delay(20);
-    }
-    Require(completed is { State: RemoteOperationStates.Succeeded, Code: "ServerRestarted", Ok: true } &&
-        !completed.Message.Contains("private", StringComparison.OrdinalIgnoreCase) &&
-        !completed.Message.Contains("script output", StringComparison.OrdinalIgnoreCase) &&
-        secondCompleted is { State: RemoteOperationStates.Succeeded } && executions == 1 && secondExecutions == 1,
-        "FIFO execution, one terminal execution, or operation-result redaction failed");
-    await coordinator.DisposeAsync();
-    Require(coordinator.Submit(deviceId, Guid.NewGuid(), profileId, "start", () =>
-            Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."))).Code ==
-        "OperationCoordinatorStopped", "a disposed operation worker accepted new work");
-    await using var reloadedCoordinator = new RemoteOperationCoordinator(data);
-    var reloaded = reloadedCoordinator.Find(deviceId, submittedOperation.Id);
-    Require(reloaded is { State: RemoteOperationStates.Succeeded }, "terminal operation did not survive reload");
+    finally { release.TrySetResult(); }
 });
 
 await Check("remote operation execution survives an unavailable audit log", async () =>
@@ -3057,30 +3061,34 @@ await Check("remote operation execution survives an unavailable audit log", asyn
 await Check("remote operation disposal interrupts queued work without executing it", async () =>
 {
     using var data = Data("remote-operation-disposal");
-    var coordinator = new RemoteOperationCoordinator(data);
+    await using var coordinator = new RemoteOperationCoordinator(data);
     var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     var releaseFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     var deviceId = Guid.NewGuid();
-    var first = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", async () =>
+    try
     {
-        firstStarted.TrySetResult(true);
-        await releaseFirst.Task;
-        return new RemoteOperationOutcome(true, "FixtureStarted", "Started.");
-    });
-    await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
-    var queuedExecutions = 0;
-    var second = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "start", () =>
-    {
-        Interlocked.Increment(ref queuedExecutions);
-        return Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."));
-    });
-    var disposing = coordinator.DisposeAsync().AsTask();
-    releaseFirst.TrySetResult(true);
-    await disposing.WaitAsync(TimeSpan.FromSeconds(5));
-    var interrupted = coordinator.Find(deviceId, second.Operation!.Id);
-    Require(first.Accepted && second.Accepted && queuedExecutions == 0 &&
-        interrupted is { State: RemoteOperationStates.Interrupted, Code: "HostShuttingDown", Ok: false },
-        "disposing the owned worker ran or stranded queued remote work");
+        var first = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "restart", async () =>
+        {
+            firstStarted.TrySetResult(true);
+            await releaseFirst.Task;
+            return new RemoteOperationOutcome(true, "ServerRestarted", "Restarted.");
+        });
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var queuedExecutions = 0;
+        var second = coordinator.Submit(deviceId, Guid.NewGuid(), Guid.NewGuid(), "stop", () =>
+        {
+            Interlocked.Increment(ref queuedExecutions);
+            return Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "Must not run."));
+        });
+        var disposing = coordinator.DisposeAsync().AsTask();
+        releaseFirst.TrySetResult(true);
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+        var interrupted = coordinator.Find(deviceId, second.Operation!.Id);
+        Require(first.Accepted && second.Accepted && queuedExecutions == 0 &&
+            interrupted is { State: RemoteOperationStates.Interrupted, Code: "HostShuttingDown", Ok: false },
+            "disposing the owned worker ran or stranded queued remote work");
+    }
+    finally { releaseFirst.TrySetResult(true); }
 });
 
 await Check("remote operation rejects safely when its journal cannot commit", async () =>

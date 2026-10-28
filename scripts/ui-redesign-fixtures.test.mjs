@@ -1679,6 +1679,27 @@ test('only the exact passive progress abort after a validated pending Start is a
   assert.match(source, /kind: 'intentional-passive-progress-abort'/u, 'the scoped cancellation remains in the artifact evidence');
 });
 
+test('renderer teardown exempts only a validated exact passive jobs fetch canceled after cleanup begins', () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'expectedRendererCleanupAbort');
+  assert.ok(helper, 'cleanup classification must remain a bounded pure check');
+  const classify = runInNewContext(`${helper.getText(ast)}\n;expectedRendererCleanupAbort`, { URL });
+  const origin = 'http://127.0.0.1:5127';
+  const failure = { method: 'GET', resourceType: 'fetch', error: 'net::ERR_ABORTED', validatedFixture: true,
+    bodyBytes: 0, url: `${origin}/api/local/background-jobs` };
+  assert.equal(classify(true, origin, failure), true);
+  assert.equal(classify(false, origin, failure), false, 'an active-render abort remains a failure');
+  for (const changed of [{ validatedFixture: false }, { method: 'POST' }, { resourceType: 'xhr' },
+    { error: 'net::ERR_FAILED' }, { bodyBytes: 1 }, { url: `${origin}/api/local/snapshot` },
+    { url: `${origin}/api/local/background-jobs?unexpected=1` }, { url: `${origin}/api/local/background-jobs#fragment` },
+    { url: 'http://127.0.0.1:5128/api/local/background-jobs' }, { url: 'invalid' }])
+    assert.equal(classify(true, origin, { ...failure, ...changed }), false, 'unrelated failures must stay red');
+  assert.ok(source.indexOf('cleaningUp = true;') < source.indexOf('await context.close();'), 'classification begins only at explicit context teardown');
+  assert.match(source, /cleanupCancellations\.push\(\{ kind: 'context-cleanup-passive-read-abort'/u,
+    'the canceled observation remains separate evidence rather than disappearing from the report');
+});
+
 test('clock-driven hosting captures install before polling and wait for settled responses after advancing time', async () => {
   const installs = [];
   for (const testCase of simpleHostingCases) {

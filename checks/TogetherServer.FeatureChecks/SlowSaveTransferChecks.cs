@@ -17,6 +17,8 @@ internal static class SlowSaveTransferChecks
         await PeerPullAsync(parent, "Original");
         await PeerPullAsync(parent, "Branch");
         await SeedResumeGzipAsync(parent);
+        await PendingHistoryIsNotACompletedDownloadAsync(parent);
+        await PausedSeedIsNotACompletedDownloadAsync(parent);
         JobsPersistAndCoalesce(parent);
         CachedSchedulingAndResume(parent);
         await ProgressReadsDuringPersistenceAsync(parent);
@@ -71,9 +73,52 @@ internal static class SlowSaveTransferChecks
         }
         finally { jobs.BeforePersistForChecks = null; release.Set(); }
         using var activity = await begin.WaitAsync(TimeSpan.FromSeconds(5));
-        SharedSaveTransferProgress.Clear(data, root, new string('A', 64));
+        SharedSaveTransferProgress.Complete(data, root, new string('A', 64));
         activity.Dispose();
         Require(jobs.Read().Jobs is [{ State: "Succeeded" }], "An isolated durable checkpoint lost finalization.");
+    }
+
+    private static async Task PendingHistoryIsNotACompletedDownloadAsync(string parent)
+    {
+        using var fixture = new Fixture(parent, "Branch");
+        fixture.PrepareChangedForwardedSave(WorldAuthorityTrust.ChainVersionsPerCheck + 2);
+        var receiver = fixture.RequesterService;
+        var group = typeof(WorldPeerService).GetMethod("Find", Private)!.Invoke(receiver, [fixture.Root.GroupKey]);
+        Task Pull() => (Task)typeof(WorldPeerService).GetMethod("PullCatalogAsync", Private)!.Invoke(receiver,
+            [group, fixture.SourceRoute, CancellationToken.None])!;
+        await Pull().WaitAsync(TimeSpan.FromSeconds(90));
+        var pending = BackgroundJobs.For(fixture.RequesterData).Read().Jobs.Single(job => job.Operation == "Save download");
+        var vault = SharedWorldBranchVault.Root(fixture.RequesterData, fixture.Descriptor.Branch!);
+        Require(pending is { State: "Waiting", ResultCode: "SharedHistoryPending", ReceivedBytes: 0 } &&
+            fixture.SourceHandler.Operations.Count(operation => operation == WorldPeerOperations.Version) >= WorldAuthorityTrust.ChainVersionsPerCheck &&
+            !fixture.SourceHandler.Operations.Contains(WorldPeerOperations.Chunk) && !File.Exists(Path.Combine(vault, "latest.json")),
+            "Bounded signed-history staging claimed a completed download or receipt before any payload arrived.");
+        await Pull().WaitAsync(TimeSpan.FromSeconds(90));
+        var completed = BackgroundJobs.For(fixture.RequesterData).Read().Jobs.Single(job => job.Operation == "Save download");
+        Require(completed.Id == pending.Id && completed is { State: "Succeeded", Phase: "Receipt" } &&
+            completed.ReceivedBytes == completed.TotalBytes &&
+            FriendLink.ReadReceivedLatest(vault)?.VersionHash == fixture.Descriptor.Version.VersionHash,
+            "Resumed signed history did not finish one actual hash-verified download and receipt.");
+    }
+
+    private static async Task PausedSeedIsNotACompletedDownloadAsync(string parent)
+    {
+        using var fixture = new Fixture(parent, "Original", matchingFiles: true);
+        fixture.PrepareMatchingPublication(forceLargeChanged: true);
+        fixture.TargetService.ReceiveFreeBytesForChecks = () => 0;
+        var paused = await fixture.SeedAsync();
+        var failed = BackgroundJobs.For(fixture.Target).Read().Jobs.Single(job => job.Operation == "Save download");
+        Require(paused is { Code: "SeedPaused", Receipt: null } && failed is
+        { State: "Failed", ResultCode: "InsufficientSpace", ReceivedBytes: 0 } &&
+            !File.Exists(Path.Combine(fixture.DuplicateVault, "latest.json")),
+            "A seeded low-space pause was labeled SaveReceived without a completed copy or receipt.");
+        fixture.TargetService.ReceiveFreeBytesForChecks = null;
+        await fixture.SeedAllAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        var completed = BackgroundJobs.For(fixture.Target).Read().Jobs.Single(job => job.Operation == "Save download");
+        Require(completed.Id == failed.Id && completed is { State: "Succeeded", Phase: "Receipt" } &&
+            completed.ReceivedBytes == completed.TotalBytes &&
+            FriendLink.ReadReceivedLatest(fixture.DuplicateVault)?.VersionHash == fixture.Descriptor.Version.VersionHash,
+            "Retrying the paused actual seed did not finish verification/receipt on its existing application job.");
     }
 
     private static async Task SeedResumeGzipAsync(string parent)

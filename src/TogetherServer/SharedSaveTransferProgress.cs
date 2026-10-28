@@ -12,6 +12,7 @@ internal static class SharedSaveTransferProgress
         internal DateTimeOffset UpdatedUtc = DateTimeOffset.UtcNow;
         internal int Active;
         internal bool ClearRequested;
+        internal bool CompletionConfirmed;
         internal Lazy<BackgroundJobs.Attempt>? Job;
     }
     private sealed class Activity((string, string, string) key, Copy copy) : IDisposable
@@ -29,7 +30,7 @@ internal static class SharedSaveTransferProgress
                 {
                     if (copy.ClearRequested)
                     {
-                        complete = true;
+                        complete = copy.CompletionConfirmed;
                         copies.TryRemove(new(key, copy));
                     }
                     job = copy.Job;
@@ -37,7 +38,7 @@ internal static class SharedSaveTransferProgress
                 }
             }
             if (complete) job?.Value.Complete("SaveReceived", "The save passed verification and receipt processing finished. Game loading has not been checked.");
-            else job?.Value.Waiting("CatchUpPending", "The bounded transfer pass ended. Remaining bytes or receipt work will continue in the background.");
+            else job?.Value.Waiting("CatchUpPending", "This bounded pass ended before verification and receipt completion. Further history or payload checks may continue in the background.");
         }
     }
     private static readonly ConcurrentDictionary<(string DataRoot, string GroupKey, string VersionHash), Copy> copies = new();
@@ -57,8 +58,12 @@ internal static class SharedSaveTransferProgress
         {
             key = Key(data, root, versionHash);
             copy = copies.GetOrAdd(key, _ => new());
-            if (copy.Active == 0) copy.Job = new(() => BackgroundJobs.For(data).Begin("download:" + root.GroupKey + ":" + versionHash,
-                root.ProfileId, serverName, worldName, "Save download"), LazyThreadSafetyMode.ExecutionAndPublication);
+            if (copy.Active == 0)
+            {
+                copy.CompletionConfirmed = false;
+                copy.Job = new(() => BackgroundJobs.For(data).Begin("download:" + root.GroupKey + ":" + versionHash,
+                    root.ProfileId, serverName, worldName, "Save download"), LazyThreadSafetyMode.ExecutionAndPublication);
+            }
             copy.Active++; copy.UpdatedUtc = DateTimeOffset.UtcNow;
             job = copy.Job;
         }
@@ -148,7 +153,25 @@ internal static class SharedSaveTransferProgress
             if (copy.Active == 0) { job = copy.Job; copies.TryRemove(new(key, copy)); }
             else { copy.ClearRequested = true; copy.Status = null; }
         }
-        job?.Value.Complete("SaveReceived");
+        job?.Value.Waiting("CatchUpPending", "This transfer observation ended before verified completion. A later background pass may continue it.");
+    }
+
+    // Clearing an observation also occurs for bounded history work and pauses.
+    // Only a caller that completed verification and receipt processing may
+    // request success; the held activity still blocks hosting until disposed.
+    internal static void Complete(LocalData data, SharedWorldPeerRoot root, string versionHash)
+    {
+        Lazy<BackgroundJobs.Attempt>? job = null;
+        lock (progressSync)
+        {
+            var key = Key(data, root, versionHash);
+            if (!copies.TryGetValue(key, out var copy)) return;
+            copy.CompletionConfirmed = true;
+            copy.ClearRequested = true;
+            copy.Status = null;
+            if (copy.Active == 0) { job = copy.Job; copies.TryRemove(new(key, copy)); }
+        }
+        job?.Value.Complete("SaveReceived", "The save passed verification and receipt processing finished. Game loading has not been checked.");
     }
 
     internal static void Fail(LocalData data, SharedWorldPeerRoot root, string versionHash, string code, string message)
