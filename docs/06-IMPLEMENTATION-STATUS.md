@@ -7,7 +7,28 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## 0.3.3.24 candidate: background shared hosting and failed-attempt diagnostics
+## 0.3.3.24 preview release: background shared hosting and failed-attempt diagnostics
+
+[0.3.3.24 Preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.24)
+was published on 2026-10-28 with explicit owner authorization, using the
+unchanged verified build from exact application source
+`82567ba02001c02569e28d48aafda2124c90e99d`. Release ID is `427315024`.
+The annotated tag `6cbb4a708bdab5136e70032702902ac651b6c53e` resolves to
+that application commit; subsequent documentation commits are not the tag target.
+
+The four published files came directly from run `40783786057`, release-assets
+artifact `12857863832`, package job `123152999772`; no rebuild or signing
+change was made. Fresh unauthenticated downloads verified all four names,
+sizes and SHA-256 digests, both executable versions, NotSigned state and the
+two checksum-file contents. GitHub reports prerelease=true, draft=false;
+stable/latest remains `v0.3.3`. Public binary digests are:
+
+- Portable: `cf88a2078058b62fefee5dab6c99f733cd93ca5ef0fb11b19e28188683281e03` (66,357,186 bytes).
+- Installer: `f1312a1929f73044c0b76ecd5aa246dabc85b260c8a13a817a709ec5fe5d8c95` (60,816,922 bytes).
+
+Local publication evidence is retained under
+`local-data/ci24-publish-release/`, including the original manifest,
+prepublication checks, upload receipts and anonymous public verification.
 
 This source starts from the complete published .23 application at `1ff236c`
 and its release-documentation HEAD `0e53ca4`, on
@@ -142,7 +163,7 @@ Corrections established by these checks:
 
 The earlier LAN API sync refusal lacked its result code, so its original cause remains unconfirmed despite subsequent successful frozen runs. Future reports preserve the typed result, duration and bounded existing route/work observations; assertions remain unchanged. These reports contain fixed stages/codes/booleans, not private request bodies, credentials or world contents.
 
-The candidate is **ready for the next 0.3.3.24 preview with the acceptance limits below** and has not been published. Use the frozen application/source `82567ba` above; documentation-only follow-ups are not replacement application sources. Native notification delivery/click remains blocked by hosted Windows QuietTime; independent window/picker/draft cases passed. Physical laptop/main-PC behavior, real LAN/WAN timing, real-game joins/save-load/restart and save integrity remain unverified. Manual follow-up must exercise this source on both PCs for original-Host identity/Stop, advancing slow-transfer bytes while navigating, and continued background redistribution. The user's screenshot remains unresolved physical evidence until those PCs exercise this source; prior .23 passes do not accept these fixes. All interactive checks ran on explicitly opted-in hosted Windows runners, never the owner's desktop.
+The verified application/source `82567ba` is now **published as the 0.3.3.24 prerelease with these acceptance limits**; documentation-only follow-ups are not replacement application sources. Native notification delivery/click remains blocked by hosted Windows QuietTime; independent window/picker/draft cases passed. Physical laptop/main-PC behavior, real LAN/WAN timing, real-game joins/save-load/restart and save integrity remain unverified. Manual follow-up must exercise this source on both PCs for original-Host identity/Stop, advancing slow-transfer bytes while navigating, and continued background redistribution. The user's screenshot remains unresolved physical evidence until those PCs exercise this source; prior .23 passes do not accept these fixes. All interactive checks ran on explicitly opted-in hosted Windows runners, never the owner's desktop. Publication only read/copied/hashed binaries locally; it launched no app, installer or browser.
 ## 0.3.3.23 preview release
 
 [0.3.3.23 Preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.23)
