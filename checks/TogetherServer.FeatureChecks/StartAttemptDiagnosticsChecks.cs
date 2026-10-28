@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using TogetherServer;
@@ -87,6 +88,7 @@ internal static class StartAttemptDiagnosticsChecks
         InterruptedAndBounded(root, profileId);
         await RemoteMessageAsync(root, profileId);
         await IndependentRemoteControlsAsync(root, profileId);
+        await TerminalStartCleanupAsync(root, profileId);
     }
 
     private static void InterruptedAndBounded(string root, Guid profileId)
@@ -179,6 +181,102 @@ internal static class StartAttemptDiagnosticsChecks
                 "Independent preparation lost its durable result or attempt correlation.");
         }
         finally { release.TrySetResult(); }
+    }
+
+    private static async Task TerminalStartCleanupAsync(string root, Guid profileId)
+    {
+        using var data = new LocalData(Path.Combine(root, "terminal-start-cleanup"));
+        await using var coordinator = new RemoteOperationCoordinator(data);
+        var published = new TaskCompletionSource<Guid>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseNext = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var otherStopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbacks = 0;
+        var starts = 0;
+        var forbiddenExecutions = 0;
+        var device = Guid.NewGuid();
+        var firstRequest = Guid.NewGuid();
+        coordinator.AfterTerminalPublishedForChecks = operationId =>
+        {
+            if (Interlocked.Increment(ref callbacks) != 1) return Task.CompletedTask;
+            published.TrySetResult(operationId);
+            return releaseCleanup.Task;
+        };
+        Task<RemoteOperationOutcome> Forbidden()
+        {
+            Interlocked.Increment(ref forbiddenExecutions);
+            return Task.FromResult(new RemoteOperationOutcome(true, "Unexpected", "This delegate must not run."));
+        }
+        try
+        {
+            var first = coordinator.Submit(device, firstRequest, profileId, "start", () =>
+            {
+                Interlocked.Increment(ref starts);
+                return Task.FromResult(new RemoteOperationOutcome(false, "SharedSaveUnavailable", "Synthetic save source unavailable."));
+            });
+            var terminalId = await published.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(first.Accepted && first.Operation?.Id == terminalId &&
+                coordinator.Find(device, terminalId) is { State: "Failed", Code: "SharedSaveUnavailable" },
+                "The cleanup regression did not publish the first Start's terminal result.");
+            var cleanupTask = ActiveStartTask(coordinator, profileId);
+            var journalCount = data.LoadRemoteOperations().Count;
+            var distinct = coordinator.Submit(device, Guid.NewGuid(), profileId, "start", Forbidden);
+            var idempotent = coordinator.Submit(device, firstRequest, profileId, "start", Forbidden);
+            Require(!distinct.Accepted && distinct.Code == "StartAlreadyPreparing" &&
+                idempotent.Accepted && idempotent.Existing && idempotent.Operation is
+                { State: "Failed", Code: "SharedSaveUnavailable" } prior && prior.Id == terminalId &&
+                forbiddenExecutions == 0 && data.LoadRemoteOperations().Count == journalCount && !cleanupTask.IsCompleted,
+                "Visible terminal state admitted an untracked Start, journaled a rejected retry or broke same-key idempotency.");
+            var stop = coordinator.Submit(device, Guid.NewGuid(), Guid.NewGuid(), "stop", () =>
+            {
+                otherStopped.TrySetResult();
+                return Task.FromResult(new RemoteOperationOutcome(true, "Stopped", "Synthetic unrelated Stop completed."));
+            });
+            await otherStopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(stop.Accepted && !cleanupTask.IsCompleted,
+                "Terminal Start cleanup blocked unrelated serialized remote controls.");
+            releaseCleanup.TrySetResult();
+            await cleanupTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var nextRequest = Guid.NewGuid();
+            var next = coordinator.Submit(device, nextRequest, profileId, "start", async () =>
+            {
+                Interlocked.Increment(ref starts);
+                nextEntered.TrySetResult();
+                await releaseNext.Task;
+                return new(true, "Started", "Synthetic retry completed.");
+            });
+            await nextEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var nextTask = ActiveStartTask(coordinator, profileId);
+            var duringNext = coordinator.Submit(device, Guid.NewGuid(), profileId, "start", Forbidden);
+            Require(next.Accepted && !duringNext.Accepted && duringNext.Code == "StartAlreadyPreparing" && starts == 2 &&
+                forbiddenExecutions == 0 && coordinator.Find(device, next.Operation!.Id)?.State == "Running" && !nextTask.IsCompleted,
+                "A retry after cleanup was lost, executed twice or had its registration removed by the old Start.");
+            releaseNext.TrySetResult();
+            await nextTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await coordinator.DisposeAsync();
+            var journal = data.LoadRemoteOperations();
+            Require(journal.Count == journalCount + 2 && journal.All(item => RemoteOperationStates.Terminal(item.State)) &&
+                journal.Single(item => item.Id == terminalId).Code == "SharedSaveUnavailable" &&
+                journal.Single(item => item.Id == next.Operation!.Id).State == "Succeeded" && starts == 2 && forbiddenExecutions == 0,
+                "Terminal cleanup left phantom pending work, lost results or executed a rejected request.");
+        }
+        finally
+        {
+            // Release both possible owners before await-using disposal, even
+            // when a regression assertion fails inside the held interval.
+            releaseCleanup.TrySetResult();
+            releaseNext.TrySetResult();
+        }
+
+        static Task ActiveStartTask(RemoteOperationCoordinator owner, Guid profile)
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var sync = typeof(RemoteOperationCoordinator).GetField("sync", flags)!.GetValue(owner)!;
+            lock (sync)
+                return ((Dictionary<Guid, Task>)typeof(RemoteOperationCoordinator).GetField("activeStarts", flags)!.GetValue(owner)!)[profile];
+        }
     }
 
     private sealed class DiagnosticDriver : IGameServerDriver

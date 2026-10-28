@@ -59,6 +59,9 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
     private readonly Task worker;
     private readonly Dictionary<Guid, Task> activeStarts = [];
     private int disposed;
+    // Source-only barrier for the interval after terminal journal publication
+    // but before audit/activity cleanup releases this Start's active slot.
+    internal Func<Guid, Task>? AfterTerminalPublishedForChecks { get; set; }
 
     private sealed record QueuedOperation(Guid OperationId, Func<Task<RemoteOperationOutcome>> Execute);
 
@@ -101,12 +104,12 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
                         "Request ID was already used for a different action.", null);
                 return new(true, true, existing.Code, existing.Message, View(existing));
             }
-            if (action == "start" && operations.Any(item => item.ProfileId == profileId && item.Action == "start" &&
-                !RemoteOperationStates.Terminal(item.State)))
+            if (action == "start" && (activeStarts.ContainsKey(profileId) || operations.Any(item => item.ProfileId == profileId && item.Action == "start" &&
+                !RemoteOperationStates.Terminal(item.State))))
             {
                 StartAttemptDiagnostics.RecordFailure(data, profileId, "RemoteStart", "Queued", "StartAlreadyPreparing",
-                    "A Start request is already preparing this server. Follow that request's current progress.", "BlockedStart", requestId);
-                return new(false, false, "StartAlreadyPreparing", "A Start request is already preparing this server. Follow that request's current progress.", null);
+                    "A Start request is still active for this server. Follow its current progress or result.", "BlockedStart", requestId);
+                return new(false, false, "StartAlreadyPreparing", "A Start request is still active for this server. Follow its current progress or result.", null);
             }
             if (action == "start" && activeStarts.Count >= MaximumConcurrentStarts)
             {
@@ -296,6 +299,7 @@ public sealed class RemoteOperationCoordinator : IAsyncDisposable
                 data.TryAudit($"remote-operation-journal-failed {operation.Id} after-execution {DateTimeOffset.UtcNow:O}");
             }
         }
+        if (AfterTerminalPublishedForChecks is { } barrier) await barrier(operation.Id);
         data.TryAudit($"remote-operation-complete {operation.Id} {operation.DeviceId} {operation.ProfileId} {operation.Action} {operation.Code} {operation.CompletedUtc:O}");
         RecordActivity(publicOutcome.Ok ? "RemoteActionSucceeded" : "RemoteActionFailed",
             $"Friend {ActionLabel(operation.Action)} {(publicOutcome.Ok ? "completed" : "failed")}.",
