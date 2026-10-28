@@ -91,7 +91,7 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
                 }
                 if (!originalLatest.RecoveryRequired)
                 {
-                    if (originalLatest.Code == "SharedSaveUnavailable" && originalVersion is null)
+                    if (originalLatest.Code == "NoPublishedSave" && originalVersion is null)
                         return await manager.StartAsync(profileId, cancellationToken);
                     return await Refused(originalLatest.Code, originalLatest.Message);
                 }
@@ -99,8 +99,6 @@ internal sealed class SimpleOwnerHostingService(LocalData data, HostManager mana
             var latest = await peers.ResolveLatestRecoverySourceAsync(root, cancellationToken);
             if (!latest.Ok || latest.Source is null)
             {
-                if (latest.Code == "SharedSaveUnavailable" && originalVersion is null && requested.Id == sourceId)
-                    return await manager.StartAsync(profileId, cancellationToken);
                 return await Refused(latest.Code, latest.Message);
             }
             var source = latest.Source;

@@ -39,7 +39,19 @@ internal sealed partial class WorldPeerService
             phase = "OriginalLatestSelection";
             var selected = await LatestLocalSaveAsync(group, cancellationToken, progress);
             if (selected is null)
-                return new(false, "SharedSaveUnavailable", "No complete shared save is available on this PC yet.");
+            {
+                phase = "OriginalPristineCheck";
+                var published = await manager.SharedWorldStatusAsync(root.ProfileId).WaitAsync(cancellationToken);
+                var publication = Path.Combine(data.RootPath, "shared-worlds", root.ProfileId.ToString("N"));
+                SharedWorldService.EnsureUnlinkedRoot(data.RootPath, publication);
+                if (published.Latest is not null || published.Error is not null ||
+                    Path.Exists(Path.Combine(publication, "latest.json")) ||
+                    Path.Exists(Path.Combine(publication, root.GroupId.ToString("N"))))
+                    throw new InvalidDataException("The absent original publication is ambiguous or needs review.");
+                if (!await RecoveryAllowedAsync(group, cancellationToken) || LatestObservationHash(root) != observation)
+                    return new(false, "LatestSaveChanged", "Signed save information or permission changed. Check the current save before Start.");
+                return new(false, "NoPublishedSave", "This shared world has no published or known signed progress yet.");
+            }
             if (!selected.ProducedHere || selected.Vault is not null || selected.Descriptor.Branch is not null)
                 return new(true, "DifferentSharedSaveReady", "The newest completed save needs the existing recovery preparation.",
                     RecoveryRequired: true);
@@ -68,6 +80,9 @@ internal sealed partial class WorldPeerService
                 var current = Find(root.GroupKey);
                 if (current is null || current.Root != root || !await RecoveryAllowedAsync(current, cancellationToken))
                     return new(false, "HostingPermissionRequired", "Current receiving and hosting permission needs review before Start.");
+                var published = await manager.SharedWorldStatusAsync(root.ProfileId).WaitAsync(cancellationToken);
+                if (published.Error is not null)
+                    throw new InvalidDataException("The current original publication needs review before catch-up.");
                 return new(true, "SharedSaveCopyPending", KnownProgressPendingMessage, RecoveryRequired: true);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -273,11 +288,16 @@ internal sealed partial class WorldPeerService
             !item.Descriptor.TestOnly && item.Descriptor.TestArtifact is null && AuthorizedDescriptor(group, item.Descriptor)).ToArray();
         if (local.Length == 0)
         {
-            ReportLatestReview(new("Inventory", "NoCompleteCopy", "None", KnownHeadCount:
-                state.Branches.Select(item => item.Branch.HeadVersionHash)
-                    .Concat(state.Sessions.Select(item => item.Session.HeadVersionHash).OfType<string>()).Distinct().Count()));
-            if (state.Branches.Count > 0 || state.Sessions.Any(item => item.Session.HeadVersionHash is not null))
-                throw new InvalidDataException("A known signed save has no complete local payload.");
+            var knownWithoutCopy = state.Branches.Select(item => item.Branch.HeadVersionHash)
+                .Concat(state.Sessions.Select(item => item.Session.HeadVersionHash).OfType<string>())
+                .Concat(state.Peers.SelectMany(peer => peer.AvailableVersionHashes)).Distinct(StringComparer.Ordinal).ToArray();
+            ReportLatestReview(new("Inventory", "NoCompleteCopy", "None", KnownHeadCount: knownWithoutCopy.Length));
+            if (knownWithoutCopy.Length > 0)
+            {
+                var pending = new InvalidDataException("Known signed progress has no complete verified local copy.");
+                pending.Data["WorldPeerLatestReason"] = "KnownProgressNotLocal";
+                throw pending;
+            }
             return null;
         }
         var candidates = local.Select(item => item.Descriptor).ToArray();

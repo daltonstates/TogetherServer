@@ -14,6 +14,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         await OriginalAdvertisementScheduleAsync(parent);
         await LocalAdvertisementIdentityChecksAsync(parent);
         await ReturningOwnerMissingCopyChecksAsync(parent);
+        await OriginalNoPublicationFallbackChecksAsync(parent);
         await OriginalPendingSelectionCompletenessChecksAsync();
         await OriginalPendingAnchoredSelectionChecksAsync(parent);
         await OriginalDiscoveryBudgetDiagnosticAsync(parent);
@@ -206,6 +207,50 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         Require(selected == 0, "Completeness used for pending classification tightened an existing valid anchored selection.");
     }
 
+    private static async Task OriginalNoPublicationFallbackChecksAsync(string parent)
+    {
+        foreach (var shape in new[] { "RetainedCopy", "NoCopy", "AvailableOnly" })
+        {
+            using var fixture = new ReturningOwnerCopyFixture(parent);
+            fixture.RemoveOriginalPublication(retainOldCopy: shape == "RetainedCopy");
+            if (shape == "AvailableOnly") fixture.AnnounceAvailableOnly();
+            else await fixture.AnnounceAsync();
+            var pending = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default);
+            Require(pending is { Ok: true, RecoveryRequired: true, Source: null, Code: "SharedSaveCopyPending" },
+                "Known progress without an original publication was mistaken for a pristine shared world: " + shape);
+            fixture.Offline = true;
+            var result = await fixture.Owner.StartAsync(fixture.Root.ProfileId, default).WaitAsync(TimeSpan.FromSeconds(8));
+            Require(!result.Ok && result.Code == "SharedSaveUnavailable" && fixture.Driver.ValidationAttempts == 0 &&
+                fixture.Driver.PrepareAttempts == 0 && fixture.Driver.StartAttempts == 0,
+                "Failed pending recovery fell through into pristine original validation/setup/Start: " + shape + "/" + result.Code);
+            fixture.RequireNoReceivedCopy();
+            fixture.RequireOriginalPreserved();
+        }
+        foreach (var missing in new[] { false, true })
+        {
+            using var fixture = new ReturningOwnerCopyFixture(parent);
+            fixture.InvalidateOriginalPointer(missing);
+            var refused = await fixture.Owner.StartAsync(fixture.Root.ProfileId, default);
+            Require(!refused.Ok && refused.Code == "SharedSaveHistoryNeedsReview" && fixture.Driver.ValidationAttempts == 0 &&
+                fixture.Driver.PrepareAttempts == 0 && fixture.Driver.StartAttempts == 0,
+                "A damaged pointer or unpointed retained original publication was treated as never published.");
+            fixture.RequireNoReceivedCopy();
+        }
+        using (var fixture = new ReturningOwnerCopyFixture(parent))
+        {
+            fixture.RemoveOriginalPublication(retainOldCopy: false);
+            var pristine = await fixture.Peers.ResolveLatestOriginalStartSourceAsync(fixture.Root, default);
+            Require(pristine is { Code: "NoPublishedSave", RecoveryRequired: false, Source: null },
+                "A genuinely pristine shared world did not retain its explicit first-Start outcome.");
+            var first = await fixture.Owner.StartAsync(fixture.Root.ProfileId, default);
+            Require(first.Code == "OriginalSourceVerified" && fixture.Driver.ValidationAttempts == 1 &&
+                fixture.Driver.PrepareAttempts == 0 && fixture.Driver.StartAttempts == 0,
+                "A pristine shared Start did not reach only the deliberately refusing file-only driver: " + first.Code);
+            fixture.RequireNoReceivedCopy();
+            fixture.RequireOriginalPreserved();
+        }
+    }
+
     private static async Task OriginalDiscoveryBudgetDiagnosticAsync(string parent)
     {
         using var fixture = new OriginalPublicationFixture(parent, "discovery-budget-diagnostic", fileCount: 3);
@@ -321,6 +366,8 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         internal WorldPeerExistingCopyChecks.Fixture Copies { get; }
         internal SharedWorldPeerRoot Root => Copies.Root;
         internal WorldPeerService Peers { get; }
+        internal SimpleOwnerHostingService Owner { get; }
+        internal OriginalStartDriver Driver { get; } = new();
         internal SharedWorldVersion Latest { get; }
         internal List<WorldPeerLatestReviewDiagnostic> Diagnostics { get; } = [];
         internal bool Offline { get; set; }
@@ -328,12 +375,18 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         private readonly SharedWorldVersion original;
         private readonly string originalPayload, liveMarker;
         private readonly byte[] originalBytes;
+        private bool originalRemoved;
+        private string? retainedOriginalPayload;
         private const System.Reflection.BindingFlags Private = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
 
         internal ReturningOwnerCopyFixture(string parent)
         {
             Copies = new(parent, "Branch");
-            var profile = Copies.A.LoadSettings().Profiles.Single();
+            var settings = Copies.A.LoadSettings();
+            var profile = settings.Profiles.Single();
+            profile.ExecutablePath = Path.Combine(Copies.A.RootPath, "never-executed-returning-owner.synthetic");
+            File.WriteAllText(profile.ExecutablePath, "Generated file-only driver; never execute.");
+            Copies.A.SaveSettings(settings);
             original = Copies.Descriptor.Branch!.Offer.Version;
             originalPayload = Path.Combine(Copies.A.RootPath, "shared-worlds", Root.ProfileId.ToString("N"), Root.GroupId.ToString("N"),
                 "1", SharedWorldService.PayloadDirectory, "world.dat");
@@ -361,7 +414,9 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             }
             friends = new(Copies.A, Client);
             var pairing = Read<PairingService>("pairing");
-            Peers = new(Copies.A, new HostManager(Copies.A), friends, pairing, Client);
+            var manager = new HostManager(Copies.A, new GameServerRegistry([Driver], PortProbeMode.ObserveOnly));
+            Peers = new(Copies.A, manager, friends, pairing, Client);
+            Owner = new(Copies.A, manager, Peers, () => throw new InvalidOperationException("The generated owner must not enable a listener."));
             Peers.LatestReviewDiagnostic = Diagnostics.Add;
         }
 
@@ -372,6 +427,39 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             var publication = (Task<bool>)typeof(WorldPeerService).GetMethod("PublishLocalAdvertisementAsync", Private)!
                 .Invoke(Copies.TargetService, [group, CancellationToken.None, false, false])!;
             Require(await publication, "The generated peer could not publish its signed completed continuation.");
+        }
+
+        internal void AnnounceAvailableOnly()
+        {
+            var roster = Read<SharedWorldRoster>("roster");
+            using var member = ECDsa.Create();
+            member.ImportPkcs8PrivateKey(Copies.B.LoadProtected(Path.GetFileName(Copies.KeyPath))!, out _);
+            Store(Copies.B, Root, roster).Publish(Copies.Descriptor.Branch!.Offer.Proposal.ProposerDeviceId, member,
+                [Copies.SourceRoute], [], [], [Latest.VersionHash]);
+        }
+
+        internal void RemoveOriginalPublication(bool retainOldCopy)
+        {
+            if (retainOldCopy)
+            {
+                var retained = Path.Combine(Copies.A.RootPath, "received-shared-worlds", Guid.Empty.ToString("N"), Root.ProfileId.ToString("N"));
+                WriteCopy(retained, original, originalBytes);
+                retainedOriginalPayload = Path.Combine(retained, original.VersionHash, SharedWorldService.PayloadDirectory, "world.dat");
+            }
+            var publication = Path.GetFullPath(Path.Combine(Copies.A.RootPath, "shared-worlds", Root.ProfileId.ToString("N")));
+            var group = Path.GetFullPath(Path.Combine(publication, Root.GroupId.ToString("N")));
+            Require(group.StartsWith(Path.GetFullPath(Copies.A.RootPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase),
+                "The disposable publication reset crossed its generated fixture root.");
+            File.Delete(Path.Combine(publication, "latest.json"));
+            Directory.Delete(group, recursive: true);
+            originalRemoved = true;
+        }
+
+        internal void InvalidateOriginalPointer(bool missing)
+        {
+            var pointer = Path.Combine(Copies.A.RootPath, "shared-worlds", Root.ProfileId.ToString("N"), "latest.json");
+            if (missing) File.Delete(pointer);
+            else File.WriteAllText(pointer, "{damaged generated original pointer");
         }
 
         internal void RemoveSourceAccess(bool expired)
@@ -400,14 +488,18 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             !Directory.Exists(Path.Combine(Copies.A.RootPath, "world-peer-recovery-sources")) &&
             !Copies.SourceHandler.Operations.Any(operation => operation is WorldPeerOperations.Catalog or WorldPeerOperations.Chunk or WorldPeerOperations.Seed),
             "A pending/unauthorized original Start received payload, copied a source or bypassed its metadata-only routing boundary.");
-        internal void RequireOriginalPreserved() => Require(
-            File.ReadAllBytes(originalPayload).SequenceEqual(originalBytes) &&
-            File.ReadAllText(liveMarker) == "generated original live world stays intact" &&
-            JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(Path.Combine(Copies.A.RootPath, "shared-worlds",
-                Root.ProfileId.ToString("N"), "latest.json")), Json)?.VersionHash == original.VersionHash &&
-            Copies.A.LoadSettings().Profiles.Count == 1 && !Copies.A.LoadSettings().CompanionListeningEnabled &&
-            Copies.A.LoadRuns().Count == 0 && Copies.B.LoadRuns().Count == 0,
-            "Returning-owner catch-up overwrote original progress, restored/setup a profile, enabled a listener or created a run.");
+        internal void RequireOriginalPreserved()
+        {
+            var pointer = Path.Combine(Copies.A.RootPath, "shared-worlds", Root.ProfileId.ToString("N"), "latest.json");
+            var publicationPreserved = originalRemoved ? !File.Exists(originalPayload) && !File.Exists(pointer) :
+                File.ReadAllBytes(originalPayload).SequenceEqual(originalBytes) &&
+                JsonSerializer.Deserialize<SharedWorldVersion>(File.ReadAllBytes(pointer), Json)?.VersionHash == original.VersionHash;
+            Require(publicationPreserved && File.ReadAllText(liveMarker) == "generated original live world stays intact" &&
+                (retainedOriginalPayload is null || File.ReadAllBytes(retainedOriginalPayload).SequenceEqual(originalBytes)) &&
+                Copies.A.LoadSettings().Profiles.Count == 1 && !Copies.A.LoadSettings().CompanionListeningEnabled &&
+                Copies.A.LoadRuns().Count == 0 && Copies.B.LoadRuns().Count == 0,
+                "Returning-owner catch-up overwrote original progress, restored/setup a profile, enabled a listener or created a run.");
+        }
         public void Dispose() { Peers.Dispose(); friends.Dispose(); Copies.Dispose(); }
 
         private sealed class ReturningOwnerWire(ReturningOwnerCopyFixture fixture, HttpMessageHandler handler) : HttpMessageHandler

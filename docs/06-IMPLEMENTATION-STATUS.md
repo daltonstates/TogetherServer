@@ -51,7 +51,7 @@ liveness risk; it has not been established as the cause of the physical delay.
 Local validation is code-only. Strict Release solution compilation passes with
 zero warnings/errors. The 119 AppFlows checks and 47 SharedHostNotice checks
 pass, including unchanged-selection Preparing/Hosting/Stopped updates and the
-app/game port distinction; typecheck, production bundle and lint pass. Seven
+app/game port distinction; typecheck, production bundle and lint pass. Eight
 focused generated-file/fake-HTTP backend groups pass, including retained
 historical reuse, signed-anchor/missing-copy routing, current access refusals,
 publication priority, pull-hint expiry and scheduling. The final code-only
@@ -64,6 +64,26 @@ assertion still expecting the old generic review code for a missing newer save.
 The revised check distinguishes pending-copy from fork refusal and retains the
 same no-source, metadata-only, no-run and unchanged cached-payload assertions.
 The failed log and scratch data remain preserved for comparison.
+
+Before publication, caller review found that an absent original publication
+record could still reach a legacy pristine-world fallback after required
+catch-up failed. The first .21 build, source
+`70b3db736193635c205ef08d082539d2f5b14994`, is held from release despite its
+passing focused/source/API checks and ordinary hosting journeys. Its
+[CI evidence](https://github.com/daltonstates/TogetherServer/actions/runs/40613895713)
+is retained. The integrated correction removes the post-recovery fallback and
+reserves first Start for an explicit no-known-publication outcome. Known signed
+progress without any local copy enters bounded catch-up without a Start source;
+corrupt or ambiguous original publication metadata stays refused. Generated
+fake-driver coverage checks zero validation/setup/Start after unavailable
+catch-up, no-copy routing, corrupt records and genuinely pristine first Start.
+The corrected source passes both focused discovery and adopted-hosting groups,
+including those new guards, and strict compilation with zero warnings/errors.
+All 16 functional/packaging lanes of the first CI pass, including 94 source
+groups, eight API journeys, 1,597 UI tests and the broader fixtures; its Desktop
+lane has 12 required passes and the explicit QuietTime notification block.
+Those results do not substitute for final-source CI. No .21 tag/release or owner
+installation has occurred at this checkpoint.
 
 ### Separate physical .20 observations
 
