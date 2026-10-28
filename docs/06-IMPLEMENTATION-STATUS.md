@@ -128,7 +128,38 @@ unpointed current-group publication state and known-progress refusals remain
 protected. A generated regression retains old manifest/payload/roster bytes,
 performs the explicit source review and verifies new-group publication 1 without
 touching those old files. Strict compilation passes with zero warnings/errors;
-focused verification and final-source hosted CI remain pending.
+focused verification passes, including the reviewed-source regression.
+
+The `a1aa73ea08e37e47342ac9b3023a1e7e2118809f`
+[run](https://github.com/daltonstates/TogetherServer/actions/runs/40624449500)
+passes all 27 broader gates, including the reviewed source rotation, Companion
+46/46, Minecraft 12/12, all 94 source groups and 1,597 UI tests. Its first
+ordinary hosting journey passes all nine stages; the second and the separate
+diagnostic preparation return `LatestSaveChanged`. The diagnostic contains two
+successful selections of the same single canonical copy before the trailing
+observation changes during final verification. The changed component is still
+unknown. This candidate remains withheld.
+
+Recovery-source preparation now permits one bounded revalidation when only copy
+evidence changes and each newly advertised/received hash is in the exact
+selected save's already verified signed ancestry. Root, roster, device, consent,
+sharing, peer identity/access/conflict, branch and session fields must stay
+identical. The retained source is verified again, current permission and strict
+all-head selection are repeated, and the fresh full hash must remain stable.
+Unknown hashes (checked per peer), new heads, authority/consent/session/conflict
+changes, source tampering or a second change still refuse. The original and
+prepared-Start full fences retain their semantics. No discovery, network,
+retention, setup or Start instruction is replayed. Stable-path permission is
+also checked after selection to cover expiry during verification.
+
+Strict code-only compilation has zero warnings/errors. Nine unique focused
+backend groups have passed across the integrated work; final discovery,
+freshness and recovery-head groups pass, including signed copy-only positive
+cases and unknown-copy, new-head, grant, conflict, tamper and second-change
+negative cases. They assert no extra transfer/retention or hosting mutation.
+Fixed categorical diagnostics identify future refusal boundaries without paths,
+identities or save hashes. The source is awaiting final hosted verification; no
+.21 release, tag, installation or physical test has occurred.
 
 ### Separate physical .20 observations
 

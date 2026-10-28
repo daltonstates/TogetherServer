@@ -16,6 +16,7 @@ internal static partial class WorldPeerHostingDiscoveryChecks
         await ReturningOwnerMissingCopyChecksAsync(parent);
         await OriginalNoPublicationFallbackChecksAsync(parent);
         await ReviewedOriginalSourceRotationChecksAsync(parent);
+        await RecoveryCopyEvidenceRevalidationChecksAsync(parent);
         await OriginalPendingSelectionCompletenessChecksAsync();
         await OriginalPendingAnchoredSelectionChecksAsync(parent);
         await OriginalDiscoveryBudgetDiagnosticAsync(parent);
@@ -272,6 +273,123 @@ internal static partial class WorldPeerHostingDiscoveryChecks
             fixture.RequireNoCopyOrTransfer();
         }
         finally { gate.Release(); }
+    }
+
+    private static async Task RecoveryCopyEvidenceRevalidationChecksAsync(string parent)
+    {
+        foreach (var change in new[] { "Selected", "Ancestor", "Unknown", "UnknownAlreadyClaimed", "Head", "Grant", "Conflict", "SecondChange", "RetainedTamper" })
+        {
+            using var fixture = new OriginalPublicationFixture(parent, "revalidate-" + change, fileCount: 3);
+            Require((await fixture.Peers.EnsureOwnerHostingMembershipAsync(fixture.Root, default)).Ok,
+                "The generated recovery revalidation lacked current owner membership.");
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var world = fixture.Base.Target;
+            var remote = (SharedWorldPeerStore)typeof(World).GetField("remoteStore", flags)!.GetValue(world)!;
+            var member = (ECDsa)typeof(World).GetField("key", flags)!.GetValue(world)!;
+            var memberId = (Guid)typeof(World).GetField("memberId", flags)!.GetValue(world)!;
+            var local = Store(fixture.Data, fixture.Root, world.Roster);
+            var unknown = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("generated unverified copy evidence")));
+            SharedWorldPeerAnnouncement RemoteHead() => remote.ReadPage().Announcements.Where(item => item.DeviceId == memberId)
+                .OrderByDescending(item => item.Revision).First();
+            void ImportCopies(params string[] copies)
+            {
+                var current = RemoteHead();
+                remote.Publish(memberId, member, current.Routes, current.Sessions, current.Branches, copies);
+                local.ImportPage(remote.ReadPage());
+            }
+            ImportCopies(change == "UnknownAlreadyClaimed" ? [unknown] : []);
+            var diagnostics = new List<WorldPeerLatestReviewDiagnostic>();
+            var selections = 0;
+            var changes = 0;
+            var preparing = 0;
+            var preparingAtFinalSelection = -1;
+            var networkAtSelection = -1;
+            Exception? mutationFailure = null;
+            fixture.Peers.LatestReviewDiagnostic = diagnostic =>
+            {
+                diagnostics.Add(diagnostic);
+                try
+                {
+                    if (diagnostic.Phase == "RecoveryFinalRevalidation" && diagnostic.Reason == "RecheckingKnownCopies" && change == "RetainedTamper")
+                    {
+                        var retained = WorldPeerRecoverySource.StorageRoot(fixture.Data, fixture.Root,
+                            Lane(fixture.Root, Guid.Empty), fixture.Current.VersionHash);
+                        var path = Path.Combine(retained, fixture.Current.VersionHash, SharedWorldService.PayloadDirectory, "world.dat");
+                        var bytes = File.ReadAllBytes(path); bytes[0] ^= 1;
+                        File.WriteAllBytes(path, bytes);
+                        changes++;
+                    }
+                    if (diagnostic.Phase != "LatestSelection" || diagnostic.Reason != "UniqueDescendantVerified") return;
+                    selections++;
+                    if (selections == 1) networkAtSelection = world.Handler.PayloadRequests;
+                    if (selections == 3 && change == "SecondChange") { ImportCopies(); changes++; return; }
+                    if (selections != 2) return;
+                    preparingAtFinalSelection = preparing;
+                    if (change == "UnknownAlreadyClaimed")
+                    {
+                        var own = local.ReadPage().Announcements.Where(item => item.DeviceId == Guid.Empty).OrderByDescending(item => item.Revision).First();
+                        local.Publish(Guid.Empty, fixture.Base.Owner, own.Routes, own.Sessions, own.Branches, [.. own.AvailableVersionHashes, unknown]);
+                    }
+                    else if (change == "Head")
+                    {
+                        var head = SharedWorldService.SignVersion(fixture.Current with
+                        { Number = fixture.Current.Number + 1, ParentHash = fixture.Current.VersionHash, BackupId = Guid.NewGuid() }, fixture.Base.Owner);
+                        world.Announce(head);
+                        local.ImportPage(remote.ReadPage());
+                    }
+                    else if (change == "Grant")
+                    {
+                        var updated = SignRoster(world.Roster with
+                        {
+                            Epoch = world.Roster.Epoch + 1,
+                            Revision = world.Roster.Revision + 1,
+                            Members = world.Roster.Members.Select(item => item with { Grants = item.Grants with { Receive = false } }).ToArray()
+                        }, fixture.Base.Owner);
+                        SaveGroups(fixture.Data, [Membership(fixture.Base.Other.Root, fixture.Base.Other.Roster, Guid.Empty, fixture.Base.Other.Route),
+                            Membership(fixture.Root, updated, Guid.Empty, world.Route)]);
+                    }
+                    else if (change == "Conflict")
+                    {
+                        var current = RemoteHead();
+                        var fork = SharedWorldPeerTrust.Sign(current with
+                        { AnnouncedUtc = current.AnnouncedUtc.AddTicks(1), AnnouncementHash = "", Signature = "" }, member);
+                        Require(local.Import(fork).Code == "PeerConflictPreserved", "The generated conflicting signer observation was not preserved.");
+                    }
+                    else ImportCopies(change switch
+                    {
+                        "Ancestor" => [world.Version.VersionHash],
+                        "Unknown" => [unknown],
+                        _ => [fixture.Current.VersionHash]
+                    });
+                    changes++;
+                }
+                catch (Exception error) { mutationFailure = error; }
+            };
+            var result = await fixture.Peers.ResolveLatestRecoverySourceAsync(fixture.Root, default, progress =>
+            { if (progress.Phase == "PreparingCopy") preparing++; });
+            if (mutationFailure is not null) throw new InvalidOperationException("The generated revalidation mutation failed: " + change, mutationFailure);
+            var benign = change is "Selected" or "Ancestor";
+            var expectedReason = change switch
+            {
+                "Selected" or "Ancestor" => "KnownCopiesRevalidated",
+                "Unknown" or "UnknownAlreadyClaimed" => "UnknownCopyEvidence",
+                "SecondChange" => "SecondObservationChanged",
+                "RetainedTamper" => "RetainedSourceChanged",
+                _ => "GuardingEvidenceChanged"
+            };
+            Require(changes == (change is "SecondChange" or "RetainedTamper" ? 2 : 1) && selections >= 2 && preparingAtFinalSelection >= 0 &&
+                preparing == preparingAtFinalSelection && world.Handler.PayloadRequests == networkAtSelection &&
+                diagnostics.Any(item => item.Phase == "RecoveryFinalRevalidation" && item.Reason == expectedReason),
+                "Recovery revalidation lost its mutation/category or repeated transfer/retention: " + change);
+            Require(benign ? result.Ok && result.Source?.Descriptor.Version.VersionHash == fixture.Current.VersionHash &&
+                    result.ObservationHash == fixture.Peers.LatestObservationHash(fixture.Root) :
+                !result.Ok && result.Source is null && result.Code == "LatestSaveChanged",
+                "Changed evidence authorized an unknown/stale save or refused one stable known-copy update: " + change + "/" + result.Code);
+            Require(fixture.Driver.ValidationAttempts == 0 && fixture.Driver.PrepareAttempts == 0 && fixture.Driver.StartAttempts == 0 &&
+                fixture.Data.LoadRuns().Count == 0 && fixture.Data.LoadSettings().Profiles.Count == 2 &&
+                !fixture.Data.LoadSettings().CompanionListeningEnabled,
+                "Recovery observation revalidation entered local setup/Start or changed hosting policy.");
+        }
     }
 
     private static async Task ReviewedOriginalSourceRotationChecksAsync(string parent)
