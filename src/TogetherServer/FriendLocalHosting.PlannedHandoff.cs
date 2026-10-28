@@ -164,9 +164,13 @@ internal sealed partial class FriendLocalHostingService
             if (local is not null && local.SetupIdentity != PortableSetupIdentity(version))
                 return await Result("LocalServerSetupRequired", "The shared game's required setup changed. Review this PC's matching installation before the move continues.");
             var localProfile = snapshot.Settings.Profiles.SingleOrDefault(item => item.Id == profileId) ??
-                (local is null ? null : new ServerProfile { Kind = version.Game, GamePort = local.Setup.GamePort,
+                (local is null ? null : new ServerProfile
+                {
+                    Kind = version.Game,
+                    GamePort = local.Setup.GamePort,
                     WorldDirectory = local.PreparedServerRoot ?? "",
-                    Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = local.FactorioRconPort ?? 27015 } : null });
+                    Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = local.FactorioRconPort ?? 27015 } : null
+                });
             progress.Report("Ports", "Checking this PC's approved game ports before preparing the hosting move.");
             var selectedPorts = await ChooseLocalPortsAsync(version, localProfile, input, cancellationToken);
             if (!selectedPorts.Ok) return await Result(selectedPorts.Code, selectedPorts.Message);

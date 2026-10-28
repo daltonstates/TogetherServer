@@ -142,8 +142,15 @@ internal static class ApprovedGamePortsChecks
         using var data = Data(root, "approved-owner");
         var driver = new LocalHostingChecks.FilesOnlyDriver();
         var manager = new HostManager(data, new GameServerRegistry([driver], PortProbeMode.ObserveOnly));
-        var profile = new ServerProfile { Kind = GameKinds.Fixture, Name = "Synthetic", WorldId = "Synthetic",
-            WorldDirectory = Path.Combine(data.RootPath, "world"), ExecutablePath = Path.Combine(data.RootPath, "never-run.synthetic"), GamePort = 2500 };
+        var profile = new ServerProfile
+        {
+            Kind = GameKinds.Fixture,
+            Name = "Synthetic",
+            WorldId = "Synthetic",
+            WorldDirectory = Path.Combine(data.RootPath, "world"),
+            ExecutablePath = Path.Combine(data.RootPath, "never-run.synthetic"),
+            GamePort = 2500
+        };
         var saved = await manager.UpdateSettingsAsync(new HostSettings { Profiles = [profile] });
         Require(saved.Ok && data.ApprovedGamePorts.Find(GameKinds.Fixture)?.GamePort == 2500 && driver.ProcessAttempts == 0,
             "explicit own-server setup did not record the selected port or invoked a process");

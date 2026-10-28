@@ -207,7 +207,8 @@ public sealed partial class HostManager
             // silent selection of a different unapproved port.
             var candidate = new ServerProfile
             {
-                Kind = version.Game, GamePort = first,
+                Kind = version.Game,
+                GamePort = first,
                 Factorio = version.Game == GameKinds.Factorio ? new() { RconPort = approved?.FactorioRconPort ?? 27015 } : null
             };
             cancellationToken.ThrowIfCancellationRequested();

@@ -810,9 +810,11 @@ internal sealed partial class WorldPeerService : IDisposable
         var body = payload ?? [];
         var request = WorldPeerProtocol.Sign(challenge, operation, key, offset, versionHash, fileIndex, chunkOffset, body);
         using var exchange = new HttpRequestMessage(HttpMethod.Post, prefix + "exchange")
-        { Content = SharedSaveCompression.SeedContent(JsonSerializer.SerializeToUtf8Bytes(
+        {
+            Content = SharedSaveCompression.SeedContent(JsonSerializer.SerializeToUtf8Bytes(
             new WorldPeerExchangeRequest(request, body), SharedWorldPeerTrust.Json),
-            operation == WorldPeerOperations.Seed && acceptsCompressedSeed) };
+            operation == WorldPeerOperations.Seed && acceptsCompressedSeed)
+        };
         AddPeerHeaders(exchange);
         observation?.Request(TransferOperation(operation), WorldPeerTransferHttpStep.Exchange);
         using var response = await client.SendAsync(exchange, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
