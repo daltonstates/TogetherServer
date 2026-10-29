@@ -1456,6 +1456,50 @@ try
             .SetEquals([profile.Id, joinProfile.Id]),
         "renamed Friend PC name or multiple server assignments did not survive Host restart");
     Console.WriteLine("PASS Friend PC names and multiple server assignments persist after Host restart"); passes++;
+    // Exercise the mapped HTTPS endpoint, not just limiter fixtures. This
+    // generated PC has no lifecycle permission and owns no background poller.
+    using var budgetActivation = await publicClient.PostAsJsonAsync("/api/companion/pair",
+        new PairingActivation(inviteA.DeviceId, inviteA.Code, true), webJson);
+    Require(budgetActivation.IsSuccessStatusCode, "bulk-budget fixture activation failed");
+    var budgetCredential = await budgetActivation.Content.ReadFromJsonAsync<PairingCredential>(webJson) ??
+        throw new Exception("empty bulk-budget fixture activation");
+    Require((await OwnerPut<DevicePermissionRequest, PairingDecision>(owner,
+        $"/api/local/devices/{budgetCredential.DeviceId}/permissions", new(false, false))).Ok,
+        "bulk-budget fixture permissions were not saved");
+    var budgetClock = Stopwatch.StartNew();
+    for (var index = 0; index <= 140; index++)
+    {
+        using var bulkRequest = new HttpRequestMessage(HttpMethod.Get,
+            $"/api/companion/servers/{profile.Id}/shared-world");
+        bulkRequest.Headers.Add("X-Device-Id", budgetCredential.DeviceId.ToString());
+        bulkRequest.Headers.Add(CompanionProtocol.HeaderName, CompanionProtocol.Current.ToString());
+        bulkRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", budgetCredential.Credential);
+        using var bulkResponse = await publicClient.SendAsync(bulkRequest);
+        if (index < 140)
+            Require(bulkResponse.StatusCode == HttpStatusCode.Forbidden,
+                $"bulk-budget fixture did not reach its expected sharing refusal at {index}: {(int)bulkResponse.StatusCode}");
+        else
+        {
+            var limit = await bulkResponse.Content.ReadFromJsonAsync<PairingDecision>(webJson);
+            Require(bulkResponse.StatusCode == HttpStatusCode.TooManyRequests && limit?.Code == "RateLimited",
+                "bulk requests did not reach their bounded authenticated device subquota");
+        }
+    }
+    // Permission refusal happens before operation creation, so this helper
+    // performs exactly one authenticated request and no operation polling.
+    var reservedStop = await PublicAction(publicClient, budgetCredential, profile.Id, Guid.NewGuid(), "stop");
+    Require(!reservedStop.Ok && reservedStop.Code == "PermissionDenied" && reservedStop.OperationId is null,
+        "bulk traffic consumed the reserved Stop permission check: " + reservedStop.Code);
+    for (var index = 0; index < 39; index++)
+        Require((await PublicStatus(publicClient, budgetCredential)).Protocol?.Compatible == true,
+            "bulk refusal consumed a reserved interactive permit");
+    var exhaustedStop = await PublicAction(publicClient, budgetCredential, profile.Id, Guid.NewGuid(), "stop");
+    Require(!exhaustedStop.Ok && exhaustedStop.Code == "RateLimited" && budgetClock.Elapsed < TimeSpan.FromMinutes(1) &&
+        (await PublicStatus(publicClient, joinCredential)).Protocol?.Compatible == true &&
+        (await OwnerGetJson<HostSnapshot>(owner, "/api/local/snapshot")).Runs.Single(run => run.ProfileId == profile.Id).ProcessId == firstPid,
+        "the reserved-budget check raised the total limit, throttled another PC or changed the running process");
+    Console.WriteLine("PASS mapped bulk requests preserve remote-control permission checks within the unchanged 180-request device cap"); passes++;
+
     var restartedRenewal = await RenewCredential(priorCredentialC);
     Require(restartedRenewal.Status == HttpStatusCode.OK &&
         restartedRenewal.Renewal?.Credential == credentialC.Credential &&
@@ -2723,13 +2767,15 @@ async Task<FriendActionResult> FriendAction(HttpClient client, Guid profileId, s
     var deadline = DateTimeOffset.UtcNow.AddSeconds(45);
     while (DateTimeOffset.UtcNow < deadline)
     {
-        var status = await OwnerPost<object, FriendView>(client, "/api/local/friend/poll", new { });
+        // Observe the app-owned five-second network poll without manufacturing
+        // ten authenticated polls/second while an explicit operation prepares.
+        var status = await OwnerGetJson<FriendView>(client, "/api/local/snapshot");
         var operation = status.Profiles.Select(profile => profile.Operation)
             .FirstOrDefault(candidate => candidate?.Id == operationId);
         if (operation is not null && RemoteOperationStates.Terminal(operation.State))
             return new(operation.Ok == true, operation.Code, operation.Message, null,
                 operation.PortConflicts, operation.Id, operation.State);
-        await Task.Delay(100);
+        await Task.Delay(500);
     }
     throw new Exception($"Friend {action} operation {operationId} did not reach a terminal state.");
 }
@@ -2750,7 +2796,7 @@ async Task<FriendActionResult> PublicAction(HttpClient client, PairingCredential
     var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
     while (DateTimeOffset.UtcNow < deadline)
     {
-        await Task.Delay(100);
+        await Task.Delay(1000);
         using var poll = new HttpRequestMessage(HttpMethod.Get, "/api/companion/operations/" + operationId);
         poll.Headers.Add("X-Device-Id", credential.DeviceId.ToString());
         poll.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Credential);

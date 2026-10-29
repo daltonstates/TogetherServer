@@ -34,7 +34,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
     private string? activeAddress;
     private readonly SemaphoreSlim listenerGate = new(1, 1);
     private readonly RemoteOperationCoordinator operations = new(data);
-    private readonly AuthenticatedDeviceRateLimiter deviceRateLimiter = new(180, TimeSpan.FromMinutes(1));
+    private readonly AuthenticatedDeviceTrafficBudget deviceRateLimiter = new();
     private readonly SharedWorldEnrollmentNonces sharedEnrollment = new();
     private readonly SharedWorldEnrollmentNonces successorEnrollment = new();
     private readonly SharedWorldVoteInbox recoveryVotes = new(data);
@@ -207,9 +207,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
         builder.Services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
-                RateLimitPartition.GetFixedWindowLimiter("host", _ => new FixedWindowRateLimiterOptions
-                { PermitLimit = 600, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
+            options.GlobalLimiter = CompanionTrafficBudget.CreateGlobalLimiter();
             options.AddPolicy("pairing", context => RateLimitPartition.GetFixedWindowLimiter(
                 context.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
                 { PermitLimit = 12, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true }));
@@ -275,7 +273,7 @@ public sealed partial class CompanionServer(LocalData data, HostManager manager,
             var token = auth.StartsWith("Bearer ", StringComparison.Ordinal) ? auth[7..] : null;
             decision = pairing.Authenticate(id, token, out device, out usedPreviousCredential);
             if (!decision.Ok) return false;
-            if (deviceRateLimiter.TryAcquire(id)) return true;
+            if (deviceRateLimiter.TryAcquire(id, CompanionTrafficBudget.IsBulkTransfer(context))) return true;
             device = null;
             decision = new(false, "RateLimited", "This PC is sending too many requests. Wait a moment and try again.");
             return false;

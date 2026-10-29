@@ -83,7 +83,48 @@ five unused mock parameters, corrected without weakening read-only-call
 assertions. The .24 published executable is pinned as an additional
 compatibility lane, alongside the seven existing published-version lanes.
 
-Frozen application source is `d93408c25f8ace57207fba6f5e6b117465469fa9`.
+The initial frozen application source below is **superseded** by the
+request-budget correction described next. Its artifacts are retained as
+evidence, not the next publication candidate.
+
+Additional hosted [run 40810649216](https://github.com/daltonstates/TogetherServer/actions/runs/40810649216)
+proved the source rotation was safely refused: `ConsentRequired` before and
+after restart, pending review for the exact replacement, original approval,
+unchanged pointer, old payload retained, no new payload/receipt and zero
+Host confirmation. Explicit consent renewal then succeeded. Companion
+reached 25 passing groups before a different failure:
+`deniedStop=RateLimited`, `unsupportedStop=ServerNotReady`.
+
+The harness forced fresh network polls every 100 ms; it now observes the
+local cached snapshot while the app's normal five-second poll continues.
+Direct public operation observations use one-second polling; all original
+30/45-second deadlines and permission/occupancy assertions remain. Source
+review also confirmed a real product contention path: original-Host save
+requests and controls shared the same 180-request/minute device allowance.
+About 45 MiB of 256 KiB chunks alone could exhaust it before status or
+metadata overhead, blocking unrelated controls.
+
+The correction retains the **180/device and 600/Host per-minute aggregate
+ceilings**. Bulk shared-save and peer endpoint traffic can use at most
+140/device and 480/Host, leaving 40/device and 120/Host for non-bulk requests.
+Both counters use one aligned monotonic window and one atomic debit, so
+rejected bulk and rollover cannot consume the reserve. Peer device and
+pairing limits remain. Classification uses only trusted fixed route
+metadata; credentials are still authenticated before device accounting and
+all access, freshness, occupancy and process guards remain authoritative.
+This is reserved request capacity, not faster throughput or guaranteed
+service during arbitrary non-bulk overload.
+
+The solution builds with zero warnings/errors. Four focused source groups
+pass, including the new quota saturation/concurrency/rollover group and the
+existing failed-attempt, job-ownership and original-Host Stop guards. The
+registry now contains 106 groups. A native hosted check also exercises the
+actual mapped HTTPS routes with a fresh generated device, exhausted bulk
+allowance, a preserved Stop permission refusal and the unchanged total cap;
+it runs after the fixture's planned Host restart to isolate its quota window.
+A fresh immutable candidate and full hosted verification are pending.
+
+Initial frozen application source was `d93408c25f8ace57207fba6f5e6b117465469fa9`.
 [Hosted run 40804155941](https://github.com/daltonstates/TogetherServer/actions/runs/40804155941)
 completed with **17 successful jobs, two failed and one dispatch-only skip**.
 All 105 source groups, packaged QoL API, Core, Browser, Rehearsal, both-ended
@@ -152,8 +193,8 @@ Installer SHA-256 is
 (60,828,095 bytes); its manifest reports NotSigned. The package passed six
 installer checks and all three wizard choices on its dedicated runner,
 without claiming full acceptance. Evidence is under
-`local-data/ci25-verified/`. No corrected test is a reason to rebuild or
-replace these frozen application bytes.
+`local-data/ci25-verified/`. Test-only corrections reused these bytes; the
+subsequent product budget correction requires a new candidate.
 
 No running application, transfer, pairing or world was modified. Workers
 inspected repository/synthetic data only; shared builds and commits remain

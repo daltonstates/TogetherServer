@@ -63,6 +63,7 @@ var groups = new (string Name, Func<Task> Run)[]
     ("Persisted failed Start and preparation diagnostics", () => StartAttemptDiagnosticsChecks.RunAsync(root)),
     ("Fixed private receive-request failure diagnostics", () => PeerRequestFailureDiagnosticsChecks.RunAsync(root)),
     ("Shared transfer lease ownership and safe failures", () => SharedTransferFailureChecks.RunAsync(root)),
+    ("Reserved remote controls during bulk save traffic", CompanionTrafficBudgetChecks.RunAsync),
     ("Quit intent and authoritative launch admission", () => AppShutdownIntentChecks.RunAsync(root)),
     ("Owner Start preparation releases unrelated controls", () => OwnerStartLocalGateChecks.RunAsync(root)),
     ("Per-manager owner Start preparation single flight", () => SimpleOwnerStartSingleFlightChecks.RunAsync(root)),
