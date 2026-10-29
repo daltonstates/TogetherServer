@@ -19,6 +19,7 @@ internal static partial class LocalHostingChecks
     {
         Inputs();
         await PreparedRouteWarningsAsync(root);
+        await RetainedValheimPortsWithoutIncomingListenerAsync(root);
         await SavedInstallationBeforeDiscoveryAsync(root);
         await WorldPeerLocalHostingChecks.RunAsync(root);
         await OwnerSwitchAsync(root);
@@ -587,7 +588,7 @@ internal static partial class LocalHostingChecks
         internal readonly Guid GroupId = Guid.NewGuid();
         internal readonly Guid DeviceId = Guid.NewGuid();
         internal readonly int ControlPort;
-        internal readonly FilesOnlyDriver Driver = new();
+        internal readonly FilesOnlyDriver Driver;
         internal readonly HostManager Manager;
         internal readonly FriendLocalHostingService Service;
         private readonly FriendService friends;
@@ -595,19 +596,37 @@ internal static partial class LocalHostingChecks
         private readonly ECDsa member = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         private readonly string vault;
         private readonly int fileCount;
+        private readonly string game;
+        private readonly string gameVersion;
         private readonly Guid? alternateConnectionId;
         private SharedWorldVersion head;
 
         internal Fixture(string root, bool granted, bool automaticReceiving = false, int fileCount = 1, int initialVersion = 1,
-            bool alternateConnection = false, bool approvedPorts = true)
+            bool alternateConnection = false, bool approvedPorts = true, string game = GameKinds.Fixture)
         {
             this.fileCount = fileCount;
+            this.game = game;
+            Driver = new(game);
             Data = new(Path.Combine(root, "local-hosting-" + Guid.NewGuid().ToString("N")));
             var properties = IPGlobalProperties.GetIPGlobalProperties();
             var occupied = properties.GetActiveTcpListeners().Concat(properties.GetActiveUdpListeners()).Select(item => item.Port).ToHashSet();
-            ControlPort = Enumerable.Range(50000, 8000).First(port => Enumerable.Range(port, 4).All(item => !occupied.Contains(item)));
+            ControlPort = Enumerable.Range(50000, 8000).First(port => Enumerable.Range(port, 6).All(item => !occupied.Contains(item)));
             Data.SaveSettings(new HostSettings { CompanionPort = ControlPort, Profiles = [] });
-            if (approvedPorts) Data.ApprovedGamePorts.Save(new(GameKinds.Fixture, ControlPort + 2, null));
+            if (approvedPorts) Data.ApprovedGamePorts.Save(new(game, ControlPort + 2, null));
+            var executable = Path.Combine(Data.RootPath, "never-run.synthetic");
+            if (game == GameKinds.Valheim)
+            {
+                // Read only version metadata from our own assembly copy. The
+                // file-only driver refuses every process operation.
+                File.Copy(typeof(HostManager).Assembly.Location, executable);
+                gameVersion = ServerAddOns.GameVersion(new() { Kind = game, ExecutablePath = executable });
+                Require(gameVersion != "Unknown", "the generated Valheim file boundary needs readable assembly version metadata");
+            }
+            else
+            {
+                File.WriteAllText(executable, "file boundary only; never executable");
+                gameVersion = "Unknown";
+            }
             var draft = new SharedWorldRoster(3, GroupId, ProfileId, 1, 1, true, Public(owner),
                 [new(DeviceId, Public(member), new(Receive: granted, EligibleHost: granted, Reshare: automaticReceiving), false)], "",
                 SignerDeviceId: Guid.Empty, SignerPublicKey: Public(owner));
@@ -646,8 +665,6 @@ internal static partial class LocalHostingChecks
                 Data.SaveProtected("friend-connections.protected", JsonSerializer.SerializeToUtf8Bytes(
                     new { ids = new[] { Guid.Empty, alternateConnectionId.Value }, selectedId = Guid.Empty }, Json));
             }
-            var executable = Path.Combine(Data.RootPath, "never-run.synthetic");
-            File.WriteAllText(executable, "file boundary only; never executable");
             Manager = new(Data, new GameServerRegistry([Driver], PortProbeMode.ObserveOnly));
             friends = new(Data, (_, _) => throw new InvalidOperationException("Network access is forbidden in file-only preparation checks."));
             Service = new(Data, friends, Manager, _ => [executable]);
@@ -720,9 +737,11 @@ internal static partial class LocalHostingChecks
                     return new(true, observed.Code, observed.Message, source, observed.ObservationHash);
                 });
         private SharedWorldVersion Version(long number, string? parent, byte[] bytes) => SharedWorldService.SignVersion(new(4,
-            GroupId, number, parent, ProfileId, GameKinds.Fixture, "SyntheticLocalHosting", DateTimeOffset.UtcNow,
-            SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(ControlPort, false, "Unknown", [], []),
-            Enumerable.Range(0, fileCount).Select(index => new SharedWorldFile(index == 0 ? "world.dat" : $"world-{index:D3}.dat",
+            GroupId, number, parent, ProfileId, game, "SyntheticLocalHosting", DateTimeOffset.UtcNow,
+            SharedWorldCaptureKinds.PostStopBackup, Guid.NewGuid(), new(ControlPort, false, gameVersion, [], []),
+            Enumerable.Range(0, fileCount).Select(index => new SharedWorldFile(game == GameKinds.Valheim
+                ? index == 0 ? "SyntheticLocalHosting.db" : "SyntheticLocalHosting.fwl"
+                : index == 0 ? "world.dat" : $"world-{index:D3}.dat",
                 bytes.LongLength, Convert.ToHexString(SHA256.HashData(bytes)))).ToArray(), "", "", ""), owner);
         private void WriteCopy(SharedWorldVersion version, byte[] bytes)
         {
@@ -737,12 +756,12 @@ internal static partial class LocalHostingChecks
         public void Dispose() { friends.Dispose(); Data.Dispose(); owner.Dispose(); member.Dispose(); }
     }
 
-    internal sealed class FilesOnlyDriver : IGameServerDriver
+    internal sealed class FilesOnlyDriver(string kind = GameKinds.Fixture) : IGameServerDriver
     {
         internal int ProcessAttempts { get; private set; }
         internal Action? BeforeProcessAttempt { get; set; }
         internal Action? DuringPrepareForChecks { get; set; }
-        public string Kind => GameKinds.Fixture;
+        public string Kind => kind;
         public string DisplayName => "Source-only preparation";
         public bool ShowPortDiagnostics => false;
         public bool SupportsCrashRecovery => false;

@@ -102,8 +102,12 @@ Choose this PC's game ports the first time you host a shared server. Each PC
 can use different ports, including PCs on the same network. Ports chosen while
 setting up your own server are remembered, so you can reuse that approval.
 Manage reusable choices in **App Settings > Game ports**. A busy approved port
-needs your attention; the app does not silently choose another port. Changing
-a prepared server's ports uses that server's local setup.
+needs your attention; the app does not silently choose another port. For a
+stopped shared Valheim server, **Host locally** selects your most recently saved
+Valheim choice, even if its earlier hosting copy used a different port. Review
+the selected ports and confirm **Host locally** to check and apply them before
+Start. Valheim also needs the following UDP port. Other prepared servers use
+their local setup to change ports.
 
 Updated PCs negotiate gzip compression for save downloads and peer forwarding
 when it reduces the transmitted size. Already compressed saves can travel at

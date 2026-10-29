@@ -176,6 +176,56 @@ public sealed partial class HostManager
         finally { gate.Release(); }
     }
 
+    // An explicit Host locally request may apply this PC's approved Valheim
+    // ports to a stopped continuation. Refresh and preference edits never do so.
+    internal async Task<ActionResult> ChangeLocalHostingPortsAsync(ServerProfile expected,
+        ApprovedGamePort selected, CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var profile = settings.Profiles.SingleOrDefault(item => item.Id == expected.Id);
+            if (profile is null || !SameProfile(profile, expected) || profile.Kind != GameKinds.Valheim ||
+                profile.SeparateCopySourceProfileId is null || profile.SeparateCopyBranchHash is null)
+                return Result(false, "LocalPortChangeRequired", "The local server setup changed. Refresh hosting checks before choosing its ports again.");
+            if (data.Recovery.LifecycleBlocked)
+                return Result(false, "DataRecoveryRequired", "Review this PC's recovery notice before changing its hosting setup.");
+            if (runs.Any(run => run.ProfileId == profile.Id))
+                return Result(false, "ProfileInUse", "Stop the server or review Recovery before changing its game ports.");
+            if (worldCopyReservations.Contains(profile.Id))
+                return Result(false, "WorldCopyInProgress", "Wait for the world copy to finish before changing this server.");
+            var approval = data.ApprovedGamePorts.Find(profile.Kind, selected.Id);
+            if (approval != selected)
+                return Result(false, "LocalPortApprovalRequired", "The selected port approval changed. Review this PC's game ports again.");
+            var state = ReadSeparateHost(profile.Id);
+            if (state is null || state.SourceProfileId != profile.SeparateCopySourceProfileId ||
+                state.BranchHash != profile.SeparateCopyBranchHash || state.WorldDirectory != profile.WorldDirectory)
+                return Result(false, "LocalHostingReviewRequired", "The local hosting copy needs review before changing its ports.");
+            var next = System.Text.Json.JsonSerializer.Deserialize<HostSettings>(
+                System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(settings)) ??
+                throw new InvalidDataException("The current Host settings could not be copied.");
+            var changed = next.Profiles.Single(item => item.Id == profile.Id);
+            changed.GamePort = selected.GamePort;
+            if (!games.TryGet(changed.Kind, out var driver))
+                return Result(false, "LocalPortsRequired", "The local game's port checks are unavailable.");
+            var ports = driver.Ports(changed);
+            foreach (var run in runs)
+            {
+                var declared = PortsForRun(run);
+                if (declared is null || ports.Any(port => declared.Any(other => PortOverlap(port, other))))
+                    return Result(false, "LocalPortsRequired", "Another managed server's game ports are in use or need review. Choose another approved plan.");
+            }
+            if (ports.Any(port => port.Port == settings.CompanionPort) || !games.PortsAvailableForStart(ports))
+                return Result(false, "LocalPortsRequired", "The selected game ports are in use or overlap this PC's Friend connection. Choose another approved plan.");
+            cancellationToken.ThrowIfCancellationRequested();
+            // Invalidate the old setup proof before changing the port. Finish
+            // preparation must verify the same world and record its new setup.
+            SaveSeparateHost(state with { Ready = false });
+            return UpdateSettingsLocked(next);
+        }
+        finally { gate.Release(); }
+    }
+
     internal async Task<LocalHostingPortPlan> LocalHostingPortsAsync(SharedWorldVersion version,
         ServerProfile? existing, CancellationToken cancellationToken, Guid? approvedPortId = null)
     {

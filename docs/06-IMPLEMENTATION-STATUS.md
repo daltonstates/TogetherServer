@@ -7,6 +7,49 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## 0.3.3.26 prerelease candidate: local Valheim ports, 2026-10-29
+
+A retained shared Valheim server kept its earlier game port and disabled its
+port selector, even after a different reusable port was saved in App Settings.
+Host locally now selects the latest saved Valheim choice and lets the local
+owner review or change it. An explicit hosting confirmation applies that choice
+to a stopped continuation and repeats preparation before Start. Refresh also
+discards a stale port draft when the saved approvals change.
+
+The Host gate rejects active or unresolved runs, stale setup, removed/changed
+approval, world-copy reservations, managed-port conflicts and overlap with the
+Friend port. It checks both Valheim UDP ports and invalidates the old setup proof
+before saving the new port. Worlds and signed history are preserved. Editing
+App Settings alone does not reconfigure a server. Other prepared games retain
+their local Setup port workflow.
+
+Ordinary retained Valheim preparation keeps incoming connectivity advisory,
+including a retry after the new port was saved but preparation was interrupted.
+It does not enable a previously disabled listener. A planned move keeps its
+prepared port selection while waiting for the final save; a newer approval does
+not replace that selection. New hosting flows and planned moves retain their
+existing connection checks.
+
+With pinned .NET 10.0.301 and Node 24.14.1, all 188 focused FriendLocalHosting
+and ApprovedGamePorts UI tests passed, along with TypeScript, lint and production
+UI bundling. A fresh isolated `--artifacts-path` build had zero warnings/errors.
+Its four focused source groups passed: reusable approved ports, guided local
+preparation, prepared Friend Start gates and read-only local hosting routes.
+The Valheim service cases cover retained and removed old approvals, ordinary
+re-preparation and interruption after saving the new port. They renew the setup
+proof with byte-identical signed/local saves and incoming connections disabled.
+Whitespace and desktop diagnostic isolation checks passed.
+
+The initial broader run is not accepted as full-suite evidence: concurrent
+verification shared its output directory, and that assembly ran 107 groups
+against the current source's 106-group registry. It included a matching-file
+resume test absent from this checkout, which reported a work-budget failure.
+That run was stopped; final checks used the isolated build above. Full-suite,
+native/viewport, physical Friend-PC, real Valheim startup/join/save/restart and
+router routing acceptance remain open. The owner authorized a prerelease for
+testing; its immutable candidate and hosted Windows acceptance are being prepared.
+No app was launched or installed on the owner's desktop for these checks.
+
 ## 0.3.3.25 prerelease: physical transfer reporting follow-up
 
 [v0.3.3.25](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.25)

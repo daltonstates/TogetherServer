@@ -37,7 +37,8 @@ internal sealed partial class FriendLocalHostingService
         {
             var gamePort = request.GamePort ?? current.GamePort;
             var rconPort = version.Game == GameKinds.Factorio ? request.FactorioRconPort ?? current.FactorioRconPort : request.FactorioRconPort;
-            if (existing is not null && (gamePort != existing.GamePort || rconPort != existing.Factorio?.RconPort))
+            if (existing is not null && existing.Kind != GameKinds.Valheim &&
+                (gamePort != existing.GamePort || rconPort != existing.Factorio?.RconPort))
                 return Refused("LocalPortChangeRequired", "This prepared server retains its saved ports. Change them in its local game setup before approving a different plan.");
             var saved = data.ApprovedGamePorts.Save(new(version.Game, gamePort, rconPort));
             if (!saved.Ok) return Refused(saved.Code, saved.Message);
@@ -48,7 +49,14 @@ internal sealed partial class FriendLocalHostingService
         else selected = current.ApprovedPortId is { } currentId ? data.ApprovedGamePorts.Find(version.Game, currentId) : null;
         if (selected is null) return Refused("LocalPortApprovalRequired", "Choose and approve this PC's game ports once before preparing hosting. The other Host's port is only a suggestion.");
         if (existing is not null && (selected.GamePort != existing.GamePort || selected.FactorioRconPort != existing.Factorio?.RconPort))
-            return Refused("LocalPortChangeRequired", "This prepared server retains its saved ports. Change them in its local game setup before choosing a different approved plan.");
+        {
+            if (existing.Kind != GameKinds.Valheim)
+                return Refused("LocalPortChangeRequired", "This prepared server retains its saved ports. Change them in its local game setup before choosing a different approved plan.");
+            var changed = await manager.ChangeLocalHostingPortsAsync(existing, selected, cancellationToken);
+            if (!changed.Ok) return Refused(changed.Code, changed.Message);
+            existing = (await manager.CompanionSnapshotAsync()).Settings.Profiles.SingleOrDefault(item => item.Id == existing.Id);
+            if (existing is null) return Refused("LocalPortChangeRequired", "The local server setup changed. Refresh hosting checks before choosing its ports again.");
+        }
         // Remember explicit selection as this game's preferred reusable plan.
         if (request.ApprovedPortId is not null)
             data.ApprovedGamePorts.Save(new(selected.Game, selected.GamePort, selected.FactorioRconPort), selected.Id);

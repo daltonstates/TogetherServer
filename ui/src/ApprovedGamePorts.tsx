@@ -138,8 +138,8 @@ export function ApprovedGamePortsPanel({ disabled = false, active = true, onBusy
   const valid = port !== null && validGamePorts(game, port, game === 'Factorio' ? portNumber(rconPort) : null)
   const busy = disabled || pending || reading || needsRefresh
   return <div className="approved-game-ports" aria-busy={pending || reading}>
-    <p>Approve the game ports you want to reuse when hosting on this PC. Host locally uses these choices for future shared servers.</p>
-    <p className="helper-text">Changing this list keeps existing server setup and running servers as they are. Change an existing server’s ports in its local Setup. Network settings still need your own configuration.</p>
+    <p>Approve the game ports you want to reuse when hosting on this PC. Host locally selects your most recently saved choice for that game.</p>
+    <p className="helper-text">Host locally can apply your selected ports to a stopped Valheim server before starting. Change other prepared servers’ ports in their local Setup. Network settings still need your own configuration.</p>
     {!active && plans === null && !reading && !notice && <p className="helper-text">Open Game ports to review this PC’s saved approvals.</p>}
     {reading && <p role="status">Loading approved game ports…</p>}
     {plans && (plans.length === 0 ? <p>No game ports have been approved on this PC.</p> :

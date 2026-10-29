@@ -16,6 +16,7 @@ internal static class ApprovedGamePortsChecks
         Store(root);
         await RoutesAsync(root);
         await SelectionAsync(root);
+        await RetainedValheimAsync(root);
         await OwnerSetupAsync(root);
     }
 
@@ -147,6 +148,67 @@ internal static class ApprovedGamePortsChecks
         var legacy = await manager.LocalHostingPortsAsync(version, existing, CancellationToken.None);
         Require(legacy.GamePort == 2470 && legacy.ApprovedPortId is null, "legacy prepared setup acquired approval from another port plan");
         Require(data.LoadRuns().Count == 0 && !data.LoadSettings().CompanionListeningEnabled, "port checks changed runtime state");
+    }
+
+    private static async Task RetainedValheimAsync(string root)
+    {
+        using var data = Data(root, "approved-retained-valheim");
+        var branch = new string('A', 64);
+        var profile = new ServerProfile
+        {
+            Id = SharedWorldBranchLiveSource.LocalProfileId(branch), Kind = GameKinds.Valheim,
+            Name = "Synthetic", ServerName = "Synthetic", WorldId = "Synthetic", GamePort = 2456,
+            ExecutablePath = Path.Combine(data.RootPath, "never-run.exe"),
+            WorldDirectory = Path.Combine(data.RootPath, "world"),
+            SeparateCopySourceProfileId = Guid.NewGuid(), SeparateCopyBranchHash = branch
+        };
+        Directory.CreateDirectory(profile.WorldDirectory);
+        var world = Path.Combine(profile.WorldDirectory, "Synthetic.db");
+        File.WriteAllText(world, "synthetic world bytes; never loaded by a game");
+        data.SaveSettings(new HostSettings { Profiles = [profile] });
+        var state = new SeparateCopyHostState(1, profile.SeparateCopySourceProfileId.Value, profile.Id,
+            Guid.NewGuid(), branch, new string('B', 64), profile.WorldDirectory, Ready: true, SetupHash: "previous proof");
+        data.SaveProtected(SharedWorldBranchLiveSource.StateName(profile.Id), JsonSerializer.SerializeToUtf8Bytes(state));
+        data.ApprovedGamePorts.Save(new(GameKinds.Valheim, 2460, null));
+        var selected = data.ApprovedGamePorts.Find(GameKinds.Valheim)!;
+        var available = true;
+        IReadOnlyList<GamePort> checkedPorts = [];
+        var manager = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly, ports =>
+        {
+            checkedPorts = ports.ToArray();
+            return available;
+        }));
+        Require(data.LoadSettings().Profiles.Single().GamePort == 2456 &&
+            SharedWorldBranchLiveSource.ReadState(data, profile.Id)!.Ready,
+            "saving an approval reconfigured the retained server without an explicit hosting request");
+        var changed = await manager.ChangeLocalHostingPortsAsync(profile, selected, CancellationToken.None);
+        Require(changed.Ok && data.LoadSettings().Profiles.Single().GamePort == 2460 &&
+            checkedPorts.Select(port => port.Port).SequenceEqual([2460, 2461]) &&
+            SharedWorldBranchLiveSource.ReadState(data, profile.Id) is { Ready: false, SetupHash: "previous proof" } &&
+            File.ReadAllText(world) == "synthetic world bytes; never loaded by a game" && data.LoadRuns().Count == 0 &&
+            !data.LoadSettings().CompanionListeningEnabled,
+            $"explicit retained Valheim port choice failed, missed its query port, reused its old setup proof or changed the world/runtime: {changed.Code}; {changed.Message}");
+        Require(!(await manager.ChangeLocalHostingPortsAsync(profile, selected, CancellationToken.None)).Ok,
+            "a stale server setup changed local ports");
+        var current = data.LoadSettings().Profiles.Single();
+        data.ApprovedGamePorts.Save(new(GameKinds.Valheim, 2470, null));
+        var next = data.ApprovedGamePorts.Find(GameKinds.Valheim)!;
+        available = false;
+        Require((await manager.ChangeLocalHostingPortsAsync(current, next, CancellationToken.None)).Code == "LocalPortsRequired" &&
+            data.LoadSettings().Profiles.Single().GamePort == 2460,
+            "busy approved ports changed retained setup or silently substituted another port");
+        available = true;
+        data.ApprovedGamePorts.Save(new(GameKinds.Valheim, data.LoadSettings().CompanionPort - 1, null));
+        Require((await manager.ChangeLocalHostingPortsAsync(current, data.ApprovedGamePorts.Find(GameKinds.Valheim)!,
+            CancellationToken.None)).Code == "LocalPortsRequired", "the Valheim query port overlapped the Friend listener");
+        data.ApprovedGamePorts.Delete(next.Id);
+        Require((await manager.ChangeLocalHostingPortsAsync(current, next, CancellationToken.None)).Code == "LocalPortApprovalRequired",
+            "removed approval reconfigured the retained server");
+        data.SaveRuns([new ManagedRun { ProfileId = current.Id, Kind = GameKinds.Valheim, GamePort = current.GamePort }]);
+        var unresolved = new HostManager(data, new GameServerRegistry(data, false, PortProbeMode.ObserveOnly, _ => true));
+        Require((await unresolved.ChangeLocalHostingPortsAsync(current, selected, CancellationToken.None)).Code == "ProfileInUse" &&
+            data.LoadSettings().Profiles.Single().GamePort == 2460,
+            "an active or unresolved managed run allowed a port change");
     }
 
     private static async Task OwnerSetupAsync(string root)

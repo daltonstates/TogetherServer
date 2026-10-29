@@ -2222,31 +2222,121 @@ it('keeps a suggested game port unapproved until the local checkbox is chosen, t
   expect(confirm).toBeEnabled()
   fireEvent.click(confirm)
   await waitFor(() => expect(calls).toContain(`${base}/hosting/start`))
-  expect(bodies).toEqual([expect.objectContaining({ gamePort: 2460, factorioRconPort: null, approvePorts: true })])
+  expect(bodies).toEqual([expect.objectContaining({ gamePort: 2460, factorioRconPort: null, approvePorts: true, requirePeerConnection: true })])
   expect(bodies[0]).not.toHaveProperty('approvedPortId')
 })
 
-it('offers approved plans for reuse without another approval and keeps an existing prepared server’s selector fixed', async () => {
+it('offers approved plans for reuse without another approval', async () => {
   const writes: unknown[] = []
   stubFetch(vi.fn(async (_url: string, init?: RequestInit) => {
     if (init?.method) { writes.push(JSON.parse(String(init.body))); return new Promise<Response>(() => {}) }
     return response({ ...portApprovalRequired, approvedPorts: [approvedPort] })
   }))
-  const view = render(<FriendLocalHosting {...props} />)
+  render(<FriendLocalHosting {...props} />)
   const dialog = await openHosting()
-  fireEvent.change(dialog.getByRole('combobox', { name: 'Approved local game ports' }), { target: { value: approvedPort.id } })
+  expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toHaveValue(approvedPort.id)
   expect(dialog.queryByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' })).not.toBeInTheDocument()
   fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
   await waitFor(() => expect(writes).toHaveLength(1))
   expect(writes[0]).toHaveProperty('approvedPortId', approvedPort.id)
   expect(writes[0]).not.toHaveProperty('gamePort')
-  view.unmount()
-  stubFetch(vi.fn(async () => response({ ...prepared, gamePort: 2460, needsPortApproval: false,
-    selectedApprovedPortId: approvedPort.id, approvedPorts: [approvedPort], factorioRconPort: null })))
+})
+
+it.each([true, false])('uses App Settings ports for a retained Valheim server before Start (previous ports approved: %s)', async approved => {
+  const oldPort = { ...approvedPort, id: '55555555-5555-4555-8555-555555555555', gamePort: 2456 }
+  const plans = approved ? [oldPort, approvedPort] : [approvedPort]
+  const current: LocalHostingStatus = { ...prepared, ok: approved, readyForManualStart: approved,
+    needsPortApproval: !approved, selectedApprovedPortId: approved ? oldPort.id : null,
+    code: approved ? prepared.code : 'LocalPortApprovalRequired', approvedPorts: plans, factorioRconPort: null,
+    steps: prepared.steps.map(step => !approved && step.key === 'ports' ? { ...step, state: 'ActionRequired' } : step) }
+  const writes: { url: string; body: Record<string, unknown> }[] = []
+  stubFetch(async (url, init) => {
+    if (!init?.method) return response(current)
+    writes.push({ url, body: JSON.parse(String(init.body)) })
+    return response(url.endsWith('/prepare') ? { ...prepared, gamePort: 2460, needsPortApproval: false,
+      selectedApprovedPortId: approvedPort.id, approvedPorts: plans, factorioRconPort: null } :
+      { ok: true, code: 'Starting', message: 'Start requested.' })
+  })
   render(<FriendLocalHosting {...props} />)
-  const existing = await openHosting()
-  expect(existing.getByRole('combobox', { name: 'Approved local game ports' })).toBeDisabled()
-  expect(existing.getByText('This prepared server keeps its saved ports. Open its local Setup to change them.')).toBeInTheDocument()
+  const dialog = await openHosting()
+  const selector = dialog.getByRole('combobox', { name: 'Approved local game ports' })
+  expect(selector).toBeEnabled()
+  expect(selector).toHaveValue(approvedPort.id)
+  expect(dialog.getByText(/This server currently uses port 2456/)).toBeInTheDocument()
+  expect(writes).toEqual([])
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  await waitFor(() => expect(writes.map(write => write.url)).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`]))
+  expect(writes[0].body).toMatchObject({ approvedPortId: approvedPort.id, requirePeerConnection: false })
+  expect(writes[0].body).not.toHaveProperty('gamePort')
+})
+
+it('refreshes a stale port draft after the approved choice changes in App Settings', async () => {
+  let current = portApprovalRequired
+  const writes: string[] = []
+  stubFetch(async (url, init) => { if (init?.method) writes.push(url); return response(current) })
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  fireEvent.change(dialog.getByRole('spinbutton', { name: 'Local hosting game port' }), { target: { value: '2470' } })
+  fireEvent.click(dialog.getByRole('checkbox', { name: 'Approve these game ports for reuse on this PC.' }))
+  current = { ...portApprovalRequired, gamePort: 2460, needsPortApproval: false,
+    selectedApprovedPortId: approvedPort.id, approvedPorts: [approvedPort] }
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await waitFor(() => expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toHaveValue(approvedPort.id))
+  expect(dialog.queryByRole('spinbutton', { name: 'Local hosting game port' })).not.toBeInTheDocument()
+  expect(writes).toEqual([])
+})
+
+it('keeps incoming connectivity advisory when retrying an unfinished retained Valheim port change', async () => {
+  const unfinished: LocalHostingStatus = { ...prepared, ok: false, code: 'LocalHostingPreparationRequired', readyForManualStart: false,
+    gamePort: 2460, needsPortApproval: false, selectedApprovedPortId: approvedPort.id, approvedPorts: [approvedPort], factorioRconPort: null,
+    steps: prepared.steps.map(step => step.key === 'save' ? { ...step, state: 'ActionRequired' } : step) }
+  const writes: { url: string; body: Record<string, unknown> }[] = []
+  stubFetch(async (url, init) => {
+    if (!init?.method) return response(unfinished)
+    writes.push({ url, body: JSON.parse(String(init.body)) })
+    return response(url.endsWith('/prepare') ? { ...unfinished, ok: true, code: 'LocalHostingPrepared', readyForManualStart: true,
+      steps: prepared.steps } : { ok: true, code: 'Starting', message: 'Start requested.' })
+  })
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toHaveValue(approvedPort.id)
+  fireEvent.click(dialog.getByRole('button', { name: 'Host locally' }))
+  await waitFor(() => expect(writes.map(write => write.url)).toEqual([`${base}/hosting/prepare`, `${base}/hosting/start`]))
+  expect(writes[0].body).toMatchObject({ approvedPortId: approvedPort.id, requirePeerConnection: false })
+})
+
+it('keeps prepared Minecraft ports in local Setup', async () => {
+  const javaPort = { ...approvedPort, game: 'MinecraftJava' as const }
+  stubFetch(async () => response({ ...prepared, game: 'MinecraftJava', gamePort: 2460, needsPortApproval: false,
+    selectedApprovedPortId: javaPort.id, approvedPorts: [javaPort], factorioRconPort: null }))
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toBeDisabled()
+  expect(dialog.getByText('This prepared server keeps its saved ports. Open its local Setup to change them.')).toBeInTheDocument()
+})
+
+it.each(['Prepared', 'Accepted'] as const)('keeps a planned move’s prepared port after %s and a new saved approval', async recipientState => {
+  const movePort = { ...approvedPort, id: '55555555-5555-4555-8555-555555555555', gamePort: 2456 }
+  let current: LocalHostingStatus = { ...initial, consented: true, needsPortApproval: false, selectedApprovedPortId: movePort.id,
+    approvedPorts: recipientState === 'Prepared' ? [movePort] : [movePort, approvedPort], factorioRconPort: null, handoffRequest: {
+      pending: true, code: 'RecipientPrepared', message: 'Waiting for the final save.',
+      successorDeviceId: '33333333-3333-4333-8333-333333333333', requestId: '44444444-4444-4444-8444-444444444444',
+      recipientState, preparedVersionHash: recipientState === 'Prepared' ? branchHash : null, finalVersion: null,
+      receiptConfirmed: false, canComplete: false, canCancel: true } }
+  const writes: string[] = []
+  stubFetch(async (url, init) => { if (init?.method) writes.push(url); return response(current) })
+  render(<FriendLocalHosting {...props} />)
+  const dialog = await openHosting()
+  expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toHaveValue(movePort.id)
+  if (recipientState === 'Prepared') expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toBeDisabled()
+  else fireEvent.change(dialog.getByRole('combobox', { name: 'Approved local game ports' }), { target: { value: approvedPort.id } })
+  current = { ...current, approvedPorts: [movePort, approvedPort],
+    handoffRequest: { ...current.handoffRequest!, recipientState: 'Prepared', preparedVersionHash: branchHash } }
+  fireEvent.click(dialog.getByRole('button', { name: 'Retry automatic checks' }))
+  await waitFor(() => expect(dialog.getByRole('option', { name: 'Valheim · 2460–2461' })).toBeInTheDocument())
+  expect(dialog.getByRole('combobox', { name: 'Approved local game ports' })).toHaveValue(movePort.id)
+  expect(dialog.getByText('This hosting move keeps the ports already prepared for it.')).toBeInTheDocument()
+  expect(writes).toEqual([])
 })
 
 it('clears a draft game-port approval when the saved Host connection changes', async () => {

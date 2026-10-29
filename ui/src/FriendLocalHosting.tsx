@@ -564,7 +564,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     setActionStartedAt(began); setBusy(true); setPendingAction('prepare'); setLastHostingAttempt(null); setError(''); setActionMessage('')
     try {
       const next = await changeJson(`${base}/hosting/prepare`, 'POST', parseLocalHostingStatus, {
-        allowReceiving: true, acceptSplitWarning: !planned?.requestId, requirePeerConnection: true,
+        allowReceiving: true, acceptSplitWarning: !planned?.requestId,
+        // Retained continuations can repeat setup checks without enabling
+        // incoming connections, including after an interrupted port change.
+        requirePeerConnection: !(target.game === 'Valheim' && target.localProfileId && target.branchHash && !planned?.requestId),
         serverFile: serverFile.trim() || null, gamePassword: password || null,
         ...(ports.selection ?? {}),
         ...(planned?.requestId ? { requestId: planned.requestId, acceptedTerms } :
@@ -804,10 +807,10 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     }
   }, [base, scope, disabled, checksCurrent, acceptedTerms, serverFile, onOpenHost, acceptStatus, stoppedSharingStatus, canHostAfterTransfer])
   useEffect(() => {
-    if (busy || checking || disabled || transfer.blocked || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
+    if (busy || checking || disabled || transfer.blocked || ports.changed || !checksCurrent || !status?.readyForManualStart || !startIntent.current) return
     if (localHostingAttention(status, acceptedTerms, serverFile)) { startIntent.current = null; setOpen(true); return }
     void startPrepared(status)
-  }, [status, busy, checking, disabled, checksCurrent, acceptedTerms, serverFile, startPrepared, transfer.blocked])
+  }, [status, busy, checking, disabled, checksCurrent, acceptedTerms, serverFile, startPrepared, transfer.blocked, ports.changed])
 
   const host = () => {
     if (mutation.current || disabled || unconfirmedStartRef.current || !canHostAfterTransfer() || !ports.ready || !checksCurrent || checking || !status?.allowed) return
@@ -820,7 +823,7 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
     if (attention && !open) { setOpen(true); return }
     startIntent.current = { scope, until: Date.now() + 10 * 60 * 1000,
       requestId: activeHostingRequest(status)?.requestId ?? null }
-    if (status.readyForManualStart) { void startPrepared(status); return }
+    if (status.readyForManualStart && !ports.changed) { void startPrepared(status); return }
     const invitation = activeHostingRequest(status)
     if (invitation?.recipientState === 'Prepared' && !status.readyForManualStart) {
       if (!plannedOperation) setPlannedOperation({ requestId: invitation.requestId!, until: startIntent.current.until })
@@ -979,12 +982,12 @@ export function FriendLocalHosting({ profileId, connectionId, worldName, availab
           {busy ? hostingActions[pendingAction ?? 'checks'].label : 'Share stopped progress'}</Button> :
         waitingForHost && plannedOperation && startIntent.current ? <span role="status">Waiting for the current Host to finish the save...</span> :
         <Button disabled={!canContinue} onClick={() => { setNetworkConfirmed(true); if (requestOffered) void respond(true); else host() }}><Icon name={busy ? 'loader' : 'play'} />
-          {busy ? hostingActions[pendingAction ?? 'checks'].label : status?.readyForManualStart ? 'Start hosting' : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
+          {busy ? hostingActions[pendingAction ?? 'checks'].label : status?.readyForManualStart && !ports.changed ? 'Start hosting' : networkConfirmed ? 'Retry and start' : 'Host locally'}</Button>}>
       <div className="local-hosting-flow" aria-busy={busy}>
         {transfer.blocked && !(busy && (pendingAction === 'prepare' || pendingAction === 'start') || startUnconfirmed || waitingForHost) &&
           <FriendSaveTransferProgress status={transfer.status} fresh={transfer.fresh} unavailable={transfer.unavailable} />}
         {!status?.running && !networkConfirmed && <p className="local-hosting-warning">Hosting lets other players connect to this PC through your network. Keep TogetherServer open while hosting. {sharingRequired
-          ? 'Share stopped progress keeps hosting stopped. Start hosting remains a separate choice after sharing and current checks finish.' : status?.readyForManualStart
+          ? 'Share stopped progress keeps hosting stopped. Start hosting remains a separate choice after sharing and current checks finish.' : status?.readyForManualStart && !ports.changed
           ? 'Start checks this PC and the prepared save again before starting.'
           : 'The app will get the latest available save, check this PC and start when it is ready.'}</p>}
         <>
