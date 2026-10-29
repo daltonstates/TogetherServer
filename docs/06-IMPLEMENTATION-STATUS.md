@@ -50,6 +50,23 @@ router routing acceptance remain open. The owner authorized a prerelease for
 testing; its immutable candidate and hosted Windows acceptance are being prepared.
 No app was launched or installed on the owner's desktop for these checks.
 
+The frozen application is `d24618b1d9641ff86455c1f4a435970272b42e40`, built
+by [Windows CI 40929295921](https://github.com/daltonstates/TogetherServer/actions/runs/40929295921)
+with SHA-256 `e539bb9c499fc1f88fda931c50a56f0f27453dbdb5089a4ab378ecc14cb5a118`.
+Core, installer packaging, Browser, Rehearsal, automatic shared hosting and all
+eight compatibility lanes passed. Desktop's required notification delivery and
+click remain blocked by hosted Windows QuietTime.
+
+Two UI results remain failed and are not retroactively accepted. One wizard
+capture lost its CSS to Chromium `ERR_NO_BUFFER_SPACE`; its behavioral checks
+passed, while the unstyled capture produced layout findings. The two-ended UX
+passed all ten stages, exact save/session checks and one Prepare/Start, but its
+checker could not prove an expected empty progress 409 during Friend-to-Host
+transition. A checks-only follow-up adds completed empty-body evidence under
+the existing exact identity, chronology and single-refusal bounds, with 88 pure
+Node checks passed. A serial frozen-asset capture and full UX rerun are being
+prepared without rebuilding or replacing the application or UI assets.
+
 ## 0.3.3.25 prerelease: physical transfer reporting follow-up
 
 [v0.3.3.25](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.25)

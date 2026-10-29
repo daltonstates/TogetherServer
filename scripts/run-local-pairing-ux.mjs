@@ -6,7 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import readline from 'node:readline';
 import { createHash } from 'node:crypto';
-import { guidedHostingStage, roleTransitionRequestFacts, roleTransitionPayloadFacts,
+import { guidedHostingStage, roleTransitionRequestFacts, roleTransitionPayloadFacts, roleTransitionBodyFacts,
   classifyRoleTransitionRefusal } from './local-pairing-role-transition.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -447,14 +447,20 @@ try {
           new URL(response.url()).pathname === '/api/local/snapshot';
         const isPolicyChange = response.url().endsWith('/api/local/settings/control-policy') && request.method() === 'PUT';
         const needsBody = entry || isStart || isSnapshot || isPolicyChange || response.status() >= 400 || transition?.request.route === 'HostMode';
+        const isProgressRefusal = transition?.request.route === 'OriginalHostingProgress' && response.status() === 409;
         // Only allowlisted code/mode/boolean facts survive this local decode.
-        const result = needsBody ? await response.json().catch(() => null) : null;
+        // Progress intentionally returns an empty 409 after the mode changes.
+        // Capture actual bytes; a failed JSON parse cannot establish emptiness.
+        const progressBody = isProgressRefusal ? await response.body().catch(() => undefined) : undefined;
+        const result = needsBody && !isProgressRefusal ? await response.json().catch(() => null) : null;
+        let bodyFinished = false;
         if (transition && needsBody) {
-          const finished = await response.finished().then(error => error === null).catch(() => false);
-          if (!finished) transition.state = 'Failed';
+          bodyFinished = await response.finished().then(error => error === null).catch(() => false);
+          if (!bodyFinished) transition.state = 'Failed';
           else if (transition.state !== 'Failed') transition.state = 'Finished';
         }
-        if (transition && needsBody) Object.assign(transition.response, roleTransitionPayloadFacts(result));
+        if (transition && needsBody) Object.assign(transition.response, roleTransitionPayloadFacts(result),
+          roleTransitionBodyFacts(isProgressRefusal && bodyFinished ? progressBody : undefined));
         const failure = httpFailures.find(item => item.event === transition);
         if (failure) failure.reportEntry.code = transition.response.code;
         if (entry) Object.assign(entry, { status: response.status(), code: fixedCode(result?.code), ok: result?.ok === true });

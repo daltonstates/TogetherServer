@@ -1717,10 +1717,11 @@ try {
     }
   };
   let nextPlan = 0;
-  // Three isolated contexts keep UI-only screenshot review bounded on one
-  // hosted runner. Each plan owns its fixture state, context and filenames.
-  manifest.execution = { concurrentContexts: 3, browsers: 1, assetServers: 1, serializedManifest: true };
-  await Promise.all(Array.from({ length: Math.min(3, plans.length) }, async () => {
+  // A serial frozen-byte rerun reduces browser resource pressure without
+  // dropping inventory or relaxing any request, layout or screenshot check.
+  const concurrentContexts = args.includes('--serial-captures') ? 1 : 3;
+  manifest.execution = { concurrentContexts, browsers: 1, assetServers: 1, serializedManifest: true };
+  await Promise.all(Array.from({ length: Math.min(concurrentContexts, plans.length) }, async () => {
     while (nextPlan < plans.length) {
       const planIndex = nextPlan++;
       try { await runPlan(plans[planIndex]); }

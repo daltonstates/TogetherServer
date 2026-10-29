@@ -15,8 +15,9 @@ export function roleTransitionRequestFacts({ url, pageOrigin, candidateOrigin, o
   const base = `/api/local/friend/${originalProfileId}/shared-world`;
   const route = parsed.pathname === base ? 'OriginalSharedWorld'
     : parsed.pathname === `${base}/hosting/start` ? 'GuidedStart'
-      : parsed.pathname === '/api/local/mode/host' ? 'HostMode'
-        : parsed.pathname === '/api/local/snapshot' ? 'Snapshot' : 'Other';
+      : parsed.pathname === `${base}/hosting/progress` ? 'OriginalHostingProgress'
+        : parsed.pathname === '/api/local/mode/host' ? 'HostMode'
+          : parsed.pathname === '/api/local/snapshot' ? 'Snapshot' : 'Other';
   return {
     pageRole: pageOrigin === candidateOrigin ? 'Candidate' : pageOrigin === ownerOrigin ? 'Owner' : 'Other',
     origin: originLabel(parsed.origin), sameOrigin: parsed.origin === pageOrigin,
@@ -39,12 +40,19 @@ export function roleTransitionPayloadFacts(value) {
     ok: object?.ok === true,
     mode: object?.mode === 'Host' || object?.mode === 'Friend' ? object.mode : 'Other',
     codeOnlyBody: object?.code === 'HostMode' && Object.keys(object).length === 1,
+    emptyBody: false,
     // Structural HostSnapshot proof only. The journey independently asserts the
     // exact running candidate, selected profile, source, hashes and session.
     hostSnapshotShape: object?.mode === 'Host' && record(object.settings) && Array.isArray(object.settings.profiles) &&
       Array.isArray(object.runs) && typeof object.evidence === 'string' && record(object.passwordConfigured) &&
       typeof object.managedWorldsRoot === 'string'
   };
+}
+
+// JSON decode failure is not proof of an empty response. The capture caller
+// supplies actual response bytes only after the HTTP response completes.
+export function roleTransitionBodyFacts(bytes) {
+  return { emptyBody: bytes instanceof Uint8Array && bytes.byteLength === 0 };
 }
 
 const validStamp = value => Number.isSafeInteger(value?.order) && value.order > 0 &&
@@ -55,7 +63,7 @@ const completed = event => event?.state === 'Finished' && before(event.request, 
 const successful = event => completed(event) && Number.isInteger(event.response.status) && event.response.status >= 200 && event.response.status < 300;
 const exactRequest = (request, route, method, body, contentType) => request?.pageRole === 'Candidate' &&
   request.origin === 'CandidateLoopback' && request.sameOrigin === true && request.route === route && request.method === method &&
-  request.profile === (route === 'OriginalSharedWorld' || route === 'GuidedStart' ? 'Original' : 'None') &&
+  request.profile === (['OriginalSharedWorld', 'OriginalHostingProgress', 'GuidedStart'].includes(route) ? 'Original' : 'None') &&
   (route === 'Snapshot' ? ['Absent', 'Exact'].includes(request.localHeader) : request.localHeader === 'Exact') &&
   ['Absent', 'CandidateLoopback'].includes(request.originHeader) &&
   request.query === 'Absent' && request.body === body && request.contentType === contentType && request.urlCredentials === 'Absent';
@@ -71,7 +79,7 @@ function evidenceEvent(event) {
     response: { order: response.order, ms: response.ms, stage: response.stage, status: response.status,
       code: responseCodes.has(response.code) ? response.code : 'Unavailable', ok: response.ok === true,
       mode: ['Host', 'Friend'].includes(response.mode) ? response.mode : 'Other', codeOnlyBody: response.codeOnlyBody === true,
-      hostSnapshotShape: response.hostSnapshotShape === true },
+      emptyBody: response.emptyBody === true, hostSnapshotShape: response.hostSnapshotShape === true },
     state: event.state
   };
 }
@@ -83,9 +91,15 @@ function evidenceEvent(event) {
 export function classifyRoleTransitionRefusal(event, { startRequestCount, starts, modeChanges, hostSnapshots,
   observationsTruncated = false }, acceptedCount = 0) {
   const denied = reason => ({ accepted: false, reason });
-  if (event?.response?.status !== 409 || event.response.code !== 'HostMode' || event.response.codeOnlyBody !== true)
-    return denied('NotExactHostModeResponse');
-  if (!completed(event) || !inStage(event) || !exactRequest(event.request, 'OriginalSharedWorld', 'GET', 'Absent', 'Absent'))
+  const progress = event?.request?.route === 'OriginalHostingProgress';
+  const exactPayload = progress
+    ? event?.response?.emptyBody === true && event.response.code === 'Unavailable' && event.response.codeOnlyBody === false &&
+      event.response.ok === false && event.response.mode === 'Other' && event.response.hostSnapshotShape === false
+    : event?.response?.code === 'HostMode' && event.response.codeOnlyBody === true && event.response.emptyBody !== true;
+  if (event?.response?.status !== 409 || !exactPayload)
+    return denied(progress ? 'NotExactEmptyProgressResponse' : 'NotExactHostModeResponse');
+  if (!completed(event) || !inStage(event) ||
+    !exactRequest(event.request, progress ? 'OriginalHostingProgress' : 'OriginalSharedWorld', 'GET', 'Absent', 'Absent'))
     return denied('RefusalRequestNotExact');
   if (observationsTruncated || startRequestCount !== 1 || starts.length !== 1)
     return denied('SingleStartNotProven');
@@ -108,8 +122,8 @@ export function classifyRoleTransitionRefusal(event, { startRequestCount, starts
   if (!before(start.response, mode.request) || !before(mode.request, event.response) || !before(mode.response, firstHost.response))
     return denied('TransitionOrderNotProven');
   if (acceptedCount !== 0) return denied('RefusalLimitExceeded');
-  return { accepted: true, reason: 'ConfirmedFriendToHostTransition', evidence: {
-    code: 'HostMode', status: 409,
+  return { accepted: true, reason: progress ? 'ConfirmedFriendToHostProgressTransition' : 'ConfirmedFriendToHostTransition', evidence: {
+    code: progress ? 'Unavailable' : 'HostMode', status: 409,
     refusal: evidenceEvent(event), successfulStart: evidenceEvent(start), successfulModeChange: evidenceEvent(mode),
     firstHostSnapshot: evidenceEvent(firstHost)
   } };

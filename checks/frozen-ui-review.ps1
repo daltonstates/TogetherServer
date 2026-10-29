@@ -60,7 +60,7 @@ try {
         $output = if ($scope -eq 'save-transfer') { 'local-data/save-transfer-visual-review' } else { 'local-data/ui-redesign-visual-review' }
         try {
             # Explicit hosted opt-in. Render the downloaded UI; never rebuild it.
-            node scripts/render-ui-redesign.mjs "--$scope-only" --allow-isolated-browser-tests --hosted-runner github-actions
+            node scripts/render-ui-redesign.mjs "--$scope-only" --serial-captures --allow-isolated-browser-tests --hosted-runner github-actions
             if ($LASTEXITCODE -ne 0) { throw 'Frozen UI capture failed.' }
             $manifest = Get-Content (Join-Path $output 'manifest.json') -Raw | ConvertFrom-Json
             $index = @($package.assets | Where-Object asset -ceq 'index.html')
@@ -69,6 +69,7 @@ try {
                 $manifest.build.verificationRevision -cne $context.verificationRevision -or
                 $manifest.build.candidateSha256 -cne $context.candidateSha256 -or
                 $manifest.build.candidateRunId -cne [string]$context.candidateRunId -or $manifest.coverage.scope -cne $scope -or
+                $manifest.execution.concurrentContexts -ne 1 -or
                 $manifest.status -cne 'captured-awaiting-visual-inspection' -or $manifest.summary.planned -lt 1 -or
                 $manifest.summary.planned -ne $manifest.summary.attempted -or $manifest.summary.failed -ne 0 -or
                 $manifest.summary.skipped -ne 0 -or $manifest.summary.layoutFindings -ne 0 -or @($manifest.fatalErrors).Count -ne 0 -or
