@@ -1034,6 +1034,7 @@ try
     Require((await OwnerGetJson<SharedWorldStatus>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 1,
         "receipt retry counted one PC twice");
+    var beforeRotationPointer = File.ReadAllBytes(Path.Combine(receiverRoot, "latest.json"));
     var rotatedWorld = Path.Combine(root, "rotated-world");
     Directory.CreateDirectory(rotatedWorld);
     File.WriteAllText(Path.Combine(rotatedWorld, "world.dat"), "same WorldId, replacement source");
@@ -1062,9 +1063,33 @@ try
     Require(rotatedShared.ConfirmedCopies == 0, "an old source receipt counted for the new group");
     var blockedRotation = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
-    Require(!blockedRotation.Ok && blockedRotation.Code == "SourceReviewRequired" &&
-        File.Exists(Path.Combine(receiverRoot, publishedShared.Latest.VersionHash, "payload", "world.dat")),
-        "Friend replaced an earlier group without renewed consent");
+    var oldRotationPayloadRetained = File.Exists(Path.Combine(receiverRoot, publishedShared.Latest.VersionHash, "payload", "world.dat"));
+    var rotationPointerUnchanged = File.ReadAllBytes(Path.Combine(receiverRoot, "latest.json")).SequenceEqual(beforeRotationPointer);
+    var rotatedPayloadAbsent = !File.Exists(Path.Combine(receiverRoot, rotatedShared.Latest!.VersionHash, "payload", "world.dat"));
+    var rotatedReceiptAbsent = !File.Exists(Path.Combine(receiverRoot, rotatedShared.Latest.VersionHash, "receipt.json"));
+    bool rotationReviewPending, originalGroupStillApproved;
+    // Only this runner's generated protected fixture. Never print its
+    // credentials/configuration; retain fixed policy booleans as evidence.
+    using (var rotationData = new LocalData(friendAData))
+    {
+        var rotationConfig = rotationData.LoadProtectedJson<FriendConfiguration>(
+            $"friend-{firstConnection.ConnectionId:N}.protected");
+        rotationReviewPending = rotationConfig?.PendingSharedWorldGroups?.GetValueOrDefault(profile.Id) == rotatedShared.Latest.GroupId;
+        originalGroupStillApproved = rotationConfig?.ApprovedSharedWorldGroups?.GetValueOrDefault(profile.Id) == publishedShared.Latest.GroupId;
+    }
+    var rotationHostUnconfirmed = (await OwnerGetJson<SharedWorldStatus>(owner,
+        $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 0;
+    var rotationFacts = $"ok={blockedRotation.Ok}, code={blockedRotation.Code}, oldPayload={oldRotationPayloadRetained}, " +
+        $"pointerUnchanged={rotationPointerUnchanged}, newPayloadAbsent={rotatedPayloadAbsent}, newReceiptAbsent={rotatedReceiptAbsent}, " +
+        $"reviewPending={rotationReviewPending}, oldGroupApproved={originalGroupStillApproved}, hostUnconfirmed={rotationHostUnconfirmed}";
+    Console.WriteLine("CONSENT_SOURCE_ROTATION_BEFORE_REVIEW " + rotationFacts);
+    // Background discovery may already have recorded the changed group and
+    // disabled automatic consent before this explicit pull. Both fixed codes
+    // require renewed consent; neither may change the pointer or accept bytes.
+    Require(!blockedRotation.Ok && blockedRotation.Code is ("SourceReviewRequired" or "ConsentRequired") &&
+        rotationReviewPending && originalGroupStillApproved && rotationHostUnconfirmed &&
+        oldRotationPayloadRetained && rotationPointerUnchanged && rotatedPayloadAbsent && rotatedReceiptAbsent,
+        "Friend did not preserve the earlier group behind renewed consent: " + rotationFacts);
     Require((await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,
         $"/api/local/friend/{profile.Id}/shared-world/consent", new(false))).Ok &&
         (await OwnerPut<SharedWorldConsentRequest, ReceivedSharedWorldResult>(aLocal,

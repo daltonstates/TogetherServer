@@ -95,7 +95,35 @@ reports receipt confirmation rather than another measured download. The
 test-only correction retains the byte assertions for Preparing/Receiving,
 checks indeterminate verification/receipt, adds Preparing coverage and keeps
 the management phase visible across sections. All 20 affected tests pass
-locally. The complete Existing lane still needs its frozen-byte recheck.
+locally. The complete Existing lane is being rechecked by
+[run 40806839357](https://github.com/daltonstates/TogetherServer/actions/runs/40806839357),
+using verification-only source `ca21c6380d5c7f8b5c51149a08208526c1116fb0`
+against the unchanged original candidate. That run passed **1,697/1,697 UI
+tests in 113 files, 115/115 General checks**, all driver/update suites,
+Shared Worlds **11/11 with zero recovery skips** and LiveSave **5/5**.
+Companion then failed after 19 passing groups at a combined refusal-code/
+old-payload assertion for source rotation. Its old failure text did not record
+which condition failed and does not establish that a replacement occurred.
+
+Source review found two valid refusal paths: the first changed-group check
+returns `SourceReviewRequired` and persists pending review; automatic consent
+then becomes false, so another request can return `ConsentRequired` before
+the roster check. The strengthened fixture accepts only those codes while
+requiring the exact pending replacement group, retained original approval,
+an unchanged pre-rotation pointer, preserved old payload, absent replacement
+payload/receipt and zero Host confirmation. It emits only fixed codes and
+booleans from generated fixture metadata, then still requires explicit
+off/on consent and a successful separate replacement receipt. Actual hosted
+refusal facts remain to be observed in the continuation.
+
+The bounded `ExistingTail` continuation reruns Companion and the remaining
+format/served/staging/native/update-handoff checks against these same bytes.
+It requires an earlier candidate and preserves all identity and foreground
+guards; default full Existing coverage is unchanged. Earlier successful
+checks remain separate evidence. Corrected runners compile locally with
+zero warnings/errors; no process test ran on the owner's desktop. The
+workflow enforces that product/build inputs remain identical to the frozen
+source before running the corrected checks.
 Desktop's failed requirement is again OS notification delivery/click blocked
 by Windows `QuietTime`; independent native cases completed successfully.
 
@@ -107,7 +135,13 @@ without executing or extracting the application. ProductVersion is
 NotSigned. Portable SHA-256 is
 `38f388722926fdddaf1308af92ad23e9df8625b823418da871251b8c2005b1af`
 (66,368,612 bytes). Package job `123220065093` retained the same portable in
-release-assets artifact `12867173933`. Evidence is under
+release-assets artifact `12867173933`. That artifact's digest, both actual
+executable streams and both checksum files were independently checked.
+Installer SHA-256 is
+`1bc6ce0027a972427073a7a5a08a6d8dd0c89c452f387b2a8ade4dad0ad131a3`
+(60,828,095 bytes); its manifest reports NotSigned. The package passed six
+installer checks and all three wizard choices on its dedicated runner,
+without claiming full acceptance. Evidence is under
 `local-data/ci25-verified/`. No corrected test is a reason to rebuild or
 replace these frozen application bytes.
 

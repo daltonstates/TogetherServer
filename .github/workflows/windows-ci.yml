@@ -22,6 +22,10 @@ on:
         description: Run corrected Existing checks against unchanged candidate bytes
         type: boolean
         default: false
+      existing_tail:
+        description: Resume failed Companion and following Existing checks; preceding passes remain separate evidence
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -644,6 +648,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           [long]$runId = 0
+          if ('${{ inputs.existing_tail }}' -eq 'true' -and $env:EXISTING_CHECKS -ne 'true') {
+            throw 'ExistingTail is only a continuation of corrected Existing checks.'
+          }
           if ($env:CANDIDATE_RUN_ID -cnotmatch '^[1-9][0-9]{0,18}$' -or
               ![long]::TryParse($env:CANDIDATE_RUN_ID, [ref]$runId) -or $runId -lt 1 -or
               $env:CANDIDATE_SOURCE -cnotmatch '^[0-9a-fA-F]{40}$' -or
@@ -800,7 +807,8 @@ jobs:
           # Explicit opt-in for this dedicated hosted Windows desktop only.
           # Build check runners, never rebuild or replace the downloaded candidate.
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
-          ./scripts/verify-release.ps1 -AppPath $candidate -CandidateSourceRevision $env:CANDIDATE_SOURCE -Suite Existing -AllowInteractiveTests
+          $suite = if ('${{ inputs.existing_tail }}' -eq 'true') { 'ExistingTail' } else { 'Existing' }
+          ./scripts/verify-release.ps1 -AppPath $candidate -CandidateSourceRevision $env:CANDIDATE_SOURCE -Suite $suite -AllowInteractiveTests
 
       - name: Verify the same frozen bytes after every attempted case
         if: always() && steps.bound.outcome == 'success'

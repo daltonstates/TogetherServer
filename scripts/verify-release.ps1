@@ -4,7 +4,7 @@ param(
     [switch]$Build,
     [switch]$RequireSignature,
     [switch]$SkipDesktop,
-    [ValidateSet('All', 'Core', 'Existing', 'Qol', 'QolApi', 'Browser', 'Desktop', 'Rehearsal')][string]$Suite = 'All',
+    [ValidateSet('All', 'Core', 'Existing', 'ExistingTail', 'Qol', 'QolApi', 'Browser', 'Desktop', 'Rehearsal')][string]$Suite = 'All',
     [switch]$AllowInteractiveTests
 )
 $ErrorActionPreference = 'Stop'
@@ -80,6 +80,9 @@ function Write-NewConsoleCheckResult([ValidateSet('minecraft-checks', 'terraria-
 
 Push-Location $repository
 try {
+    if ($Suite -eq 'ExistingTail' -and (!$CandidateSourceRevision -or $Build)) {
+        throw 'ExistingTail requires an unchanged earlier candidate; preceding Existing checks remain separate evidence.'
+    }
     if ($Build -and $CandidateSourceRevision) { throw 'An earlier immutable candidate cannot be rebuilt during continuation.' }
     if ($Build -and $AppPath) { throw 'Use either -Build or -AppPath, not both.' }
     if ($Build) {
@@ -255,6 +258,10 @@ try {
         Invoke-Checked 'Shared LiveSave packaged transfer journey' {
             dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath --shared-live-transfer-journey
         }
+    }
+    # A bounded failed-stage continuation. It retains every identity/focus
+    # guard and never claims the preceding UI/general/save journeys were run.
+    if ($Suite -in 'All', 'Existing', 'ExistingTail') {
         Invoke-Checked 'TogetherServer.CompanionChecks' {
             dotnet run --project checks/TogetherServer.CompanionChecks/TogetherServer.CompanionChecks.csproj -c Release -- $AppPath
         }
