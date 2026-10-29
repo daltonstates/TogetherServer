@@ -7,7 +7,14 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## 0.3.3.25 candidate: physical transfer reporting follow-up
+## 0.3.3.25 prerelease: physical transfer reporting follow-up
+
+[v0.3.3.25](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.25)
+was published with explicit owner authorization on **2026-10-29**, using the
+unchanged verified `0450dcca768f9a8c8626a4ea4eba4d6fd7f8c1cc` build below.
+[Installer download](https://github.com/daltonstates/TogetherServer/releases/download/v0.3.3.25/TogetherServer-Setup-win-x64.exe)
+and [portable download](https://github.com/daltonstates/TogetherServer/releases/download/v0.3.3.25/TogetherServer-win-x64.exe)
+are available for testing the same version on both PCs.
 
 The first physical-PC report after .24 publication remains unresolved acceptance.
 Read-only inspection confirmed the installed binary was exactly
@@ -210,17 +217,31 @@ Installer size: **60,828,499 bytes**, SHA-256
 Both signatures are **NotSigned**. ZIP digests, actual executable streams,
 checksums, version metadata and all seven embedded UI asset hashes were
 independently verified without running the application on the owner desktop.
-Evidence remains ignored under `local-data/ci25-0450dcc/`. No .25 tag or release
-has been published, and the installed .24 app and its transfer were left alone.
-Physical two-PC/network/game-save acceptance remains open.
+Build evidence remains ignored under `local-data/ci25-0450dcc/`.
+Publication release ID is `427607960`, published at `2026-10-29T08:23:06Z`.
+The public tag resolves exactly to `0450dcca768f9a8c8626a4ea4eba4d6fd7f8c1cc`;
+release metadata confirms `prerelease=true`, `draft=false` and exactly four
+assets. All four were independently downloaded without an Authorization
+header or cookies and checked at `2026-10-29T08:24:54Z`: binary sizes, SHA-256,
+numeric/string versions, portable source identity and `NotSigned` state match
+the verified candidate. The original portable/installer checksum companions
+(94/100 bytes) also match and name the correct binaries. Their own SHA-256
+digests are respectively
+`83846a6505cd67a9973d8733353a9f6856963bb02d31c84768b4d609473ce05c`
+and `b3ee97b407548f3a31a0bd6933968833abf196f128c2c967a40fee7546b45de9`.
+The stable latest endpoint remains **v0.3.3**, release ID `418702775`.
+Publication evidence is ignored under `local-data/github-release/v0.3.3.25/`.
+Neither executable was run or installed on the owner desktop; its installed
+.24 app and transfer were left alone. Physical two-PC/network/game-save
+acceptance remains open.
 
-Readiness: **ready for the next prerelease for owner testing**, using only the
+Readiness: **published as a prerelease for owner testing**, using only the
 final `0450dcc` application and its verified installer above. The initial
-superseded `d93408c` executable must not be published. Both focused frozen
+superseded `d93408c` executable was not published. Both focused frozen
 rechecks passed without changing candidate bytes. The original full run's
 QuietTime notification failure remains a failed acceptance requirement;
 the UI failures have separate passing rechecks. This is not a full acceptance
-or physical save-integrity claim. No .25 publication was performed.
+or physical save-integrity claim.
 
 Initial frozen application source was `d93408c25f8ace57207fba6f5e6b117465469fa9`.
 [Hosted run 40804155941](https://github.com/daltonstates/TogetherServer/actions/runs/40804155941)
