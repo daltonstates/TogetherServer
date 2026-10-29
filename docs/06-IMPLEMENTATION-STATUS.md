@@ -321,8 +321,9 @@ No running application, transfer, pairing or world was modified. Workers
 inspected repository/synthetic data only; shared builds and commits remain
 coordinator-owned. Local checks remain code-only; interactive acceptance
 belongs on explicitly opted-in hosted Windows runners. The installed .24
-application does not contain this follow-up. .25 is not published, and the
-physical two-PC transfer, game-load and saved-restart checks remain open.
+application does not contain this follow-up. The corrected `0450dcc` build
+was subsequently published as .25, as recorded above. Physical two-PC
+transfer, game-load and saved-restart checks remain open.
 
 ## 0.3.3.24 preview release: background shared hosting and failed-attempt diagnostics
 
