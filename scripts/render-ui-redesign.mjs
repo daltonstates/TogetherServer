@@ -3,7 +3,7 @@
 // Keep this guard before imports, filesystem reads, servers, or browser side effects.
 const args = process.argv.slice(2);
 const listOnly = args.length === 1 && args[0] === '--list' || args.length === 2 && args.includes('--list') &&
-  (args.includes('--simple-shared-hosting-only') || args.includes('--server-access-only') || args.includes('--sharing-delivery-only'));
+  (args.includes('--simple-shared-hosting-only') || args.includes('--server-access-only') || args.includes('--sharing-delivery-only') || args.includes('--save-transfer-only'));
 if (!listOnly && (!args.includes('--allow-isolated-browser-tests') ||
     args.indexOf('--hosted-runner') < 0 || args[args.indexOf('--hosted-runner') + 1] !== 'github-actions' ||
     process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_OS !== 'Windows' ||
@@ -25,7 +25,8 @@ const { simpleHostingCases, simpleHostingVariants, assertSimpleHostingUi, instal
 const { sharingDeliveryCases, applySharingDeliveryFixture, assertSharingDeliveryUi } = await import('./sharing-delivery-review.mjs');
 const { uiReviewBuild } = await import('./ui-review-provenance.mjs');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const output = resolve(root, args.includes('--sharing-delivery-only') ? 'local-data/sharing-delivery-visual-review' : 'local-data/ui-redesign-visual-review');
+const output = resolve(root, args.includes('--save-transfer-only') ? 'local-data/save-transfer-visual-review' :
+  args.includes('--sharing-delivery-only') ? 'local-data/sharing-delivery-visual-review' : 'local-data/ui-redesign-visual-review');
 if (!listOnly) await mkdir(output, { recursive: true });
 const manifest = {
   version: 1, evidence: 'Actual bundled React UI; synthetic responses only. No game, .NET, production storage, network or real-world acceptance.',
@@ -180,7 +181,7 @@ const cases = [
     id: `join-connection-${state}`, scenario: `friend-${state}`, workspace: 'Join', section: state === 'revoked' ? ['Join sections', 'pairing', 'Add a Host'] : ['Join sections', 'connection', 'Connection settings'],
     screen: state === 'revoked' ? heading('Join a server') : { css: '.friend-panel' } })),
   ...['verifying', 'receipt'].map(state => ({ id: `join-shared-${state}`, scenario: `friend-shared-${state}-offline`, workspace: 'Join',
-    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress') })),
+    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: `shared-${state}` })),
   ...['low-space', 'untrusted'].map(state => ({ id: `join-shared-${state}`, scenario: `friend-shared-${state}`, workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Next shared-save action') })),
   ...['Host', 'Join'].flatMap(workspace => ['peers', 'peers-conflict', ...(workspace === 'Join' ? ['peers-follower'] : [])].map(state => ({
@@ -333,12 +334,18 @@ const setupPolishOnly = args.includes('--setup-polish-only');
 const simpleHostingOnly = args.includes('--simple-shared-hosting-only');
 const serverAccessOnly = args.includes('--server-access-only');
 const sharingDeliveryOnly = args.includes('--sharing-delivery-only');
+const saveTransferOnly = args.includes('--save-transfer-only');
+const saveTransferCaseIds = ['join-shared-preparing', 'join-shared-receiving', 'join-shared-verifying', 'join-shared-receipt'];
 const setupPolishVariants = [
   { id: 'darkdesktop', viewport: { width: 1280, height: 900 }, theme: 'dark', scale: 100, reducedMotion: 'no-preference' },
   { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150, reducedMotion: 'reduce' },
   { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100, reducedMotion: 'reduce' }
 ];
-const reviewCases = sharingDeliveryOnly ? sharingDeliveryCases : serverAccessOnly ? serverAccessCaseIds.map(id => {
+const reviewCases = saveTransferOnly ? saveTransferCaseIds.map(id => {
+  const testCase = cases.find(testCase => testCase.id === id);
+  if (!testCase) throw new Error(`Required save-transfer review case is missing: ${id}`);
+  return testCase;
+}) : sharingDeliveryOnly ? sharingDeliveryCases : serverAccessOnly ? serverAccessCaseIds.map(id => {
   const testCase = accessReviewCases.find(testCase => testCase.id === id);
   if (!testCase) throw new Error(`Required server-access review case is missing: ${id}`);
   return testCase;
@@ -347,7 +354,7 @@ const reviewCases = sharingDeliveryOnly ? sharingDeliveryCases : serverAccessOnl
   : args.includes('--sidebar-only') ? [...cases, ...dialogs].filter(testCase => testCase.sidebarReview ||
     ['host-files', 'host-logs', 'host-sessions', 'host-pc-access', 'host-first-use', 'join-first-pairing', 'attention-issues', 'settings-updates', 'dialog-protection'].includes(testCase.id))
   : [...cases, ...dialogs];
-const plans = simpleHostingOnly || sharingDeliveryOnly ? reviewCases.flatMap(testCase => simpleHostingVariants.map(variant => ({ testCase, variant }))) : setupPolishOnly || serverAccessOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
+const plans = simpleHostingOnly || sharingDeliveryOnly || saveTransferOnly ? reviewCases.flatMap(testCase => simpleHostingVariants.map(variant => ({ testCase, variant }))) : setupPolishOnly || serverAccessOnly ? reviewCases.flatMap(testCase => setupPolishVariants.map(variant => ({ testCase, variant }))) : reviewCases.flatMap(testCase => [
   ...variants.map(variant => ({ testCase, variant })),
   ...(largeTextPages.has(testCase.id) || testCase.sidebarReview ? [{ testCase, variant: { id: 'lightnarrow150', viewport: { width: 390, height: 844 }, theme: 'light', scale: 150 } }] : []),
   ...(testCase.sidebarReview ? [
@@ -357,10 +364,10 @@ const plans = simpleHostingOnly || sharingDeliveryOnly ? reviewCases.flatMap(tes
   ] : []),
   ...(['dialog-selected-server-picker', 'host-files', 'host-pc-advanced', 'host-backups'].includes(testCase.id) || testCase.id.startsWith('move-hosting-') || testCase.sidebarReview ? [{ testCase, variant: { id: 'darkshortdesktop', viewport: { width: 1280, height: 650 }, theme: 'dark', scale: 100 } }] : []),
 ]);
-manifest.coverage = { scope: sharingDeliveryOnly ? 'sharing-delivery' : serverAccessOnly ? 'server-access' : simpleHostingOnly ? 'simple-shared-hosting' : setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
+manifest.coverage = { scope: saveTransferOnly ? 'save-transfer' : sharingDeliveryOnly ? 'sharing-delivery' : serverAccessOnly ? 'server-access' : simpleHostingOnly ? 'simple-shared-hosting' : setupPolishOnly ? 'setup-polish' : args.includes('--move-hosting-only') ? 'move-hosting' : args.includes('--sidebar-only') ? 'sidebars' : 'all',
   mainPages: reviewCases.filter(testCase => !isDialogReview(testCase)).length,
-  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (simpleHostingOnly || sharingDeliveryOnly ? simpleHostingVariants : setupPolishOnly || serverAccessOnly ? setupPolishVariants : variants).map(item => item.id),
-  text150Pages: reviewCases.filter(testCase => largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
+  dialogAndTooltipCases: reviewCases.filter(isDialogReview).length, variants: (simpleHostingOnly || sharingDeliveryOnly || saveTransferOnly ? simpleHostingVariants : setupPolishOnly || serverAccessOnly ? setupPolishVariants : variants).map(item => item.id),
+  text150Pages: reviewCases.filter(testCase => saveTransferOnly || largeTextPages.has(testCase.id)).map(testCase => testCase.id), plannedCaptures: plans.length };
 manifest.acceptanceBoundaries = [
   'Finite source inventory of pages, reachable dialogs, disclosures and representative states; not every combinatorial data value.',
   'Native startup/runtime/close messages and OS file/folder pickers require approved native Windows acceptance and are not represented as browser screenshots.',
@@ -535,21 +542,31 @@ async function performActions(page, testCase, record) {
   if (testCase.section) await section(page, testCase.section, record);
   if (testCase.button) await click(page, new RegExp(testCase.button), record, false);
   switch (testCase.action) {
-    case 'shared-verified-copy': case 'shared-preparing': case 'shared-receiving': {
+    case 'shared-verified-copy': case 'shared-preparing': case 'shared-receiving': case 'shared-verifying': case 'shared-receipt': {
       const next = await visible(page.getByRole('region', { name: 'Next shared-save action', exact: true }));
       const verified = testCase.action === 'shared-verified-copy';
       const preparing = testCase.action === 'shared-preparing';
+      const verifying = testCase.action === 'shared-verifying';
+      const receipt = testCase.action === 'shared-receipt';
       if (testCase.action === 'shared-verified-copy') {
         await visible(next.getByRole('heading', { name: 'Prepare hosting on this PC', exact: true }));
         await visible(page.getByText('Verified save copy 5 on this PC. Copy possession does not grant hosting authority or prove readiness.', { exact: true }));
       } else {
-        await visible(next.getByRole('heading', { name: preparing ? 'Preparing local save files' : 'Receiving the save copy', exact: true }));
+        await visible(next.getByRole('heading', { name: preparing ? 'Preparing local save files' :
+          verifying ? 'Verifying the save copy' : receipt ? 'Confirming receipt' : 'Receiving the save copy', exact: true }));
         const progress = await visible(page.getByRole('region', { name: 'Save transfer progress', exact: true }));
-        const bytes = await visible(progress.getByRole('progressbar', { name: preparing ? 'Local save bytes staged' : 'Save bytes received', exact: true }));
-        const values = await bytes.evaluate(el => ({ value: el.value, max: el.max, description: el.getAttribute('aria-valuetext') }));
-        if (values.value !== 1048576 || values.max !== 4194304 || values.description !== '1 MiB of 4 MiB')
+        const bytes = await visible(progress.getByRole('progressbar', { name: preparing ? 'Local save bytes staged' :
+          verifying ? 'Checking save files and permission' : receipt ? 'Confirming save receipt' : 'Save bytes received', exact: true }));
+        const values = await bytes.evaluate(el => ({ value: el.getAttribute('value'), max: el.max, description: el.getAttribute('aria-valuetext') }));
+        if (verifying || receipt) {
+          if (values.value !== null) throw new Error('Verification or receipt confirmation invented determinate completion progress');
+          await visible(progress.getByText('4 MiB of 4 MiB', { exact: true }));
+        } else if (Number(values.value) !== 1048576 || values.max !== 4194304 || values.description !== '1 MiB of 4 MiB')
           throw new Error('Staged/received byte progress or its accessible description differs from the strict fixture');
-        if (preparing) await visible(progress.getByRole('list', { name: 'Transfer phases' }).getByText('Prepare local files', { exact: true }));
+        const stage = progress.getByRole('list', { name: 'Transfer phases' }).locator('[aria-current="step"]');
+        const expectedStage = preparing ? 'Prepare local files' : verifying ? 'Check files and permission' : receipt ? 'Confirm receipt' : 'Receive the copy';
+        if (await stage.count() !== 1 || (await stage.textContent()).trim() !== expectedStage)
+          throw new Error('The transfer does not identify exactly its actual current phase');
       }
       const primary = next.locator('button:not(.secondary):not(.text-button)');
       if (verified) {
@@ -566,8 +583,11 @@ async function performActions(page, testCase, record) {
       if (!await manage.isEnabled()) throw new Error('Shared-save landing must keep Manage sharing reachable');
       if (await page.getByRole('button', { name: 'Review Start server', exact: true }).count())
         throw new Error('Synthetic copy possession must never establish Start authority');
+      if (state.requests.some(item => item.method === 'POST' && /\/shared-world\/hosting\/(prepare|start)$/u.test(item.path)))
+        throw new Error('Observing a save transfer prepared or started hosting');
       record.assertions.push(verified ? 'Synthetic verified copy exposes one primary Host this save and secondary Manage sharing; no signed Host or Start authority created' : preparing ?
         'Synthetic local staging shows measured retained/staged bytes and the preparation phase; redundant receive blocked, management reachable, and no signed Host or Start authority created' :
+        verifying || receipt ? 'Synthetic final save checks show the actual phase and indeterminate progress despite all bytes present; redundant receive blocked, management reachable, and no hosting mutation' :
         'Synthetic Receiving byte progress leads with at most one primary, redundant receiving blocked, and Manage sharing reachable; no signed Host or Start authority created');
       break;
     }

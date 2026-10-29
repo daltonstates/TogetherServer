@@ -26,6 +26,10 @@ on:
         description: Resume failed Companion and following Existing checks; preceding passes remain separate evidence
         type: boolean
         default: false
+      ui_checks:
+        description: Recheck hosting, transfer-phase and actual two-ended UI using frozen assets
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -628,7 +632,7 @@ jobs:
 
   frozen-hosting-recheck:
     if: github.event_name == 'workflow_dispatch'
-    name: ${{ inputs.existing_checks && 'Recheck Existing with an unchanged candidate' || 'Recheck ordinary hosting with an existing frozen candidate' }}
+    name: ${{ inputs.ui_checks && 'Recheck UI with an unchanged candidate' || inputs.existing_checks && 'Recheck Existing with an unchanged candidate' || 'Recheck ordinary hosting with an existing frozen candidate' }}
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.existing_checks && 60 || 20 }}
     permissions:
@@ -650,6 +654,10 @@ jobs:
           [long]$runId = 0
           if ('${{ inputs.existing_tail }}' -eq 'true' -and $env:EXISTING_CHECKS -ne 'true') {
             throw 'ExistingTail is only a continuation of corrected Existing checks.'
+          }
+          if ('${{ inputs.ui_checks }}' -eq 'true' -and
+              ($env:EXISTING_CHECKS -ne 'true' -or '${{ inputs.existing_tail }}' -eq 'true')) {
+            throw 'Frozen UI checks require corrected-check source without an ExistingTail run.'
           }
           if ($env:CANDIDATE_RUN_ID -cnotmatch '^[1-9][0-9]{0,18}$' -or
               ![long]::TryParse($env:CANDIDATE_RUN_ID, [ref]$runId) -or $runId -lt 1 -or
@@ -801,7 +809,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Run corrected Existing checks on the unchanged application
-        if: inputs.existing_checks
+        if: inputs.existing_checks && !inputs.ui_checks
         shell: pwsh
         run: |
           # Explicit opt-in for this dedicated hosted Windows desktop only.
@@ -809,6 +817,21 @@ jobs:
           $candidate = (Resolve-Path local-data/release-candidate/TogetherServer.exe).Path
           $suite = if ('${{ inputs.existing_tail }}' -eq 'true') { 'ExistingTail' } else { 'Existing' }
           ./scripts/verify-release.ps1 -AppPath $candidate -CandidateSourceRevision $env:CANDIDATE_SOURCE -Suite $suite -AllowInteractiveTests
+
+      - name: Install pinned browser for frozen UI checks
+        if: inputs.ui_checks
+        working-directory: ui
+        shell: pwsh
+        run: |
+          ./node_modules/.bin/playwright.cmd install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned frozen-review browser installation failed.' }
+
+      - name: Recheck exact UI assets and two-ended mode transitions
+        if: inputs.ui_checks
+        shell: pwsh
+        run: |
+          # Explicit hosted Windows opt-in; never run this on the owner's desktop.
+          ./checks/frozen-ui-review.ps1 -AllowInteractiveTests
 
       - name: Verify the same frozen bytes after every attempted case
         if: always() && steps.bound.outcome == 'success'
@@ -829,6 +852,7 @@ jobs:
           path: |
             ${{ runner.temp }}/frozen-hosting-recheck-origin.json
             local-data/ci-evidence/frozen-hosting-recheck/*.json
+            local-data/ci-evidence/frozen-ui-review/**
             local-data/ci-evidence/release-gate/*.json
             local-data/local-pairing-lab/simple-hosting-*/report.json
           if-no-files-found: warn

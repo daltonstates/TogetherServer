@@ -68,7 +68,7 @@ export const simpleHostingVariants = [
 ];
 
 export async function installHostingReviewClock(page, testCase, now) {
-  const clockDriven = testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused' || testCase.hostingEntry === 'hidden';
+  const clockDriven = testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused';
   if (clockDriven) await page.clock.install({ time: now });
   return clockDriven;
 }
@@ -158,6 +158,29 @@ export async function assertUnconfirmedStart(page, modal) {
 
 // Clock advancement dispatches the automatic read; it does not await its
 // response or React's loading/result paint. Finish both before scroll capture.
+export async function waitForPassiveHostingAccessPoll(page, accessPath, settle) {
+  if (settle) await settle();
+  // The production observer waits ten seconds between reads. Its scheduling
+  // interval is separate from the existing eight-second response/body bound.
+  // Advancing a synthetic clock here can fire an unrelated read's abort timer
+  // between quiet observation and the clock jump, even with immediate fixtures.
+  const request = await page.waitForRequest(request => {
+    const url = new URL(request.url());
+    return request.method() === 'GET' && url.pathname === accessPath && !url.search && !url.hash;
+  }, { timeout: 10000 + 8000 });
+  let timer;
+  try {
+    return await Promise.race([(async () => {
+      const response = await request.response();
+      if (!response || !response.ok() || await response.finished())
+        throw new Error('The observed passive hosting access response did not finish successfully');
+      return response;
+    })(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('The observed passive hosting access response did not finish within 8000 ms')), 8000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 export async function advancePreparedHostingCheck(page, modal, ticks, buttonName = 'Start hosting', unconfirmed = false, settle) {
   if (settle) await settle();
   const refreshed = page.waitForResponse(response => response.url().endsWith('/shared-world/hosting') &&
@@ -347,19 +370,22 @@ export async function assertSimpleHostingUi(page, testCase, record, state, settl
       await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
       await assertHidden(1);
     }
+    const initialPassiveReads = state.requests.filter(item => item.method === 'GET' && item.path === accessPath).length;
     for (let poll = 0; poll < 2; poll++) {
-      if (settle) await settle();
-      const polled = page.waitForResponse(response => response.url().endsWith(accessPath) &&
-        response.request().method() === 'GET' && response.ok(), { timeout: 8000 });
-      await page.clock.fastForward(10001);
-      await (await polled).finished();
+      const polled = await waitForPassiveHostingAccessPoll(page, accessPath, settle);
+      const result = await polled.json();
+      if (result.allowed !== false || result.code !== permission.code)
+        throw new Error('A passive hosting access poll changed the expected permission decision');
       await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
       if (settle) await settle();
       await access.getByText(permission.message, { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
       await assertHidden(Number(retryExpected));
     }
+    const passiveAccessChecks = state.requests.filter(item => item.method === 'GET' && item.path === accessPath).length - initialPassiveReads;
+    if (passiveAccessChecks < 2) throw new Error('Two natural passive access checks were not observed');
     record.assertions.push({ hostingEntryHidden: true, hostingAccessStatusVisible: true, hostingAccessRetry: retryExpected,
       permissionCode: permission.code, presentation: card ? 'card' : 'action', passiveAccessPolling: true,
+      passiveAccessChecks, pollingTime: 'real production interval',
       explicitAccessChecks: Number(retryExpected), prepareRequests: 0, startRequests: 0 });
   } else if (testCase.hostingEntry === 'visible') {
     const card = testCase.section === sharedSaves;

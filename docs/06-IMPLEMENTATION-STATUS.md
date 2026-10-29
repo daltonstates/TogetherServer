@@ -122,7 +122,50 @@ registry now contains 106 groups. A native hosted check also exercises the
 actual mapped HTTPS routes with a fresh generated device, exhausted bulk
 allowance, a preserved Stop permission refusal and the unchanged total cap;
 it runs after the fixture's planned Host restart to isolate its quota window.
-A fresh immutable candidate and full hosted verification are pending.
+The final immutable application source is
+`0450dcca768f9a8c8626a4ea4eba4d6fd7f8c1cc`.
+[Hosted run 40813608923](https://github.com/daltonstates/TogetherServer/actions/runs/40813608923)
+completed with **16 successful jobs, three failed and one dispatch-only skip**.
+All **106 source/synthetic groups**, **1,697 UI tests in 113 files**,
+**115 General checks**, Core, Browser, Rehearsal, automatic shared hosting,
+all eight compatibility lanes and installer packaging passed. Existing also
+passed Shared Worlds **11/11 with zero recovery skips**, LiveSave **5/5** and
+Companion **47/47**, including real mapped HTTPS bulk saturation with a
+preserved Stop permission refusal and the unchanged aggregate device cap.
+Source rotation was refused before and after restart with the original
+payload/pointer preserved and no new receipt; explicit consent renewal then
+succeeded. The exact application hash remained unchanged through verification.
+
+The remaining failures are recorded separately. Desktop notification delivery
+and click acceptance remain blocked by Windows QuietTime; independent native
+checks passed. Hosting rendering passed its semantic assertions but recorded
+one aborted background-jobs GET during a synthetic clock jump. The two-ended
+UI passed all ten journey stages but its error recorder also saw one shared-world
+HTTP 409 during the successful Friend-to-Host transition. That earlier capture
+did not retain the response code and is not retroactively classified as safe.
+
+Verification-only corrections use natural ten-second access polling with the
+existing eight-second response/body bound and retain transport failures.
+The two-ended recorder accepts at most one read-only, completed, exact
+`{code:HostMode}` refusal only when a successful explicit Start, successful
+mode change and first structural Host snapshot prove the complete transition
+timeline. Other HTTP failures and request failures remain fatal. All **81 pure
+Node observation tests** pass. A bounded hosted recheck is pending for hosting,
+all twelve Preparing/Receiving/Verifying/Receipt render variants and actual
+two-ended UX, using the frozen application and its seven unchanged UI assets.
+
+Candidate run/job/artifact: `40813608923` / `123249430700` / `12871790940`.
+Portable size: **66,370,485 bytes**, SHA-256
+`a001898acc06b9de170a844c129e3b7f439f89b0d3b3eae53e085d8609c29436`.
+Packaging job/artifact: `123250490066` / `12871632529`.
+Installer size: **60,828,499 bytes**, SHA-256
+`c5543835beb12eb6d00e7b4da54625d1d1325603c8e97563e03705629de0af59`.
+Both signatures are **NotSigned**. ZIP digests, actual executable streams,
+checksums, version metadata and all seven embedded UI asset hashes were
+independently verified without running the application on the owner desktop.
+Evidence remains ignored under `local-data/ci25-0450dcc/`. No .25 tag or release
+has been published, and the installed .24 app and its transfer were left alone.
+Physical two-PC/network/game-save acceptance remains open.
 
 Initial frozen application source was `d93408c25f8ace57207fba6f5e6b117465469fa9`.
 [Hosted run 40804155941](https://github.com/daltonstates/TogetherServer/actions/runs/40804155941)

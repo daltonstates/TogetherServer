@@ -6,6 +6,8 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import readline from 'node:readline';
 import { createHash } from 'node:crypto';
+import { guidedHostingStage, roleTransitionRequestFacts, roleTransitionPayloadFacts,
+  classifyRoleTransitionRefusal } from './local-pairing-role-transition.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(repo, 'ui', 'package.json'));
@@ -43,6 +45,48 @@ const hostingRequestDiagnostics = [];
 const hostingUiTransitions = [];
 const hostingRequests = new WeakMap();
 const diagnosticsStartedAt = Date.now();
+const transitionClockStartedAt = performance.now();
+const browserRequests = new WeakMap();
+const transitionStarts = [];
+const transitionModeChanges = [];
+const transitionHostSnapshots = [];
+const httpFailures = [];
+const pendingResponseDiagnostics = new Set();
+let diagnosticOrder = 0;
+let transitionObservationsTruncated = false;
+const diagnosticStamp = () => ({ order: ++diagnosticOrder,
+  ms: Math.round((performance.now() - transitionClockStartedAt) * 1000) / 1000, stage: currentStage });
+const roleTransitionRefusals = [];
+report.roleTransitionRefusals = roleTransitionRefusals;
+function captureTransitionEvent(collection, event) {
+  if (collection.length < 16) collection.push(event);
+  else transitionObservationsTruncated = true;
+}
+async function settleResponseDiagnostics() {
+  const pending = [...pendingResponseDiagnostics];
+  if (!pending.length) return;
+  let timer;
+  const settled = await Promise.race([Promise.allSettled(pending).then(() => true),
+    new Promise(resolve => { timer = setTimeout(() => resolve(false), 10000); })]);
+  clearTimeout(timer);
+  if (!settled && report.errors.length < 20) report.errors.push({ stage: currentStage, kind: 'request-diagnostic-timeout' });
+}
+function classifyHttpFailures() {
+  const allHttpEntries = new Set(httpFailures.map(item => item.reportEntry));
+  const failed = report.failedRequests.filter(entry => !allHttpEntries.has(entry));
+  roleTransitionRefusals.length = 0;
+  for (const item of httpFailures) {
+    const classification = classifyRoleTransitionRefusal(item.event, { startRequestCount: hostingStartRequests,
+      starts: transitionStarts, modeChanges: transitionModeChanges, hostSnapshots: transitionHostSnapshots,
+      observationsTruncated: transitionObservationsTruncated }, roleTransitionRefusals.length);
+    if (classification.accepted) roleTransitionRefusals.push(classification.evidence);
+    else {
+      if (item.event.response.status === 409) item.reportEntry.roleTransitionClassification = classification.reason;
+      failed.push(item.reportEntry);
+    }
+  }
+  report.failedRequests.splice(0, report.failedRequests.length, ...failed);
+}
 let closingBrowser = false;
 let previousHostingUi = '';
 let previousConnectionId;
@@ -334,8 +378,18 @@ try {
     });
     const page = await context.newPage();
     page.on('request', request => {
+      const event = { request: { ...diagnosticStamp(), ...roleTransitionRequestFacts({ url: request.url(),
+        pageOrigin: origin, candidateOrigin: `http://127.0.0.1:${input.friendPort}`,
+        ownerOrigin: `http://127.0.0.1:${input.hostPort}`, originalProfileId: input.profileId,
+        method: request.method(), headers: request.headers(), postData: request.postData() }) }, state: 'Pending' };
+      browserRequests.set(request, event);
       if (request.method() === 'POST' && new URL(request.url()).pathname ===
-        `/api/local/friend/${input.profileId}/shared-world/hosting/start`) hostingStartRequests++;
+        `/api/local/friend/${input.profileId}/shared-world/hosting/start`) {
+        hostingStartRequests++;
+        captureTransitionEvent(transitionStarts, event);
+      }
+      if (event.request.route === 'HostMode' && event.request.pageRole === 'Candidate' && hostingStartRequests > 0)
+        captureTransitionEvent(transitionModeChanges, event);
       if (request.method() === 'POST' && new URL(request.url()).pathname ===
         `/api/local/friend/${input.profileId}/shared-world/hosting/prepare`) hostingPrepareRequests++;
       const operation = request.method() === 'POST' && new URL(request.url()).pathname.match(
@@ -350,6 +404,8 @@ try {
     });
     page.on('pageerror', () => { if (report.errors.length < 20) report.errors.push({ stage: currentStage, kind: 'pageerror' }); });
     page.on('requestfailed', request => {
+      const transition = browserRequests.get(request);
+      if (transition) transition.state = 'Failed';
       const entry = hostingRequests.get(request);
       if (entry) Object.assign(entry, { state: 'Failed', elapsedMs: Date.now() - diagnosticsStartedAt - entry.startedMs,
         failureKind: requestFailureKind(request.failure()?.errorText), duringBrowserCleanup: closingBrowser });
@@ -363,56 +419,87 @@ try {
         method: request.method(), path: new URL(request.url()).pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ':id').slice(0, 160) });
     });
     page.on('requestfinished', request => {
+      const transition = browserRequests.get(request);
+      if (transition && transition.state !== 'Failed') transition.state = 'Finished';
       const entry = hostingRequests.get(request);
       if (entry) Object.assign(entry, { state: 'Finished', elapsedMs: Date.now() - diagnosticsStartedAt - entry.startedMs });
     });
-    page.on('response', async response => {
-      const entry = hostingRequests.get(response.request());
-      if (entry) {
-        entry.status = response.status();
-        const result = await response.json().catch(() => null);
-        Object.assign(entry, { code: fixedCode(result?.code), ok: result?.ok === true });
+    page.on('response', response => {
+      const request = response.request();
+      const observed = diagnosticStamp();
+      const transition = browserRequests.get(request);
+      if (transition) transition.response = { ...observed, status: response.status(), ...roleTransitionPayloadFacts(null) };
+      // HTTP errors remain failures until the final complete timeline proves the
+      // one exact role-transition refusal. No requestfailed event enters here.
+      if (response.status() >= 400 && report.failedRequests.length < 40) {
+        const reportEntry = { stage: observed.stage, status: response.status(), method: request.method(),
+          path: new URL(response.url()).pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ':id').slice(0, 160),
+          code: 'Unavailable', request: transition?.request ?? null, response: transition?.response ?? null };
+        report.failedRequests.push(reportEntry);
+        if (transition) httpFailures.push({ event: transition, reportEntry });
       }
-      if (response.request().method() === 'POST' && new URL(response.url()).pathname ===
-        `/api/local/friend/${input.profileId}/shared-world/hosting/start`) {
-        const result = await response.json().catch(() => null);
-        hostingStartResults.push({ status: response.status(), ok: result?.ok === true });
-      }
-      if (origin === `http://127.0.0.1:${input.friendPort}` && new URL(response.url()).pathname === '/api/local/snapshot') {
-        try {
-          const snapshot = await response.json();
-          const connectionStates = ['Connected', 'Disabled', 'Disconnected/Unknown', 'Revoked', 'Access expired',
-            'Awaiting approval', 'Update required', 'Not connected'];
-          const observation = {
-            mode: ['Host', 'Friend'].includes(snapshot?.mode) ? snapshot.mode : 'Other',
-            connectionState: connectionStates.includes(snapshot?.state) ? snapshot.state : 'Other',
-            connectionCode: snapshot?.connectionCode == null ? 'None' : fixedCode(snapshot.connectionCode),
-            connectionChanged: previousConnectionId !== undefined && previousConnectionId !== snapshot?.connectionId,
-            connectionMatchesStart: startConnectionId === undefined ? null : startConnectionId === snapshot?.connectionId,
-            sourceAssigned: Array.isArray(snapshot?.profiles) && snapshot.profiles.some(profile => profile?.id === input.profileId),
-            assignedProfiles: Array.isArray(snapshot?.profiles) ? Math.min(100, snapshot.profiles.length) : 0,
-            managedRuns: Array.isArray(snapshot?.runs) ? Math.min(2, snapshot.runs.length) : 0,
-            ...await hostingUiPresence(page)
-          };
-          previousConnectionId = snapshot?.connectionId;
-          latestHostingUi = { elapsedMs: Date.now() - diagnosticsStartedAt, ...observation };
-          const signature = JSON.stringify(observation);
-          if (signature !== previousHostingUi) {
-            previousHostingUi = signature;
-            if (hostingUiTransitions.length === 64) hostingUiTransitions.shift();
-            hostingUiTransitions.push({ elapsedMs: Date.now() - diagnosticsStartedAt, stage: currentStage, ...observation });
+      const recording = (async () => {
+        const entry = hostingRequests.get(request);
+        if (entry) entry.status = response.status();
+        const isStart = request.method() === 'POST' && new URL(response.url()).pathname ===
+          `/api/local/friend/${input.profileId}/shared-world/hosting/start`;
+        const isSnapshot = origin === `http://127.0.0.1:${input.friendPort}` &&
+          new URL(response.url()).pathname === '/api/local/snapshot';
+        const isPolicyChange = response.url().endsWith('/api/local/settings/control-policy') && request.method() === 'PUT';
+        const needsBody = entry || isStart || isSnapshot || isPolicyChange || response.status() >= 400 || transition?.request.route === 'HostMode';
+        // Only allowlisted code/mode/boolean facts survive this local decode.
+        const result = needsBody ? await response.json().catch(() => null) : null;
+        if (transition && needsBody) {
+          const finished = await response.finished().then(error => error === null).catch(() => false);
+          if (!finished) transition.state = 'Failed';
+          else if (transition.state !== 'Failed') transition.state = 'Finished';
+        }
+        if (transition && needsBody) Object.assign(transition.response, roleTransitionPayloadFacts(result));
+        const failure = httpFailures.find(item => item.event === transition);
+        if (failure) failure.reportEntry.code = transition.response.code;
+        if (entry) Object.assign(entry, { status: response.status(), code: fixedCode(result?.code), ok: result?.ok === true });
+        if (isStart) hostingStartResults.push({ status: response.status(), ok: result?.ok === true });
+        if (isSnapshot) {
+          const snapshot = result;
+          if (transition?.response.mode === 'Host' && transitionStarts.length &&
+            transition.response.order > transitionStarts[0].request.order) {
+            // Keep the first Host response by observed event order, independently
+            // of asynchronous JSON/UI diagnostic completion order.
+            if (!transitionHostSnapshots.length || transition.response.order < transitionHostSnapshots[0].response.order)
+              transitionHostSnapshots.splice(0, transitionHostSnapshots.length, transition);
           }
-        } catch { /* Read-only diagnostics cannot change the journey's result. */ }
-      }
-      if (response.status() >= 400 && report.failedRequests.length < 40) report.failedRequests.push({ stage: currentStage,
-        status: response.status(), method: response.request().method(),
-        path: new URL(response.url()).pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ':id').slice(0, 160) });
-      if (response.url().endsWith('/api/local/settings/control-policy') && response.request().method() === 'PUT') {
-        const result = await response.json().catch(() => null);
-        report.controlPolicyChanges.push({ status: response.status(), ok: result?.ok === true,
+          try {
+            const connectionStates = ['Connected', 'Disabled', 'Disconnected/Unknown', 'Revoked', 'Access expired',
+              'Awaiting approval', 'Update required', 'Not connected'];
+            const observation = {
+              mode: ['Host', 'Friend'].includes(snapshot?.mode) ? snapshot.mode : 'Other',
+              connectionState: connectionStates.includes(snapshot?.state) ? snapshot.state : 'Other',
+              connectionCode: snapshot?.connectionCode == null ? 'None' : fixedCode(snapshot.connectionCode),
+              connectionChanged: previousConnectionId !== undefined && previousConnectionId !== snapshot?.connectionId,
+              connectionMatchesStart: startConnectionId === undefined ? null : startConnectionId === snapshot?.connectionId,
+              sourceAssigned: Array.isArray(snapshot?.profiles) && snapshot.profiles.some(profile => profile?.id === input.profileId),
+              assignedProfiles: Array.isArray(snapshot?.profiles) ? Math.min(100, snapshot.profiles.length) : 0,
+              managedRuns: Array.isArray(snapshot?.runs) ? Math.min(2, snapshot.runs.length) : 0,
+              ...await hostingUiPresence(page)
+            };
+            previousConnectionId = snapshot?.connectionId;
+            latestHostingUi = { elapsedMs: Date.now() - diagnosticsStartedAt, ...observation };
+            const signature = JSON.stringify(observation);
+            if (signature !== previousHostingUi) {
+              previousHostingUi = signature;
+              if (hostingUiTransitions.length === 64) hostingUiTransitions.shift();
+              hostingUiTransitions.push({ elapsedMs: Date.now() - diagnosticsStartedAt, stage: currentStage, ...observation });
+            }
+          } catch { /* Read-only diagnostics cannot change the journey's result. */ }
+        }
+        if (isPolicyChange) report.controlPolicyChanges.push({ status: response.status(), ok: result?.ok === true,
           code: /^[A-Za-z0-9]{1,80}$/.test(result?.code ?? '') ? result.code : 'Unavailable',
           listening: result?.snapshot?.settings?.companionListeningEnabled === true });
-      }
+      })();
+      pendingResponseDiagnostics.add(recording);
+      void recording.catch(() => {
+        if (report.errors.length < 20) report.errors.push({ stage: observed.stage, kind: 'request-diagnostic-error' });
+      }).finally(() => pendingResponseDiagnostics.delete(recording));
     });
     page.on('download', download => { void download.cancel(); report.errors.push({ stage: currentStage, kind: 'download-refused' }); });
     page.on('dialog', dialog => { void dialog.dismiss(); report.errors.push({ stage: currentStage, kind: 'native-dialog-refused' }); });
@@ -590,7 +677,7 @@ try {
       automaticReceipt: true, receivedHashesMatch: true, originalUnchanged: true };
     await shot(friend, '05-verified-copy');
   });
-  await stage('missing server blocks then one confirmation prepares and Starts', async () => {
+  await stage(guidedHostingStage, async () => {
     await nav(friend, 'Play'); await button(friend, 'Host locally');
     const dialog = friend.getByRole('dialog', { name: 'Host locally', exact: true });
     await dialog.waitFor({ state: 'visible', timeout });
@@ -733,6 +820,8 @@ try {
     if (hostingStartRequests !== 1 || hostingPrepareRequests !== 1) throw new Error('Discovery, polling or Stop repeated hosting intent');
     report.copyIntegrity.originalUnchangedAfterCandidateStop = true;
   });
+  await settleResponseDiagnostics();
+  classifyHttpFailures();
   if (report.errors.length || report.failedRequests.length) throw new Error('Browser errors, failed requests or forbidden native interactions were observed');
   report.ok = true;
 } catch (error) {
@@ -749,6 +838,13 @@ try {
 } finally {
   closingBrowser = true;
   if (browser) await browser.close().catch(() => {});
+  await settleResponseDiagnostics();
+  classifyHttpFailures();
+  if (report.ok && (report.errors.length || report.failedRequests.length)) {
+    report.ok = false;
+    report.failure = { stage: currentStage, code: report.errors.length ? 'BrowserRuntimeError' : 'BrowserRequestFailed',
+      message: 'Browser errors or failed requests were observed before report completion.' };
+  }
   for (const entry of hostingRequestDiagnostics) entry.elapsedMs ??= Date.now() - diagnosticsStartedAt - entry.startedMs;
   await fs.writeFile(path.join(artifacts, 'report.json'), JSON.stringify(report, null, 2));
   process.stdout.write(`${JSON.stringify({ ok: report.ok, stages: report.stages.length, failedStage: report.failure?.stage })}\n`);

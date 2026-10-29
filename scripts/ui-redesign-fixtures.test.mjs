@@ -210,6 +210,40 @@ test('sharing-delivery-only inventory is exactly three states by three viewports
   assert.doesNotMatch(pureModule, /\.click\(|\.launch\(|createServer\(/u);
 });
 
+test('save-transfer-only inventory contains exactly four distinct phases across all three required variants', () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const assignment = ast.statements.find(node => ts.isExpressionStatement(node) && node.expression.left?.getText(ast) === 'manifest.inventory');
+  const inventory = source.slice(source.indexOf('const heading ='), source.indexOf('manifest.inventory =')) + assignment.getText(ast) +
+    '\n;({plans,inventory:manifest.inventory,coverage:manifest.coverage})';
+  const focused = runInNewContext(inventory, { manifest: {}, worldReviewCases, accessReviewCases, serverAccessCaseIds,
+    simpleHostingCases, simpleHostingVariants, sharingDeliveryCases, args: ['--save-transfer-only'] });
+  const phases = ['preparing', 'receiving', 'verifying', 'receipt'];
+  assert.equal(focused.coverage.scope, 'save-transfer');
+  assert.equal(focused.coverage.mainPages, 4);
+  assert.equal(focused.coverage.plannedCaptures, 12);
+  assert.equal(focused.inventory.length, 12);
+  assert.equal(new Set(focused.inventory.map(item => item.id)).size, 12);
+  assert.deepEqual(Array.from(focused.coverage.variants), simpleHostingVariants.map(item => item.id));
+  assert.deepEqual(Array.from(focused.coverage.text150Pages), phases.map(phase => `join-shared-${phase}`));
+  for (const phase of phases) {
+    const plans = focused.plans.filter(plan => plan.testCase.id === `join-shared-${phase}`);
+    assert.equal(plans.length, 3);
+    assert.deepEqual(Array.from(plans.map(plan => plan.variant.id)), ['darkdesktop', 'lightnarrow', 'lightnarrow150']);
+    assert.ok(plans.some(plan => plan.variant.viewport.width === 390 && plan.variant.scale === 150));
+    assert.ok(plans.every(plan => plan.testCase.action === `shared-${phase}` && plan.testCase.screen.name === 'Save transfer progress'));
+    const state = createFixtureState(plans[0].testCase.scenario);
+    const status = shared.parseFriendSharedWorldStatus(routeFixture(state, {
+      method: 'GET', path: `/api/local/friend/${fixtureIds.primary}/shared-world`
+    }).body);
+    assert.equal(status.transferPhase.toLowerCase(), phase);
+    assert.equal(status.receivedBytes, ['preparing', 'receiving'].includes(phase) ? 1048576 : 4194304);
+    assert.equal(status.totalBytes, 4194304);
+    assert.equal(state.requests.some(request => request.method !== 'GET'), false);
+  }
+  assert.match(source, /'local-data\/save-transfer-visual-review'/u);
+});
+
 test('sharing-delivery hosted capture binds candidate bytes and refuses incomplete or disclosure-dependent evidence', () => {
   const workflow = readFileSync(new URL('../.github/workflows/windows-ci.yml', import.meta.url), 'utf8');
   const capture = workflow.slice(workflow.indexOf('      - name: Review visible sharing delivery'), workflow.indexOf('\n  verify:'));
@@ -750,13 +784,15 @@ test('renderer guard precedes imports and refuses desktop execution by construct
   assert.doesNotThrow(() => check(['--list', '--simple-shared-hosting-only'], {}, 'linux'), 'the bounded hosting inventory remains read-only');
   assert.doesNotThrow(() => check(['--list', '--server-access-only'], {}, 'linux'), 'the bounded server-access inventory remains read-only');
   assert.doesNotThrow(() => check(['--list', '--sharing-delivery-only'], {}, 'linux'), 'the bounded sharing-delivery inventory remains read-only');
+  assert.doesNotThrow(() => check(['--list', '--save-transfer-only'], {}, 'linux'), 'the bounded save-transfer inventory remains read-only');
   for (const [argv, env, platform] of [
     [[], hosted, 'win32'], [flags, {}, 'win32'],
     [['--list', '--allow-isolated-browser-tests'], {}, 'win32'], [['--list', 'capture'], {}, 'win32'],
     [['--list', '--setup-polish-only'], {}, 'win32'], [['--setup-polish-only'], hosted, 'win32'],
-    [['--server-access-only'], hosted, 'win32'], [['--sharing-delivery-only'], hosted, 'win32'],
+    [['--server-access-only'], hosted, 'win32'], [['--sharing-delivery-only'], hosted, 'win32'], [['--save-transfer-only'], hosted, 'win32'],
     [['--list', '--sharing-delivery-only', '--server-access-only'], {}, 'win32'],
     [['--list', '--simple-shared-hosting-only', '--server-access-only'], {}, 'win32'],
+    [['--list', '--save-transfer-only', '--server-access-only'], {}, 'win32'],
     [['--hosted-runner', 'github-actions'], hosted, 'win32'],
     [['github-actions', '--allow-isolated-browser-tests'], hosted, 'win32'],
     [flags, { ...hosted, RUNNER_ENVIRONMENT: 'self-hosted' }, 'win32'],
@@ -1771,15 +1807,106 @@ test('synthetic clock advancement drains outstanding jobs bodies before and afte
     'the actual renderer injects its bounded browser-lifetime coordinator into hosting clock journeys');
 });
 
-test('clock-driven hosting captures install before polling and wait for settled responses after advancing time', async () => {
+function passiveAccessPollHarness() {
+  const source = readFileSync(new URL('simple-shared-hosting-review.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('review.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helper = ast.statements.find(statement => ts.isFunctionDeclaration(statement) &&
+    statement.name?.text === 'waitForPassiveHostingAccessPoll').getText(ast).replace(/^export /u, '');
+  const timers = new Map(), scheduled = [], cleared = [];
+  const wait = runInNewContext(`${helper}\n;waitForPassiveHostingAccessPoll`, {
+    URL, setTimeout(callback, milliseconds) {
+      const id = scheduled.length + 1;
+      scheduled.push({ id, callback, milliseconds }); timers.set(id, callback);
+      return id;
+    }, clearTimeout(id) { cleared.push(id); timers.delete(id); }
+  });
+  return { wait, timers, scheduled, cleared };
+}
+
+test('natural access polling separates the real ten-second schedule from the eight-second response and body bound', async () => {
+  const { wait, timers, scheduled, cleared } = passiveAccessPollHarness();
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting/access`;
+  let finishQuiet, observeRequest, receiveHeaders, finishBody, finished = false, requestWaits = 0;
+  const quiet = new Promise(resolve => { finishQuiet = resolve; });
+  const headers = new Promise(resolve => { receiveHeaders = resolve; });
+  const body = new Promise(resolve => { finishBody = resolve; });
+  const request = { method: () => 'GET', url: () => `http://synthetic.invalid${path}`, response: () => headers };
+  const response = { ok: () => true, finished: () => body };
+  const page = {
+    clock: { fastForward: () => { throw new Error('Natural access observation must not advance synthetic time'); } },
+    waitForRequest(predicate, options) {
+      requestWaits++;
+      assert.equal(options.timeout, 10000 + 8000, 'the real production interval has a distinct bounded scheduling wait');
+      assert.deepEqual(Object.keys(options), ['timeout']);
+      assert.equal(predicate(request), true);
+      for (const invalid of [
+        { method: () => 'POST' }, { method: () => 'PUT' },
+        { url: () => `http://synthetic.invalid${path}/check` },
+        { url: () => `http://synthetic.invalid${path}?force=true` },
+        { url: () => `http://synthetic.invalid${path}#unexpected` },
+        { url: () => `http://synthetic.invalid${path.replace(fixtureIds.primary, fixtureIds.secondary)}` }
+      ]) assert.equal(predicate({ ...request, ...invalid }), false, 'only the exact passive scoped GET is observed');
+      return new Promise(resolve => { observeRequest = resolve; });
+    }
+  };
+  const pending = wait(page, path, () => quiet).then(result => { finished = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requestWaits, 0, 'an existing outstanding read must settle first');
+  finishQuiet();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requestWaits, 1);
+  assert.equal(scheduled.length, 0, 'response time cannot elapse while waiting for the next ten-second production poll');
+  observeRequest(request);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(scheduled.map(timer => timer.milliseconds), [8000], 'the response deadline remains eight seconds');
+  receiveHeaders(response);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finished, false, 'headers alone do not establish a completed synthetic body');
+  finishBody(null);
+  assert.equal(await pending, response);
+  assert.deepEqual(cleared, [1]);
+  assert.equal(timers.size, 0);
+});
+
+test('natural access polling preserves schedule, transport, body and timeout failures without synthetic clock advancement', async () => {
+  const path = `/api/local/friend/${fixtureIds.primary}/shared-world/hosting/access`;
+  for (const failure of ['quiet', 'schedule', 'headers', 'body-rejection', 'body-failure', 'status', 'missing-response', 'timeout']) {
+    const { wait, timers, scheduled } = passiveAccessPollHarness();
+    const reason = new Error(`Synthetic ${failure} failure`);
+    const request = { method: () => 'GET', url: () => `http://synthetic.invalid${path}`, response: async () => {
+      if (failure === 'headers') throw reason;
+      if (failure === 'missing-response') return null;
+      return { ok: () => failure !== 'status', finished: async () => {
+        if (failure === 'body-rejection') throw reason;
+        if (failure === 'body-failure') return reason;
+        if (failure === 'timeout') return new Promise(() => {});
+        return null;
+      } };
+    } };
+    const page = { clock: { fastForward: () => { throw new Error('A failed passive read cannot advance time'); } },
+      waitForRequest: async () => { if (failure === 'schedule') throw reason; return request; } };
+    const pending = wait(page, path, async () => { if (failure === 'quiet') throw reason; });
+    if (failure === 'timeout') {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(scheduled[0].milliseconds, 8000);
+      scheduled[0].callback();
+    }
+    if (['quiet', 'schedule', 'headers', 'body-rejection'].includes(failure))
+      await assert.rejects(pending, error => error === reason, `${failure} must preserve its original failure`);
+    else await assert.rejects(pending, /passive hosting access response did not finish/u, failure);
+    assert.equal(timers.size, 0, `${failure} must not leave a response timer running`);
+    assert.equal(scheduled.length, ['quiet', 'schedule'].includes(failure) ? 0 : 1,
+      'response timers start only after the natural poll request exists');
+  }
+});
+
+test('only hosting timeout/refusal journeys install synthetic time; hidden entries retain fixed Date with real timers', async () => {
   const installs = [];
   for (const testCase of simpleHostingCases) {
     const installed = await installHostingReviewClock({ clock: { install: async options => installs.push({ id: testCase.id, options }) } }, testCase, '2026-10-10T16:00:00Z');
-    assert.equal(installed, testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused' || testCase.hostingEntry === 'hidden');
+    assert.equal(installed, testCase.readyStartTimeout === true || testCase.stoppedProgressJourney === 'refused');
   }
   assert.deepEqual(installs, [
-    ...simpleHostingCases.filter(testCase => testCase.hostingEntry === 'hidden')
-      .map(testCase => ({ id: testCase.id, options: { time: '2026-10-10T16:00:00Z' } })),
     { id: 'simple-hosting-ready-start-timeout', options: { time: '2026-10-10T16:00:00Z' } },
     { id: 'simple-hosting-stopped-progress-refused', options: { time: '2026-10-10T16:00:00Z' } }
   ]);
@@ -1799,11 +1926,13 @@ test('clock-driven hosting captures install before polling and wait for settled 
   findInit(rendererAst);
   assert.ok(initSource);
   for (const clockDriven of [true, false]) {
-    const globals = { Date, crypto: {}, localStorage: { setItem: () => {} } };
+    const nativeTimeout = () => {};
+    const globals = { Date, setTimeout: nativeTimeout, crypto: {}, localStorage: { setItem: () => {} } };
     const init = runInNewContext(`(${initSource})`, globals);
     init({ theme: 'dark', scale: 100, now: '2026-10-10T16:00:00Z', clockDriven });
     if (clockDriven) assert.equal(globals.Date, Date, 'the fixed-date shim cannot replace the installed clock Date');
     else assert.equal(globals.Date.now(), FIXED_NOW, 'ordinary captures retain their fixed synthetic observation time');
+    assert.equal(globals.setTimeout, nativeTimeout, 'fixing the fixture Date does not replace natural polling timers');
   }
   let completeRead;
   let loading = true;
@@ -2086,11 +2215,11 @@ test('hidden hosting launcher evidence requires one clicked access check followe
     let clicks = 0;
     let polls = 0;
     let pollReplaysCheck = false;
-    const respond = (method, path, body) => {
+    const responseFor = (method, path, body) => {
       const response = routeFixture(state, { method, path, body });
-      completeResponse({ url: () => `http://synthetic.invalid${path}`,
+      return { url: () => `http://synthetic.invalid${path}`,
         request: () => ({ method: () => method, postDataJSON: () => body }),
-        ok: () => response.status === 200, json: async () => response.body, finished: async () => null });
+        ok: () => response.status === 200, json: async () => response.body, finished: async () => null };
     };
     const access = {
       waitFor: async options => assert.equal(options.state, 'visible'), count: async () => counts.status,
@@ -2104,7 +2233,7 @@ test('hidden hosting launcher evidence requires one clicked access check followe
     const retry = { count: async () => counts.retry, isEnabled: async () => retryEnabled,
       click: async () => {
         clicks++;
-        respond('POST', `${base}/access/check`, {});
+        completeResponse(responseFor('POST', `${base}/access/check`, {}));
       } };
     const scope = { getByRole: (role, options) => {
       assert.equal(options.exact, true);
@@ -2114,13 +2243,8 @@ test('hidden hosting launcher evidence requires one clicked access check followe
     } };
     const page = {
       evaluate: async action => assert.match(action.toString(), /requestAnimationFrame\(\(\) => requestAnimationFrame/u,
-        'the next timer advance waits for the previous passive result to finish painting'),
-      clock: { fastForward: async ticks => {
-        assert.equal(ticks, 10001);
-        polls++;
-        if (pollReplaysCheck) routeFixture(state, { method: 'POST', path: `${base}/access/check`, body: {} });
-        respond('GET', `${base}/access`);
-      } },
+        'the previous natural passive result must finish painting'),
+      clock: { fastForward: () => { throw new Error('Hidden entries must use real passive polling'); } },
       getByRole: (role, options) => {
         if (role === 'region' && options.name === 'Play') return scope;
         const key = role === 'button' ? 'launcher' : role;
@@ -2133,6 +2257,15 @@ test('hidden hosting launcher evidence requires one clicked access check followe
         return new Promise(resolve => { completeResponse = response => {
           assert.equal(predicate(response), true, 'each wait binds the explicit POST or passive scoped GET'); resolve(response);
         }; });
+      },
+      waitForRequest: async (predicate, options) => {
+        assert.deepEqual(options, { timeout: 10000 + 8000 });
+        polls++;
+        if (pollReplaysCheck) routeFixture(state, { method: 'POST', path: `${base}/access/check`, body: {} });
+        const response = responseFor('GET', `${base}/access`);
+        const request = { method: () => 'GET', url: response.url, response: async () => response };
+        assert.equal(predicate(request), true, 'a natural scheduled request is the exact passive GET');
+        return request;
       }
     };
     const record = { assertions: [] };
@@ -2141,6 +2274,8 @@ test('hidden hosting launcher evidence requires one clicked access check followe
     assert.equal(record.assertions[0].hostingAccessStatusVisible, true);
     assert.equal(record.assertions[0].hostingAccessRetry, retryExpected);
     assert.equal(record.assertions[0].passiveAccessPolling, true);
+    assert.equal(record.assertions[0].passiveAccessChecks, 2);
+    assert.equal(record.assertions[0].pollingTime, 'real production interval');
     assert.equal(record.assertions[0].explicitAccessChecks, Number(retryExpected));
     assert.equal(record.assertions[0].prepareRequests, 0);
     assert.equal(record.assertions[0].startRequests, 0);
