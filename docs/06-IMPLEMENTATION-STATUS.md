@@ -7,7 +7,13 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
-## 0.3.3.26 prerelease candidate: local Valheim ports, 2026-10-29
+## 0.3.3.26 prerelease: local Valheim ports, 2026-10-29
+
+[v0.3.3.26](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.26)
+was published with explicit owner authorization on **2026-10-29**.
+[Installer download](https://github.com/daltonstates/TogetherServer/releases/download/v0.3.3.26/TogetherServer-Setup-win-x64.exe)
+and [portable download](https://github.com/daltonstates/TogetherServer/releases/download/v0.3.3.26/TogetherServer-win-x64.exe)
+are available for testing the saved Valheim port fix.
 
 A retained shared Valheim server kept its earlier game port and disabled its
 port selector, even after a different reusable port was saved in App Settings.
@@ -53,6 +59,9 @@ No app was launched or installed on the owner's desktop for these checks.
 The frozen application is `d24618b1d9641ff86455c1f4a435970272b42e40`, built
 by [Windows CI 40929295921](https://github.com/daltonstates/TogetherServer/actions/runs/40929295921)
 with SHA-256 `e539bb9c499fc1f88fda931c50a56f0f27453dbdb5089a4ab378ecc14cb5a118`.
+The candidate job is `123643130245`, artifact `12920614154`; installer packaging
+job `123644775153` produced artifact `12921968278`. The package archive SHA-256 is
+`6a033d973646785ff77f2c67820b010ff8dda5d456f65b1a556b0f3935b12c18`.
 Core, installer packaging, QolApi, Browser, Rehearsal, automatic shared hosting and all
 eight compatibility lanes passed. Desktop's required notification delivery and
 click remain blocked by hosted Windows QuietTime.
@@ -69,12 +78,40 @@ Node checks passed. The serial frozen-asset capture and full UX rerun passed in
 at checks source `2ff7d761e1ab8e9f01db4a20a4abdeee01b71e73`, without rebuilding
 or replacing the application or UI assets. Its artifact is `12924432522`, SHA-256
 `f66f87fefc6cc57f0eac1fa7102116500c827a3f6eba8eebd944975c42988500`.
+All 108 hosting and 12 transfer cases ran serially without skips, capture
+failures or layout findings. All ten two-ended stages passed with matching save
+hashes and one Prepare/Start. This rerun observed the existing typed HostMode
+transition refusal; the completed empty-progress-body variant has pure-check
+coverage. The earlier artifact still lacks that proof and remains failed.
 
 The original Existing lane passed all 47 Companion groups before failing on
 five whitespace locations in the new approved-port test fixture. That test-only
-initializer is corrected; full solution formatting now passes locally. A hosted
-ExistingTail continuation will verify the remaining package smokes against the
-same frozen candidate. The original failure remains recorded separately.
+initializer is corrected; full solution formatting passed locally and in hosted
+[ExistingTail 40935967961](https://github.com/daltonstates/TogetherServer/actions/runs/40935967961)
+at checks source `7b9f8a3a5deec2baff7519d2441bc703395574d2`. Its job is
+`123666497502`, artifact `12924978195`, archive SHA-256
+`b2365a253379a123913e5f2a5575e37f45aeede799ad60e128ac6bf2ec968166`.
+All 47 Companion groups, served/staging isolation, hidden and interactive
+desktop smokes, native pickers and update handoff passed against unchanged
+candidate bytes. Preceding Existing checks remain evidence from the original
+run; this continuation does not claim to rerun them. The original failure
+remains recorded separately.
+
+Independent unauthenticated downloads of all four public assets passed on
+2026-10-29 at 19:10 UTC: exact names, byte lengths, SHA-256, checksum sidecars,
+file version `0.3.3.26` and portable ProductVersion source identity matched CI.
+Both executables are **NotSigned**. The public tag resolves to the frozen
+application source above, the release is a prerelease, and stable latest remains
+`v0.3.3`. No application or installer ran on the owner's desktop.
+
+| Executable | Bytes | SHA-256 |
+| --- | ---: | --- |
+| TogetherServer-Setup-win-x64.exe | 60,830,050 | `4a129f519b7e569dfcbac9357fba0e434e7b0aa1d9e833be91d81470a10c127d` |
+| TogetherServer-win-x64.exe | 66,372,203 | `e539bb9c499fc1f88fda931c50a56f0f27453dbdb5089a4ab378ecc14cb5a118` |
+
+This remains a testing preview without full acceptance: notification delivery
+and click, physical Friend-PC/network behavior, real game join/save/restart and
+router routing remain unverified.
 
 ## 0.3.3.25 prerelease: physical transfer reporting follow-up
 
