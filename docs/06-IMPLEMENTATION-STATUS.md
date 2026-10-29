@@ -157,9 +157,8 @@ at verification source `a8aa81a4d54556d321cd380d4d86610cf77ad6cc` passed all
 failed before their phase assertions: the old plan opened Shared saves and
 waited for the removed **Next shared-save action** region, while live progress
 now belongs to Play. No JavaScript, HTTP or transport failures were recorded
-in those cases. The two-ended UI step was not reached. The corrected capture
-plan and actual two-ended UX still require a hosted pass against the frozen
-application and its seven unchanged UI assets. The failed recheck artifact
+in those cases. The two-ended UI step was not reached in that failed run.
+The failed recheck artifact
 `12872739143` has ZIP SHA-256
 `69c533f90b17a358e7eb6f46371ec81dac59d530cdc6fd972a9e2848c667e347`.
 The corrected plans use the current Play progress section and an explicit
@@ -171,7 +170,36 @@ completion. It requires matching signed logical totals and advancing partial
 counters while retaining the prior local version. Historical receipt evidence
 for that prior copy remains valid. Its original fifteen-second first-chunk
 wait and two-second control responsiveness deadline are unchanged. This
-native assertion and the corrected UI captures require hosted rechecks.
+native assertion and the corrected UI captures were dispatched for hosted rechecks.
+Those frozen rechecks are
+[UI run 40818835637](https://github.com/daltonstates/TogetherServer/actions/runs/40818835637)
+and [ExistingTail run 40818837512](https://github.com/daltonstates/TogetherServer/actions/runs/40818837512),
+using verification-only source `3a78664468ff9bf5f1397be336617a170516fda1`.
+The UI run **passed**: **108/108 hosting captures**, **12/12 transfer-phase
+captures**, zero layout findings, all ten actual two-ended stages, all three
+lab stages, clean owned-process cleanup and zero observed owned windows.
+It recorded zero browser/HTTP failures and needed zero role-transition
+exceptions; it does not retroactively classify the earlier unexplained 409.
+Desktop and narrow 150% receiving/verification captures were visually reviewed:
+measured 25%/1 MiB of 4 MiB, indeterminate verification, current phase and
+separate local/remote action availability remain readable. Provenance binds
+every capture to the original candidate and seven unchanged UI assets.
+UI evidence artifact `12874230623` has ZIP SHA-256
+`3a358c62ba4bcf05851f436812c391c6cdfd8b22390da8d7d522a43d29f887f0`.
+ExistingTail **passed all 47 companion groups**, including the added real
+pinned-HTTPS partial-byte API/job observations, interruption/resume, controls
+during receiving and the mapped bulk/control quota boundaries. Source rotation
+remained refused before and after restart, with no replacement payload/receipt.
+All following ExistingTail checks, including staging isolation, hidden/visible
+desktop guards, shutdown-race recovery and verified update handoff, passed.
+Its final executable hash remained the original candidate hash.
+Evidence artifact `12874107183` has ZIP SHA-256
+`bdb194b47692e23d887a60b112ced5f9a80f49045b9fa761a78c4b81e14a00e0`.
+This continuation supplements the full original Existing pass; it does not
+recount UI/General checks that its scope intentionally did not rerun.
+The changed companion checks compile with zero
+warnings/errors and pass scoped formatting; all 82 pure UI checks pass.
+Neither recheck rebuilds or replaces the frozen candidate.
 
 Candidate run/job/artifact: `40813608923` / `123249430700` / `12871790940`.
 Portable size: **66,370,485 bytes**, SHA-256
@@ -186,6 +214,14 @@ Evidence remains ignored under `local-data/ci25-0450dcc/`. No .25 tag or release
 has been published, and the installed .24 app and its transfer were left alone.
 Physical two-PC/network/game-save acceptance remains open.
 
+Readiness: **ready for the next prerelease for owner testing**, using only the
+final `0450dcc` application and its verified installer above. The initial
+superseded `d93408c` executable must not be published. Both focused frozen
+rechecks passed without changing candidate bytes. The original full run's
+QuietTime notification failure remains a failed acceptance requirement;
+the UI failures have separate passing rechecks. This is not a full acceptance
+or physical save-integrity claim. No .25 publication was performed.
+
 Initial frozen application source was `d93408c25f8ace57207fba6f5e6b117465469fa9`.
 [Hosted run 40804155941](https://github.com/daltonstates/TogetherServer/actions/runs/40804155941)
 completed with **17 successful jobs, two failed and one dispatch-only skip**.
@@ -198,7 +234,7 @@ reports receipt confirmation rather than another measured download. The
 test-only correction retains the byte assertions for Preparing/Receiving,
 checks indeterminate verification/receipt, adds Preparing coverage and keeps
 the management phase visible across sections. All 20 affected tests pass
-locally. The complete Existing lane is being rechecked by
+locally. The complete Existing lane was rechecked by
 [run 40806839357](https://github.com/daltonstates/TogetherServer/actions/runs/40806839357),
 using verification-only source `ca21c6380d5c7f8b5c51149a08208526c1116fb0`
 against the unchanged original candidate. That run passed **1,697/1,697 UI
@@ -217,7 +253,8 @@ an unchanged pre-rotation pointer, preserved old payload, absent replacement
 payload/receipt and zero Host confirmation. It emits only fixed codes and
 booleans from generated fixture metadata, then still requires explicit
 off/on consent and a successful separate replacement receipt. Actual hosted
-refusal facts remain to be observed in the continuation.
+refusal facts are recorded in `40810649216` and reconfirmed by the final full
+and continued runs above.
 
 The first tail attempt, [40809923029](https://github.com/daltonstates/TogetherServer/actions/runs/40809923029),
 stopped in new diagnostic scaffolding after 19 passing Companion groups:
@@ -227,7 +264,8 @@ replacement evidence. The fixture now stops its exact disposable app before
 reading only generated protected-policy booleans, restarts it and separately
 requires the refusal and unchanged files to persist before consent renewal.
 No credential/configuration text is logged. The corrected runner compiles
-with zero warnings/errors; hosted confirmation is pending.
+with zero warnings/errors; subsequent hosted runs confirmed the refusal and
+restart assertions as recorded above.
 
 The bounded `ExistingTail` continuation reruns Companion and the remaining
 format/served/staging/native/update-handoff checks against these same bytes.
