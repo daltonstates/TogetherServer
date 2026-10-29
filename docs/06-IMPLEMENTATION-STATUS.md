@@ -116,6 +116,16 @@ booleans from generated fixture metadata, then still requires explicit
 off/on consent and a successful separate replacement receipt. Actual hosted
 refusal facts remain to be observed in the continuation.
 
+The first tail attempt, [40809923029](https://github.com/daltonstates/TogetherServer/actions/runs/40809923029),
+stopped in new diagnostic scaffolding after 19 passing Companion groups:
+constructing a second `LocalData` while the generated Friend app was running
+correctly hit its exclusive `host.lock`. This was a test-harness error, not
+replacement evidence. The fixture now stops its exact disposable app before
+reading only generated protected-policy booleans, restarts it and separately
+requires the refusal and unchanged files to persist before consent renewal.
+No credential/configuration text is logged. The corrected runner compiles
+with zero warnings/errors; hosted confirmation is pending.
+
 The bounded `ExistingTail` continuation reruns Companion and the remaining
 format/served/staging/native/update-handoff checks against these same bytes.
 It requires an earlier candidate and preserves all identity and foreground

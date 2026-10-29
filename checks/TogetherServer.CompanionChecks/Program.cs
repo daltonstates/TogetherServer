@@ -1067,9 +1067,14 @@ try
     var rotationPointerUnchanged = File.ReadAllBytes(Path.Combine(receiverRoot, "latest.json")).SequenceEqual(beforeRotationPointer);
     var rotatedPayloadAbsent = !File.Exists(Path.Combine(receiverRoot, rotatedShared.Latest!.VersionHash, "payload", "world.dat"));
     var rotatedReceiptAbsent = !File.Exists(Path.Combine(receiverRoot, rotatedShared.Latest.VersionHash, "receipt.json"));
+    Console.WriteLine($"CONSENT_SOURCE_ROTATION_REFUSAL ok={blockedRotation.Ok}, code={blockedRotation.Code}, " +
+        $"oldPayload={oldRotationPayloadRetained}, pointerUnchanged={rotationPointerUnchanged}, " +
+        $"newPayloadAbsent={rotatedPayloadAbsent}, newReceiptAbsent={rotatedReceiptAbsent}");
     bool rotationReviewPending, originalGroupStillApproved;
     // Only this runner's generated protected fixture. Never print its
     // credentials/configuration; retain fixed policy booleans as evidence.
+    // Stop its exact disposable app before taking the data-store owner lock.
+    StopApp(friendA);
     using (var rotationData = new LocalData(friendAData))
     {
         var rotationConfig = rotationData.LoadProtectedJson<FriendConfiguration>(
@@ -1077,6 +1082,16 @@ try
         rotationReviewPending = rotationConfig?.PendingSharedWorldGroups?.GetValueOrDefault(profile.Id) == rotatedShared.Latest.GroupId;
         originalGroupStillApproved = rotationConfig?.ApprovedSharedWorldGroups?.GetValueOrDefault(profile.Id) == publishedShared.Latest.GroupId;
     }
+    friendA = StartApp(appPath, "--friend", friendAPort, friendAData);
+    await WaitLocal(friendAPort);
+    var rotationAfterRestart = await OwnerPost<object, ReceivedSharedWorldResult>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world/pull", new { });
+    var rotationStillPreserved = File.ReadAllBytes(Path.Combine(receiverRoot, "latest.json")).SequenceEqual(beforeRotationPointer) &&
+        !File.Exists(Path.Combine(receiverRoot, rotatedShared.Latest.VersionHash, "payload", "world.dat")) &&
+        !File.Exists(Path.Combine(receiverRoot, rotatedShared.Latest.VersionHash, "receipt.json"));
+    Console.WriteLine($"CONSENT_SOURCE_ROTATION_AFTER_RESTART ok={rotationAfterRestart.Ok}, code={rotationAfterRestart.Code}, preserved={rotationStillPreserved}");
+    Require(!rotationAfterRestart.Ok && rotationAfterRestart.Code is ("SourceReviewRequired" or "ConsentRequired") && rotationStillPreserved,
+        "A pending source review did not continue to refuse receiving after restart.");
     var rotationHostUnconfirmed = (await OwnerGetJson<SharedWorldStatus>(owner,
         $"/api/local/profiles/{profile.Id}/shared-world")).ConfirmedCopies == 0;
     var rotationFacts = $"ok={blockedRotation.Ok}, code={blockedRotation.Code}, oldPayload={oldRotationPayloadRetained}, " +
