@@ -144,7 +144,7 @@ describe('Shared saves task presentation', () => {
   })
 
   it.each([
-    ['Receiving', 'Receiving the save copy'], ['Verifying', 'Verifying the save copy'],
+    ['Preparing', 'Preparing local save files'], ['Receiving', 'Receiving the save copy'], ['Verifying', 'Verifying the save copy'],
     ['Receipt', 'Confirming receipt']
   ])('leads active %s with progress and blocks another Get while keeping consent withdrawal available', async (phase, heading) => {
     const mutations: string[] = []
@@ -157,7 +157,15 @@ describe('Shared saves task presentation', () => {
     await act(async () => {})
     expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Save transfer progress' })).toBeInTheDocument()
-    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '64')
+    const progress = screen.getByRole('progressbar')
+    if (phase === 'Preparing' || phase === 'Receiving') {
+      expect(progress).toHaveAttribute('value', '64')
+      expect(progress).toHaveAttribute('max', '64')
+      expect(progress).toHaveAccessibleName(phase === 'Preparing' ? 'Local save bytes staged' : 'Save bytes received')
+    } else {
+      expect(progress).not.toHaveAttribute('value')
+      expect(progress).toHaveAccessibleName(phase === 'Verifying' ? 'Checking save files and permission' : 'Confirming save receipt')
+    }
     expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
     expect(screen.getByText(/Get latest save is unavailable while this copy/)).toBeInTheDocument()
     expect(screen.getByText(/Keep the app open\. Wait for file checks and receipt confirmation/)).toBeInTheDocument()

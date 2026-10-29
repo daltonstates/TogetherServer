@@ -80,9 +80,36 @@ Git whitespace checks passed. No dependencies were added. Evidence is in
 An earlier worker UI run failed because a new test omitted `act` and leaked
 fake timers; those test issues were corrected. The first lint pass caught
 five unused mock parameters, corrected without weakening read-only-call
-assertions. Hosted rendered/native/network-fixture acceptance is pending.
-The .24 published executable is pinned as an additional compatibility lane,
-alongside the seven existing published-version lanes.
+assertions. The .24 published executable is pinned as an additional
+compatibility lane, alongside the seven existing published-version lanes.
+
+Frozen application source is `d93408c25f8ace57207fba6f5e6b117465469fa9`.
+[Hosted run 40804155941](https://github.com/daltonstates/TogetherServer/actions/runs/40804155941)
+completed with **17 successful jobs, two failed and one dispatch-only skip**.
+All 105 source groups, packaged QoL API, Core, Browser, Rehearsal, both-ended
+pairing/LAN/UI, automatic shared hosting, all eight compatibility lanes,
+server-access/hosting/sharing rendering and installer packaging passed.
+Existing stopped at three stale UI assertions after 1,693 passing tests:
+verification/receipt bars must be indeterminate, and the management view
+reports receipt confirmation rather than another measured download. The
+test-only correction retains the byte assertions for Preparing/Receiving,
+checks indeterminate verification/receipt, adds Preparing coverage and keeps
+the management phase visible across sections. All 20 affected tests pass
+locally. The complete Existing lane still needs its frozen-byte recheck.
+Desktop's failed requirement is again OS notification delivery/click blocked
+by Windows `QuietTime`; independent native cases completed successfully.
+
+The original candidate artifact is `12867616217`, candidate job
+`123218973129`. Its ZIP digest was independently checked against Actions,
+then the actual executable stream and all seven UI entries were hashed
+without executing or extracting the application. ProductVersion is
+`0.3.3.25+d93408c25f8ace57207fba6f5e6b117465469fa9`; metadata reports
+NotSigned. Portable SHA-256 is
+`38f388722926fdddaf1308af92ad23e9df8625b823418da871251b8c2005b1af`
+(66,368,612 bytes). Package job `123220065093` retained the same portable in
+release-assets artifact `12867173933`. Evidence is under
+`local-data/ci25-verified/`. No corrected test is a reason to rebuild or
+replace these frozen application bytes.
 
 No running application, transfer, pairing or world was modified. Workers
 inspected repository/synthetic data only; shared builds and commits remain

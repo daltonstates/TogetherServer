@@ -29,7 +29,8 @@ describe('shared-save UX evidence', () => {
     const dialog = within(screen.getByRole('dialog', { name: 'Manage sharing' }))
     const navigation = within(dialog.getByRole('navigation', { name: 'Shared-save management sections' }))
     const conflict = await dialog.findByText(/Conflicting hosting decisions need review/)
-    const progress = dialog.getByRole('progressbar', { name: 'Management save bytes received' })
+    const progress = dialog.getByText('Confirming receipt · 2 MiB of 2 MiB')
+    expect(dialog.queryByRole('progressbar', { name: 'Management save bytes received' })).not.toBeInTheDocument()
     expect(navigation.getByRole('button', { name: 'Copy status' })).toHaveAttribute('aria-current', 'page')
     expect(dialog.queryByRole('button', { name: 'Prepare solo recovery' })).not.toBeInTheDocument()
 
