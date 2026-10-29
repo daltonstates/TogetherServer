@@ -44,16 +44,16 @@ The initial broader run is not accepted as full-suite evidence: concurrent
 verification shared its output directory, and that assembly ran 107 groups
 against the current source's 106-group registry. It included a matching-file
 resume test absent from this checkout, which reported a work-budget failure.
-That run was stopped; final checks used the isolated build above. Full-suite,
-native/viewport, physical Friend-PC, real Valheim startup/join/save/restart and
-router routing acceptance remain open. The owner authorized a prerelease for
-testing; its immutable candidate and hosted Windows acceptance are being prepared.
+That run was stopped; final local checks used the isolated build above. The
+hosted QolApi lane subsequently passed all 106 source groups. Physical Friend-PC,
+real Valheim startup/join/save/restart and router routing acceptance remain open.
+The owner authorized a prerelease for testing; hosted checks use immutable bytes.
 No app was launched or installed on the owner's desktop for these checks.
 
 The frozen application is `d24618b1d9641ff86455c1f4a435970272b42e40`, built
 by [Windows CI 40929295921](https://github.com/daltonstates/TogetherServer/actions/runs/40929295921)
 with SHA-256 `e539bb9c499fc1f88fda931c50a56f0f27453dbdb5089a4ab378ecc14cb5a118`.
-Core, installer packaging, Browser, Rehearsal, automatic shared hosting and all
+Core, installer packaging, QolApi, Browser, Rehearsal, automatic shared hosting and all
 eight compatibility lanes passed. Desktop's required notification delivery and
 click remain blocked by hosted Windows QuietTime.
 
@@ -64,8 +64,17 @@ passed all ten stages, exact save/session checks and one Prepare/Start, but its
 checker could not prove an expected empty progress 409 during Friend-to-Host
 transition. A checks-only follow-up adds completed empty-body evidence under
 the existing exact identity, chronology and single-refusal bounds, with 88 pure
-Node checks passed. A serial frozen-asset capture and full UX rerun are being
-prepared without rebuilding or replacing the application or UI assets.
+Node checks passed. The serial frozen-asset capture and full UX rerun passed in
+[40932895697](https://github.com/daltonstates/TogetherServer/actions/runs/40932895697)
+at checks source `2ff7d761e1ab8e9f01db4a20a4abdeee01b71e73`, without rebuilding
+or replacing the application or UI assets. Its artifact is `12924432522`, SHA-256
+`f66f87fefc6cc57f0eac1fa7102116500c827a3f6eba8eebd944975c42988500`.
+
+The original Existing lane passed all 47 Companion groups before failing on
+five whitespace locations in the new approved-port test fixture. That test-only
+initializer is corrected; full solution formatting now passes locally. A hosted
+ExistingTail continuation will verify the remaining package smokes against the
+same frozen candidate. The original failure remains recorded separately.
 
 ## 0.3.3.25 prerelease: physical transfer reporting follow-up
 

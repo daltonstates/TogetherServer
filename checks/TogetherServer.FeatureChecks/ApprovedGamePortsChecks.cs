@@ -156,11 +156,16 @@ internal static class ApprovedGamePortsChecks
         var branch = new string('A', 64);
         var profile = new ServerProfile
         {
-            Id = SharedWorldBranchLiveSource.LocalProfileId(branch), Kind = GameKinds.Valheim,
-            Name = "Synthetic", ServerName = "Synthetic", WorldId = "Synthetic", GamePort = 2456,
+            Id = SharedWorldBranchLiveSource.LocalProfileId(branch),
+            Kind = GameKinds.Valheim,
+            Name = "Synthetic",
+            ServerName = "Synthetic",
+            WorldId = "Synthetic",
+            GamePort = 2456,
             ExecutablePath = Path.Combine(data.RootPath, "never-run.exe"),
             WorldDirectory = Path.Combine(data.RootPath, "world"),
-            SeparateCopySourceProfileId = Guid.NewGuid(), SeparateCopyBranchHash = branch
+            SeparateCopySourceProfileId = Guid.NewGuid(),
+            SeparateCopyBranchHash = branch
         };
         Directory.CreateDirectory(profile.WorldDirectory);
         var world = Path.Combine(profile.WorldDirectory, "Synthetic.db");
