@@ -1000,6 +1000,25 @@ try
         await Task.Delay(100);
     Require(File.Exists(partial) && new FileInfo(partial).Length >= SharedWorldService.ChunkBytes,
         "slow transfer did not retain its first completed chunk");
+    // Sample the running application's actual local API while its HTTPS
+    // receiver is between chunks. The sandwich permits genuine advancement
+    // between reads while binding both projections to the same logical total.
+    var expectedSaveBytes = secondShared.Latest!.Files.Sum(file => file.Length);
+    var beforeProgress = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world");
+    var slowJobs = await OwnerGetJson<BackgroundJobList>(aLocal, "/api/local/background-jobs");
+    var afterProgress = await OwnerGetJson<ReceivedSharedWorldStatus>(aLocal,
+        $"/api/local/friend/{profile.Id}/shared-world");
+    var slowJob = slowJobs.Jobs.SingleOrDefault(job => job.ProfileId == profile.Id &&
+        job.Operation == "Save download" && job.State == "Running");
+    Require(beforeProgress is { State: "Receiving", TransferPhase: "Receiving", ReceivedBytes: > 0, ThisPcVersion: 1 } &&
+        afterProgress is { State: "Receiving", TransferPhase: "Receiving", ThisPcVersion: 1 } &&
+        beforeProgress.HostVersion == secondShared.Latest.Number && afterProgress.HostVersion == secondShared.Latest.Number &&
+        beforeProgress.TotalBytes == expectedSaveBytes && afterProgress.TotalBytes == expectedSaveBytes &&
+        beforeProgress.ReceivedBytes <= afterProgress.ReceivedBytes && afterProgress.ReceivedBytes < expectedSaveBytes &&
+        slowJob is { Phase: "Receiving", ReceivedBytes: > 0, CompletedUtc: null } && slowJob.TotalBytes == expectedSaveBytes &&
+        slowJob.ReceivedBytes >= beforeProgress.ReceivedBytes && slowJob.ReceivedBytes <= afterProgress.ReceivedBytes,
+        "slow actual HTTPS bytes were absent or inconsistent in the local transfer and background-jobs APIs before completion");
     var responsive = Stopwatch.StartNew();
     Require((await OwnerPost<object, FriendView>(aLocal, "/api/local/friend/poll", new { })).State is "Connected" or "Disabled",
         "heartbeat failed during a slow shared-save transfer");

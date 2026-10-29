@@ -232,7 +232,13 @@ test('save-transfer-only inventory contains exactly four distinct phases across 
     assert.deepEqual(Array.from(plans.map(plan => plan.variant.id)), ['darkdesktop', 'lightnarrow', 'lightnarrow150']);
     assert.ok(plans.some(plan => plan.variant.viewport.width === 390 && plan.variant.scale === 150));
     assert.ok(plans.every(plan => plan.testCase.action === `shared-${phase}` && plan.testCase.screen.name === 'Save transfer progress'));
-    const state = createFixtureState(plans[0].testCase.scenario);
+    assert.ok(plans.every(plan => plan.testCase.section.join('/') === 'Selected server sections/play/Play'));
+    const state = createFixtureState({ id: plans[0].testCase.scenario, ...plans[0].testCase.fixture });
+    assert.equal(state.friend.state, 'Connected');
+    assert.equal(state.friend.profiles[0].state, 'Offline');
+    assert.equal(state.friend.profiles[0].canStart, true);
+    const access = routeFixture(state, { method: 'GET', path: `/api/local/friend/${fixtureIds.primary}/shared-world/hosting/access` }).body;
+    assert.equal(access.allowed, true, 'the mounted receiver observation requires positively confirmed hosting access');
     const status = shared.parseFriendSharedWorldStatus(routeFixture(state, {
       method: 'GET', path: `/api/local/friend/${fixtureIds.primary}/shared-world`
     }).body);
@@ -242,6 +248,89 @@ test('save-transfer-only inventory contains exactly four distinct phases across 
     assert.equal(state.requests.some(request => request.method !== 'GET'), false);
   }
   assert.match(source, /'local-data\/save-transfer-visual-review'/u);
+});
+
+test('save-transfer captures navigate to Play and prove current progress with local hosting blocked and remote Start available', async () => {
+  const source = readFileSync(new URL('render-ui-redesign.mjs', import.meta.url), 'utf8');
+  const ast = ts.createSourceFile('renderer.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const helpers = ['section', 'assertSaveTransferUi', 'performActions'].map(name => ast.statements.find(statement =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === name).getText(ast)).join('\n');
+  const perform = runInNewContext(`${helpers}\n;performActions`, { URL, visible: async locator => locator });
+  const titles = { preparing: ['Preparing local save files', 'Local save bytes staged', 'Prepare local files', '25% staged locally'],
+    receiving: ['Receiving the shared save', 'Shared save bytes received', 'Receive save', '25% received or retained'],
+    verifying: ['Verifying the shared save', 'Verifying the shared save', 'Verify files', null],
+    receipt: ['Confirming save receipt', 'Confirming save receipt', 'Confirm receipt', null] };
+  async function check(phase, mobile, fault) {
+    const state = createFixtureState({ id: `friend-shared-${phase}-offline`, simpleHosting: 'prepare' });
+    let selected = '';
+    const [title, progressName, step, percent] = titles[phase];
+    const navigation = { getByRole: (role, options) => {
+      assert.equal(role, 'button'); assert.equal(options.name, 'Play');
+      return { click: async () => { selected = 'play'; } };
+    }, locator: selector => {
+      assert.equal(selector, '[aria-current="page"]');
+      return { filter: options => { assert.equal(options.hasText, 'Play'); assert.equal(selected, 'play'); return {}; } };
+    } };
+    const progress = { getByText: (text, options) => {
+      if (typeof text?.test === 'function') return { count: async () => fault === 'percent' ? 1 : 0 };
+      assert.ok([title, '1 MiB of 4 MiB', percent].includes(text), 'use the current receiver presentation, not the older shared-save task card');
+      assert.equal(options.exact, true); return {};
+    }, getByRole: (role, options) => {
+      if (role === 'progressbar') {
+        assert.equal(options.name, progressName);
+        return { evaluate: async read => read({ max: 4194304, getAttribute: name =>
+          name === 'value' ? percent ? fault === 'bytes' ? '0' : '1048576' : fault === 'percent' ? '4194304' : null : null }) };
+      }
+      assert.equal(role, 'list'); assert.equal(options.name, 'Save transfer stages');
+      return { locator: selector => { assert.equal(selector, '[aria-current="step"]'); return {
+        count: async () => 1, textContent: async () => fault === 'phase' ? 'Wrong phase' : step
+      }; } };
+    } };
+    const play = { getByRole: (role, options) => {
+      if (role === 'region') { assert.equal(options.name, 'Save transfer progress'); return progress; }
+      assert.equal(role, 'button');
+      assert.ok(['Host locally', 'Start server'].includes(options.name));
+      return { isEnabled: async () => options.name === 'Host locally' ? fault === 'local-enabled' : fault !== 'remote-blocked' };
+    } };
+    const page = { getByRole: (role, options) => {
+      if (role === 'combobox') {
+        assert.equal(options.name, 'Selected server sections');
+        return { isVisible: async () => mobile, selectOption: async value => { assert.equal(value, 'play'); selected = value; } };
+      }
+      if (role === 'navigation') { assert.equal(options.name, 'Selected server sections'); return navigation; }
+      if (role === 'dialog') { assert.equal(options.name, 'Host locally'); return { count: async () => 0 }; }
+      assert.equal(role, 'region'); assert.equal(options.name, 'Play'); assert.equal(selected, 'play'); return play;
+    }, waitForFunction: async (predicate, target) => {
+      assert.equal(target.label, 'Selected server sections'); assert.equal(target.value, 'play'); assert.equal(selected, 'play');
+      assert.match(predicate.toString(), /select/u);
+    }, waitForResponse: async (predicate, options) => {
+      assert.equal(options.timeout, 8000);
+      const path = `/api/local/friend/${fixtureIds.primary}/shared-world`;
+      const fixture = routeFixture(state, { method: 'GET', path });
+      const response = { url: () => `http://synthetic.invalid${path}`, request: () => ({ method: () => 'GET' }),
+        ok: () => true, finished: async () => null,
+        json: async () => fault === 'total' ? { ...fixture.body, totalBytes: 1 } : fixture.body };
+      assert.equal(predicate(response), true);
+      assert.equal(predicate({ ...response, request: () => ({ method: () => 'POST' }) }), false);
+      assert.equal(predicate({ ...response, url: () => `http://synthetic.invalid${path}?force=1` }), false);
+      if (fault === 'write') state.requests.push({ method: 'POST', path: `${path}/hosting/prepare` });
+      return response;
+    } };
+    const record = { actions: [], assertions: [] };
+    await perform(page, { action: `shared-${phase}`, section: ['Selected server sections', 'play', 'Play'] }, record, state);
+    assert.equal(record.actions[0].value, 'play');
+    assert.equal(record.assertions[0].saveTransferPhase.toLowerCase(), phase);
+    assert.equal(record.assertions[0].localHostingBlocked, true);
+    assert.equal(record.assertions[0].eligibleRemoteStartAvailable, true);
+    assert.equal(record.assertions[0].observationOnly, true);
+    assert.equal(record.assertions[0].determinate, !!percent);
+    assert.equal(state.requests.some(request => request.method !== 'GET'), false);
+  }
+  for (const phase of Object.keys(titles)) for (const mobile of [false, true]) await check(phase, mobile);
+  for (const fault of ['local-enabled', 'remote-blocked', 'bytes', 'phase', 'total', 'write'])
+    await assert.rejects(check('receiving', false, fault), /local hosting|measured logical|actual current phase|logical byte totals|wrote state/u, fault);
+  await assert.rejects(check('verifying', false, 'percent'), /invented determinate/u);
+  assert.match(source, /await performActions\(page, testCase, record, state\)/u, 'the real renderer supplies the same fixture ledger to the phase assertion');
 });
 
 test('sharing-delivery hosted capture binds candidate bytes and refuses incomplete or disclosure-dependent evidence', () => {

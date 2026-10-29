@@ -150,9 +150,28 @@ The two-ended recorder accepts at most one read-only, completed, exact
 `{code:HostMode}` refusal only when a successful explicit Start, successful
 mode change and first structural Host snapshot prove the complete transition
 timeline. Other HTTP failures and request failures remain fatal. All **81 pure
-Node observation tests** pass. A bounded hosted recheck is pending for hosting,
-all twelve Preparing/Receiving/Verifying/Receipt render variants and actual
-two-ended UX, using the frozen application and its seven unchanged UI assets.
+Node observation tests** pass. Frozen UI
+[recheck 40817073345](https://github.com/daltonstates/TogetherServer/actions/runs/40817073345)
+at verification source `a8aa81a4d54556d321cd380d4d86610cf77ad6cc` passed all
+**108 hosting captures with zero layout findings**. Its twelve progress cases
+failed before their phase assertions: the old plan opened Shared saves and
+waited for the removed **Next shared-save action** region, while live progress
+now belongs to Play. No JavaScript, HTTP or transport failures were recorded
+in those cases. The two-ended UI step was not reached. The corrected capture
+plan and actual two-ended UX still require a hosted pass against the frozen
+application and its seven unchanged UI assets. The failed recheck artifact
+`12872739143` has ZIP SHA-256
+`69c533f90b17a358e7eb6f46371ec81dac59d530cdc6fd972a9e2848c667e347`.
+The corrected plans use the current Play progress section and an explicit
+synthetic hosting-access grant. All **82 pure observation tests** pass,
+including phase totals, local-host refusal, eligible remote Start and no
+mutation. The existing three-second slow HTTPS fixture also now samples the
+running Friend transfer API, Background jobs and transfer API again before
+completion. It requires matching signed logical totals and advancing partial
+counters while retaining the prior local version. Historical receipt evidence
+for that prior copy remains valid. Its original fifteen-second first-chunk
+wait and two-second control responsiveness deadline are unchanged. This
+native assertion and the corrected UI captures require hosted rechecks.
 
 Candidate run/job/artifact: `40813608923` / `123249430700` / `12871790940`.
 Portable size: **66,370,485 bytes**, SHA-256

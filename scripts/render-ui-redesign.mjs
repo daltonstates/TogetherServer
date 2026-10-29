@@ -140,9 +140,11 @@ const cases = [
   { id: 'join-shared-verified-copy', scenario: 'friend-shared-verified-offline', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: heading('Prepare hosting on this PC'), action: 'shared-verified-copy' },
   { id: 'join-shared-preparing', scenario: 'friend-shared-preparing-offline', workspace: 'Join',
-    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: 'shared-preparing' },
+    fixture: { simpleHosting: 'prepare' }, section: ['Selected server sections', 'play', 'Play'],
+    screen: region('Save transfer progress'), action: 'shared-preparing' },
   { id: 'join-shared-receiving', scenario: 'friend-shared-receiving-offline', workspace: 'Join',
-    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: 'shared-receiving' },
+    fixture: { simpleHosting: 'prepare' }, section: ['Selected server sections', 'play', 'Play'],
+    screen: region('Save transfer progress'), action: 'shared-receiving' },
   { id: 'join-first-pairing', scenario: 'friend-pairing', workspace: 'Join', screen: heading('Join a server') },
   { id: 'join-permitted-controls', scenario: 'friend-permitted', workspace: 'Join', section: ['Join sections', 'connection', 'Connection settings'], screen: heading('Connection settings'), action: 'permitted-controls' },
   { id: 'join-permitted-start', scenario: 'friend-offline', workspace: 'Join', section: ['Join sections', 'play', 'Play'], screen: heading('Play'), action: 'permitted-start' },
@@ -181,7 +183,8 @@ const cases = [
     id: `join-connection-${state}`, scenario: `friend-${state}`, workspace: 'Join', section: state === 'revoked' ? ['Join sections', 'pairing', 'Add a Host'] : ['Join sections', 'connection', 'Connection settings'],
     screen: state === 'revoked' ? heading('Join a server') : { css: '.friend-panel' } })),
   ...['verifying', 'receipt'].map(state => ({ id: `join-shared-${state}`, scenario: `friend-shared-${state}-offline`, workspace: 'Join',
-    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: `shared-${state}` })),
+    fixture: { simpleHosting: 'prepare' }, section: ['Selected server sections', 'play', 'Play'],
+    screen: region('Save transfer progress'), action: `shared-${state}` })),
   ...['low-space', 'untrusted'].map(state => ({ id: `join-shared-${state}`, scenario: `friend-shared-${state}`, workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Next shared-save action') })),
   ...['Host', 'Join'].flatMap(workspace => ['peers', 'peers-conflict', ...(workspace === 'Join' ? ['peers-follower'] : [])].map(state => ({
@@ -538,11 +541,62 @@ async function click(page, name, record, exact = true) {
   record.actions.push({ action: 'click', role: 'button', name: String(name) });
   await page.getByRole('button', { name, exact }).click({ timeout: 8000 });
 }
-async function performActions(page, testCase, record) {
+async function assertSaveTransferUi(page, testCase, record, state) {
+  const phases = {
+    'shared-preparing': { phase: 'Preparing', title: 'Preparing local save files', stage: 'Prepare local files',
+      progressName: 'Local save bytes staged', bytes: 1048576, percent: '25% staged locally' },
+    'shared-receiving': { phase: 'Receiving', title: 'Receiving the shared save', stage: 'Receive save',
+      progressName: 'Shared save bytes received', bytes: 1048576, percent: '25% received or retained' },
+    'shared-verifying': { phase: 'Verifying', title: 'Verifying the shared save', stage: 'Verify files',
+      progressName: 'Verifying the shared save', bytes: 4194304 },
+    'shared-receipt': { phase: 'Receipt', title: 'Confirming save receipt', stage: 'Confirm receipt',
+      progressName: 'Confirming save receipt', bytes: 4194304 }
+  };
+  const expected = phases[testCase.action];
+  if (!expected) throw new Error('Unknown save-transfer capture phase');
+  const play = await visible(page.getByRole('region', { name: 'Play', exact: true }));
+  const path = `/api/local/friend/${state.friend.profiles[0]?.id}/shared-world`;
+  // Bind the picture to fresh logical totals from the mounted passive observer.
+  const response = await page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET' && url.pathname === path && !url.search && !url.hash;
+  }, { timeout: 8000 });
+  if (!response.ok() || await response.finished()) throw new Error('The passive save-transfer observation did not finish successfully');
+  const observed = await response.json();
+  if (observed.transferPhase !== expected.phase || observed.receivedBytes !== expected.bytes || observed.totalBytes !== 4194304)
+    throw new Error('The current receiver phase or logical byte totals differ from the strict fixture');
+  const progress = await visible(play.getByRole('region', { name: 'Save transfer progress', exact: true }));
+  await visible(progress.getByText(expected.title, { exact: true }));
+  const bytes = await visible(progress.getByRole('progressbar', { name: expected.progressName, exact: true }));
+  const values = await bytes.evaluate(el => ({ value: el.getAttribute('value'), max: el.max, now: el.getAttribute('aria-valuenow') }));
+  if (expected.percent) {
+    if (Number(values.value) !== 1048576 || values.max !== 4194304)
+      throw new Error('Staged/received byte progress differs from its measured logical total');
+    await visible(progress.getByText('1 MiB of 4 MiB', { exact: true }));
+    await visible(progress.getByText(expected.percent, { exact: true }));
+  } else if (values.value !== null || values.now !== null || await progress.getByText(/^\d+%/u).count())
+    throw new Error('Verification or receipt confirmation invented determinate completion progress');
+  const stage = progress.getByRole('list', { name: 'Save transfer stages', exact: true }).locator('[aria-current="step"]');
+  if (await stage.count() !== 1 || (await stage.textContent()).trim() !== expected.stage)
+    throw new Error('The transfer does not identify exactly its actual current phase');
+  const local = await visible(play.getByRole('button', { name: 'Host locally', exact: true }));
+  const remote = await visible(play.getByRole('button', { name: 'Start server', exact: true }));
+  if (await local.isEnabled() || !await remote.isEnabled())
+    throw new Error('Receiving on this PC must block local hosting while keeping eligible remote Start available');
+  if (await page.getByRole('dialog', { name: 'Host locally', exact: true }).count() ||
+      state.requests.some(item => item.method !== 'GET') || state.simpleHostingPrepared || state.simpleHostingStarted)
+    throw new Error('Observing a save transfer wrote state, prepared hosting or started a server');
+  record.assertions.push({ saveTransferPhase: expected.phase, receivedBytes: observed.receivedBytes, totalBytes: observed.totalBytes,
+    currentPhaseVisible: true, determinate: !!expected.percent, localHostingBlocked: true, eligibleRemoteStartAvailable: true,
+    freshPassiveObservation: true, observationOnly: true, prepareRequests: 0, startRequests: 0 });
+}
+async function performActions(page, testCase, record, state) {
   if (testCase.section) await section(page, testCase.section, record);
   if (testCase.button) await click(page, new RegExp(testCase.button), record, false);
   switch (testCase.action) {
-    case 'shared-verified-copy': case 'shared-preparing': case 'shared-receiving': case 'shared-verifying': case 'shared-receipt': {
+    case 'shared-preparing': case 'shared-receiving': case 'shared-verifying': case 'shared-receipt':
+      await assertSaveTransferUi(page, testCase, record, state); break;
+    case 'shared-verified-copy': {
       const next = await visible(page.getByRole('region', { name: 'Next shared-save action', exact: true }));
       const verified = testCase.action === 'shared-verified-copy';
       const preparing = testCase.action === 'shared-preparing';
@@ -1495,7 +1549,7 @@ try {
             await visible(page.locator('section.context-workspace'));
           }
         }
-        await performActions(page, testCase, record);
+        await performActions(page, testCase, record, state);
       }
       // A click can still be finishing Host -> Friend navigation. Settle the
       // current responses and painted UI before resolving or scrolling a pane.
