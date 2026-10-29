@@ -547,10 +547,11 @@ internal sealed partial class WorldPeerService
     {
         using var activity = SharedSaveTransferProgress.Begin(data, group.Root, descriptor.Version.VersionHash, group.Name, descriptor.Version.WorldId);
         try { await ReceivePeerSaveCoreAsync(group, route, descriptor, vault, existing, cancellationToken, localCopies); }
-        catch
+        catch (Exception error)
         {
-            SharedSaveTransferProgress.Fail(data, group.Root, descriptor.Version.VersionHash, "PeerTransferFailed",
-                "The approved peer transfer did not finish. Existing verified saves were kept; a later background check may retry.");
+            SharedSaveTransferProgress.ReceiveFailure(data, group.Root, descriptor.Version.VersionHash,
+                error, cancellationToken, WorldPeerTransferOperation.Chunk, WorldPeerTransferPhase.Pulling,
+                IsReceiveWorkBudgetExpired);
             SharedSaveTransferProgress.Clear(data, group.Root, descriptor.Version.VersionHash);
             throw;
         }
@@ -562,10 +563,13 @@ internal sealed partial class WorldPeerService
     {
         var version = descriptor.Version;
         var observation = transferAttempt.Value?.Attempt;
-        observation?.Phase(WorldPeerTransferPhase.Pulling);
-        observation?.Expected(version.Files.Sum(file => file.Length), version.Files.Count, version.Number);
+        observation?.Phase(WorldPeerTransferPhase.Preparing);
+        observation?.Expected(version.Files.Sum(file => file.Length), version.Files.Count, version.Number, version.VersionHash);
         var total = SharedWorldService.BoundedTotalBytes(version.Files);
-        SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", 0, total);
+        var stage = SharedWorldService.SafeChild(vault, ".partial-" + version.VersionHash);
+        var payloadRoot = Path.Combine(stage, SharedWorldService.PayloadDirectory);
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Preparing",
+            StagedPayloadLengths(payloadRoot, version).Sum(), total);
         Directory.CreateDirectory(vault);
         var records = new WorldAuthorityStore(data).Read(group.Root.ProfileId);
         var anchor = descriptor.Branch?.Offer.Version ?? WorldPeerFileTransfer.TrustedHistoricAnchor(group.Root, version, records);
@@ -581,13 +585,13 @@ internal sealed partial class WorldPeerService
             throw new InvalidDataException("The peer branch does not extend the completed local branch; both signed histories were kept.");
         if (ReceiveFreeBytes(vault) < total * 2 + 1024L * 1024 * 1024)
             throw new IOException("The peer copy needs space for complete verification and the disk reserve.");
-        var stage = SharedWorldService.SafeChild(vault, ".partial-" + version.VersionHash);
         Directory.CreateDirectory(stage);
-        var payloadRoot = Path.Combine(stage, SharedWorldService.PayloadDirectory);
         Directory.CreateDirectory(payloadRoot);
         await ReuseMatchingFilesAsync(group, descriptor, vault, payloadRoot, anchor, localCopies, cancellationToken);
         long transferred = 0;
-        long received = 0;
+        var retainedLengths = StagedPayloadLengths(payloadRoot, version);
+        long received = retainedLengths.Sum();
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
         for (var index = 0; index < version.Files.Count; index++)
         {
             var file = version.Files[index];
@@ -597,17 +601,16 @@ internal sealed partial class WorldPeerService
             using var output = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
             if (output.Length == file.Length)
             {
-                received += file.Length;
-                SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
                 continue;
             }
             var resume = output.Length <= file.Length ? output.Length / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes : 0;
             output.SetLength(resume); output.Position = resume;
-            received += resume;
+            received += resume - retainedLengths[index];
             SharedSaveTransferProgress.Report(data, group.Root, version, "Receiving", received, total);
             while (output.Position < file.Length)
             {
                 if (!await ReceiveAllowedAsync(group, cancellationToken)) throw new OperationCanceledException("Save consent changed.");
+                observation?.Phase(WorldPeerTransferPhase.Pulling);
                 observation?.Requested(index, output.Position);
                 var chunkStart = received;
                 var expectedChunkBytes = Math.Min(SharedWorldService.ChunkBytes, file.Length - output.Position);

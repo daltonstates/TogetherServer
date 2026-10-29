@@ -10,6 +10,37 @@ const job: BackgroundJob = { id: '11111111-1111-4111-8111-111111111111', profile
 const response = (value: unknown) => new Response(JSON.stringify(value))
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
+it('keeps measured local staging, rollback and resumable pauses distinct from reception and final checks', async () => {
+  vi.useFakeTimers()
+  let current = { ...job, phase: 'Preparing', receivedBytes: 128 }
+  const fetcher = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => response({ jobs: [current], activeCount: current.state === 'Waiting' ? 0 : 1 }))
+  vi.stubGlobal('fetch', fetcher)
+  render(<BackgroundJobs />)
+  await act(async () => {})
+  fireEvent.click(screen.getByText('Background jobs', { selector: 'summary span' }))
+  expect(screen.getByText('ReceiveSave · Preparing local files')).toBeInTheDocument()
+  expect(screen.getByRole('progressbar', { name: 'Weekend server save bytes staged locally' })).toHaveAttribute('value', '128')
+  current = { ...current, receivedBytes: 768 }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(screen.getByRole('progressbar')).toHaveAttribute('value', '768')
+  current = { ...current, receivedBytes: 512, state: 'Waiting', attempts: 3, resultCode: 'SaveTransferWorkBudget' }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+  expect(screen.getByText('512 B of 1 KiB staged locally')).toBeInTheDocument()
+  expect(screen.getAllByText('Weekend server')).toHaveLength(1)
+  expect(screen.getByText('Waiting')).toBeInTheDocument()
+  current = { ...current, receivedBytes: 896, phase: 'Receiving', state: 'Running' }
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(screen.getByRole('progressbar', { name: 'Weekend server save bytes received' })).toHaveAttribute('value', '896')
+  for (const phase of ['Verifying', 'Receipt']) {
+    current = { ...current, receivedBytes: 1024, phase }
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('progressbar')).not.toHaveAttribute('value')
+    expect(screen.queryByText(/100%/)).not.toBeInTheDocument()
+  }
+  expect(fetcher.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+})
+
 it('keeps one backend job and measured progress while the menu closes and workspace navigation changes', async () => {
   vi.useFakeTimers()
   let receivedBytes = 128

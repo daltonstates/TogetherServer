@@ -21,7 +21,10 @@ internal sealed class BackgroundJobs
     {
         internal Saved Saved = saved;
         internal int Users;
+        internal Completion? PendingCompletion;
     }
+    internal sealed record Completion(string State, string Code, string? Message,
+        string? DiagnosticOperation = null, string? DiagnosticPhase = null);
     private static readonly ConcurrentDictionary<string, Lazy<BackgroundJobs>> instances = new(StringComparer.OrdinalIgnoreCase);
     internal static BackgroundJobs For(LocalData data) => instances.GetOrAdd(Path.GetFullPath(data.RootPath),
         _ => new(() => new(data), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
@@ -85,11 +88,13 @@ internal sealed class BackgroundJobs
         }
         internal void Complete(string code, string? message = null) => Finish("Succeeded", code, message);
         internal void Fail(string code, string? message = null) => Finish("Failed", code, message);
+        internal void Fail(SharedSaveTransferFailure failure) => Finish("Failed", failure.Code, failure.Message,
+            "ReceiveSave_" + failure.Operation, failure.Phase);
         internal void Waiting(string code, string? message = null) => Finish("Waiting", code, message);
-        private void Finish(string state, string code, string? message)
+        private void Finish(string state, string code, string? message, string? diagnosticOperation = null, string? diagnosticPhase = null)
         {
             if (Interlocked.Exchange(ref disposed, 1) != 0) return;
-            owner.Finish(scope, entry, state, code, message);
+            owner.Finish(scope, entry, state, code, message, diagnosticOperation, diagnosticPhase);
         }
         public void Dispose() => Finish("Interrupted", "WorkInterrupted", "This attempt ended before completion. Progress may be resumed by a later check.");
     }
@@ -112,6 +117,7 @@ internal sealed class BackgroundJobs
             }
             if (entry.Users++ == 0)
             {
+                entry.PendingCompletion = null;
                 var previous = entry.Saved.Job;
                 var resume = operation == "Save download";
                 entry.Saved = entry.Saved with
@@ -143,38 +149,61 @@ internal sealed class BackgroundJobs
         {
             if (entries.GetValueOrDefault(scope) != expected || expected.Users == 0) return;
             var next = update(expected.Saved.Job);
+            // Another owner reporting work must not inherit an earlier
+            // completion, even when its measured counters are unchanged.
+            // An unchanged report still does not renew visible UpdatedUtc.
+            if (expected.PendingCompletion?.State == "Succeeded") expected.PendingCompletion = null;
             if (next == expected.Saved.Job) return;
             expected.Saved = expected.Saved with { Job = next with { UpdatedUtc = clock.GetUtcNow() } };
         }
         Save(force: false);
     }
-    private void Finish(string scope, Entry expected, string state, string code, string? message)
+    private void Finish(string scope, Entry expected, string state, string code, string? message,
+        string? diagnosticOperation = null, string? diagnosticPhase = null)
     {
         BackgroundJob? failure = null;
+        string? failureOperation = null, failurePhase = null;
+        var finished = false;
         lock (sync)
         {
             if (entries.GetValueOrDefault(scope) != expected || expected.Users == 0) return;
-            if (--expected.Users != 0) return;
-            var now = clock.GetUtcNow();
-            expected.Saved = expected.Saved with
+            var completion = new Completion(state, Bounded(code, 100), message is null ? null : Bounded(message, 500),
+                diagnosticOperation, diagnosticPhase);
+            // A genuine failure or verified completion supersedes an older
+            // outcome. Passive disposal/waiting cannot erase either one.
+            if (state is "Failed" or "Succeeded" || expected.PendingCompletion?.State is not ("Failed" or "Succeeded"))
+                expected.PendingCompletion = completion;
+            if (state == "Failed" && expected.Saved.Job.Operation == "Save download")
             {
-                Job = expected.Saved.Job with
+                failure = expected.Saved.Job with { ResultCode = completion.Code, Message = completion.Message };
+                failureOperation = completion.DiagnosticOperation;
+                failurePhase = completion.DiagnosticPhase;
+            }
+            if (--expected.Users == 0)
+            {
+                completion = expected.PendingCompletion ?? completion;
+                state = completion.State;
+                finished = true;
+                var now = clock.GetUtcNow();
+                expected.Saved = expected.Saved with
                 {
-                    State = state,
-                    ResultCode = Bounded(code, 100),
-                    Message = message is null ? null : Bounded(message, 500),
-                    UpdatedUtc = now,
-                    CompletedUtc = state == "Waiting" ? null : now
-                }
-            };
-            if (state == "Failed" && expected.Saved.Job.Operation == "Save download") failure = expected.Saved.Job;
-            Prune(now);
+                    Job = expected.Saved.Job with
+                    {
+                        State = state,
+                        ResultCode = completion.Code,
+                        Message = completion.Message,
+                        UpdatedUtc = now,
+                        CompletedUtc = state == "Waiting" ? null : now
+                    }
+                };
+                Prune(now);
+            }
         }
         if (failure is not null)
-            StartAttemptDiagnostics.RecordFailure(data, failure.ProfileId, "ReceiveSave",
-                failure.Phase, code, message ?? "The save transfer did not finish.",
+            StartAttemptDiagnostics.RecordFailure(data, failure.ProfileId, failureOperation ?? "ReceiveSave",
+                failurePhase ?? failure.Phase, failure.ResultCode ?? code, failure.Message ?? "The save transfer did not finish.",
                 "TransferFailed", failure.Id, failure.Id);
-        Save(force: state != "Waiting");
+        Save(force: failure is not null || finished && state != "Waiting");
     }
     internal BackgroundJobList Read()
     {

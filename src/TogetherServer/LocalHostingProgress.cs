@@ -13,7 +13,7 @@ internal sealed class LocalHostingProgressStore(TimeProvider? clock = null)
 {
     internal const long MaximumPhaseMilliseconds = 24 * 60 * 60 * 1000;
     private static readonly string[] TimedPhases =
-        ["Permission", "PeerSync", "LatestSave", "Receiving", "Verifying", "Receipt", "PreparingCopy",
+        ["Permission", "PeerSync", "LatestSave", "Preparing", "Receiving", "Verifying", "Receipt", "PreparingCopy",
             "ServerSetup", "Ports", "Connection", "Starting", "Other"];
     private readonly object sync = new();
     private readonly TimeProvider time = clock ?? TimeProvider.System;

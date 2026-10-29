@@ -20,8 +20,8 @@ internal static partial class CoreRemoteJourney
         Require(compiledVersion is not null &&
             currentVersion == AppUpdater.FormatVersion(compiledVersion),
             "The release candidate file version must match the compiled current TogetherServer assembly version.");
-        Require(legacyVersion is "0.3.0" or "0.3.1" or "0.3.2" or "0.3.2.1" or "0.3.2.2" or "0.3.3" or "0.3.3.23",
-            "The separately supplied legacy EXE must be a published 0.3.0, 0.3.1, 0.3.2, 0.3.2.1, 0.3.2.2, 0.3.3 or 0.3.3.23 release.");
+        Require(legacyVersion is "0.3.0" or "0.3.1" or "0.3.2" or "0.3.2.1" or "0.3.2.2" or "0.3.3" or "0.3.3.23" or "0.3.3.24",
+            "The separately supplied legacy EXE must be a published 0.3.0, 0.3.1, 0.3.2, 0.3.2.1, 0.3.2.2, 0.3.3, 0.3.3.23 or 0.3.3.24 release.");
         Require(Version.Parse(legacyVersion).CompareTo(Version.Parse(currentVersion)) < 0,
             "The legacy EXE version must be strictly older than the current release candidate.");
         await MixedRolesAsync(currentApp, legacyApp, fixture, currentVersion, legacyVersion, "new-host-old-friend");

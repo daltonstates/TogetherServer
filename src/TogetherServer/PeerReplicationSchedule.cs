@@ -31,6 +31,16 @@ internal sealed class PeerReplicationSchedule
     internal bool Due(string key, long generation, DateTimeOffset now) =>
         !routes.TryGetValue(key, out var entry) || entry.Generation != generation || now >= entry.Due;
 
+    internal void LocalProgress(string world, DateTimeOffset now)
+    {
+        var prompt = now.AddSeconds(2);
+        foreach (var key in routes.Keys.Where(key => key.StartsWith(world + ":", StringComparison.Ordinal)).ToArray())
+        {
+            var entry = routes[key];
+            if (entry.Due > prompt) routes[key] = entry with { Due = prompt };
+        }
+    }
+
     internal void Completed(string key, long generation, DateTimeOffset now, bool failed, bool pending,
         double jitter)
     {

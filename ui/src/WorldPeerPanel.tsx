@@ -26,7 +26,7 @@ type GroupSelection = { canChoose: boolean; needsChoice: boolean;
 type DefaultReview = { groupKey: string; deviceId: string; publicKey: string; sessionId: string; branchHash: string }
 type TransferProgress = { state: string; phase: string; operation: string; httpStep: string; result: string; error: string;
   httpStatus: number | null; startedUtc: string; updatedUtc: string; elapsedMilliseconds: number;
-  submittedBytes: number; receivedBytes: number; completedFiles: number; requestedFileIndex: number | null;
+  submittedBytes: number; receivedBytes: number; localStagedBytes: number; completedFiles: number; requestedFileIndex: number | null;
   requestedOffset: number | null; exactReceiptAccepted: boolean; totalBytes: number | null; totalFiles: number | null;
   publicationNumber: number | null; receiptPublicationNumber: number | null }
 type BackgroundTransfer = { routeOrdinal: number; recipientRole: string; current: TransferProgress | null;
@@ -82,7 +82,7 @@ function list<T>(value: unknown, maximum: number, decode: (item: unknown) => T):
 }
 const transferCodes = {
   state: ['Working', 'Pending', 'Succeeded', 'Failed', 'Canceled'],
-  phase: ['Queued', 'Metadata', 'Pulling', 'Offering', 'Sending', 'VerifyingLocal', 'VerifyingRemote', 'Receipt'],
+  phase: ['Queued', 'Metadata', 'Preparing', 'Pulling', 'Offering', 'Sending', 'VerifyingLocal', 'VerifyingRemote', 'Receipt'],
   operation: ['None', 'Metadata', 'Catalog', 'Manifest', 'Chunk', 'Seed', 'Receipt'],
   httpStep: ['None', 'Challenge', 'Exchange'],
   result: ['None', 'NoPayload', 'PassComplete', 'SeedPaused', 'SeedHistoryPending', 'ManifestUnavailable', 'ChunkUnavailable',
@@ -114,6 +114,7 @@ function parseTransferProgress(value: unknown): TransferProgress | null {
     httpStatus: optionalTransferCount(source.httpStatus, 599, 100), startedUtc, updatedUtc,
     elapsedMilliseconds: transferCount(source.elapsedMilliseconds, 86400000),
     submittedBytes: transferCount(source.submittedBytes, 2 ** 50), receivedBytes: transferCount(source.receivedBytes, 2 ** 50),
+    localStagedBytes: source.localStagedBytes === undefined ? 0 : transferCount(source.localStagedBytes, 2 ** 50),
     completedFiles: transferCount(source.completedFiles, 100000),
     requestedFileIndex: optionalTransferCount(source.requestedFileIndex, 100000), requestedOffset: optionalTransferCount(source.requestedOffset, 2 ** 50),
     exactReceiptAccepted: flag(source.exactReceiptAccepted), totalBytes: optionalTransferCount(source.totalBytes, 2 ** 50),
@@ -213,6 +214,7 @@ export function parseWorldPeerGroups(value: unknown): WorldPeerGroup[] {
 }
 
 const transferPhases: Record<string, string> = { Queued: 'Waiting for background transfer', Metadata: 'Checking world metadata',
+  Preparing: 'Preparing local save files',
   Pulling: 'Checking and receiving completed saves', Offering: 'Offering a completed save', Sending: 'Sending save files',
   VerifyingLocal: 'Checking received files', VerifyingRemote: 'Waiting for the other PC to check files', Receipt: 'Exchanging exact copy receipts' }
 const transferStates: Record<string, string> = { Working: 'In progress', Pending: 'Waiting for another background pass',
@@ -252,6 +254,7 @@ function BackgroundTransfers({ group }: { group: WorldPeerGroup }) {
         {progress ? <>
           <p>{transferPhases[progress.phase] ?? 'Transfer step unavailable'}{progress.publicationNumber !== null && ` · Save ${progress.publicationNumber}`} — {transferStates[progress.state] ?? 'Progress unavailable'}.</p>
           <p>This pass: {formatSharedBytes(progress.submittedBytes)} submitted · {formatSharedBytes(progress.receivedBytes)} received · {progress.completedFiles} {progress.completedFiles === 1 ? 'file' : 'files'} completed.</p>
+          {progress.localStagedBytes > 0 && <p>{formatSharedBytes(progress.localStagedBytes)} newly staged locally for later verification. Local staging is separate from network traffic and copy receipts.</p>}
           {transferResults[progress.result] && <p>{transferResults[progress.result]}</p>}
         </> : <p>Current transfer progress is unavailable.</p>}
         {transfer.current && transfer.lastResult && <p>Previous pass: {transferPhases[transfer.lastResult.phase] ?? 'Transfer step unavailable'} — {transferResults[transfer.lastResult.result] ?? transferStates[transfer.lastResult.state] ?? 'Result unavailable'}.</p>}

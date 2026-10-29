@@ -14,6 +14,23 @@ internal sealed partial class WorldPeerService
     private sealed record MatchingFile(SharedWorldFile Target, SharedWorldFile Source);
     internal Action<long>? MatchingFileCopyingForChecks { get; set; }
 
+    // These are staged logical bytes, not a verification or receipt. Count all
+    // signed target paths before choosing the first missing file, including
+    // completed files after it. Namespace and full hash checks still authorize
+    // completion; an oversized staged file contributes no usable bytes.
+    private long[] StagedPayloadLengths(string payloadRoot, SharedWorldVersion version)
+    {
+        SharedWorldService.EnsureUnlinkedRoot(data.RootPath, payloadRoot);
+        return version.Files.Select(file =>
+        {
+            var path = SharedWorldService.SafeChild(payloadRoot, file.Path);
+            SharedWorldService.EnsureUnlinkedRoot(data.RootPath, path);
+            if (!File.Exists(path)) return 0L;
+            var length = new FileInfo(path).Length;
+            return length <= file.Length ? length : 0;
+        }).ToArray();
+    }
+
     private static MatchingFile[] MatchingFiles(SharedWorldVersion prior, SharedWorldVersion target)
     {
         if (prior.Files.Count is < 1 or > SharedWorldService.MaximumFiles)
@@ -39,6 +56,20 @@ internal sealed partial class WorldPeerService
         CancellationToken cancellationToken, Func<bool>? additionalAuthorization = null)
     {
         var version = descriptor.Version;
+        var total = SharedWorldService.BoundedTotalBytes(version.Files);
+        var stagedLengths = StagedPayloadLengths(payloadRoot, version);
+        var staged = stagedLengths.Sum();
+        var positions = version.Files.Select((file, index) => (file.Path, index))
+            .ToDictionary(item => item.Path, item => item.index, StringComparer.Ordinal);
+        void ReportLength(SharedWorldFile file, long length)
+        {
+            var index = positions[file.Path];
+            var bounded = Math.Clamp(length, 0, file.Length);
+            staged += bounded - stagedLengths[index];
+            stagedLengths[index] = bounded;
+            SharedSaveTransferProgress.Report(data, group.Root, version, "Preparing", staged, total);
+        }
+        SharedSaveTransferProgress.Report(data, group.Root, version, "Preparing", staged, total);
         var candidates = inventory.Take(32).Where(item =>
             !item.Descriptor.TestOnly && item.Descriptor.TestArtifact is null &&
             item.Descriptor.Version.VersionHash != version.VersionHash &&
@@ -64,18 +95,20 @@ internal sealed partial class WorldPeerService
 
         ExistingCopyScope scope;
         lock (stateSync) scope = ExistingCopyScopeFor(group, descriptor, cancellationToken);
-        async Task RequireCurrentAsync()
+        async Task RequireCurrentAsync(CancellationToken token)
         {
-            if (!await ReceiveAllowedAsync(group, cancellationToken))
-                throw new OperationCanceledException("Current receiving consent changed during local file reuse.");
+            if (!await ReceiveAllowedAsync(group, token))
+                throw new SaveTransferPermissionChangedException();
             lock (stateSync)
             {
-                RequireExistingCopyScope(scope, descriptor, cancellationToken);
-                if (!ChunkSourceIsCurrent(scope.Group, selected.Copy) || additionalAuthorization?.Invoke() == false)
-                    throw new InvalidDataException("The prior copy's current source or forwarding permission changed.");
+                RequireExistingCopyScope(scope, descriptor, token);
+                if (!ChunkSourceIsCurrent(scope.Group, selected.Copy))
+                    throw new InvalidDataException("The prior copy's current source changed.");
+                if (additionalAuthorization?.Invoke() == false)
+                    throw new SaveTransferPermissionChangedException();
             }
         }
-        await RequireCurrentAsync();
+        await RequireCurrentAsync(cancellationToken);
         WorldPeerFileTransfer.VerifyHistory(vault, descriptor, anchor);
         VerifyExistingCopyHistory(scope.Group, selected.Copy, selected.Copy.Descriptor, cancellationToken);
         using var lease = MatchingFileLease.Open(data.RootPath, RecoverySourceDirectory(selected.Copy),
@@ -89,15 +122,20 @@ internal sealed partial class WorldPeerService
         {
             foreach (var match in selected.Files)
             {
-                await RequireCurrentAsync();
+                await RequireCurrentAsync(cancellationToken);
                 var output = lease.Target(match.Target.Path);
                 var originalLength = output.Length;
                 if (originalLength >= match.Target.Length) continue;
+                // An interrupted full-chunk prefix is ordinary unverified
+                // staging. Resume it through the existing signed chunk path
+                // instead of rehashing a growing prefix on every short pass.
+                if (originalLength >= SharedWorldService.ChunkBytes) continue;
                 var input = lease.Source(match.Source.Path);
                 if (input is null) continue; // A missing file takes the normal network path.
                 if (input.Length != match.Source.Length)
                     throw new InvalidDataException("The prior matching file changed its signed length.");
                 var complete = false;
+                var retainedPrefix = false;
                 try
                 {
                     using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -105,7 +143,7 @@ internal sealed partial class WorldPeerService
                     long position = 0;
                     while (position < match.Source.Length)
                     {
-                        await RequireCurrentAsync();
+                        await RequireCurrentAsync(cancellationToken);
                         var count = (int)Math.Min(512 * 1024, match.Source.Length - position);
                         await input.ReadExactlyAsync(buffer.AsMemory(0, count), cancellationToken);
                         hash.AppendData(buffer, 0, count);
@@ -117,25 +155,53 @@ internal sealed partial class WorldPeerService
                                 throw new InvalidDataException("The staged matching file prefix changed.");
                         }
                         if (retained < count)
+                        {
                             await output.WriteAsync(buffer.AsMemory(retained, count - retained), cancellationToken);
+                            ReportLength(match.Target, output.Length);
+                        }
                         position += count;
                         try { MatchingFileCopyingForChecks?.Invoke(position); }
                         catch (Exception) { /* Observations cannot authorize local reuse. */ }
                     }
                     if (!Convert.ToHexString(hash.GetHashAndReset()).Equals(match.Target.Sha256, StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException("The prior matching file failed its signed hash.");
-                    await RequireCurrentAsync();
+                    await RequireCurrentAsync(cancellationToken);
                     await output.FlushAsync(cancellationToken);
                     complete = true;
+                    RecordLocalStagedWork(group, version.VersionHash, Math.Max(0, match.Target.Length - originalLength));
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // Canceled work may retain an unplayable prefix only after
+                    // a fresh uncanceled permission and namespace check. Full
+                    // payload hashing still precedes any promotion/receipt.
+                    // A real recheck or flush refusal must replace the budget
+                    // cancellation. The finally below still rolls back before
+                    // the caller classifies that actual typed failure.
+                    await RequireCurrentAsync(CancellationToken.None);
+                    lease.RequirePlainNamespace();
+                    var length = Math.Max(originalLength,
+                        Math.Min(output.Length, match.Target.Length) / SharedWorldService.ChunkBytes * SharedWorldService.ChunkBytes);
+                    output.SetLength(length);
+                    await output.FlushAsync(CancellationToken.None);
+                    retainedPrefix = true;
+                    ReportLength(match.Target, length);
+                    RecordLocalStagedWork(group, version.VersionHash, Math.Max(0, length - originalLength));
+                    throw;
                 }
                 finally
                 {
                     // Existing staged bytes were compared, never overwritten.
-                    // A failed/cancelled local append cannot damage that prefix.
-                    if (!complete) output.SetLength(originalLength);
+                    // Integrity/permission failures roll back this append;
+                    // canceled prefixes retained above remain unverified.
+                    if (!complete && !retainedPrefix)
+                    {
+                        output.SetLength(originalLength);
+                        ReportLength(match.Target, originalLength);
+                    }
                 }
             }
-            await RequireCurrentAsync();
+            await RequireCurrentAsync(cancellationToken);
             lease.RequirePlainNamespace();
             VerifyExistingCopyHistory(scope.Group, selected.Copy, selected.Copy.Descriptor, cancellationToken);
         }

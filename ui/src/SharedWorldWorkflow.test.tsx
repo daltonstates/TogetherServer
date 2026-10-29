@@ -163,7 +163,7 @@ describe('Shared saves guided workflow', () => {
     expect(mutations).toEqual([])
   })
 
-  it.each(['Receiving', 'Verifying', 'Receipt'] as const)('marks failed %s observation Unknown while retaining verified copy, consent and guarded recovery', async phase => {
+  it.each(['Preparing', 'Receiving', 'Verifying', 'Receipt'] as const)('marks failed %s observation Unknown while retaining verified copy, consent and guarded recovery', async phase => {
     vi.useFakeTimers()
     let fail = false
     let completed = false

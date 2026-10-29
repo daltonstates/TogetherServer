@@ -35,6 +35,7 @@ internal sealed partial class WorldPeerService
     {
         var reason = error switch
         {
+            SaveTransferPermissionChangedException => WorldPeerTransferError.Unauthorized,
             TaskCanceledException { InnerException: TimeoutException } when !cancellationToken.IsCancellationRequested => WorldPeerTransferError.Timeout,
             OperationCanceledException when !cancellationToken.IsCancellationRequested => WorldPeerTransferError.Unauthorized,
             OperationCanceledException => WorldPeerTransferError.Canceled,

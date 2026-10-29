@@ -29,7 +29,11 @@ internal static class SupportReportRedactor
         clean = Endpoint.Replace(clean, "[redacted-endpoint]");
         clean = ExtendedWindowsPath.Replace(clean, "[redacted-path]");
         clean = ProcessId.Replace(clean, "[redacted-process-id]");
-        clean = ServerLogSanitizer.ProtectSupportValue(clean);
+        // Only exact source-owned transfer explanations bypass the broad game
+        // player-line classifier. All secret, path and identity filters remain.
+        clean = SharedSaveTransferFailure.IsFixedMessage(clean)
+            ? ServerLogSanitizer.Protect(clean, "Support", ServerLogAudience.Friend, truncated: false)
+            : ServerLogSanitizer.ProtectSupportValue(clean);
         if (clean.Length == 0) clean = fallback;
         return clean.Length <= maximum ? clean : clean[..Math.Max(1, maximum - 14)] + "… [truncated]";
     }

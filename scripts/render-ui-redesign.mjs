@@ -138,6 +138,8 @@ const cases = [
     screen: { css: '.friend-play-flow details[open]', text: 'Permissions apply only to this server. Stop and Restart also require a Ready server and a current player count of zero, checked again before stopping.' } },
   { id: 'join-shared-verified-copy', scenario: 'friend-shared-verified-offline', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: heading('Prepare hosting on this PC'), action: 'shared-verified-copy' },
+  { id: 'join-shared-preparing', scenario: 'friend-shared-preparing-offline', workspace: 'Join',
+    section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: 'shared-preparing' },
   { id: 'join-shared-receiving', scenario: 'friend-shared-receiving-offline', workspace: 'Join',
     section: ['Join sections', 'shared-saves', 'Shared saves'], screen: region('Save transfer progress'), action: 'shared-receiving' },
   { id: 'join-first-pairing', scenario: 'friend-pairing', workspace: 'Join', screen: heading('Join a server') },
@@ -533,19 +535,21 @@ async function performActions(page, testCase, record) {
   if (testCase.section) await section(page, testCase.section, record);
   if (testCase.button) await click(page, new RegExp(testCase.button), record, false);
   switch (testCase.action) {
-    case 'shared-verified-copy': case 'shared-receiving': {
+    case 'shared-verified-copy': case 'shared-preparing': case 'shared-receiving': {
       const next = await visible(page.getByRole('region', { name: 'Next shared-save action', exact: true }));
       const verified = testCase.action === 'shared-verified-copy';
+      const preparing = testCase.action === 'shared-preparing';
       if (testCase.action === 'shared-verified-copy') {
         await visible(next.getByRole('heading', { name: 'Prepare hosting on this PC', exact: true }));
         await visible(page.getByText('Verified save copy 5 on this PC. Copy possession does not grant hosting authority or prove readiness.', { exact: true }));
       } else {
-        await visible(next.getByRole('heading', { name: 'Receiving the save copy', exact: true }));
+        await visible(next.getByRole('heading', { name: preparing ? 'Preparing local save files' : 'Receiving the save copy', exact: true }));
         const progress = await visible(page.getByRole('region', { name: 'Save transfer progress', exact: true }));
-        const bytes = await visible(progress.getByRole('progressbar', { name: 'Save bytes received', exact: true }));
+        const bytes = await visible(progress.getByRole('progressbar', { name: preparing ? 'Local save bytes staged' : 'Save bytes received', exact: true }));
         const values = await bytes.evaluate(el => ({ value: el.value, max: el.max, description: el.getAttribute('aria-valuetext') }));
         if (values.value !== 1048576 || values.max !== 4194304 || values.description !== '1 MiB of 4 MiB')
-          throw new Error('Receiving byte progress or its accessible description differs from the strict fixture');
+          throw new Error('Staged/received byte progress or its accessible description differs from the strict fixture');
+        if (preparing) await visible(progress.getByRole('list', { name: 'Transfer phases' }).getByText('Prepare local files', { exact: true }));
       }
       const primary = next.locator('button:not(.secondary):not(.text-button)');
       if (verified) {
@@ -556,13 +560,14 @@ async function performActions(page, testCase, record) {
         const redundantGet = page.getByRole('button', { name: 'Get latest save', exact: true });
         if (await redundantGet.isVisible() && await redundantGet.isEnabled())
           throw new Error('Receiving progress must disable a redundant Get latest save request');
-        await visible(page.getByText('Get latest save is unavailable while this copy is being received, verified or acknowledged.', { exact: true }));
+        await visible(page.getByText('Get latest save is unavailable while this copy is being prepared, received, verified or acknowledged.', { exact: true }));
       }
       const manage = await visible(next.getByRole('button', { name: 'Manage sharing', exact: true }));
       if (!await manage.isEnabled()) throw new Error('Shared-save landing must keep Manage sharing reachable');
       if (await page.getByRole('button', { name: 'Review Start server', exact: true }).count())
         throw new Error('Synthetic copy possession must never establish Start authority');
-      record.assertions.push(verified ? 'Synthetic verified copy exposes one primary Host this save and secondary Manage sharing; no signed Host or Start authority created' :
+      record.assertions.push(verified ? 'Synthetic verified copy exposes one primary Host this save and secondary Manage sharing; no signed Host or Start authority created' : preparing ?
+        'Synthetic local staging shows measured retained/staged bytes and the preparation phase; redundant receive blocked, management reachable, and no signed Host or Start authority created' :
         'Synthetic Receiving byte progress leads with at most one primary, redundant receiving blocked, and Manage sharing reachable; no signed Host or Start authority created');
       break;
     }

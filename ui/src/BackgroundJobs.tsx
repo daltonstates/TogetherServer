@@ -83,14 +83,15 @@ export function BackgroundJobs() {
       <ol>{result?.jobs.map(job => <li key={job.id} className={`background-job job-${job.state.toLowerCase()}`}>
         <div><strong>{job.serverName || job.worldName || 'Shared server'}</strong><span>{job.state}</span></div>
         {job.worldName && job.worldName !== job.serverName && <small>{job.worldName}</small>}
-        <p>{job.operation} · {job.phase}</p>
-        {['Running', 'Stalled'].includes(job.state) && (job.totalBytes !== null && job.totalBytes > 0
-          ? <><progress aria-label={`${job.serverName || job.worldName} save bytes received`} max={job.totalBytes} value={job.receivedBytes} />
+        <p>{job.operation} · {job.phase === 'Preparing' ? 'Preparing local files' : job.phase}</p>
+        {['Running', 'Stalled'].includes(job.state) && (['Preparing', 'PreparingCopy', 'Receiving'].includes(job.phase) && job.totalBytes !== null && job.totalBytes > 0
+          ? <><progress aria-label={`${job.serverName || job.worldName} save bytes ${job.phase === 'Preparing' ? 'staged locally' : job.phase === 'PreparingCopy' ? 'prepared locally' : 'received'}`} max={job.totalBytes} value={job.receivedBytes} />
             <small>{Math.floor(job.receivedBytes * 100 / job.totalBytes)}% · {formatSharedBytes(job.receivedBytes)} of {formatSharedBytes(job.totalBytes)}</small></>
           : <><progress aria-label={`${job.serverName || job.worldName} ${job.phase}`} />{(job.receivedBytes > 0 || job.phase === 'Receiving') &&
-            <small>{formatSharedBytes(job.receivedBytes)} received · total unknown</small>}</>)}
+            <small>{job.phase === 'Preparing' ? `${formatSharedBytes(job.receivedBytes)} staged locally` : `${formatSharedBytes(job.receivedBytes)} received`}{job.totalBytes === null ? ' · total unknown' : ''}</small>}</>)}
+        {job.phase === 'Preparing' && <small>Local staging includes retained bytes. File verification and receipt confirmation are separate.</small>}
         {!['Running', 'Stalled'].includes(job.state) && job.totalBytes !== null && job.totalBytes > 0 &&
-          <small>{formatSharedBytes(job.receivedBytes)} of {formatSharedBytes(job.totalBytes)} received</small>}
+          <small>{formatSharedBytes(job.receivedBytes)} of {formatSharedBytes(job.totalBytes)} {job.phase === 'Preparing' ? 'staged locally' : 'received or retained'}</small>}
         <p>{job.message}</p>
         <small><time dateTime={job.updatedUtc}>{new Date(job.updatedUtc).toLocaleString()}</time>{job.attempts > 1 && ` · ${job.attempts} attempts`}</small>
         {job.resultCode && <small>Result: {job.resultCode}</small>}

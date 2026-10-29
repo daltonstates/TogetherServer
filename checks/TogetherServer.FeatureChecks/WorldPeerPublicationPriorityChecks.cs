@@ -75,8 +75,11 @@ internal static class WorldPeerPublicationPriorityChecks
             "A paused new-publication offer starved legal incoming competing history or invented a receipt.");
         var result = fixture.Source.Views().Single().BackgroundTransfers!.Single();
         Require(result.LastResult is { State: "Pending", Error: "None", Result: "SeedPaused", ExactReceiptAccepted: false } &&
+            result.LastResult.PublicationNumber == fixture.Other.Version.Number &&
+            result.LastResult.TotalBytes == fixture.Other.Version.Files.Sum(file => file.Length) &&
             result.LastFailure is null && fixture.PublishedHead() == fixture.Latest.Version.VersionHash,
-            "A paused offer became a terminal failure, exact receipt or replacement of competing local progress.");
+            "A paused offer became a terminal failure, exact receipt or replacement of competing local progress. " +
+                ProgressDiagnostic(result.LastResult));
     }
 
     private static async Task ProgressBudgetYieldsAsync(string parent)
@@ -87,10 +90,10 @@ internal static class WorldPeerPublicationPriorityChecks
         var result = fixture.Source.Views().Single().BackgroundTransfers!.Single();
         Require(fixture.Wire.LatestChunkRequests >= 2 && fixture.Wire.IncomingChunk.Task.IsCompleted && fixture.ReceivedOther() &&
             result.LastResult is { State: "Pending", Error: "None", Result: "WorkBudget", SubmittedBytes: > 0, ReceivedBytes: > 0 } &&
-            result.LastResult.PublicationNumber == 9 && result.LastResult.RequestedFileIndex == 0 &&
-            result.LastResult.RequestedOffset == SharedWorldService.ChunkBytes && fixture.Other.Version.Number == 10 &&
+            result.LastResult.PublicationNumber == fixture.Other.Version.Number &&
+            result.LastResult.TotalBytes == fixture.Other.Version.Files.Sum(file => file.Length) && fixture.Other.Version.Number == 10 &&
             result.LastFailure is null && !fixture.OwnerReceipt(fixture.Latest.Version.VersionHash),
-            "The priority work budget starved incoming work, invented completion, or classified its resumable yield as cancellation.");
+            "The priority work budget starved incoming work, replaced incoming publication/total with outgoing progress, invented completion, or classified its resumable yield as cancellation.");
     }
 
     private static async Task ReceiptScopeAsync(string parent, ReceiptMode mode)
@@ -172,8 +175,10 @@ internal static class WorldPeerPublicationPriorityChecks
             State: "Pending", Result: "SeedPaused", PublicationNumber: 11, ExactReceiptAccepted: false,
             ReceiptPublicationNumber: null, RequestedFileIndex: null, RequestedOffset: null, SubmittedBytes: 0, ReceivedBytes: 0
         } &&
+            pending.TotalBytes == fixture.Latest.Version.Files.Sum(file => file.Length) &&
             fixture.Wire.LatestSeedRequests == 0 && !fixture.OwnerReceipt(fixture.Latest.Version.VersionHash),
-            "An active unacknowledged pull of eleven fell through to an older receipt-eight success or invented progress.");
+            "An active unacknowledged pull of eleven fell through to an older receipt-eight success or invented progress. " +
+                ProgressDiagnostic(pending));
         clock.Timestamp = TimeSpan.FromSeconds(30).Ticks;
         Require((await fixture.RequestLatestChunkAsync()).SequenceEqual(firstChunk), "The generated replay did not request the same exact signed chunk.");
         clock.Timestamp = TimeSpan.FromSeconds(61).Ticks;
@@ -189,13 +194,32 @@ internal static class WorldPeerPublicationPriorityChecks
                     State: "Pending", Result: "SeedPaused", PublicationNumber: 11, ExactReceiptAccepted: false,
                     RequestedFileIndex: null, RequestedOffset: null, SubmittedBytes: 0, ReceivedBytes: 0
                 } &&
+                probed.TotalBytes == fixture.Latest.Version.Files.Sum(file => file.Length) &&
                 fixture.RemoteHeadIsOther() && !fixture.OwnerReceipt(fixture.Latest.Version.VersionHash),
-                "An expired replay hint failed to allow one bounded probe, or the occupied real receive gate allowed duplicate payload/receipt.");
+                "An expired replay hint failed to allow one bounded probe, or the occupied real receive gate allowed duplicate payload/receipt. " +
+                    ProgressDiagnostic(probed));
         }
         finally { receiveGate.Release(); }
     }
 
     private enum ReceiptMode { Exact, Forwarded, SameNumberOtherHash }
+    private static string ProgressDiagnostic(WorldPeerTransferProgress? progress) => JsonSerializer.Serialize(new
+    {
+        state = progress?.State,
+        phase = progress?.Phase,
+        operation = progress?.Operation,
+        result = progress?.Result,
+        error = progress?.Error,
+        publicationNumber = progress?.PublicationNumber,
+        totalBytes = progress?.TotalBytes,
+        submittedBytes = progress?.SubmittedBytes,
+        receivedBytes = progress?.ReceivedBytes,
+        localStagedBytes = progress?.LocalStagedBytes,
+        exactReceiptAccepted = progress?.ExactReceiptAccepted,
+        receiptPublicationNumber = progress?.ReceiptPublicationNumber,
+        requestedFileIndex = progress?.RequestedFileIndex,
+        requestedOffset = progress?.RequestedOffset
+    }, Json);
     private static void Require([DoesNotReturnIf(false)] bool value, string message)
     { if (!value) throw new InvalidOperationException(message); }
 

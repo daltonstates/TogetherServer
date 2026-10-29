@@ -271,7 +271,7 @@ export function parseFriendSharedWorldStatus(value: unknown): FriendStatus {
   const totalBytes = numberOrNull(source.totalBytes ?? 0, 'Total bytes') ?? 0
   if (receivedBytes > totalBytes) throw new Error('Received byte progress is invalid.')
   const transferPhase = source.transferPhase ?? null
-  if (transferPhase !== null && transferPhase !== 'Receiving' && transferPhase !== 'Verifying' && transferPhase !== 'Receipt')
+  if (transferPhase !== null && transferPhase !== 'Preparing' && transferPhase !== 'Receiving' && transferPhase !== 'Verifying' && transferPhase !== 'Receipt')
     throw new Error('Transfer phase is invalid.')
   return { consented: boolean(source.consented, 'This PC consent'),
     hostVersion: numberOrNull(source.hostVersion, 'Host version'),
@@ -866,6 +866,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     status?.state === 'Low space' ? 'Low space — receiving paused' :
     status?.state === 'Stalled' ? 'Transfer paused — retrying' :
     status.error != null ? status.error :
+    transferPhase === 'Preparing' ? 'Preparing local save files' :
     transferPhase === 'Verifying' ? 'Verifying received save' :
     transferPhase === 'Receipt' ? 'Confirming receipt' :
     transferPhase === 'Receiving' ? 'Receiving completed save' :
@@ -936,7 +937,7 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     <p className="helper-text">Changes since the Host's last completed copy may be missing. Hosting never takes over automatically.</p>
     <section className="shared-next-action" aria-label="Next shared-save action">
       <h4 aria-live="polite" aria-atomic="true">{nextTask === 'start' ? 'Setup complete; choose Start when ready' :
-        nextTask === 'transfer' ? transferPhase === 'Receiving' ? 'Receiving the save copy' :
+        nextTask === 'transfer' ? transferPhase === 'Preparing' ? 'Preparing local save files' : transferPhase === 'Receiving' ? 'Receiving the save copy' :
           transferPhase === 'Verifying' ? 'Verifying the save copy' : 'Confirming receipt' :
         nextTask === 'pair' ? 'Connect to the new approved Host' :
         nextTask === 'receive' ? 'Get the save before preparing hosting' : nextTask === 'prepare' ? 'Prepare hosting on this PC' :
@@ -971,21 +972,23 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
     <label><Input type="checkbox" checked={status?.consented ?? false} disabled={!available || !status || (busy && !status.consented)}
       onChange={event => void run('consent', event.target.checked)} /> Allow saves on this PC</label>
     {status && !status.consented && <DismissibleNotice as="p" scope={noticeScope} role="note">Turn on Allow saves on this PC before choosing Get latest save.</DismissibleNotice>}
-    {transferPhase && <p role="note">Get latest save is unavailable while this copy is being received, verified or acknowledged.</p>}
+    {transferPhase && <p role="note">Get latest save is unavailable while this copy is being prepared, received, verified or acknowledged.</p>}
     <div className="actions">{nextTask !== 'check' && <Button className="secondary" disabled={!canCheck}
       onClick={() => void run('check')}>Check latest</Button>}
       {nextTask !== 'receive' && <Button className="secondary" disabled={!canReceive}
         onClick={() => void run('pull')}><Icon name="archive" />{busy ? 'Working…' : 'Get latest save'}</Button>}</div>
     {status && transferPhase && <section aria-label="Save transfer progress" aria-live="polite">
       <p>{formatSharedBytes(status.receivedBytes)} of {formatSharedBytes(status.totalBytes)}</p>
-      {status.totalBytes > 0 && <progress max={status.totalBytes} value={status.receivedBytes}
-        aria-label="Save bytes received" aria-valuetext={`${formatSharedBytes(status.receivedBytes)} of ${formatSharedBytes(status.totalBytes)}`} />}
+      {(transferPhase === 'Preparing' || transferPhase === 'Receiving') && status.totalBytes > 0 ? <progress max={status.totalBytes} value={status.receivedBytes}
+        aria-label={transferPhase === 'Preparing' ? 'Local save bytes staged' : 'Save bytes received'} aria-valuetext={`${formatSharedBytes(status.receivedBytes)} of ${formatSharedBytes(status.totalBytes)}`} /> :
+        <progress aria-label={transferPhase === 'Verifying' ? 'Checking save files and permission' : transferPhase === 'Receipt' ? 'Confirming save receipt' : 'Preparing local save files'} />}
       <ol aria-label="Transfer phases">
+        <li aria-current={transferPhase === 'Preparing' ? 'step' : undefined}>Prepare local files</li>
         <li aria-current={transferPhase === 'Receiving' ? 'step' : undefined}>Receive the copy</li>
         <li aria-current={transferPhase === 'Verifying' ? 'step' : undefined}>Check files and permission</li>
         <li aria-current={transferPhase === 'Receipt' ? 'step' : undefined}>Confirm receipt</li>
       </ol>
-      <p className="helper-text">All bytes may arrive before file checks and receipt confirmation finish. Keep the app open. Interrupted transfers resume.</p>
+      <p className="helper-text">Progress includes local bytes retained from earlier passes. Staged bytes still need file checks and receipt confirmation. Keep the app open. Interrupted transfers resume.</p>
     </section>}
     {observationFresh && status?.capacityNotice && <DismissibleNotice as="p" scope={noticeScope} role="alert">{status.capacityNotice}</DismissibleNotice>}
     {message && <DismissibleNotice as="p" scope={noticeScope} role="status">{message}</DismissibleNotice>}
@@ -1034,9 +1037,10 @@ export function FriendSharedWorlds({ profileId, available, onAddressChange, game
         <Icon name={transferAlert || capacityAlert ? 'warning' : transferPhase ? 'refresh' : 'archive'} size={20} />
         <div><strong>{!observationFresh ? 'Current save status unknown' : status?.thisPcVersion != null ? `Verified local save ${status.thisPcVersion}` :
           status?.consented ? 'Waiting for a completed copy' : 'Save receiving off'}</strong>
-          <span>{transferPhase ? `${transferPhase === 'Receiving' ? 'Receiving bytes' : transferPhase === 'Verifying' ? 'Verifying files and access' : 'Confirming receipt'} · ${formatSharedBytes(status?.receivedBytes ?? 0)} of ${formatSharedBytes(status?.totalBytes ?? 0)}` :
+          <span>{transferPhase ? `${transferPhase === 'Preparing' ? 'Staging local files' : transferPhase === 'Receiving' ? 'Receiving or retaining bytes' : transferPhase === 'Verifying' ? 'Verifying files and access' : 'Confirming receipt'} · ${formatSharedBytes(status?.receivedBytes ?? 0)} of ${formatSharedBytes(status?.totalBytes ?? 0)}` :
             transferAlert ? headline : !available ? 'Host support not checked. Verified copies on this PC are kept.' : 'Receiving, hosting and choosing a default are separate decisions.'}</span>
-          {transferPhase && status && status.totalBytes > 0 && <progress max={status.totalBytes} value={status.receivedBytes} aria-label="Management save bytes received" />}
+          {(transferPhase === 'Preparing' || transferPhase === 'Receiving') && status && status.totalBytes > 0 && <progress max={status.totalBytes} value={status.receivedBytes}
+            aria-label={transferPhase === 'Preparing' ? 'Management local save bytes staged' : 'Management save bytes received'} />}
         </div>
       </div>
       {observationFailure && <DismissibleNotice as="p" scope={noticeScope} className="warning-text" role="alert">Current Host progress is unavailable. Your verified copy and consent are retained.</DismissibleNotice>}

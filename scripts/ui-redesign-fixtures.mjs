@@ -57,7 +57,7 @@ export const fixtureScenarios = Object.freeze([
   'host-ready', 'host-offline', 'host-starting', 'host-unknown', 'host-countdown', 'host-maintenance',
   'host-multi', 'host-first-use', 'host-attention', 'host-shared', 'host-managed-sharing',
   'friend-connected', 'friend-permitted', 'friend-pairing', 'friend-unpaired', 'friend-disabled', 'friend-offline', 'friend-disconnected', 'friend-expired',
-  'friend-consent', 'friend-shared', 'friend-shared-verified-offline', 'friend-shared-receiving-offline',
+  'friend-consent', 'friend-shared', 'friend-shared-verified-offline', 'friend-shared-preparing-offline', 'friend-shared-receiving-offline',
   'friend-managed-sharing', 'settings', 'setup-valheim',
   'setup-java', 'setup-bedrock', 'setup-factorio', 'setup-terraria', 'setup-custom',
   'host-stopping', 'host-error', 'host-java-offline', 'host-bedrock-offline', 'host-factorio-offline',
@@ -160,6 +160,7 @@ export function createFixtureState(scenario = 'host-ready') {
   const name = options.id ?? options.name ?? 'host-ready';
   const preset = String(name).toLowerCase();
   const receivedSaveState = preset === 'friend-shared-verified-offline' ? 'verified' :
+    preset === 'friend-shared-preparing-offline' ? 'preparing' :
     preset === 'friend-shared-receiving-offline' ? 'receiving' :
     preset === 'friend-shared-verifying-offline' ? 'verifying' :
     preset === 'friend-shared-receipt-offline' ? 'receipt' : null;
@@ -556,13 +557,15 @@ export function routeFixture(state, request) {
       if (state.hostingStartPendingRequest) return { ...reply(null), pending: true };
       if (!state.hostingProgressPending) return reply(null);
       const receiving = state.hostingProgress === 'Receiving';
+      const preparing = state.hostingProgress === 'Preparing';
       state.hostingProgressReads++;
       const receivedBytes = state.hostingProgressReceivedBytes ?? 1048576;
       return reply({ phase: state.hostingProgress, state: 'Working',
-        message: receiving ? 'Receiving the completed synthetic save.' : 'Checking every received synthetic file against its signed hash.',
-        startedUtc: fixtureNow, updatedUtc: fixtureNow, receivedBytes: receiving ? receivedBytes : 4194304,
-        totalBytes: 4194304, percent: receiving ? receivedBytes / 4194304 * 100 : null,
-        phaseTimings: receiving ? [{ phase: 'PeerSync', elapsedMilliseconds: 500 }, { phase: 'Receiving', elapsedMilliseconds: 1250 }] :
+        message: preparing ? 'Staging reusable synthetic files on this PC.' : receiving ? 'Receiving the completed synthetic save.' : 'Checking every received synthetic file against its signed hash.',
+        startedUtc: fixtureNow, updatedUtc: fixtureNow, receivedBytes: receiving || preparing ? receivedBytes : 4194304,
+        totalBytes: 4194304, percent: receiving || preparing ? receivedBytes / 4194304 * 100 : null,
+        phaseTimings: preparing ? [{ phase: 'PeerSync', elapsedMilliseconds: 500 }, { phase: 'Preparing', elapsedMilliseconds: 1250 }] :
+          receiving ? [{ phase: 'PeerSync', elapsedMilliseconds: 500 }, { phase: 'Receiving', elapsedMilliseconds: 1250 }] :
           [{ phase: 'Receiving', elapsedMilliseconds: 1250 }, { phase: 'PreparingCopy', elapsedMilliseconds: 2500 },
             { phase: 'Verifying', elapsedMilliseconds: 3750 }] });
     }
@@ -647,6 +650,8 @@ export function routeFixture(state, request) {
       ...(state.consented && state.receivedSaveState === 'verified' ? { hostVersion: 5, thisPcVersion: 5, state: 'Ready',
         completedUtc: fixtureNow, receivedUtc: fixtureNow, receiptConfirmed: true,
         receivedBytes: 4194304, totalBytes: 4194304 } : {}),
+      ...(state.consented && state.receivedSaveState === 'preparing' ? { hostVersion: 5, state: 'Preparing',
+        completedUtc: fixtureNow, receivedBytes: 1048576, totalBytes: 4194304, transferPhase: 'Preparing' } : {}),
       ...(state.consented && state.receivedSaveState === 'receiving' ? { hostVersion: 5, state: 'Receiving',
         completedUtc: fixtureNow, receivedBytes: 1048576, totalBytes: 4194304, transferPhase: 'Receiving' } : {}),
       ...(state.consented && state.receivedSaveState === 'verifying' ? { hostVersion: 5, state: 'Verifying',

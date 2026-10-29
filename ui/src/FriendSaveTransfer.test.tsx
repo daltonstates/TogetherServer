@@ -14,7 +14,7 @@ it.each([
   expect(() => parseFriendSaveTransferStatus(value)).toThrow()
 })
 
-it.each(['Receiving', 'Verifying', 'Receipt'] as const)('retains the active %s phase when every byte has arrived', transferPhase => {
+it.each(['Preparing', 'Receiving', 'Verifying', 'Receipt'] as const)('retains the active %s phase when every byte has arrived', transferPhase => {
   expect(parseFriendSaveTransferStatus({ ...idle, transferPhase, receivedBytes: 100, totalBytes: 100 }).transferPhase).toBe(transferPhase)
 })
 

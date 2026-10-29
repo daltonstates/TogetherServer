@@ -13,7 +13,7 @@ namespace TogetherServer.FeatureChecks;
 
 // Generated signed saves and existing in-memory HTTP dispatch only. No app,
 // socket, process, game, browser or production storage is accessed.
-internal static class WorldPeerMatchingFileChecks
+internal static partial class WorldPeerMatchingFileChecks
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -22,10 +22,14 @@ internal static class WorldPeerMatchingFileChecks
         await PullAsync(parent);
         await SeedAsync(parent);
         await ExactPathAsync(parent);
+        await SeedFirstPullBudgetAsync(parent);
         PathAliases(parent);
         foreach (var seed in new[] { false, true })
         {
             await ResumeAsync(parent, seed);
+            await NonPrefixStagedProgressAsync(parent, seed);
+            await RetainedPrefixStillNeedsHashAsync(parent, seed);
+            await CancellationRecheckRefusalAsync(parent, seed);
             await MissingFileAsync(parent, seed);
             foreach (var target in new[] { false, true }) await LinkedFileAsync(parent, seed, target);
             foreach (var shape in new[] { "SourcePayload", "SourceAncestor", "TargetPayload", "TargetAncestor" })
@@ -131,20 +135,36 @@ internal static class WorldPeerMatchingFileChecks
         var stagePath = SharedWorldService.SafeChild(fixture.IncomingStage, unchanged.Path);
         Directory.CreateDirectory(Path.GetDirectoryName(stagePath)!); File.WriteAllBytes(stagePath, prefix);
         using var canceled = new CancellationTokenSource();
-        fixture.TargetService.MatchingFileCopyingForChecks = bytes => { if (bytes >= 512 * 1024) canceled.Cancel(); };
+        BackgroundJob? intermediate = null;
+        fixture.TargetService.MatchingFileCopyingForChecks = bytes =>
+        {
+            if (bytes < 512 * 1024) return;
+            intermediate = BackgroundJobs.For(fixture.Target).Read().Jobs.Single(job => job.Operation == "Save download");
+            canceled.Cancel();
+        };
         await RejectAsync(async () =>
         {
             if (seed) await fixture.SeedAllAsync(canceled.Token);
             else await fixture.PullWithCancellationAsync(canceled.Token);
         }, "An interrupted local matching-file copy completed: " + seed);
-        Require(File.ReadAllBytes(stagePath).SequenceEqual(prefix) && SourceHashes(fixture) == sourceBefore &&
+        var retained = File.ReadAllBytes(stagePath);
+        Require(intermediate is { Phase: "Preparing", ReceivedBytes: > 0 } && intermediate.ReceivedBytes < intermediate.TotalBytes &&
+            retained.Length >= SharedWorldService.ChunkBytes && retained.Length % SharedWorldService.ChunkBytes == 0 &&
+            retained.AsSpan(0, prefix.Length).SequenceEqual(prefix) && retained.AsSpan().SequenceEqual(source.AsSpan(0, retained.Length)) &&
+            SourceHashes(fixture) == sourceBefore &&
             !File.Exists(Path.Combine(fixture.DuplicateVault, "latest.json")) && PayloadRequests(fixture, seed).Length == 0,
-            "Cancellation changed an existing stage prefix/source or acknowledged/sent partial payload: " + seed);
+            "Preparing progress or safely retained canceled chunks lost the existing prefix/source or acknowledged/sent partial payload: " + seed);
+        var paused = BackgroundJobs.For(fixture.Target).Read().Jobs.Single(job => job.Operation == "Save download");
+        Require(paused.ReceivedBytes == retained.Length && paused.State != "Succeeded",
+            "Canceled staging failed to report its retained unverified byte baseline: " + seed);
         fixture.TargetService.MatchingFileCopyingForChecks = null;
         if (seed) await fixture.SeedAllAsync(); else await fixture.PullAsync();
         VerifyCompleted(fixture);
-        Require(RequestsOnlyChanged(fixture, PayloadRequests(fixture, seed)) && SourceHashes(fixture) == sourceBefore,
-            "Resuming local staging downloaded an unchanged signed file or changed its source: " + seed);
+        var resumedRequests = PayloadRequests(fixture, seed).Where(request =>
+            fixture.Descriptor.Version.Files[request.FileIndex!.Value].Path == unchanged.Path).ToArray();
+        Require(resumedRequests.Length > 0 && resumedRequests.All(request => request.ChunkOffset >= retained.Length) &&
+            SourceHashes(fixture) == sourceBefore,
+            "Resuming canceled local staging recopied a growing prefix or changed its source instead of using bounded signed chunks: " + seed);
     }
 
     private static async Task MissingFileAsync(string parent, bool seed)

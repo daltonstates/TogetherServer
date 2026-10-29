@@ -63,9 +63,9 @@ export function sharedSaveAge(utc: string | null | undefined, now = Date.now()):
   return `${days} ${days === 1 ? 'day' : 'days'} ago`
 }
 
-export type TransferPhase = 'Receiving' | 'Verifying' | 'Receipt'
+export type TransferPhase = 'Preparing' | 'Receiving' | 'Verifying' | 'Receipt'
 export function sharedTransferPhase(state: string, phase?: TransferPhase | null): TransferPhase | null {
-  return phase ?? (state === 'Receiving' ? 'Receiving' : state === 'Verifying' ? 'Verifying' :
+  return phase ?? (state === 'Preparing' ? 'Preparing' : state === 'Receiving' ? 'Receiving' : state === 'Verifying' ? 'Verifying' :
     state === 'Receipt' || state === 'Confirming receipt' ? 'Receipt' : null)
 }
 

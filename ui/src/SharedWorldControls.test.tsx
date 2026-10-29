@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FriendSharedWorlds, parseFriendSharedWorldStatus,
   parseHostSharedWorldStatus, parseLiveOrphanReview,
   parseRecoveryOffer, parseSharingView } from './SharedWorldControls'
@@ -21,6 +21,8 @@ const noRecovery = { state: 'NoOffer', votes: 0, required: 0, version: null, ver
 const offer = { proposal: { profileId: profile, candidateAddress: 'https://192.0.2.10:5131', candidatePublicKey: 'public-key' },
   version: { number: 3, versionHash: 'A'.repeat(64), captureKind: 'PostStopBackup' },
   candidateReceipt: { deviceId: device.id }, signed: 'signed-by-candidate' }
+
+afterEach(() => { vi.useRealTimers() })
 
 describe('Shared saves controls', () => {
   it('waits for this PC\'s saved consent before enabling the receiving choice', async () => {
@@ -197,6 +199,32 @@ describe('Shared saves controls', () => {
       .version.captureKind).toBe('LiveSave')
     expect(() => parseRecoveryOffer({ ...offer, version: { ...offer.version, captureKind: 'Unknown' } }, profile))
       .toThrow('Save capture kind is invalid.')
+  })
+
+  it('keeps local staging measured and guarded before receiving or final verification', async () => {
+    vi.useFakeTimers()
+    let phase = 'Preparing'
+    let receivedBytes = 128
+    const fetcher = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async url => {
+      if (url.endsWith('/recovery')) return reply(noRecovery)
+      if (url.endsWith('/handoff/restore')) return reply({ staged: false })
+      return reply({ consented: true, hostVersion: 3, thisPcVersion: 2, state: phase,
+        transferPhase: phase, error: null, receivedBytes, totalBytes: 1024 })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    render(<FriendSharedWorlds profileId={profile} available />)
+    await act(async () => {})
+    expect(screen.getByRole('heading', { name: 'Preparing local save files' })).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Local save bytes staged' })).toHaveAttribute('value', '128')
+    expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
+    receivedBytes = 768
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(screen.getByRole('progressbar', { name: 'Local save bytes staged' })).toHaveAttribute('value', '768')
+    phase = 'Verifying'; receivedBytes = 1024
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(screen.getByRole('progressbar', { name: 'Checking save files and permission' })).not.toHaveAttribute('value')
+    expect(screen.getByRole('button', { name: 'Get latest save' })).toBeDisabled()
+    expect(fetcher.mock.calls.every(([, init]) => !init?.method)).toBe(true)
   })
 
   it('refreshes an open receiver panel as automatic catch-up advances', async () => {

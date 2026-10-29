@@ -142,7 +142,7 @@ type StartAttempt = { scope: string; localProfileId: string; branchHash: string 
   began: number; startedUtc: string | null; latest: HostingProgress | null }
 type ProgressWatch = { sequence: number; clear: () => void; expire: (reason?: string) => void; observe: (progress: HostingProgress) => void }
 const hostingPhaseSteps: Record<string, CheckKey> = {
-  Permission: 'permission', PeerSync: 'save', LatestSave: 'save', Receiving: 'save', Verifying: 'save', Receipt: 'save', PreparingCopy: 'save',
+  Permission: 'permission', PeerSync: 'save', LatestSave: 'save', Preparing: 'save', Receiving: 'save', Verifying: 'save', Receipt: 'save', PreparingCopy: 'save',
   ServerSetup: 'server', Ports: 'ports', Connection: 'connection'
 }
 

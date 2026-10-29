@@ -12,7 +12,7 @@ export type HostingProgress = {
 
 const timingLabels: Record<string, string> = {
   Permission: 'Hosting permission', PeerSync: 'Signed progress discovery', LatestSave: 'Save selection',
-  Receiving: 'Save transfer', Verifying: 'Save verification', Receipt: 'Receipt confirmation',
+  Preparing: 'Local save file staging', Receiving: 'Save transfer', Verifying: 'Save verification', Receipt: 'Receipt confirmation',
   PreparingCopy: 'Local save preparation', ServerSetup: 'Server setup', Ports: 'Local ports', Connection: 'Connection',
   Starting: 'Launch request', Other: 'Other preparation'
 }
@@ -34,7 +34,7 @@ export function parseHostingProgress(value: unknown): HostingProgress | null {
     item.percent !== null && (typeof item.percent !== 'number' || !Number.isFinite(item.percent) || item.percent < 0 || item.percent > 100))
     throw new Error('Hosting progress is unavailable.')
   if (item.phaseTimings !== undefined && item.phaseTimings !== null) {
-    if (!Array.isArray(item.phaseTimings) || item.phaseTimings.length > 12) throw new Error('Hosting progress is unavailable.')
+    if (!Array.isArray(item.phaseTimings) || item.phaseTimings.length > Object.keys(timingLabels).length) throw new Error('Hosting progress is unavailable.')
     const seen = new Set<string>()
     for (const timing of item.phaseTimings) {
       if (!timing || typeof timing !== 'object' || Array.isArray(timing) ||
@@ -58,7 +58,7 @@ export function HostingPhaseTimings({ timings }: { timings?: HostingProgress['ph
 
 const phaseLabels: Record<string, string> = {
   Permission: 'Checking hosting access', PeerSync: 'Checking approved PCs for updates', LatestSave: 'Finding the latest completed save', Receiving: 'Receiving the save',
-  Verifying: 'Verifying the save files', Receipt: 'Confirming the received copy', PreparingCopy: 'Preparing the hosting copy on this PC',
+  Preparing: 'Preparing local save files', Verifying: 'Verifying the save files', Receipt: 'Confirming the received copy', PreparingCopy: 'Preparing the hosting copy on this PC',
   ServerSetup: 'Checking the server app', Ports: 'Checking local game ports', Connection: 'Checking this PC’s connection',
   Starting: 'Starting the local server'
 }
@@ -68,7 +68,7 @@ export function hostingProgressPhaseLabel(phase: string): string {
 }
 
 export function hostingProgressFilesLabel(phase: string): string {
-  return phase === 'PreparingCopy' ? 'files prepared for verification' : phase === 'Verifying' ? 'files checked' : 'files reported'
+  return phase === 'Preparing' ? 'files staged locally' : phase === 'PreparingCopy' ? 'files prepared for verification' : phase === 'Verifying' ? 'files checked' : 'files reported'
 }
 
 function progressMessage(progress: HostingProgress): string {
@@ -145,8 +145,9 @@ export function LocalHostingProgress({ endpoint, title, message, startedAt, expe
     if (progress && progress.state !== 'Working') onResult?.({ ...progress, message: progressMessage(progress) })
   }, [progress, onResult])
   const stale = !terminal && (unavailable || progress !== null && now - Date.parse(progress.updatedUtc) > 10_000)
+  const localStaging = progress?.phase === 'Preparing'
   const preparingCopy = progress?.phase === 'PreparingCopy'
-  const measuredBytes = !terminal && (progress?.phase === 'Receiving' || preparingCopy) && !stale && progress.totalBytes > 0
+  const measuredBytes = !terminal && (progress?.phase === 'Receiving' || preparingCopy || localStaging) && !stale && progress.totalBytes > 0
   // The measured bytes describe this transfer/copy step, never verification or overall hosting completion.
   const percent = measuredBytes ? Math.floor(progress.receivedBytes * 100 / progress.totalBytes) : null
   const currentTitle = progress?.state === 'Failed' ? 'Hosting step needs attention' : progress?.state === 'Completed' ? 'Hosting step completed' :
@@ -160,10 +161,10 @@ export function LocalHostingProgress({ endpoint, title, message, startedAt, expe
     {progress && <p className="local-hosting-phase-history">{terminal ? 'Last step' : 'Current step'}: {hostingProgressPhaseLabel(progress.phase)}.
       {' '}Updated <time dateTime={progress.updatedUtc}>{updateAge(progress.updatedUtc, now)}</time>.</p>}
     {percent !== null && progress ? <>
-      <progress aria-label={preparingCopy ? 'Hosting copy bytes prepared' : 'Shared save bytes received'} max={progress.totalBytes} value={progress.receivedBytes} />
-      <p className="local-hosting-byte-progress"><strong>{percent}% {preparingCopy ? 'of copy bytes prepared' : 'received'}</strong>
+      <progress aria-label={localStaging ? 'Local save bytes staged' : preparingCopy ? 'Hosting copy bytes prepared' : 'Shared save bytes received'} max={progress.totalBytes} value={progress.receivedBytes} />
+      <p className="local-hosting-byte-progress"><strong>{percent}% {localStaging ? 'staged locally' : preparingCopy ? 'of copy bytes prepared' : 'received'}</strong>
         <span>{formatSharedBytes(progress.receivedBytes)} of {formatSharedBytes(progress.totalBytes)}</span></p>
-      <p className="helper-text">{preparingCopy ? 'Copy preparation only. These bytes still need final file verification before the hosting copy can be used.' : 'Save transfer only. File verification and local preparation must also finish.'}</p>
+      <p className="helper-text">{localStaging ? 'Local staging only, including retained bytes from earlier passes. Final verification and receipt confirmation must still finish.' : preparingCopy ? 'Copy preparation only. These bytes still need final file verification before the hosting copy can be used.' : 'Save transfer only, including retained bytes from earlier passes. File verification and local preparation must also finish.'}</p>
     </> : !terminal && <div className="local-hosting-indeterminate" role="progressbar" aria-labelledby={titleId}
       aria-describedby={detailId} aria-valuetext={currentTitle}><span /></div>}
     {progress?.completedFiles !== undefined && progress.totalFiles !== undefined && progress.totalFiles > 0 && <p className="local-hosting-byte-progress">

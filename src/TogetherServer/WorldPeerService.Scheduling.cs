@@ -49,12 +49,34 @@ internal sealed partial class WorldPeerService
         HashSet<string> Capabilities, HashSet<(Guid Id, string Kind)> Profiles, HashSet<Guid> Sharing, HashSet<Guid> Stops);
     private Dictionary<Guid, FriendSchedulingObservation>? friendSchedulingObservation;
     private readonly PeerPendingProgress pendingProgress = new();
+    private readonly AsyncLocal<PeerReceiveWorkBudget?> receiveWorkBudget = new();
+    private bool IsReceiveWorkBudgetExpired => receiveWorkBudget.Value?.Expired == true;
+    private bool IsReceiveWorkBudgetPause(OperationCanceledException error) => receiveWorkBudget.Value?.CanPause(error) == true;
     private readonly PeerMembershipRetryBurst membershipRetry = new();
     private int membershipRefreshPending;
     private long membershipPassesStarted, membershipPassesCompleted, membershipPassBegan, membershipPassElapsed;
     private long membershipLookupsStarted, membershipLookupsCompleted;
     private int membershipPassOutcome, membershipLookupOutcome, membershipLookupReturnedRoster;
     internal event Action? BackgroundSyncRequested;
+
+    // Both inbound Seed and outbound pulls can retain useful local staging.
+    // Only durable positive deltas reach here, never a status read or a reused
+    // existing total. This changes deadlines, never launches or grants access.
+    private void RecordLocalStagedWork(Group group, string versionHash, long bytes)
+    {
+        if (bytes <= 0) return;
+        transferAttempt.Value?.Attempt.LocalStaged(bytes);
+        lock (stateSync)
+        {
+            if (peerDisposed) return;
+            pendingProgress.LocalStaged(group.Root.GroupKey, versionHash, bytes);
+            var now = DateTimeOffset.UtcNow;
+            replicationSchedule.LocalProgress(group.Root.GroupKey, now);
+            var next = now.AddSeconds(2);
+            if (next < nextBackgroundSyncUtc) nextBackgroundSyncUtc = next;
+        }
+        WakeBackgroundScheduler();
+    }
 
     internal HostingWorkSnapshot WorkSnapshot()
     {
@@ -271,6 +293,14 @@ internal sealed partial class WorldPeerService
     }
 }
 
+// Captured with the actual route owner, including its Task.Run. A caller's
+// cancellation remains distinct from the scheduler's bounded resumable turn.
+internal sealed record PeerReceiveWorkBudget(CancellationToken Budget, CancellationToken Caller)
+{
+    internal bool Expired => Budget.IsCancellationRequested && !Caller.IsCancellationRequested;
+    internal bool CanPause(OperationCanceledException error) => error is not SaveTransferPermissionChangedException && Expired;
+}
+
 // One actual transfer owns its frozen result. Joining callers may cancel their
 // waits without completing this owner or replaying another attempt's counters.
 internal sealed class PeerScheduledCompletion(long generation,
@@ -296,14 +326,31 @@ internal sealed class PeerScheduledCompletion(long generation,
 internal sealed class PeerPendingProgress
 {
     private sealed record Entry(long Generation, DateTimeOffset Attempt, long? Publication,
-        int? File, long? Offset, int Stalls);
+        int? File, long? Offset, int Stalls, long LocalWatermark);
     private readonly Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string VersionHash, long Bytes, long Sequence)> staged = new(StringComparer.Ordinal);
+    private long stagedSequence;
+
+    internal void RetainWorlds(IReadOnlySet<string> worlds)
+    {
+        foreach (var world in staged.Keys.Where(world => !worlds.Contains(world)).ToArray()) staged.Remove(world);
+        foreach (var route in entries.Keys.Where(route => !worlds.Contains(route.Split(':')[0])).ToArray()) entries.Remove(route);
+    }
+
+    internal void LocalStaged(string world, string versionHash, long bytes)
+    {
+        if (bytes <= 0) return;
+        if (!staged.ContainsKey(world) && staged.Count >= 128)
+            staged.Remove(staged.MinBy(item => item.Value.Sequence).Key);
+        var previous = staged.GetValueOrDefault(world).Bytes;
+        staged[world] = (versionHash, previous + Math.Min(bytes, WorldPeerTransferObservationStore.MaximumBytes - previous), ++stagedSequence);
+    }
 
     internal void Record(PeerReplicationSchedule schedule, string route, long generation, DateTimeOffset now,
         WorldPeerTransferProgress? result, bool failed, double jitter)
     {
-        var incomplete = result?.Result is "ByteBudget" or "WorkBudget" or "SeedHistoryPending" or "SeedPaused" ||
-            result is { Error: "Canceled" } && (result.SubmittedBytes > 0 || result.ReceivedBytes > 0);
+        var incomplete = result is { Error: "None", Result: "ByteBudget" or "WorkBudget" or "SeedHistoryPending" or "SeedPaused" } ||
+            result is { Error: "Canceled" } && (result.SubmittedBytes > 0 || result.ReceivedBytes > 0 || result.LocalStagedBytes > 0);
         var pending = incomplete && Prompt(route, generation, result!);
         schedule.Completed(route, generation, now, result is null || (failed || incomplete && !pending) && !pending, pending, jitter);
     }
@@ -313,13 +360,19 @@ internal sealed class PeerPendingProgress
         entries.TryGetValue(route, out var old);
         var sameGeneration = old?.Generation == generation;
         var newAttempt = !sameGeneration || old!.Attempt != result.StartedUtc;
+        var localWork = staged.GetValueOrDefault(route.Split(':')[0]);
+        var localWatermark = localWork.Bytes;
+        var locallyAdvanced = result.StagingVersionHash is not null && result.StagingVersionHash == localWork.VersionHash &&
+            localWatermark > (old?.LocalWatermark ?? 0);
         var publicationAdvanced = result.PublicationNumber is { } publication &&
             (old?.Publication is not { } priorPublication || publication > priorPublication);
         var cursorAdvanced = result.SubmittedBytes > 0 && result.RequestedFileIndex is { } file && result.RequestedOffset is { } offset &&
             (!sameGeneration || publicationAdvanced || old!.Publication == result.PublicationNumber &&
                 (old is not { File: { } priorFile, Offset: { } priorOffset } ||
                     file > priorFile || file == priorFile && offset > priorOffset));
-        var progressed = newAttempt && (result.ReceivedBytes > 0 || cursorAdvanced);
+        // Each pass reports only newly committed reusable bytes. Existing
+        // retained files are not replayed into this delta on the next pass.
+        var progressed = newAttempt && (result.ReceivedBytes > 0 || result.LocalStagedBytes > 0 || cursorAdvanced || locallyAdvanced);
         var stalls = progressed ? 0 : Math.Min(3, (sameGeneration ? old!.Stalls : 0) + 1);
         if (!entries.ContainsKey(route) && entries.Count >= PeerReplicationSchedule.MaximumRoutes)
             entries.Remove(entries.MinBy(pair => pair.Value.Attempt).Key);
@@ -328,7 +381,7 @@ internal sealed class PeerPendingProgress
         entries[route] = new(generation, result.StartedUtc,
             cursorAdvanced ? result.PublicationNumber : sameGeneration ? old!.Publication : null,
             cursorAdvanced ? result.RequestedFileIndex : sameGeneration ? old!.File : null,
-            cursorAdvanced ? result.RequestedOffset : sameGeneration ? old!.Offset : null, stalls);
+            cursorAdvanced ? result.RequestedOffset : sameGeneration ? old!.Offset : null, stalls, localWatermark);
         return progressed || stalls <= 2;
     }
 }

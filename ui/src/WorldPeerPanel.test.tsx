@@ -53,6 +53,22 @@ function transferGroup(current: ReturnType<typeof transferProgress> | null,
 }
 
 describe('Background save transfer observation', () => {
+  it('keeps newly retained local staging separate from wire counters and verified receipt claims', async () => {
+    const value = transferGroup(null, transferProgress({ state: 'Pending', phase: 'Preparing', operation: 'None', result: 'WorkBudget',
+      httpStatus: null, receivedBytes: 0, submittedBytes: 0, localStagedBytes: 1536, totalBytes: 4096 }))
+    const fetcher = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => reply([value]))
+    vi.stubGlobal('fetch', fetcher)
+    render(<WorldPeerPanel readOnly profileId={profileId} />)
+    const progress = await screen.findByRole('region', { name: 'Background save transfer for Weekend world' })
+    expect(progress).toHaveTextContent('Preparing local save files')
+    expect(progress).toHaveTextContent('0 B submitted · 0 B received')
+    expect(progress).toHaveTextContent('1.5 KiB newly staged locally for later verification')
+    expect(progress).toHaveTextContent('Waiting for another background pass')
+    expect(progress).toHaveTextContent('No verified copy receipt is confirmed')
+    expect(within(progress).queryByRole('alert')).not.toBeInTheDocument()
+    expect(fetcher.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+  })
+
   it('shows delivery status in the main sharing view without opening permission settings', async () => {
     const value = transferGroup(null, transferProgress({ state: 'Pending', phase: 'Sending', operation: 'Seed',
       result: 'ByteBudget', httpStatus: 200, publicationNumber: 7 }))
@@ -181,7 +197,8 @@ describe('Background save transfer observation', () => {
   })
 
   it.each([
-    { submittedBytes: -1 }, { receivedBytes: 2 ** 50 + 1 }, { completedFiles: 100001 }, { elapsedMilliseconds: 86400001 },
+    { submittedBytes: -1 }, { receivedBytes: 2 ** 50 + 1 }, { localStagedBytes: -1 }, { localStagedBytes: 2 ** 50 + 1 },
+    { completedFiles: 100001 }, { elapsedMilliseconds: 86400001 },
     { requestedFileIndex: 100001 }, { requestedOffset: -1 }, { httpStatus: 99 }, { httpStatus: 600 },
     { publicationNumber: 0 }, { receiptPublicationNumber: Number.MAX_SAFE_INTEGER + 1 }, { totalBytes: '1024' },
     { exactReceiptAccepted: 'true' }, { startedUtc: 'yesterday' }

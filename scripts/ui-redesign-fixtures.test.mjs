@@ -477,9 +477,9 @@ test('recipient request and accepted fixtures preserve missing consent/setup and
   }
 });
 
-test('verified-copy and Receiving landings decode without creating signed Host or Start authority', () => {
+test('verified-copy, Preparing and Receiving landings decode without creating signed Host or Start authority', () => {
   const path = `/api/local/friend/${fixtureIds.primary}/shared-world`;
-  for (const scenario of ['friend-shared-verified-offline', 'friend-shared-receiving-offline']) {
+  for (const scenario of ['friend-shared-verified-offline', 'friend-shared-preparing-offline', 'friend-shared-receiving-offline']) {
     const state = createFixtureState(scenario);
     const status = shared.parseFriendSharedWorldStatus(get(state, path));
     assert.equal(status.consented, true);
@@ -507,8 +507,8 @@ test('verified-copy and Receiving landings decode without creating signed Host o
       assert.ok(status.receivedUtc);
     } else {
       assert.equal(status.thisPcVersion, null);
-      assert.equal(status.state, 'Receiving');
-      assert.equal(status.transferPhase, 'Receiving');
+      assert.equal(status.state, scenario.includes('preparing') ? 'Preparing' : 'Receiving');
+      assert.equal(status.transferPhase, scenario.includes('preparing') ? 'Preparing' : 'Receiving');
       assert.equal(status.receivedBytes, 1048576);
       assert.equal(status.totalBytes, 4194304);
       assert.equal(status.receivedUtc, null);
@@ -873,7 +873,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
     ...['access', 'stop', 'network', 'diagnostics', 'advanced'].map(id => `host-pc-${id}`),
     'host-first-use', 'host-compare-all',
     ...['play', 'chat', 'logs', 'shared-saves', 'network', 'connection', 'pairing'].map(id => `join-${id}`),
-    'join-shared-verified-copy', 'join-shared-receiving', 'join-play-instructions-expanded', 'join-play-tools-expanded',
+    'join-shared-verified-copy', 'join-shared-preparing', 'join-shared-receiving', 'join-play-instructions-expanded', 'join-play-tools-expanded',
     'join-first-pairing', 'join-permitted-controls', 'join-permitted-start', 'attention-issues', 'attention-history',
     ...['appearance', 'notifications', 'windows', 'updates', 'shortcuts'].map(id => `settings-${id}`),
     'dialog-server-tools', 'dialog-managed-sharing-host', 'dialog-managed-sharing-friend', 'join-consent', 'dialog-save-consent',
@@ -936,6 +936,7 @@ test('pure renderer inventory covers every required workspace and fixture scenar
       `${id} checks anchored tails at narrow 150% text`);
   for (const [id, action, role, name] of [
     ['join-shared-verified-copy', 'shared-verified-copy', 'heading', 'Prepare hosting on this PC'],
+    ['join-shared-preparing', 'shared-preparing', 'region', 'Save transfer progress'],
     ['join-shared-receiving', 'shared-receiving', 'region', 'Save transfer progress']
   ]) {
     const screen = plans.find(plan => plan.testCase.id === id).testCase;

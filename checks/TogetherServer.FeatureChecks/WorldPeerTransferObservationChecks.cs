@@ -8,6 +8,7 @@ internal static class WorldPeerTransferObservationChecks
     internal static Task RunAsync()
     {
         PassiveSnapshotsAndRetainedFailure();
+        LocalStagingIsDistinct();
         ReceiptIsExplicitAndHistorical();
         StaleAttemptsAndBounds();
         CapacityAndPrivacy();
@@ -105,6 +106,35 @@ internal static class WorldPeerTransferObservationChecks
             "A completed attempt accepted later descriptor or receipt callbacks.");
     }
 
+    private static void LocalStagingIsDistinct()
+    {
+        var store = new WorldPeerTransferObservationStore();
+        using var attempt = store.Begin("world", "local-staging");
+        attempt.Phase(WorldPeerTransferPhase.Preparing);
+        attempt.Expected(4096, 4, 10);
+        attempt.LocalStaged(512);
+        var first = store.Read("world", "local-staging")!.Current!;
+        attempt.LocalStaged(1024);
+        Require(first is { Phase: "Preparing", LocalStagedBytes: 512, ReceivedBytes: 0, SubmittedBytes: 0 } &&
+            store.Read("world", "local-staging")!.Current is
+            {
+                LocalStagedBytes: 1536, ReceivedBytes: 0,
+                SubmittedBytes: 0, PublicationNumber: 10, TotalBytes: 4096, ExactReceiptAccepted: false
+            },
+            "Measured local staging did not advance independently of network traffic and exact receipts.");
+        attempt.Complete(WorldPeerTransferResult.WorkBudget);
+        var paused = store.Read("world", "local-staging")!;
+        attempt.LocalStaged(999);
+        Require(paused is
+        {
+            Current: null, LastFailure: null,
+            LastResult.State: "Pending", LastResult.Result: "WorkBudget", LastResult.Error: "None",
+            LastResult.LocalStagedBytes: 1536, LastResult.ExactReceiptAccepted: false
+        } &&
+            store.Read("world", "local-staging") == paused,
+            "A bounded local-work pause became a failed transfer, receipt, or mutable finished observation.");
+    }
+
     private static void StaleAttemptsAndBounds()
     {
         var clock = new ObservationClock();
@@ -116,6 +146,7 @@ internal static class WorldPeerTransferObservationChecks
         var before = store.Read("world", "route")!;
         stale.ReceiptAccepted(3);
         stale.Submitted(999);
+        stale.LocalStaged(999);
         stale.Phase(WorldPeerTransferPhase.Receipt);
         stale.Fail(WorldPeerTransferError.Unexpected);
         stale.Dispose();
@@ -130,9 +161,12 @@ internal static class WorldPeerTransferObservationChecks
         current.Submitted(long.MaxValue);
         current.Submitted(long.MaxValue);
         current.Received(long.MaxValue);
+        current.LocalStaged(long.MaxValue);
+        current.LocalStaged(long.MaxValue);
         current.FileCompleted(int.MaxValue);
         current.Submitted(-1);
         current.Received(-1);
+        current.LocalStaged(-1);
         current.FileCompleted(-1);
         current.ReceiptAccepted(0);
         clock.AdvanceMonotonic(TimeSpan.FromDays(50));
@@ -147,6 +181,7 @@ internal static class WorldPeerTransferObservationChecks
         } &&
             bounded.LastResult.SubmittedBytes == WorldPeerTransferObservationStore.MaximumBytes &&
             bounded.LastResult.ReceivedBytes == WorldPeerTransferObservationStore.MaximumBytes &&
+            bounded.LastResult.LocalStagedBytes == WorldPeerTransferObservationStore.MaximumBytes &&
             bounded.LastResult.TotalBytes == WorldPeerTransferObservationStore.MaximumBytes &&
             bounded.LastResult.RequestedOffset == WorldPeerTransferObservationStore.MaximumBytes &&
             bounded.LastResult.CompletedFiles == WorldPeerTransferObservationStore.MaximumFiles &&

@@ -14,6 +14,7 @@ internal static class IdleResourceSchedulingChecks
     internal static async Task RunAsync(string parent)
     {
         PendingProgressBounds();
+        ReceiveBudgetClassification();
         await FlightOwnedCancellationAsync();
         TrayPublicationBounds();
         await UnchangedIdleAsync(parent);
@@ -161,6 +162,100 @@ internal static class IdleResourceSchedulingChecks
         schedule.Completed("paused", 2, now, failed: true, pending: false, jitter: 1);
         Require(schedule.Due("useful", 2, now) && schedule.NextDelay(now, 2) == TimeSpan.FromSeconds(1),
             "a paused recipient hid another due route behind its own backoff");
+        for (var index = 0; index < 12; index++)
+        {
+            attempt = attempt.AddSeconds(1);
+            var localWork = Result(attempt, "WorkBudget") with
+            { Phase = "Preparing", LocalStagedBytes = 512 * 1024, PublicationNumber = 10 };
+            pending.Record(schedule, "staging", 1, now, localWork, failed: false, jitter: 1);
+            Require(!schedule.Due("staging", 1, now.AddSeconds(1)) && schedule.Due("staging", 1, now.AddSeconds(2)),
+                "new retained local staging inherited the offline failure backoff after a bounded work pause");
+            now = now.AddSeconds(2);
+        }
+        var retained = Result(attempt, "WorkBudget") with { Phase = "Preparing", LocalStagedBytes = 512 * 1024 };
+        Require(pending.Prompt("staging-replay", 1, retained) && pending.Prompt("staging-replay", 1, retained) &&
+            pending.Prompt("staging-replay", 1, retained) && !pending.Prompt("staging-replay", 1, retained),
+            "re-reading the same local staging observation manufactured new durable progress");
+        for (var index = 0; index < 4; index++)
+        {
+            attempt = attempt.AddSeconds(1);
+            Require(pending.Prompt("staging-empty", 1, Result(attempt, "WorkBudget") with { Phase = "Preparing" }) == (index < 2),
+                "a work-budget pause with no retained bytes permanently retained fast retries");
+        }
+        for (var index = 0; index < 8; index++)
+        {
+            pending.LocalStaged("inbound-world", "old-version", 256 * 1024);
+            attempt = attempt.AddSeconds(1);
+            Require(pending.Prompt("inbound-world:route", 1, Result(attempt, "WorkBudget") with { StagingVersionHash = "old-version" }) &&
+                pending.Prompt("inbound-world:other-route", 1, Result(attempt, "WorkBudget") with { StagingVersionHash = "old-version" }),
+                "durable inbound Seed staging was invisible to a world's resumable outbound schedule");
+        }
+        for (var index = 0; index < 4; index++)
+        {
+            pending.LocalStaged("inbound-world", "old-version", 0);
+            pending.LocalStaged("inbound-world", "old-version", -1);
+            attempt = attempt.AddSeconds(1);
+            Require(pending.Prompt("inbound-world:route", 1, Result(attempt, "WorkBudget") with { StagingVersionHash = "old-version" }) == (index < 2),
+                "unchanged inbound staging totals or nonpositive deltas renewed fast retries");
+        }
+        attempt = attempt.AddSeconds(1);
+        Require(!pending.Prompt("inbound-world:route", 1, Result(attempt, "WorkBudget") with { StagingVersionHash = "new-version" }),
+            "old-version local work was carried into an unrelated newer publication");
+        pending.LocalStaged("inbound-world", "new-version", 1024);
+        attempt = attempt.AddSeconds(1);
+        Require(pending.Prompt("inbound-world:route", 1, Result(attempt, "WorkBudget") with { StagingVersionHash = "new-version" }),
+            "new durable work for the exact newer publication did not resume promptly");
+        pending.Record(schedule, "inbound-world:invalid", 1, now, Result(attempt, "WorkBudget") with
+        { Error = "InvalidHistory", LocalStagedBytes = 1024, StagingVersionHash = "new-version" }, failed: true, jitter: 1);
+        Require(!schedule.Due("inbound-world:invalid", 1, now.AddSeconds(2)) && schedule.Due("inbound-world:invalid", 1, now.AddSeconds(20)),
+            "durable staging hid a current integrity failure behind a prompt work-budget retry");
+        pending.RetainWorlds(new HashSet<string>(StringComparer.Ordinal) { "another-world" });
+        for (var index = 0; index < 3; index++)
+        {
+            attempt = attempt.AddSeconds(1);
+            Require(pending.Prompt("inbound-world:route", 1, Result(attempt, "WorkBudget") with { StagingVersionHash = "new-version" }) == (index < 2),
+                "retired world's local staging watermark survived registry cleanup");
+        }
+        schedule.Completed("resumable:route", 1, now, failed: true, pending: false, jitter: 1);
+        schedule.Completed("unrelated:route", 1, now, failed: true, pending: false, jitter: 1);
+        schedule.LocalProgress("resumable", now);
+        schedule.LocalProgress("resumable", now.AddSeconds(1));
+        Require(schedule.Due("resumable:route", 1, now.AddSeconds(2)) &&
+            !schedule.Due("unrelated:route", 1, now.AddSeconds(2)) &&
+            schedule.Due("unrelated:route", 1, now.AddSeconds(20)),
+            "local progress deferred an already-prompt route or invalidated an unrelated world's offline deadline");
+    }
+
+    private static void ReceiveBudgetClassification()
+    {
+        using var caller = new CancellationTokenSource();
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(caller.Token);
+        var scope = new PeerReceiveWorkBudget(budget.Token, caller.Token);
+        Require(!scope.Expired, "an active receive turn was classified as an expired work budget");
+        budget.Cancel();
+        Require(scope.Expired && scope.CanPause(new OperationCanceledException(budget.Token)),
+            "the bounded receive deadline was not distinct from caller cancellation");
+        var permissionChanged = new SaveTransferPermissionChangedException();
+        Require(!scope.CanPause(permissionChanged),
+            "a proven permission refusal was accepted as an expected work-budget pause");
+        var observations = new WorldPeerTransferObservationStore();
+        using var attempt = observations.Begin("world", "permission-refusal");
+        attempt.Phase(WorldPeerTransferPhase.Preparing);
+        attempt.LocalStaged(1024);
+        typeof(WorldPeerService).GetMethod("ObserveTransferFailure", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [attempt, permissionChanged, budget.Token]);
+        var result = attempt.FinishedResult;
+        Require(result is { State: "Failed", Error: "Unauthorized", Result: "Failed", LocalStagedBytes: 1024 },
+            "an expired supplied token hid proven permission loss as resumable cancellation");
+        var schedule = new PeerReplicationSchedule();
+        var now = DateTimeOffset.Parse("2026-10-27T12:00:00Z");
+        new PeerPendingProgress().Record(schedule, "world:permission-refusal", 1, now, result, failed: true, jitter: 1);
+        Require(!schedule.Due("world:permission-refusal", 1, now.AddSeconds(2)) &&
+            schedule.Due("world:permission-refusal", 1, now.AddSeconds(20)),
+            "retained staging renewed prompt retries after proven permission refusal");
+        caller.Cancel();
+        Require(!scope.Expired && !scope.CanPause(new OperationCanceledException(caller.Token)),
+            "caller cancellation was falsely classified as a resumable scheduler deadline");
     }
 
     private static WorldPeerTransferProgress Result(DateTimeOffset at, string result) => new(

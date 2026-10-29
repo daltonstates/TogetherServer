@@ -7,6 +7,90 @@ required checks. Previous delivery logs and release evidence remain in Git
 history; published versions have their own
 [release notes](https://github.com/daltonstates/TogetherServer/releases).
 
+## 0.3.3.25 candidate: physical transfer reporting follow-up
+
+The first physical-PC report after .24 publication remains unresolved acceptance.
+Read-only inspection confirmed the installed binary was exactly
+`0.3.3.24+82567ba02001c02569e28d48aafda2124c90e99d`. The receiver had about
+19.2 MiB in 56 staged payload files while its retained download job reported
+zero bytes and repeated `PeerTransferFailed`. Recorded peer passes ended
+Canceled about 43–44 seconds after an HTTP 200 catalog exchange, consistent
+with the existing 45-second background-pass budget. Those observations do
+not establish which local wait or inbound exception canceled each attempt;
+.24 discarded the underlying inbound reason.
+
+Source investigation confirmed gaps not covered by .24's passing fixtures:
+pull progress starts at zero and counts resumed files only in manifest order,
+matching-file reuse writes staged bytes before its first progress report,
+and local preparation does not count toward resumable scheduling progress.
+An early incomplete file can therefore hide later retained files. The shared
+job's overlapping-owner failure path and the redactor's treatment of the
+word "peer" also need explicit coverage. These are source findings; a
+particular overlap is not proven by the physical snapshots alone.
+
+The .25 source follow-up now counts retained bytes across every signed file
+before requesting the first missing file, and reports actual matching-file
+copy work as **Preparing local files**. Receiving progress uses the same
+logical save-byte total; verification and receipt remain separate,
+indeterminate stages. Rollback and aligned resume adjust the displayed
+baseline instead of replaying a synthetic zero or treating gzip bytes as
+save bytes. Preparing remains a local-hosting blocker; remote Start on a
+different eligible Host remains separate.
+
+Canceled matching-file reuse retains only bounded, unverified full-chunk
+prefixes after an uncanceled recheck of current permission, source and plain
+file namespace. Later passes resume these through the existing authenticated
+chunk path, avoiding repeated growth of local prefix hashing. Integrity or
+permission refusal rolls back new local bytes; full-file verification still
+precedes every promotion and receipt. Durable positive local deltas prompt
+the existing coalesced scheduler to continue; polls and unchanged staging
+cannot perpetually renew fast retries. The 45-second pass budget remains.
+Its expected pause no longer masquerades as lost peer reachability. Proven
+permission loss and integrity/storage failures retain their actual failure
+classification even when cancellation also occurred.
+
+Overlapping receive leases preserve one application-owned job until the last
+owner ends. A passive lease cannot erase another owner's failure or turn
+later work into an old success. Fixed typed diagnostic explanations survive
+redaction and restart without including exception messages, credentials,
+world contents or private paths. Inbound peer rejections also retain bounded,
+coalesced fixed request/phase/result audit fields; public refusal bodies stay
+generic. Incoming publication totals and outgoing delivery hints are kept in
+their correct scopes, including an unacknowledged newer outgoing copy after
+an older cached-copy receipt check.
+
+The first focused source run passed ten of eleven groups and caught an
+outgoing-publication projection regression; its fix keeps the strict
+newer-publication/no-fabricated-receipt assertion. The final complete local
+source run passed **105/105 groups**, including that regression, deliberately
+slow actual signed streams, original/forwarded raw/gzip transfers, retained
+prefixes, overlapping jobs, typed failures and scheduler/cache guards
+(`local-data/shared-transfer25-all-source.log`). Symbolic-link subcases were
+skipped where this account could not create links. A clean focused UI run
+passed 290/290 tests in seven files. After final review, all 84 affected mock
+tests and all 16 hosting-progress tests passed, including a new check that
+accepts all thirteen distinct backend timing buckets and rejects overflow or
+duplication. The pure renderer suite passed 67/67. Final type checking, lint
+and production bundling passed; Vite retains its existing size advisory.
+Solution compilation passed with zero warnings/errors, whole-solution
+formatting passed after whitespace corrections, and diagnostic isolation and
+Git whitespace checks passed. No dependencies were added. Evidence is in
+`local-data/shared-transfer25-*.log`.
+
+An earlier worker UI run failed because a new test omitted `act` and leaked
+fake timers; those test issues were corrected. The first lint pass caught
+five unused mock parameters, corrected without weakening read-only-call
+assertions. Hosted rendered/native/network-fixture acceptance is pending.
+The .24 published executable is pinned as an additional compatibility lane,
+alongside the seven existing published-version lanes.
+
+No running application, transfer, pairing or world was modified. Workers
+inspected repository/synthetic data only; shared builds and commits remain
+coordinator-owned. Local checks remain code-only; interactive acceptance
+belongs on explicitly opted-in hosted Windows runners. The installed .24
+application does not contain this follow-up. .25 is not published, and the
+physical two-PC transfer, game-load and saved-restart checks remain open.
+
 ## 0.3.3.24 preview release: background shared hosting and failed-attempt diagnostics
 
 [0.3.3.24 Preview](https://github.com/daltonstates/TogetherServer/releases/tag/v0.3.3.24)

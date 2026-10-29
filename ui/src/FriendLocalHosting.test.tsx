@@ -2035,9 +2035,9 @@ it('waits for an in-flight automatic check before letting Browse change the sele
   expect(dialog.getByRole('button', { name: 'Host locally' })).toBeEnabled()
 })
 
-it.each(['action', 'card'] as const)('disables the %s entry through receive, verification and receipt without dispatching any action', async presentation => {
+it.each(['action', 'card'] as const)('disables the %s entry through local staging, receive, verification and receipt without dispatching any action', async presentation => {
   vi.useFakeTimers()
-  let phase: 'Receiving' | 'Verifying' | 'Receipt' | null = 'Receiving'
+  let phase: 'Preparing' | 'Receiving' | 'Verifying' | 'Receipt' | null = 'Preparing'
   const calls: { url: string; method?: string; headers?: HeadersInit }[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method, headers: init?.headers })
@@ -2050,7 +2050,15 @@ it.each(['action', 'card'] as const)('disables the %s entry through receive, ver
   const entry = screen.getByRole('button', { name: 'Host locally' })
   expect(entry).toBeDisabled()
   const progress = within(screen.getByRole('region', { name: 'Save transfer progress' }))
-  expect(progress.getByText('100% received')).toBeInTheDocument()
+  expect(progress.getByText('100% staged locally')).toBeInTheDocument()
+  expect(progress.getByRole('progressbar', { name: 'Local save bytes staged' })).toHaveAttribute('value', '100')
+  expect(progress.getByRole('list', { name: 'Save transfer stages' }).querySelector('[aria-current="step"]')).toHaveTextContent('Prepare local files')
+  fireEvent.click(entry)
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  phase = 'Receiving'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(entry).toBeDisabled()
+  expect(progress.getByText('100% received or retained')).toBeInTheDocument()
   expect(progress.getByRole('list', { name: 'Save transfer stages' }).querySelector('[aria-current="step"]')).toHaveTextContent('Receive save')
   fireEvent.click(entry)
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -2058,7 +2066,7 @@ it.each(['action', 'card'] as const)('disables the %s entry through receive, ver
   await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
   expect(entry).toBeDisabled()
   expect(progress.getByText('Verifying the shared save')).toBeInTheDocument()
-  expect(progress.queryByText('100% received')).not.toBeInTheDocument()
+  expect(progress.queryByText('100% received or retained')).not.toBeInTheDocument()
   expect(progress.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
   phase = 'Receipt'
   await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
@@ -2069,14 +2077,14 @@ it.each(['action', 'card'] as const)('disables the %s entry through receive, ver
   expect(entry).toBeEnabled()
   expect(screen.queryByRole('region', { name: 'Save transfer progress' })).not.toBeInTheDocument()
   expect(calls.every(call => call.method === undefined)).toBe(true)
-  expect(calls.filter(call => call.url === base)).toHaveLength(4)
+  expect(calls.filter(call => call.url === base)).toHaveLength(5)
   expect(calls.filter(call => call.url === base).every(call => JSON.stringify(call.headers) === JSON.stringify({ 'X-TogetherServer-Local': '1' }))).toBe(true)
   expect(open).not.toHaveBeenCalled()
 })
 
-it('disables dialog confirmation when a background transfer starts after the hosting checks', async () => {
+it('disables dialog confirmation when local staging or a background transfer starts after the hosting checks', async () => {
   vi.useFakeTimers()
-  let transferPhase: 'Verifying' | 'Receipt' | null = null
+  let transferPhase: 'Preparing' | 'Verifying' | 'Receipt' | null = null
   const writes: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
@@ -2089,6 +2097,11 @@ it('disables dialog confirmation when a background transfer starts after the hos
   const dialog = within(screen.getByRole('dialog', { name: 'Host locally' }))
   const confirm = dialog.getByRole('button', { name: 'Start hosting' })
   expect(confirm).toBeEnabled()
+  transferPhase = 'Preparing'
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(confirm).toBeDisabled()
+  expect(dialog.getByRole('region', { name: 'Save transfer progress' })).toHaveTextContent('Preparing local save files')
+  fireEvent.click(confirm)
   transferPhase = 'Verifying'
   await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
   expect(confirm).toBeDisabled()
@@ -2249,7 +2262,7 @@ it('clears a draft game-port approval when the saved Host connection changes', a
 })
 
 
-it('allows remote Start and unrelated navigation while this PC receives its replica', async () => {
+it.each(['Preparing', 'Receiving'] as const)('allows remote Start and unrelated navigation while this PC is %s its replica', async transferPhase => {
   const remoteStart = vi.fn(), navigate = vi.fn()
   const profile: PublicProfile = { id: profileId, name: 'Shared server', kind: 'Valheim', state: 'Offline',
     runOperationId: null, joinAddress: null, canStart: true, canStop: false, canStopNow: false, stopReason: null,
@@ -2262,7 +2275,7 @@ it('allows remote Start and unrelated navigation while this PC receives its repl
   const writes: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method) writes.push(url)
-    return response(url === base ? { ...idleTransfer, transferPhase: 'Receiving', receivedBytes: 25, totalBytes: 100 } : initial)
+    return response(url === base ? { ...idleTransfer, transferPhase, receivedBytes: 25, totalBytes: 100 } : initial)
   }))
   render(<><button onClick={navigate}>Another server</button><FriendPlayFlow snapshot={snapshot} profile={profile}
     showServerNotifications={false} onStart={remoteStart} localHostingAction={<FriendLocalHosting {...props} />} /></>)

@@ -11,6 +11,26 @@ const response = (value: unknown) => new Response(JSON.stringify(value), { statu
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('honest hosting progress', () => {
+  it('shows measured local staging and retained-file advancement before network reception', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(instant)
+    let current = progress({ phase: 'Preparing', message: 'Staging reusable files on this PC.', completedFiles: 75, totalFiles: 315 })
+    vi.stubGlobal('fetch', vi.fn(async () => response(current)))
+    render(<LocalHostingProgress endpoint={endpoint} title="Preparing this PC" message="Checking the save." />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+    expect(screen.getByRole('progressbar', { name: 'Local save bytes staged' })).toHaveAttribute('value', '256')
+    expect(screen.getByText('25% staged locally')).toBeInTheDocument()
+    expect(screen.getByText('75 of 315 files staged locally.')).toBeInTheDocument()
+    expect(screen.getByText(/including retained bytes from earlier passes/)).toBeInTheDocument()
+    current = { ...current, receivedBytes: 768, completedFiles: 200, updatedUtc: new Date(Date.now()).toISOString() }
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '768')
+    expect(screen.getByText('200 of 315 files staged locally.')).toBeInTheDocument()
+    current = { ...current, phase: 'Verifying', receivedBytes: 1024, completedFiles: 315, updatedUtc: new Date(Date.now()).toISOString() }
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('progressbar', { name: 'Verifying the save files' })).not.toHaveAttribute('value')
+    expect(screen.queryByText(/100%/)).not.toBeInTheDocument()
+  })
+
   it('rejects malformed counters, states, timestamps and invented percentages', () => {
     expect(parseHostingProgress(null)).toBeNull()
     expect(parseHostingProgress(progress())).toEqual(progress())
@@ -26,6 +46,15 @@ describe('honest hosting progress', () => {
       expect(() => parseHostingProgress(progress({ phaseTimings } as Partial<HostingProgress>))).toThrow(/progress/)
     expect(parseHostingProgress(progress({ phaseTimings: null }))).not.toBeNull()
     expect(parseHostingProgress(progress({ phaseTimings: [{ phase: 'Receiving', elapsedMilliseconds: 1234 }] }))).not.toBeNull()
+  })
+
+  it('accepts all thirteen distinct backend timing buckets and rejects overflow or repetition', () => {
+    const phaseTimings = ['Permission', 'PeerSync', 'LatestSave', 'Preparing', 'Receiving', 'Verifying', 'Receipt',
+      'PreparingCopy', 'ServerSetup', 'Ports', 'Connection', 'Starting', 'Other']
+      .map((phase, index) => ({ phase, elapsedMilliseconds: index * 100 }))
+    expect(parseHostingProgress(progress({ phaseTimings }))?.phaseTimings).toEqual(phaseTimings)
+    expect(() => parseHostingProgress(progress({ phaseTimings: [...phaseTimings, phaseTimings[0]] }))).toThrow(/progress/)
+    expect(() => parseHostingProgress(progress({ phaseTimings: [phaseTimings[0], phaseTimings[0]] }))).toThrow(/progress/)
   })
 
   it('shows separate observed transfer, preparation, verification and launch times without claiming Ready', async () => {

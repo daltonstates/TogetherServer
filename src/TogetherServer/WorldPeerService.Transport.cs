@@ -885,6 +885,7 @@ internal sealed partial class WorldPeerService : IDisposable
             flight.Completion = Task.Run(async () =>
             {
                 WorldPeerTransferProgress? finishedResult = null;
+                LocalPublicationDelivery? pendingPublication = null;
                 var failed = true;
                 try
                 {
@@ -906,20 +907,24 @@ internal sealed partial class WorldPeerService : IDisposable
                             // request still rechecks current access/source fences.
                             var localCatalog = await LocalCatalogWithSourcesAsync(current, cancellationToken, includeTests: false);
                             var publication = await SeedNewestLocalPublicationAsync(current, route, localCatalog.Sources, cancellationToken);
+                            pendingPublication = publication;
                             if (publication?.PendingProgress == true) transferAttempt.Value.PendingPayload = true;
                             observation.Phase(WorldPeerTransferPhase.Pulling);
                             job.Report("Checking saves");
-                            try { await PullCatalogAsync(current, route, cancellationToken); }
-                            finally
+                            await PullCatalogAsync(current, route, cancellationToken);
+                            if (publication is { Descriptor: { } outgoing })
                             {
-                                if (publication is { Descriptor: { } pendingPublication })
+                                var incomingScope = transferObservations.Read(group.Root.GroupKey, routeKey)?.Current?.StagingVersionHash;
+                                // A cached-copy receipt check is not a new
+                                // incoming payload. Keep an unacknowledged
+                                // outgoing head explicit in that case, while
+                                // a different actual pull owns its own current
+                                // publication and total. Interrupted pulls do
+                                // not reach this successful-only projection.
+                                if (incomingScope is null || incomingScope == outgoing.Version.VersionHash)
                                 {
-                                    // Incoming history cannot replace the exact
-                                    // unacknowledged local publication. Null
-                                    // cursor means no outgoing progress was
-                                    // acknowledged; it does not invent bytes.
-                                    observation.Expected(pendingPublication.Version.Files.Sum(file => file.Length),
-                                        pendingPublication.Version.Files.Count, pendingPublication.Version.Number);
+                                    observation.Expected(outgoing.Version.Files.Sum(file => file.Length),
+                                        outgoing.Version.Files.Count, outgoing.Version.Number, outgoing.Version.VersionHash);
                                     observation.Requested(publication.File, publication.Offset);
                                 }
                             }
@@ -936,6 +941,12 @@ internal sealed partial class WorldPeerService : IDisposable
                             failed = false;
                             job.Waiting("CheckComplete", "The bounded background pass finished. Eligible saves continue on the next scheduled pass.");
                         }
+                        catch (OperationCanceledException error) when (IsReceiveWorkBudgetPause(error))
+                        {
+                            observation.Complete(WorldPeerTransferResult.WorkBudget);
+                            failed = false;
+                            job.Waiting("WorkBudget", "The bounded save pass paused. Retained local work continues on a later background pass.");
+                        }
                         catch (Exception error)
                         {
                             ObserveTransferFailure(observation, error, cancellationToken);
@@ -946,6 +957,17 @@ internal sealed partial class WorldPeerService : IDisposable
                         finally
                         {
                             finishedResult = observation.FinishedResult;
+                            // Preserve the outgoing high-water cursor for the
+                            // scheduler only. The displayed publication/total
+                            // must continue to describe the actual incoming
+                            // pull, including an interrupted local preparation.
+                            if (finishedResult is not null && pendingPublication is { Descriptor: { } outgoing })
+                                finishedResult = finishedResult with
+                                {
+                                    PublicationNumber = outgoing.Version.Number,
+                                    RequestedFileIndex = pendingPublication.File,
+                                    RequestedOffset = pendingPublication.Offset
+                                };
                             transferAttempt.Value = null;
                         }
                     }
@@ -1229,7 +1251,9 @@ internal sealed partial class WorldPeerService : IDisposable
         lock (stateSync)
         {
             var groups = Groups();
-            replicationSchedule.RetainWorlds(groups.Select(group => group.Root.GroupKey).ToHashSet(StringComparer.Ordinal));
+            var retainedWorlds = groups.Select(group => group.Root.GroupKey).ToHashSet(StringComparer.Ordinal);
+            replicationSchedule.RetainWorlds(retainedWorlds);
+            pendingProgress.RetainWorlds(retainedWorlds);
             if (groups.Length == 0) return;
             known = groups;
             selected = Enumerable.Range(0, Math.Min(4, groups.Length))
@@ -1268,6 +1292,8 @@ internal sealed partial class WorldPeerService : IDisposable
 
     private async Task SyncScheduledGroupAsync(Group group, CancellationToken budget, CancellationToken caller, bool scheduled)
     {
+        var previousBudget = receiveWorkBudget.Value;
+        receiveWorkBudget.Value = new(budget, caller);
         try
         {
             using var key = RetainedLocalKey(group);
@@ -1307,6 +1333,12 @@ internal sealed partial class WorldPeerService : IDisposable
                     await SyncPeerAsync(group, route, budget, background: true);
                     group = Find(group.Root.GroupKey) ?? group;
                 }
+                catch (OperationCanceledException error) when (IsReceiveWorkBudgetPause(error))
+                {
+                    // The owner's finalization records its retained-work
+                    // outcome. A bounded wait is not lost peer reachability.
+                    break;
+                }
                 catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
                 {
                     // An expired join says nothing about a still-running
@@ -1319,11 +1351,13 @@ internal sealed partial class WorldPeerService : IDisposable
                 }
             }
         }
+        catch (OperationCanceledException error) when (IsReceiveWorkBudgetPause(error)) { }
         catch (Exception ex) when (PeerFailure(ex) || ex is OperationCanceledException && !caller.IsCancellationRequested)
         {
             ForgetReplicationRoutes(group.Root);
             SetPeerWarning(group.Root.GroupKey, "This world's signed peer information needs review; existing histories were kept.");
         }
+        finally { receiveWorkBudget.Value = previousBudget; }
     }
 
     private async Task RefreshScheduledMembershipsAsync(bool refreshFriends, CancellationToken cancellationToken)

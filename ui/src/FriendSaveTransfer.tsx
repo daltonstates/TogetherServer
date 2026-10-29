@@ -12,7 +12,7 @@ export function parseFriendSaveTransferStatus(value: unknown): FriendSaveTransfe
   const item = value as Record<string, unknown>
   if (typeof item.state !== 'string' || item.state.length === 0 || item.state.length > 300 ||
     [...item.state].some(character => character.charCodeAt(0) < 32) ||
-    item.transferPhase !== null && !['Receiving', 'Verifying', 'Receipt'].includes(String(item.transferPhase)) ||
+    item.transferPhase !== null && !['Preparing', 'Receiving', 'Verifying', 'Receipt'].includes(String(item.transferPhase)) ||
     [item.receivedBytes, item.totalBytes].some(bytes => typeof bytes !== 'number' || !Number.isSafeInteger(bytes) || bytes < 0) ||
     Number(item.receivedBytes) > Number(item.totalBytes)) throw new Error('Save transfer status is unavailable.')
   return { state: item.state, transferPhase: sharedTransferPhase(item.state, item.transferPhase as TransferPhase | null),
@@ -80,26 +80,28 @@ export function FriendSaveTransferProgress({ status, fresh, unavailable }: {
   const detailId = useId()
   const phase = status?.transferPhase
   const title = !fresh ? unavailable ? 'Save transfer status unavailable' : 'Checking save transfer' :
-    phase === 'Receiving' ? 'Receiving the shared save' : phase === 'Verifying' ? 'Verifying the shared save' : 'Confirming save receipt'
+    phase === 'Preparing' ? 'Preparing local save files' : phase === 'Receiving' ? 'Receiving the shared save' : phase === 'Verifying' ? 'Verifying the shared save' : 'Confirming save receipt'
   const message = !fresh ? 'Host locally is unavailable until this PC can confirm that no save transfer is active.' :
-    phase === 'Receiving' ? 'Keep TogetherServer open while the completed save arrives.' :
+    phase === 'Preparing' ? 'Checking and staging reusable files on this PC. This local work happens before missing save bytes are downloaded.' :
+      phase === 'Receiving' ? 'Keep TogetherServer open while the completed save arrives. Progress includes bytes retained from earlier passes.' :
       phase === 'Verifying' ? 'All bytes have arrived. Checking the files and hosting access before continuing.' :
         'The save checks have finished. Waiting for receipt confirmation before hosting.'
-  const measured = fresh && phase === 'Receiving' && status !== null && status.totalBytes > 0
+  const measured = fresh && (phase === 'Preparing' || phase === 'Receiving') && status !== null && status.totalBytes > 0
   return <section className="local-hosting-live-progress local-hosting-background-transfer" aria-label="Save transfer progress" aria-busy="true">
     <div className="local-hosting-live-progress-heading"><div role="status" aria-atomic="true">
       <strong id={titleId}><Icon name={unavailable ? 'warning' : 'loader'} />{title}</strong><p id={detailId}>{message}</p>
     </div></div>
-    {measured ? <><progress aria-label="Shared save bytes received" max={status.totalBytes} value={status.receivedBytes} />
-      <p className="local-hosting-byte-progress"><strong>{Math.floor(status.receivedBytes * 100 / status.totalBytes)}% received</strong>
+    {measured ? <><progress aria-label={phase === 'Preparing' ? 'Local save bytes staged' : 'Shared save bytes received'} max={status.totalBytes} value={status.receivedBytes} />
+      <p className="local-hosting-byte-progress"><strong>{Math.floor(status.receivedBytes * 100 / status.totalBytes)}% {phase === 'Preparing' ? 'staged locally' : 'received or retained'}</strong>
         <span>{formatSharedBytes(status.receivedBytes)} of {formatSharedBytes(status.totalBytes)}</span></p></> :
       <div className="local-hosting-indeterminate" role="progressbar" aria-labelledby={titleId} aria-describedby={detailId}
         aria-valuetext={title}><span /></div>}
     {fresh && phase && <ol className="local-hosting-transfer-steps" aria-label="Save transfer stages">
+      <li aria-current={phase === 'Preparing' ? 'step' : undefined}>Prepare local files</li>
       <li aria-current={phase === 'Receiving' ? 'step' : undefined}>Receive save</li>
       <li aria-current={phase === 'Verifying' ? 'step' : undefined}>Verify files</li>
       <li aria-current={phase === 'Receipt' ? 'step' : undefined}>Confirm receipt</li>
     </ol>}
-    <p className="helper-text">Host locally becomes available after receiving, verification and receipt confirmation finish.</p>
+    <p className="helper-text">Host locally becomes available after local preparation, receiving, verification and receipt confirmation finish. Remote Start on another eligible Host remains separate.</p>
   </section>
 }

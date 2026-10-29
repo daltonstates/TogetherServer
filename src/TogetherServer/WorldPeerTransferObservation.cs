@@ -4,11 +4,16 @@ public sealed record WorldPeerTransferProgress(string State, string Phase, strin
     int? HttpStatus, string Result, string Error, DateTimeOffset StartedUtc, DateTimeOffset UpdatedUtc,
     long ElapsedMilliseconds, long SubmittedBytes, long ReceivedBytes, int CompletedFiles,
     int? RequestedFileIndex, long? RequestedOffset, bool ExactReceiptAccepted,
-    long? TotalBytes = null, int? TotalFiles = null, long? PublicationNumber = null, long? ReceiptPublicationNumber = null);
+    long? TotalBytes = null, int? TotalFiles = null, long? PublicationNumber = null, long? ReceiptPublicationNumber = null,
+    long LocalStagedBytes = 0)
+{
+    // Scheduler-only exact staging scope. Kept out of API/support projection.
+    internal string? StagingVersionHash { get; init; }
+}
 public sealed record WorldPeerTransferView(int RouteOrdinal, string RecipientRole,
     WorldPeerTransferProgress? Current, WorldPeerTransferProgress? LastResult, WorldPeerTransferProgress? LastFailure);
 
-internal enum WorldPeerTransferPhase { Queued, Metadata, Pulling, Offering, Sending, VerifyingLocal, VerifyingRemote, Receipt }
+internal enum WorldPeerTransferPhase { Queued, Metadata, Preparing, Pulling, Offering, Sending, VerifyingLocal, VerifyingRemote, Receipt }
 internal enum WorldPeerTransferOperation { None, Metadata, Catalog, Manifest, Chunk, Seed, Receipt }
 internal enum WorldPeerTransferHttpStep { None, Challenge, Exchange }
 internal enum WorldPeerTransferRecipientRole { Unknown, OriginalHost, ApprovedPeer }
@@ -61,7 +66,8 @@ internal sealed class WorldPeerTransferObservationStore(TimeProvider? clock = nu
         internal int? HttpStatus;
         internal WorldPeerTransferResult Result;
         internal WorldPeerTransferError Error;
-        internal long SubmittedBytes, ReceivedBytes;
+        internal long SubmittedBytes, ReceivedBytes, LocalStagedBytes;
+        internal string? StagingVersionHash;
         internal int CompletedFiles;
         internal int? RequestedFileIndex;
         internal long? RequestedOffset, TotalBytes, PublicationNumber, ReceiptPublicationNumber;
@@ -119,7 +125,8 @@ internal sealed class WorldPeerTransferObservationStore(TimeProvider? clock = nu
         item.Operation.ToString(), item.HttpStep.ToString(), item.HttpStatus, item.Result.ToString(), item.Error.ToString(),
         item.StartedUtc, item.UpdatedUtc, item.FrozenElapsed ?? Elapsed(item), item.SubmittedBytes, item.ReceivedBytes,
         item.CompletedFiles, item.RequestedFileIndex, item.RequestedOffset, item.ReceiptPublicationNumber is not null,
-        item.TotalBytes, item.TotalFiles, item.PublicationNumber, item.ReceiptPublicationNumber);
+        item.TotalBytes, item.TotalFiles, item.PublicationNumber, item.ReceiptPublicationNumber, item.LocalStagedBytes)
+    { StagingVersionHash = item.StagingVersionHash };
 
     private void Change(MutableProgress? current, Func<MutableProgress, bool> change)
     {
@@ -186,8 +193,11 @@ internal sealed class WorldPeerTransferObservationStore(TimeProvider? clock = nu
             item.HttpStatus = status;
             return true;
         });
-        internal void Expected(long? totalBytes, int? totalFiles, long? publicationNumber = null) => store.Change(current, item =>
+        internal void Expected(long? totalBytes, int? totalFiles, long? publicationNumber = null,
+            string? stagingVersionHash = null) => store.Change(current, item =>
         {
+            if (item.StagingVersionHash != stagingVersionHash) item.LocalStagedBytes = 0;
+            item.StagingVersionHash = stagingVersionHash;
             item.TotalBytes = totalBytes is >= 0 ? Math.Min(totalBytes.Value, MaximumBytes) : null;
             item.TotalFiles = totalFiles is >= 0 ? Math.Min(totalFiles.Value, MaximumFiles) : null;
             item.PublicationNumber = Publication(publicationNumber);
@@ -212,6 +222,15 @@ internal sealed class WorldPeerTransferObservationStore(TimeProvider? clock = nu
             var next = Added(item.ReceivedBytes, bytes);
             if (next == item.ReceivedBytes) return false;
             item.ReceivedBytes = next;
+            return true;
+        });
+        // Local bytes flushed into resumable staging after a current-scope
+        // check. Staging still needs full verification; it is not wire traffic.
+        internal void LocalStaged(long bytes) => store.Change(current, item =>
+        {
+            var next = Added(item.LocalStagedBytes, bytes);
+            if (next == item.LocalStagedBytes) return false;
+            item.LocalStagedBytes = next;
             return true;
         });
         internal void FileCompleted(int count = 1) => store.Change(current, item =>
